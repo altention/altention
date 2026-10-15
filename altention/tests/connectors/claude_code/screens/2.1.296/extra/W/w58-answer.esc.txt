@@ -1,0 +1,30 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m    [38;5;246m/btw first[39m
+    [1m[38;5;220m/btw [0m[38;5;246mthird
+
+[39m      The answer, with enough words in it to wrap in a
+      narrow pane, and then a little more.
+
+    [38;5;246m⇧←/→ to browse · c to copy · f to fork · x to clear [39m
+    [38;5;246mhistory · Esc to close[39m

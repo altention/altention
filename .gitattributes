@@ -1,0 +1,5 @@
+# 多台機器同時追加時自動合併，不產生衝突
+skills/*/lessons.md merge=union
+skills/*/CHANGELOG.md merge=union
+skills/*/data/lessons.md merge=union
+skills/*/data/CHANGELOG.md merge=union

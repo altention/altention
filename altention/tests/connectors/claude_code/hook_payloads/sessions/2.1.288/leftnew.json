@@ -1,0 +1,209 @@
+[
+ {
+  "session_id": "ab2f7f60-0abd-4506-b709-87cbfd3cda11",
+  "transcript_path": "/w/.claude/projects/-w-proj/ab2f7f60-0abd-4506-b709-87cbfd3cda11.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "ab2f7f60-0abd-4506-b709-87cbfd3cda11",
+  "transcript_path": "/w/.claude/projects/-w-proj/ab2f7f60-0abd-4506-b709-87cbfd3cda11.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "9af8f297-3a54-4a5b-8cb5-2f226b54aff1",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "ab2f7f60-0abd-4506-b709-87cbfd3cda11",
+  "transcript_path": "/w/.claude/projects/-w-proj/ab2f7f60-0abd-4506-b709-87cbfd3cda11.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "9af8f297-3a54-4a5b-8cb5-2f226b54aff1",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "agent_type": "claude",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "a1ed1830-3176-46f1-b607-be27471c7cb6",
+  "transcript_path": "/w/.claude/projects/-w-proj/a1ed1830-3176-46f1-b607-be27471c7cb6.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "fork",
+  "seconds_since_last_response": 7,
+  "context_tokens": 15,
+  "prompt_cache_likely_expired": false,
+  "estimated_cache_write_usd": 0.0001
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "b0f378c0-6815-4802-af5a-3e52ec916705",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-typed-in-agents-view"
+ },
+ {
+  "session_id": "31c22ed4-81d9-4b22-a7eb-77669a19996a",
+  "transcript_path": "/w/.claude/projects/-w-proj/31c22ed4-81d9-4b22-a7eb-77669a19996a.jsonl",
+  "cwd": "/w/proj",
+  "agent_type": "claude",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "b0f378c0-6815-4802-af5a-3e52ec916705",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-typed-in-agents-view.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "b0f378c0-6815-4802-af5a-3e52ec916705",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "a5f787361c7254d17",
+  "agent_type": "claude",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b/subagents/agent-a5f787361c7254d17.jsonl",
+  "last_assistant_message": "ANS-typed-in-agents-view.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "00764e52-9093-4fa1-860c-a1749d4e9cdd",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-in-the-opened-one"
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "00764e52-9093-4fa1-860c-a1749d4e9cdd",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-in-the-opened-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "31c22ed4-81d9-4b22-a7eb-77669a19996a",
+  "transcript_path": "/w/.claude/projects/-w-proj/31c22ed4-81d9-4b22-a7eb-77669a19996a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "8138efc1-89c1-497d-8d4d-f616487113e1",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "echo SHELL-IS-BACK"
+ },
+ {
+  "session_id": "850d3f48-f670-4841-aa84-12bfb03cc61a",
+  "transcript_path": "/w/.claude/projects/-w-proj/850d3f48-f670-4841-aa84-12bfb03cc61a.jsonl",
+  "cwd": "/w/proj",
+  "agent_type": "claude",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "31c22ed4-81d9-4b22-a7eb-77669a19996a",
+  "transcript_path": "/w/.claude/projects/-w-proj/31c22ed4-81d9-4b22-a7eb-77669a19996a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "8138efc1-89c1-497d-8d4d-f616487113e1",
+  "permission_mode": "bypassPermissions",
+  "agent_type": "claude",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-in-the-opened-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "b847fc4b-3e8e-48f3-88b5-fa452d36831b",
+  "transcript_path": "/w/.claude/projects/-w-proj/b847fc4b-3e8e-48f3-88b5-fa452d36831b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "9b9d1fef-f3d2-4622-87de-cc451fef99a0",
+  "agent_type": "claude",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ {
+  "session_id": "a1ed1830-3176-46f1-b607-be27471c7cb6",
+  "transcript_path": "/w/.claude/projects/-w-proj/a1ed1830-3176-46f1-b607-be27471c7cb6.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ {
+  "session_id": "31c22ed4-81d9-4b22-a7eb-77669a19996a",
+  "transcript_path": "/w/.claude/projects/-w-proj/31c22ed4-81d9-4b22-a7eb-77669a19996a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "8138efc1-89c1-497d-8d4d-f616487113e1",
+  "agent_type": "claude",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ {
+  "session_id": "850d3f48-f670-4841-aa84-12bfb03cc61a",
+  "transcript_path": "/w/.claude/projects/-w-proj/850d3f48-f670-4841-aa84-12bfb03cc61a.jsonl",
+  "cwd": "/w/proj",
+  "agent_type": "claude",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ {
+  "session_id": "ab2f7f60-0abd-4506-b709-87cbfd3cda11",
+  "transcript_path": "/w/.claude/projects/-w-proj/ab2f7f60-0abd-4506-b709-87cbfd3cda11.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "9af8f297-3a54-4a5b-8cb5-2f226b54aff1",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ }
+]

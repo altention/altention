@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "name": "usage",
+  "title": "用量統計",
+  "description": "每小時把各機器的用量（打開 usage.subscription_limits 時還有訂閱額度）更新到 Discord 的看板，樣本累積在本機。",
+  "pitch": "在 #dashboard 放一個看板，顯示每台機器用了多少 Claude。不花額度（有一個預設關著的選項會每小時用一點，裝完可以再開）。",
+  "keep": "看板顯示每台機器用了多少 Claude",
+  "lose": "看不到每台用了多少 Claude",
+  "order": 50,
+  "machines": "one",
+  "channels": [
+    {
+      "name": "dashboard",
+      "kind": "board",
+      "setting": "usage.channel"
+    }
+  ],
+  "schedules": [
+    {
+      "name": "collect",
+      "when": {
+        "every": "1h",
+        "offset": "7m"
+      },
+      "do": {
+        "run": "/usr/bin/python3 \"{plugin}/collect.py\"",
+        "output": "none",
+        "log": "~/.cache/usage.out",
+        "trace": "~/.cache/usage.out"
+      }
+    }
+  ],
+  "setup": [
+    {
+      "name": "node-ccusage",
+      "on": [
+        "one",
+        "sources"
+      ],
+      "run": "\"{plugin}/install-node.sh\""
+    },
+    {
+      "name": "chart-venv",
+      "run": "V=\"$HOME/.local/share/usage/venv\"; [ -x \"$V/bin/python\" ] || python3 -m venv \"$V\"; \"$V/bin/python\" -c 'import matplotlib' 2>/dev/null || \"$V/bin/pip\" install -q matplotlib"
+    }
+  ],
+  "data": [
+    {
+      "name": "samples",
+      "path": "~/.local/share/usage",
+      "sync": "none",
+      "private": true
+    }
+  ]
+}

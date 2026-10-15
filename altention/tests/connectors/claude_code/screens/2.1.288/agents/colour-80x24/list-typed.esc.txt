@@ -1,0 +1,24 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.288[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · ~/proj[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m1 awaiting input · 0 working · 0 completed[39m
+
+[38;5;246mYour conversation moved to the background — enter opens it · esc returns to it ·
+ctrl+c twice quits[39m
+
+[38;5;246mNeeds input[39m
+[38;5;220m✻[39m [1mQ-A-one: this is…[0m  [38;5;246mANS-A-one: the first conversation (A) answered.[39m          [38;5;246m4s
+
+
+
+[39m
+
+
+
+
+
+
+[2m────────────────────────────────────────────────────────────────────────────────
+[0m❯ half a task typed, not sent[7m [0m
+[2m────────────────────────────────────────────────────────────────────────────────
+[0m  [38;5;211m⏵⏵ bypass permissions[38;5;246m · enter to create · esc to clear · ctrl+f to find[39m

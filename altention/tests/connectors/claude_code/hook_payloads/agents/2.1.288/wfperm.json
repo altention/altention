@@ -1,0 +1,279 @@
+[
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "fb8a8e0d-6cf4-45c8-8d23-851a9f992f16",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "fb8a8e0d-6cf4-45c8-8d23-851a9f992f16",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-wfperm SUBTASK-MARKER"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Workflow",
+  "tool_input": {
+   "script": "export const meta = {name: 'rig-wf', description: 'one agent', phases: [{title: 'Go'}]}\nconst r = await agent('touch a file as asked', {label: 'wf-a', phase: 'Go'})\nreturn {r}\n"
+  },
+  "tool_use_id": "toolu_rig1791851917354"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Workflow",
+  "tool_input": {
+   "script": "export const meta = {name: 'rig-wf', description: 'one agent', phases: [{title: 'Go'}]}\nconst r = await agent('touch a file as asked', {label: 'wf-a', phase: 'Go'})\nreturn {r}\n"
+  }
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission",
+  "notification_type": "permission_prompt"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Workflow",
+  "tool_input": {
+   "script": "export const meta = {name: 'rig-wf', description: 'one agent', phases: [{title: 'Go'}]}\nconst r = await agent('touch a file as asked', {label: 'wf-a', phase: 'Go'})\nreturn {r}\n"
+  },
+  "tool_response": {
+   "status": "async_launched",
+   "taskId": "w8jbdcf0l",
+   "taskType": "local_workflow",
+   "workflowName": "rig-wf",
+   "runId": "wf_60a8fc16-47a",
+   "summary": "one agent",
+   "transcriptDir": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471/subagents/workflows/wf_60a8fc16-47a",
+   "scriptPath": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471/workflows/scripts/rig-wf-wf_60a8fc16-47a.js"
+  },
+  "tool_use_id": "toolu_rig1791851917354",
+  "duration_ms": 7
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "agent_id": "a04d2b03d6369d749",
+  "agent_type": "workflow-subagent",
+  "hook_event_name": "SubagentStart"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "agent_id": "a04d2b03d6369d749",
+  "agent_type": "workflow-subagent",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch wffile",
+   "description": "rig"
+  },
+  "tool_use_id": "toolu_rig1791851925429"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "agent_id": "a04d2b03d6369d749",
+  "agent_type": "workflow-subagent",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch wffile",
+   "description": "rig"
+  },
+  "permission_suggestions": [
+   {
+    "type": "addDirectories",
+    "directories": [
+     "/w/proj"
+    ],
+    "destination": "session"
+   },
+   {
+    "type": "setMode",
+    "mode": "acceptEdits",
+    "destination": "session"
+   }
+  ]
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [
+   {
+    "id": "w8jbdcf0l",
+    "type": "workflow",
+    "status": "running",
+    "description": "one agent",
+    "name": "rig-wf"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission",
+  "notification_type": "permission_prompt"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "agent_id": "a04d2b03d6369d749",
+  "agent_type": "workflow-subagent",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch wffile",
+   "description": "rig"
+  },
+  "tool_response": {
+   "stdout": "",
+   "stderr": "",
+   "interrupted": false,
+   "isImage": false,
+   "noOutputExpected": true
+  },
+  "tool_use_id": "toolu_rig1791851925429",
+  "duration_ms": 81
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "6eb7f6bf-a091-43ac-ad82-53b91643691b",
+  "permission_mode": "default",
+  "agent_id": "a04d2b03d6369d749",
+  "agent_type": "workflow-subagent",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471/subagents/workflows/wf_60a8fc16-47a/agent-a04d2b03d6369d749.jsonl",
+  "last_assistant_message": "WF-AGENT-DONE.",
+  "background_tasks": [
+   {
+    "id": "w8jbdcf0l",
+    "type": "workflow",
+    "status": "running",
+    "description": "one agent",
+    "name": "rig-wf"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0d1ab282-030b-40b8-b005-907da5d0304c",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>w8jbdcf0l</task-id>\n<tool-use-id>toolu_rig1791851917354</tool-use-id>\n<output-file>/w/elsewhere</output-file>\n<status>completed</status>\n<summary>Dynamic workflow \"one agent\" completed</summary>\n<result>{\"r\":\"WF-AGENT-DONE.\"}</result>\n<diagnostics>Per-agent results: /w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471/subagents/workflows/wf_60a8fc16-47a/journal.jsonl — one {\"type\":\"result\",...} line per completed agent with its full return value.\nIf the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.\nTo re-run with edited post-processing: Workflow({scriptPath: '/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471/workflows/scripts/rig-wf-wf_60a8fc16-47a.js', resumeFromRunId: 'wf_60a8fc16-47a'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>\n<usage><agent_count>1</agent_count><agents_done>1</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>15</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9227</duration_ms></usage>\n</task-notification>"
+ },
+ {
+  "session_id": "c7470e39-cd48-4213-bee2-d5570bdcb471",
+  "transcript_path": "/w/.claude/projects/-w-proj/c7470e39-cd48-4213-bee2-d5570bdcb471.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0d1ab282-030b-40b8-b005-907da5d0304c",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+]

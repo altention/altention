@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+
+    /btw first
+    /btw tell me everything
+
+      - item 01 of a long list, with a few more words in it.
+      - item 02 of a long list, with a few more words in it.
+      - item 03 of a long list, with a few more words in it.
+      - item 04 of a long list, with a few more words in it.
+      - item 05 of a long list, with a few more words in it.
+      - item 06 of a long list, with a few more words in it.
+      - item 07 of a long list, with a few more words in it.
+      - item 08 of a long list, with a few more words in it.
+      - item 09 of a long list, with a few more words in it.
+
+    ⇧←/→ to browse · c to copy · f to fork · x to clear history ·
+    Esc to close

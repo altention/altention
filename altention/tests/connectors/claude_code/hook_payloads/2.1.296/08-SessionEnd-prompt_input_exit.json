@@ -1,0 +1,8 @@
+{
+ "session_id": "9e8d25b5-28ce-4219-8f6f-cadeec708fbb",
+ "transcript_path": "/w/.claude/projects/-w-proj/9e8d25b5-28ce-4219-8f6f-cadeec708fbb.jsonl",
+ "cwd": "/w/proj",
+ "prompt_id": "69116932-d6fc-40d2-ba0f-54a9f685eb68",
+ "hook_event_name": "SessionEnd",
+ "reason": "prompt_input_exit"
+}

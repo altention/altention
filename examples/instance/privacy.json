@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "_note": "Extra words tools/privacy-scan must never find in the engine: your school, company, project and repository names, unusual channel and category names. Leave out common words, or every scan reports them.",
+  "terms": ["Example University", "project-x"],
+  "channels": ["project-x-dev"],
+  "categories": ["Project X"]
+}

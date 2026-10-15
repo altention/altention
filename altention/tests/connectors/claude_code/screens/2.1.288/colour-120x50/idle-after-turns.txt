@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ please do the first thing
+
+● All done. Nothing else to report.
+
+✻ Crunched for 14s · done 3:40 PM
+
+❯ a second message while busy
+
+● All done. Nothing else to report.
+
+✻ Crunched for 14s · done 3:40 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

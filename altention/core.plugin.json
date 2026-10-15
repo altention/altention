@@ -1,0 +1,195 @@
+{
+ "format": 1,
+ "name": "core",
+ "title": "核心",
+ "description": "Discord 上管理 Claude Code 對話：機器人、同步、機器管理。一定要有，不能停用。",
+ "machines": "all",
+ "hooks": [
+  {
+   "event": "SessionStart",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "UserPromptSubmit",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "PreToolUse",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "PreToolUse",
+   "command": "'{engine}/dcbot/tools/dchook' --global --guard",
+   "timeout": 5
+  },
+  {
+   "event": "Stop",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "Notification",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "SessionEnd",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "SubagentStart",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "SubagentStop",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "StopFailure",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "PostToolUse",
+   "matcher": "Agent|Task|Workflow",
+   "command": "'{engine}/dcbot/tools/dchook' --global",
+   "timeout": 20
+  },
+  {
+   "event": "PreToolUse",
+   "matcher": "AskUserQuestion",
+   "command": "'{engine}/dcbot/tools/dchook' --global --ask",
+   "timeout": 43200
+  },
+  {
+   "event": "PermissionRequest",
+   "matcher": "ExitPlanMode",
+   "command": "'{engine}/dcbot/tools/dchook' --global --plan",
+   "timeout": 43200
+  }
+ ],
+ "cron": [
+  {
+   "name": "supervisor-boot",
+   "on": "bot",
+   "scheduler": false,
+   "when": "@reboot",
+   "run": "cd \"{engine}/dcbot\" && /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1"
+  },
+  {
+   "name": "supervisor",
+   "on": "bot",
+   "scheduler": false,
+   "when": "*/5 * * * *",
+   "run": "cd \"{engine}/dcbot\" && /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1"
+  },
+  {
+   "name": "engine-update",
+   "on": "all",
+   "scheduler": false,
+   "when": {
+    "every": "15m",
+    "offset": "machine",
+    "after": "3m"
+   },
+   "run": "{python} \"{engine}/altention/cron_update.py\" >> \"$HOME/.local/state/altention/cron-update.log\" 2>&1",
+   "why": "3a.10：引擎更新（語法和載入檢查之後才移動分支），永遠不進排程器；在機器的分鐘後 3 分鐘，避開 chatlog 那行（它也拿同一把 git 鎖）"
+  },
+  {
+   "name": "sync",
+   "on": "all",
+   "scheduler": false,
+   "when": {
+    "every": "15m",
+    "offset": "machine",
+    "after": "8m"
+   },
+   "run": "{python} \"{engine}/altention/cron_sync.py\" >> \"$HOME/.local/state/altention/cron-sync.log\" 2>&1",
+   "why": "3a.10：引擎和實例的同步，在引擎更新之後 5 分鐘，永遠不進排程器"
+  },
+  {
+   "name": "schedule-record",
+   "on": "all",
+   "scheduler": false,
+   "when": "* * * * *",
+   "run": "f=\"{engine}/altention/cron_schedule.py\"; [ ! -f \"$f\" ] || {python} \"$f\" >> \"$HOME/.local/state/altention/cron-schedule.log\" 2>&1",
+   "why": "3a.11：排程器的只記錄模式，每分鐘記下這台的插件排程「會跑什麼」，什麼都不執行、不通知；它自己就是排程器，不進排程器。啟動檔不在（引擎被退回到 3a.11 之前）時這行什麼都不做、沒有輸出"
+  },
+  {
+   "name": "watch",
+   "on": "bot",
+   "scheduler": false,
+   "when": {
+    "every": "15m",
+    "offset": "machine",
+    "after": "13m"
+   },
+   "run": "{python} \"{engine}/ops/doctor.py\" --watch >> \"$HOME/.local/state/altention/cron-watch.log\" 2>&1",
+   "why": "3a.10：機器人那台定期看四台的 last_ok 和被擋、被跳過，四台的同步都停了也有人說話"
+  }
+ ],
+ "settings": [
+  {
+   "file": "~/.claude/settings.json",
+   "key": "cleanupPeriodDays",
+   "at_least": 36500
+  }
+ ],
+ "links": [
+  {
+   "name": "global-instructions",
+   "path": "~/.claude/CLAUDE.md",
+   "made_by": "altention.sync compose_global"
+  },
+  {
+   "name": "memory",
+   "path": "~/.claude/projects/<engine>/memory",
+   "to": "{instance}/memory"
+  },
+  {
+   "name": "ssh-aliases",
+   "path": "~/.ssh/config",
+   "include": "{instance}/ssh_config",
+   "when": "more than one machine"
+  },
+  {
+   "name": "engine",
+   "path": "{root}/engine",
+   "to": "{engine}"
+  }
+ ],
+ "setup": [
+  {
+   "name": "bot-venv",
+   "on": "bot",
+   "run": "cd \"{engine}/dcbot\" && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt"
+  }
+ ],
+ "secrets": [
+  {
+   "name": "bot",
+   "on": "bot",
+   "path": "~/.config/dcbot/env"
+  }
+ ],
+ "data": [
+  {
+   "name": "knowledge",
+   "path": "{instance}/knowledge",
+   "sync": "timer",
+   "private": true
+  },
+  {
+   "name": "memory",
+   "path": "{instance}/memory",
+   "sync": "timer",
+   "private": true
+  }
+ ]
+}

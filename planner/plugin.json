@@ -1,0 +1,91 @@
+{
+  "format": 1,
+  "name": "planner",
+  "title": "秘書提醒",
+  "description": "定時傳一句話叫醒秘書頻道的 Claude（早報、晚間回顧、每週回顧），並照其他頻道自己能改的排程檔發提醒。",
+  "pitch": "每天固定時間叫秘書頻道 #secretary 的 Claude 寫早報、晚間回顧、每週回顧，也讓各頻道的 Claude 幫你設提醒。每次叫醒都會用訂閱額度；早報這些要不要開，裝完還會再問一次。",
+  "keep": "早報、晚間回顧、每週回顧和提醒",
+  "lose": "沒有早報、回顧，也不能請 Claude 設提醒",
+  "order": 30,
+  "machines": "one",
+  "channels": [
+    {
+      "name": "secretary",
+      "kind": "claude",
+      "setting": "planner.channel"
+    }
+  ],
+  "schedules": [
+    {
+      "name": "morning",
+      "when": {
+        "at": "08:00",
+        "days": "daily"
+      },
+      "timezone": "machine",
+      "do": {
+        "message": "⏰ 每日早報：照 CLAUDE.md 寫今天的早報。",
+        "channel": "secretary",
+        "log": "~/.cache/planner.out",
+        "trace": "~/.cache/planner.out"
+      }
+    },
+    {
+      "name": "evening",
+      "when": {
+        "at": "22:00",
+        "days": "daily"
+      },
+      "timezone": "machine",
+      "do": {
+        "message": "🌙 晚間回顧：照 CLAUDE.md 問我今天做完了什麼，更新短期計畫。",
+        "channel": "secretary",
+        "log": "~/.cache/planner.out",
+        "trace": "~/.cache/planner.out"
+      }
+    },
+    {
+      "name": "weekly",
+      "when": {
+        "at": "21:00",
+        "days": [
+          "sun"
+        ]
+      },
+      "timezone": "machine",
+      "do": {
+        "message": "📅 每週回顧：照 CLAUDE.md 整理這週、規劃下週。",
+        "channel": "secretary",
+        "log": "~/.cache/planner.out",
+        "trace": "~/.cache/planner.out"
+      }
+    },
+    {
+      "name": "remind",
+      "when": {
+        "every": "5m"
+      },
+      "do": {
+        "run": "/usr/bin/python3 \"{plugin}/remind.py\"",
+        "output": "none",
+        "log": "~/.cache/planner.out",
+        "trace": "~/.cache/remind-state.json"
+      }
+    }
+  ],
+  "schedule_files": "{setting:planner.schedule_files}",
+  "schedule_files_default": "{data}/planner/reminders.json",
+  "data": [
+    {
+      "name": "remind-state",
+      "path": "~/.cache/remind-state.json",
+      "sync": "none"
+    },
+    {
+      "name": "reminders",
+      "path": "{data}/planner",
+      "sync": "none",
+      "private": true
+    }
+  ]
+}

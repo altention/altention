@@ -1,0 +1,9 @@
+{
+ "session_id": "068f9b05-f64c-4fd5-a999-c7c8d5a30bb8",
+ "transcript_path": "/w/.claude/projects/-w-proj/068f9b05-f64c-4fd5-a999-c7c8d5a30bb8.jsonl",
+ "cwd": "/w/proj",
+ "prompt_id": "08437acb-99fb-4bd0-bbd4-21395f17ccec",
+ "permission_mode": "bypassPermissions",
+ "hook_event_name": "UserPromptSubmit",
+ "prompt": "hello"
+}

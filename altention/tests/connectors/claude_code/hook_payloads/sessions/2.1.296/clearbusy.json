@@ -1,0 +1,73 @@
+[
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "d7fe0dfa-0581-4bd0-9787-e7bb40e493bc",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "d7fe0dfa-0581-4bd0-9787-e7bb40e493bc",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "24cfbd88-0d2a-4753-b715-152b56dc52b1",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-slow"
+ },
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "24cfbd88-0d2a-4753-b715-152b56dc52b1",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-slow.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "5af70cea-b596-4333-b5aa-6e2bd380d008",
+  "transcript_path": "/w/.claude/projects/-w-proj/5af70cea-b596-4333-b5aa-6e2bd380d008.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c6800464-0d4d-4e2a-9fe9-4982441285ed",
+  "hook_event_name": "SessionEnd",
+  "reason": "clear"
+ },
+ {
+  "session_id": "3f241307-19a3-4f05-9399-7e1bdc8c85c5",
+  "transcript_path": "/w/.claude/projects/-w-proj/3f241307-19a3-4f05-9399-7e1bdc8c85c5.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "clear"
+ }
+]

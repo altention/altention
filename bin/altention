@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""altention (short: alt): one entry point for the whole system. It only hands over to the tools that do the work.
+
+  altention doctor [機器…] [--json] [--fix]   check every machine            (ops/doctor.py)
+  altention apply <機器|all> [--dry-run]      install what the list says      (ops/apply.py)
+  altention plugins list | show [機器]        the plugins and where they run  (ops/plugins.py)
+  altention dc post <頻道> "…"               post to a Discord channel       (altention/dc/post.py)
+  altention dc read <頻道> [則數]             read a channel                  (altention/dc/read.py)
+  altention dc notify "…"                    push a notification             (altention/dc/notify.py)
+
+The tools under it (ops/*.py) can also be run directly. In scripts, cron lines and instructions for
+Claude, write the full path or `altention`, not `alt` (alt is only linked where nothing else has that name).
+Standard library only, Python 3.8.
+"""
+import os
+import shutil
+import sys
+
+ENGINE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+TOP = {"doctor": "ops/doctor.py", "apply": "ops/apply.py", "plugins": "ops/plugins.py"}
+DC = {"post": "altention/dc/post.py", "read": "altention/dc/read.py", "notify": "altention/dc/notify.py"}
+
+
+def target(argv):
+    """(path of the tool, its arguments), or None for help."""
+    if argv[:1] and argv[0] in TOP:
+        return os.path.join(ENGINE, TOP[argv[0]]), argv[1:]
+    if argv[:1] == ["dc"] and argv[1:2] and argv[1] in DC:
+        return os.path.join(ENGINE, DC[argv[1]]), argv[2:]
+    return None
+
+
+def link(bindir=None, which=shutil.which, say=print):
+    """Link ~/.local/bin/altention, and alt, to this file's real path (install.sh calls `altention --link`). Never
+    replaces what belongs to something else: a plain file, or a link to another program (pipx and npm put theirs
+    there too). A link that already points at an `altention` (an engine that moved) or at nothing is updated. alt is
+    made only when nothing else called alt is on PATH. Returns True when altention is linked; never raises."""
+    src = os.path.realpath(os.path.abspath(__file__))
+    bindir = bindir or os.path.expanduser("~/.local/bin")
+    ok = False
+    for name in ("altention", "alt"):
+        path = os.path.join(bindir, name)
+        try:
+            if os.path.islink(path):
+                if os.path.realpath(path) == src:
+                    say("✓ %s → %s" % (path, src))
+                    ok = ok or name == "altention"
+                    continue
+                points = os.readlink(path)
+                if os.path.basename(points) != "altention" and os.path.exists(path):
+                    say("略過 %s：%s 是別的程式的連結（→ %s），請用 altention" % (name, path, points))
+                    continue
+            elif os.path.lexists(path):
+                say("略過 %s：%s 已存在而且不是連結，請手動處理" % (name, path))
+                continue
+            elif name == "alt" and which("alt"):
+                say("略過 alt：這台已經有別的 alt（%s），請用 altention" % which("alt"))
+                continue
+            os.makedirs(bindir, exist_ok=True)
+            tmp = path + ".altention-tmp"
+            if os.path.islink(tmp) or os.path.isfile(tmp):
+                os.remove(tmp)
+            os.symlink(src, tmp)
+            os.replace(tmp, path)
+            say("✓ %s → %s" % (path, src))
+            ok = ok or name == "altention"
+        except OSError as e:  # a convenience must not stop the rest of an install
+            say("略過 %s：建不起來（%s），其他照常" % (name, e))
+    return ok
+
+
+def main(argv):
+    if argv == ["--link"]:
+        sys.path.insert(0, ENGINE)
+        from altention import engine_id
+        why = engine_id.refusal(ENGINE, "altention --link")
+        if why:  # the link is evidence of where this machine's engine is: only that engine may set it
+            print(why)
+            return 1
+        link()
+        return 0
+    found = target(argv)
+    if found is None:
+        sys.stdout.write(__doc__)
+        return 0 if argv[:1] in ([], ["-h"], ["--help"], ["help"]) else 2
+    path, args = found
+    if path.endswith(".py"):
+        os.execv(sys.executable, [sys.executable, path] + args)
+    os.execv(path, [path] + args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

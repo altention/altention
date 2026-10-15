@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "_doc": "Every machine Altention manages: how to reach it and what it is for. Change this file, commit it, then run `python3 ops/apply.py <machine>` from the bot machine.",
+  "machines": {
+    "host-a": {
+      "ssh": ["local"],
+      "home": "/home/alice",
+      "hostname": "host-a",
+      "roles": ["dcbot", "dcattach"],
+      "always_on": true,
+      "notes": ["Runs the Discord bot. Always on."]
+    },
+    "host-b": {
+      "ssh": ["host-b", "host-b-via-gateway"],
+      "home": "/home/alice",
+      "hostname": "host-b",
+      "roles": ["dcattach"],
+      "always_on": true,
+      "notes": ["GPU server. Conversations started here in tmux can be attached to Discord with /attach."]
+    },
+    "laptop": {
+      "ssh": ["laptop"],
+      "home": "/Users/alice",
+      "hostname": "alices-laptop",
+      "roles": ["dcattach"],
+      "always_on": false,
+      "notes": ["macOS laptop; sleeps when closed, so its scheduled jobs catch up when it wakes."]
+    }
+  }
+}

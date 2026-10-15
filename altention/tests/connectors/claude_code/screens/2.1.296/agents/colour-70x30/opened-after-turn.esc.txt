@@ -1,0 +1,30 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m@claude · ~/proj[39m
+
+
+[38;5;246m[48;5;237m❯ [38;5;231mQ-D-one: one more task typed in the list (conversation D)[39m
+
+[38;5;231m[49m●[39m ANS-D-one: the fourth conversation (D) answered.
+
+[38;5;246m✻[39m [38;5;246mSautéed for 1s · done 12:30 PM[39m
+
+[38;5;246m※[39m [1m[38;5;246mrecap: [0;3m[38;5;246mANS-D-one: the fourth conversation (D) answered. (disable [0m
+  [3m[38;5;246mrecaps in /config)[0m
+
+[38;5;246m[48;5;237m❯ [38;5;231mQ-opened-two: typed in the conversation opened from the list[39m
+
+[38;5;231m[49m●[39m ANS-opened-two: answered in the conversation opened from the list.
+
+[38;5;246m✻[39m [38;5;246mSautéed for 1s · done 12:30 PM[39m
+
+
+
+
+
+
+[38;5;244m───────────────────────────────────────────────────────────── claude ─
+[39m❯ [7m [0m
+[38;5;244m──────────────────────────────────────────────────────────────────────
+[39m  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle) · ← for agents[39m

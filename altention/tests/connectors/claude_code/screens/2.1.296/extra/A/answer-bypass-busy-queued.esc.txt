@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj[39m
+
+
+[38;5;246m[48;5;237m❯ [38;5;231mwork a long while[39m
+
+[38;5;246m❯ a queued message[39m
+[49m  [38;5;246mctrl+x ctrl+s to send now[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;131m✻[39m [38;5;131mCalculating… [38;5;246m(41s)[39m
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m    [38;5;246m/btw slow-three[39m
+    [38;5;246m/btw slow and busy[39m
+    [1m[38;5;220m/btw [0m[38;5;246mwith one queued[39m
+
+      ANSWER-WITH-QUEUE.
+
+    [38;5;246m⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close[39m

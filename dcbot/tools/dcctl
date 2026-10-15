@@ -1,0 +1,655 @@
+#!/usr/bin/env python3
+"""dcctl: manage the Discord server through the REST API (standard library only).
+
+  dcctl channels                          list categories and channels (with IDs)
+  dcctl map [--me ID | --pane KEY]        the server for a Claude: categories, what each channel is for, and
+                                          which one is the caller's (for altention dc read --map)
+  dcctl create NAME [--category C] [--topic T] [--voice]
+  dcctl ensure NAME [--category C] [--topic T]   create only if no text channel has that name
+  dcctl category NAME                     create a category
+  dcctl rename CHANNEL NEWNAME
+  dcctl topic CHANNEL TEXT
+  dcctl move CHANNEL CATEGORY             move into a category (by name or ID)
+  dcctl archive CHANNEL                   move into the "archive" category (created if needed)
+  dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
+  dcctl send CHANNEL TEXT                 post a message
+  dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off)
+  dcctl edit CHANNEL MESSAGE_ID           replace the text of a message the bot itself posted with what stdin
+                                          holds; over 2000 characters is refused, never cut or split
+  dcctl threads [CHANNEL]                 threads (subagents, workflows, /btw), active and archived, with IDs
+  dcctl post                              (for altention dc post) a post as JSON on stdin, left for the bot to deliver
+  dcctl recap CHANNEL [N]                 the last N turns (default 5) of the Claude conversation behind a channel
+  dcctl history CHANNEL [N] [--chars K] [--before MESSAGE_ID]
+                                          the last N messages (default 30), oldest first; each is cut to
+                                          K characters (default 600, 0 = whole message)
+  dcctl roles                             list roles
+  dcctl guide --check                     print the guide as it would be posted (GUIDE.md expanded), touch nothing
+  dcctl guide [--note TEXT]               bring the guide channel in line with GUIDE.md (its messages are edited in
+                                          place); --note also posts an update notice, keeping the last 5
+
+CHANNEL / CATEGORY may be a name (without #) or an ID; history also takes a thread's ID. Every change is also logged to #audit.
+"""
+import datetime
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(1, os.path.dirname(ROOT))  # the engine: altention/ (shared settings)
+from bot import config, kinds, util  # noqa: E402
+from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
+
+API = "https://discord.com/api/v10"
+
+
+def call(method, path, body=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bot " + config.TOKEN, "Content-Type": "application/json",
+                                          "User-Agent": "DiscordBot (altention dcbot, 1.0)"})
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+                return json.loads(data) if data else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            if e.code == 429 and attempt < 4:  # rate limited: Discord says how long to wait
+                try:
+                    time.sleep(min(float(json.loads(detail).get("retry_after", 1)), 30) + 0.1)
+                except ValueError:
+                    time.sleep(2)
+                continue
+            sys.exit("Discord API 錯誤 %s：%s" % (e.code, detail[:300]))
+
+
+def channels():
+    return call("GET", "/guilds/%d/channels" % config.GUILD_ID)
+
+
+def close_names(name, chans, n=5):
+    """Channel names like `name` (for "did you mean …"): close spellings, or ones containing it."""
+    import difflib
+    names = sorted(set(c["name"] for c in chans if c["type"] == 0))
+    got = difflib.get_close_matches(name, names, n=n, cutoff=0.4)
+    return got + [x for x in names if name and (name in x or x in name) and x not in got][:n - len(got)]
+
+
+def resolve(ref, chans, kind=None, sender_category=None):
+    """(the channel `ref` names, or None; why not, or None). `ref` is an ID, a name or "category/name". Several
+    channels may share a name (each project its own #notifications): the one in the sender's category if that
+    settles it, otherwise an error listing them; never just the first one."""
+    ref = str(ref or "").strip().lstrip("#")
+    if ref.isdigit():
+        return next((c for c in chans if str(c["id"]) == ref), None), None
+    cats = dict((c["id"], c["name"]) for c in chans if c["type"] == 4)
+    category, _, name = ref.rpartition("/")
+    name = name.lstrip("#")
+    found = [c for c in chans if c["name"] == name and (kind is None or c["type"] == kind)
+             and (not category or cats.get(c.get("parent_id")) == category)]
+    if kind is None and any(c["type"] == 0 for c in found):
+        found = [c for c in found if c["type"] == 0]  # a text channel and a category sharing a name: the channel
+    if len(found) == 1:
+        return found[0], None
+    if len(found) > 1:
+        same = [c for c in found if sender_category and cats.get(c.get("parent_id")) == sender_category]
+        if len(same) == 1:
+            return same[0], None
+        listed = "、".join("%s/%s（ID %s）" % (cats.get(c.get("parent_id")) or "（沒有分類）", c["name"], c["id"]) for c in found)
+        return None, "有 %d 個頻道叫 #%s：%s。請用「分類/名稱」或頻道 ID 指定。" % (len(found), name, listed)
+    near = close_names(name, chans)
+    return None, "找不到頻道 #%s%s。頻道可能改名了（用同一個 altention 指令的 `dc read --map` 看全部）" % (
+        ref, "，相近的：" + "、".join("#" + x for x in near) if near else "")
+
+
+def find(ref, kind=None):
+    if str(ref).isdigit():  # an ID may also be a thread's, which the guild's channel list does not hold
+        for c in channels():
+            if str(c["id"]) == str(ref):
+                return c
+    found, why = resolve(ref, channels(), kind)
+    if found is None:
+        sys.exit(why or ("找不到：%s" % ref))
+    return found
+
+
+def notify_default():
+    """The channel a notification without one goes to: this (the bot's) machine's core.notify_channel."""
+    try:
+        from altention import config as altconfig
+        return str(altconfig.setting("core.notify_channel") or "notifications")
+    except Exception:  # broken settings must not stop the path that reports problems
+        return "notifications"
+
+
+def notify_target(post, chans, sender_category=None):
+    """A notification is never refused for a name several channels share: it goes to one of them (the first in
+    the server's order), saying so. Without a channel: the sender's category's own channel of the default's name
+    (#notifications) when the sender is a channel's conversation and its category has one, else the default
+    (core.notify_channel). Changes `post` in place."""
+    if not post.get("notify"):
+        return post
+    if not str(post.get("channel") or "").strip():
+        default = notify_default()
+        # a conversation's own category first: a project channel's Claude reports to that project's #notifications
+        # (the default carries a category, so "same name, the sender's category" alone never got there; 2026-10-07)
+        base = default.rpartition("/")[2].lstrip("#") or "notifications"
+        cats = dict((c["id"], c["name"]) for c in chans if c["type"] == 4)
+        mine = [c for c in chans if c["type"] == 0 and c["name"] == base and sender_category
+                and cats.get(c.get("parent_id")) == sender_category]
+        post["channel"] = str(mine[0]["id"]) if len(mine) == 1 else default
+    ref = str(post["channel"]).strip().lstrip("#")
+    found, why = resolve(ref, chans, 0, sender_category)
+    if found is None and why and why.startswith("有 "):
+        cats = dict((c["id"], c["name"]) for c in chans if c["type"] == 4)
+        category, _, name = ref.rpartition("/")
+        same = sorted((c for c in chans if c["type"] == 0 and c["name"] == name.lstrip("#")
+                       and (not category or cats.get(c.get("parent_id")) == category)),
+                      key=lambda c: (c.get("position", 0), int(c["id"])))
+        pick = same[0]
+        post["channel"] = str(pick["id"])
+        post["text"] = "（有 %d 個 #%s，送到 %s/%s）\n%s" % (len(same), pick["name"], cats.get(pick.get("parent_id")) or "（沒有分類）",
+                                                     pick["name"], post.get("text", ""))
+    return post
+
+
+def post_target_error(post, sender_category=None, chans=None):
+    """Why a post's channel cannot be found (None if it can, or the post makes it / does not need one)."""
+    if post.get("attach") or post.get("new_claude"):
+        return None
+    ref = str(post.get("channel") or "").strip().lstrip("#")
+    if ref.isdigit():
+        return None  # an ID: the bot checks it (it may be a thread)
+    found, why = resolve(ref, chans if chans is not None else channels(), 0, sender_category)
+    if found is not None or ((post.get("create") or post.get("notify")) and why and why.startswith("找不到")):
+        return None
+    return why + ("" if why.startswith("有 ") else "；真的要開一個新的紀錄頻道，加上 --create。")
+
+
+def audit(text):
+    for c in channels():
+        if c["name"] == config.AUDIT_CHANNEL and c["type"] == 0:
+            call("POST", "/channels/%s/messages" % c["id"], {"content": "[dcctl] " + text[:1900]})
+            return
+
+
+def place(ref):
+    """(id, how the audit line names it) of a channel by name or ID, or of a thread by its ID (the guild's
+    channel list does not hold threads)."""
+    if str(ref).isdigit() and not any(str(c["id"]) == str(ref) for c in channels()):
+        return str(ref), "討論串 %s" % ref
+    c = find(ref)
+    return str(c["id"]), "#%s" % c["name"]
+
+
+def message_id(ref):
+    if not str(ref).isdigit():
+        sys.exit("訊息要用 ID 指定（dcctl history 每則後面的 id）：%s" % ref)
+    return str(ref)
+
+
+EDIT_LIMIT = 2000  # Discord's, counted the way Discord counts: UTF-16 units (most emoji are two)
+
+
+def edit_text(raw):
+    """What `dcctl edit` puts in the message, from what stdin held: the newlines a heredoc or echo adds at the end
+    are not part of it. Exits when there is nothing, or more than one message holds: an edit is one message, the
+    rest would have nowhere to go."""
+    text = raw.rstrip("\r\n")
+    if not text.strip():
+        sys.exit("dcctl edit：stdin 沒有內容，訊息沒有改（不能把訊息改成空的）")
+    n = len(text.encode("utf-16-le")) // 2
+    if n > EDIT_LIMIT:
+        sys.exit("dcctl edit：新內容有 %d 字，超過一則訊息的上限 %d 字，訊息沒有改（不會自動截斷或拆成幾則）" % (n, EDIT_LIMIT))
+    return text
+
+
+def format_message(m, chars=600):
+    """One message of a channel's history as text: when, who, reactions, content, attachments."""
+    when = datetime.datetime.fromisoformat(m["timestamp"]).astimezone().strftime("%m-%d %H:%M:%S")
+    a = m.get("author") or {}
+    who = "機器人" if a.get("bot") else (a.get("global_name") or a.get("username") or "?")
+    marks = "".join((r.get("emoji") or {}).get("name") or "" for r in m.get("reactions") or [])
+    text = m.get("content") or ""
+    for snap in m.get("message_snapshots") or []:  # a forward: the original is here, not in content
+        inner = snap.get("message") or {}
+        text += ("\n" if text else "") + "[轉發] " + (inner.get("content") or "（沒有文字）")
+        m = dict(m, attachments=(m.get("attachments") or []) + (inner.get("attachments") or []))
+    for e in m.get("embeds") or []:  # the 📨 cards of dcpost: heading and body
+        card = "\n".join(x for x in ((e.get("author") or {}).get("name"), e.get("title"), e.get("description")) if x)
+        text += ("\n" if text and card else "") + card
+    if chars and len(text) > chars:
+        text = "%s…（共 %d 字，--chars 0 看全文）" % (text[:chars], len(text))
+    for att in m.get("attachments") or []:
+        text += "\n[附件] %s %s" % (att.get("filename"), att.get("url"))
+    return "[%s] %s%s (id %s)\n%s" % (when, who, " " + marks if marks else "", m.get("id"), text or "（沒有文字）")
+
+
+def history(channel_id, n, before=None):
+    """The channel's last `n` messages, oldest first (the API returns newest first, 100 at a time)."""
+    out = []
+    while len(out) < n:
+        q = "?limit=%d%s" % (min(100, n - len(out)), "&before=%s" % before if before else "")
+        page = call("GET", "/channels/%s/messages%s" % (channel_id, q))
+        if not page:
+            break
+        out += page
+        before = page[-1]["id"]
+    return out[::-1]
+
+
+GUIDE_FILE = os.path.join(ROOT, "GUIDE.md")
+NOTE_MARK = "🆕 "  # how an update notice starts; every other bot message in the channel is the guide itself
+KEEP_NOTES = 5
+
+
+GUIDE_DEFAULTS = {"example_channel_a": "#project-a", "example_channel_b": "#project-b", "example_board": "",
+                  "skill_examples": "`/deep-research`、`/code-review`、`/simplify`、`/loop`、`/schedule`"}
+
+
+def expand(text, values, includes):
+    """The guide template (GUIDE.variables.md): {{> file}}, then {{#name}}…{{/name}} / {{^name}}…{{/name}}, then
+    {{name}}. An unknown name raises KeyError: nothing is posted then."""
+    text = re.sub(r"\{\{> *([\w.]+) *\}\}", lambda m: includes[m.group(1)].rstrip("\n"), text)
+
+    def section(m):
+        keep = bool(values[m.group(2)]) == (m.group(1) == "#")
+        return m.group(3) if keep else ""
+    text = re.sub(r"\{\{([#^])([\w.]+)\}\}(.*?)\{\{/\2\}\}", section, text, flags=re.S)
+    return re.sub(r"\{\{([\w.]+)\}\}", lambda m: values[m.group(1)], text)
+
+
+def guide_values():
+    """(values, includes) for the guide, from the machine list and the instance's core.guide; defaults without one."""
+    from altention import config as altconfig
+    titles = altconfig.setting("core.guide.machine_titles", {}) or {}
+    if not isinstance(titles, dict):
+        raise GuideError("core.guide.machine_titles 要是「名稱 → 顯示名稱」的字典，現在是 %s：%r（改實例的 plugins.json）"
+                         % (type(titles).__name__, titles))
+    title = lambda n: titles.get(n, n)  # noqa: E731
+    bot = altconfig.bot_machine()[0] or altconfig.this_machine()
+    attach = sorted(n for n, m in altconfig.machines().items()
+                    if "dcattach" in (m.get("roles") or []) and altconfig.ssh_aliases(m) and n != bot)
+    values = {"bot_machine": title(bot), "attach_machines": "、".join(title(n) for n in attach),
+              "machines": "、".join(title(n) for n in [bot] + attach)}
+    cwd = altconfig.setting("core.default_cwd") or os.path.dirname(ROOT)
+    home = os.path.expanduser("~")
+    cwd = os.path.expanduser(cwd)
+    values["default_cwd"] = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
+    engine = os.path.dirname(ROOT)
+    values["engine"] = "~" + engine[len(home):] if engine == home or engine.startswith(home + "/") else engine
+    values.update(chat_channel="#" + config.CHAT_CHANNEL, audit_channel="#" + config.AUDIT_CHANNEL, guide_channel="#" + config.GUIDE_CHANNEL)
+    for k, d in GUIDE_DEFAULTS.items():
+        values[k] = altconfig.setting("core.guide." + k, d)
+    values["example_machine"] = altconfig.setting("core.guide.example_machine", title(attach[0]) if attach else "")
+    includes = {}
+    inst = altconfig.instance_dir()
+    for name in ("channels",):
+        mine = os.path.join(inst, "dcbot", "guide", name + ".md") if inst else ""
+        with open(mine if mine and os.path.isfile(mine) else os.path.join(ROOT, "guide", name + ".md"), encoding="utf-8") as f:
+            includes[name] = f.read()
+    return values, includes
+
+
+class GuideError(Exception):
+    """A setting the guide uses is not usable; the message names it."""
+
+
+SETTING_OF = {"default_cwd": "core.default_cwd", "bot_machine": "core.guide.machine_titles",
+              "attach_machines": "core.guide.machine_titles", "machines": "core.guide.machine_titles"}
+
+
+def check_values(values):
+    """Every value the template takes must be text: name the setting (in the instance's plugins.json) when not."""
+    bad = ["%s（%s）是 %s：%r" % (name, SETTING_OF.get(name, "core.guide." + name), type(v).__name__, v)
+           for name, v in sorted(values.items()) if not isinstance(v, str)]
+    if bad:
+        raise GuideError("說明範本的設定值要是文字，這些不是（改實例的 plugins.json）：" + "；".join(bad))
+
+
+def guide_text():
+    values, includes = guide_values()
+    check_values(values)
+    with open(GUIDE_FILE, encoding="utf-8") as f:
+        text = f.read()
+    try:
+        return expand(text, values, includes)
+    except KeyError as e:
+        raise GuideError("GUIDE.md 用了不認得的名稱 {{%s}}（有哪些名稱見 GUIDE.variables.md）" % e.args[0])
+
+
+def guide_chunks(text, limit=1900):
+    """GUIDE.md as Discord messages: one per "## " section, a long section split between lines."""
+    sections, cur = [], []
+    for line in text.strip().split("\n"):
+        if line.startswith("## ") and cur:
+            sections.append("\n".join(cur).strip())
+            cur = []
+        cur.append(line)
+    sections.append("\n".join(cur).strip())
+    out = []
+    for sec in sections:
+        part = ""
+        for line in sec.split("\n"):
+            if part and len(part) + 1 + len(line) > limit:
+                out.append(part)
+                part = line
+            else:
+                part = part + "\n" + line if part else line
+        if part.strip():
+            out.append(part)
+    return out
+
+
+def guide_plan(mine, chunks, note=None, keep=KEEP_NOTES):
+    """What to do to the channel. `mine`: the bot's messages there, oldest first, as (id, content).
+
+    Returns (edits, deletes, posts). The guide comes first and the notices after it, so when the guide
+    needs a different number of messages everything is posted again in order."""
+    guide = [m for m in mine if not m[1].startswith(NOTE_MARK)]
+    notes = [m for m in mine if m[1].startswith(NOTE_MARK)]
+    texts = [m[1] for m in notes] + ([note] if note else [])
+    if len(guide) != len(chunks) or (guide and notes and max(int(m[0]) for m in guide) > min(int(m[0]) for m in notes)):
+        return [], [m[0] for m in mine], chunks + texts[-keep:]
+    edits = [(m[0], c) for m, c in zip(guide, chunks) if m[1].strip() != c.strip()]
+    drop = len(texts) - keep
+    return edits, [m[0] for m in notes[:max(drop, 0)]], [note] if note else []
+
+
+def guide(note=None):
+    name = config.GUIDE_CHANNEL
+    ch = next((c for c in channels() if c["name"] == name and c["type"] == 0), None)
+    if ch is None:
+        ch = call("POST", "/guilds/%d/channels" % config.GUILD_ID,
+                  {"name": name, "type": 0, "topic": "機器人的使用說明和更新紀錄。這裡不聊天，機器人不會回應這個頻道的訊息。"})
+        audit("建立頻道 #%s" % name)
+    me = call("GET", "/users/@me")["id"]
+    mine = [(m["id"], m.get("content") or "") for m in history(ch["id"], 200) if m["author"]["id"] == me]
+    chunks = guide_chunks(guide_text())
+    if note:
+        note = "%s**%s 更新**\n%s" % (NOTE_MARK, time.strftime("%Y-%m-%d %H:%M"), note.strip())
+    edits, deletes, posts = guide_plan(mine, chunks, note)
+    for mid, content in edits:
+        call("PATCH", "/channels/%s/messages/%s" % (ch["id"], mid), {"content": content})
+    for mid in deletes:
+        call("DELETE", "/channels/%s/messages/%s" % (ch["id"], mid))
+    for content in posts:
+        call("POST", "/channels/%s/messages" % ch["id"], {"content": content[:2000], "flags": 4})  # 4: no link previews
+    print("#%s：改 %d 則、刪 %d 則、貼 %d 則" % (name, len(edits), len(deletes), len(posts)))
+    if edits or deletes or posts:
+        audit("更新 #%s 的說明（改 %d、刪 %d、貼 %d）" % (name, len(edits), len(deletes), len(posts)))
+
+
+def threads(channel_id=None):
+    """Threads of the server (or of one channel), active and archived, oldest first."""
+    chans = dict((c["id"], c["name"]) for c in channels() if c["type"] == 0)
+    found = dict((t["id"], t) for t in call("GET", "/guilds/%d/threads/active" % config.GUILD_ID)["threads"])
+    for cid in ([channel_id] if channel_id else list(chans)):
+        for t in call("GET", "/channels/%s/threads/archived/public?limit=100" % cid)["threads"]:
+            found.setdefault(t["id"], t)
+    out = []
+    for t in sorted(found.values(), key=lambda t: int(t["id"])):
+        if channel_id and t["parent_id"] != str(channel_id):
+            continue
+        out.append({"id": t["id"], "name": t["name"], "parent": chans.get(t["parent_id"], t["parent_id"]),
+                    "archived": t["thread_metadata"]["archived"]})
+    return out
+
+
+def machine_name(hostname):
+    """The name the machine list gives a machine, from the hostname it reports itself by (a Mac calls itself
+    "alices-MacBook-Pro" but is "mac" in the list: its "hostname" field). Unknown names are kept."""
+    try:  # the instance's machine list, or the old one; a broken list (or altention/ itself) must not stop a post
+        from altention import config as altconfig
+        return altconfig.name_of(hostname) or hostname
+    except Exception:
+        return hostname
+
+
+def sender_channel(pane_key):
+    """The channel whose Claude runs in this tmux pane (attached, or a window the bot opened), if any."""
+    try:
+        with open(os.path.join(config.STATE, "routes.json")) as f:
+            table = json.load(f)
+        me = os.uname().nodename.split(".")[0].lower()
+        local = pane_key.split("|", 1)[1] if pane_key.lower().startswith(me + "|") else pane_key
+        entry = table.get(local)
+        if not entry and "|" in local:  # the sender names its socket as tmux does ($TMUX), the table as the bot wrote it
+            its_socket, its_pane = local.rsplit("|", 1)
+            entry = next((v for k, v in table.items() if "|" in k and k.rsplit("|", 1)[1] == its_pane
+                          and util.same_socket(k.rsplit("|", 1)[0], its_socket, here=True)), None)
+        if entry:
+            return entry if isinstance(entry, str) else entry.get("channel")
+        with open(os.path.join(config.STATE, "channels.json")) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    parts = pane_key.split("|")
+    host, socket, pane = (parts[0], parts[1], parts[2]) if len(parts) == 3 else (None, parts[0], parts[-1])
+    me = os.uname().nodename.split(".")[0].lower()
+    host = machine_name(host) if host else None
+    for cid, st in state.items():
+        p = st.get("pane") or {}
+        same_host = (p.get("host") or me).lower() == (host or me).lower()
+        if same_host and util.same_socket(p.get("socket"), socket, here=not p.get("host")) and p.get("id") == pane:
+            return cid
+    return None
+
+
+def kind_of(c, st):
+    """How a channel is used, from the bot's state: (mark, words)."""
+    st = st or {}
+    kind = kinds.channel_kind(st)  # the one function that says what a channel is (bot/kinds.py)
+    if c["name"] == config.GUIDE_CHANNEL:
+        return "📖", "使用說明（機器人不回應）"
+    if kind == kinds.ARCHIVED or not st and c.get("_category") == config.ARCHIVE_CATEGORY:
+        return "🗄️", "封存"
+    if kind == kinds.TERMINAL:
+        return "💻", "終端機"
+    if kind == kinds.RECORD or c["name"] in (config.AUDIT_CHANNEL, "notifications"):
+        return "📝", "一般頻道（紀錄用，機器人不回應）"
+    if kind == kinds.CONVERSATION and kinds.has_conversation(st):
+        where = (st.get("pane") or {}).get("host")
+        cwd = (st.get("cwd") or "").replace(os.path.expanduser("~"), "~")
+        return "🤖", "Claude 對話，工作目錄 %s%s" % (cwd or "?", "（在 %s）" % where if where else "")
+    if kind == kinds.UNKNOWN:
+        return "❔", "不認得的種類（%s）" % st.get("kind")
+    return "❔", "還沒設定"
+
+
+def structure(chans, state, me=None):
+    """The server as text: each category with its channels, what each is for, and where `me` (a channel id) is."""
+    cats = dict((c["id"], c) for c in chans if c["type"] == 4)
+    for c in chans:
+        c["_category"] = cats.get(c.get("parent_id"), {}).get("name")
+    texts = sorted((c for c in chans if c["type"] == 0),
+                   key=lambda c: (cats[c["parent_id"]]["position"] if c.get("parent_id") in cats else -1, c["position"]))
+    out = ["Discord 伺服器結構（🤖 Claude 對話・💻 終端機・📝 一般頻道・🗄️ 封存）"]
+    mine = next((c for c in texts if str(c["id"]) == str(me)), None)
+    if mine is not None:
+        out.append("你在 #%s（分類「%s」）。" % (mine["name"], mine["_category"] or "無"))
+    elif me is not None:
+        out.append("（找不到你所在的頻道：你可能不是從 Discord 頻道開的對話。）")
+    last = object()
+    for c in texts:
+        if c["_category"] != last:
+            last = c["_category"]
+            out.append("\n【%s】" % (last or "（沒有分類）"))
+        mark, words = kind_of(c, state.get(str(c["id"])))
+        topic = " ".join((c.get("topic") or "").split())
+        out.append("- #%s %s %s%s%s" % (c["name"], mark, words, "　— " + topic[:80] if topic else "",
+                                       "　← 你在這裡" if mine is c else ""))
+    out.append("\n讀頻道：用你剛才跑的那支 altention 的 dc read <頻道>；傳話或貼東西：dc post <頻道> \"…\"（同名頻道優先選你所在分類的，也可以寫成 分類/頻道）。")
+    return "\n".join(out)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    cmd, args = argv[0], argv[1:]
+    opt = lambda name: args[args.index(name) + 1] if name in args else None  # noqa: E731
+    if cmd == "map":
+        try:
+            with open(os.path.join(config.STATE, "channels.json")) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+        me = opt("--me") or (sender_channel(opt("--pane")) if opt("--pane") else None)
+        print(structure(channels(), state, me if (opt("--me") or opt("--pane")) else None))
+    elif cmd == "channels":
+        cs = sorted(channels(), key=lambda c: (c.get("parent_id") or "", c["position"]))
+        cats = {c["id"]: c["name"] for c in cs if c["type"] == 4}
+        for c in cs:
+            if c["type"] == 4:
+                continue
+            print("%-22s %-28s %s" % (c["id"], ("#" if c["type"] == 0 else "🔊") + c["name"], cats.get(c.get("parent_id"), "")))
+    elif cmd == "ensure":
+        if any(c["name"] == args[0] and c["type"] == 0 for c in channels()):
+            print("已存在 #%s" % args[0])
+            return
+        return main(["create"] + args)
+    elif cmd == "create":
+        body = {"name": args[0], "type": 2 if "--voice" in args else 0}
+        if opt("--topic"):
+            body["topic"] = opt("--topic")
+        if opt("--category"):
+            body["parent_id"] = find(opt("--category"), 4)["id"]
+        c = call("POST", "/guilds/%d/channels" % config.GUILD_ID, body)
+        print("已建立 #%s（%s）" % (c["name"], c["id"]))
+        audit("建立頻道 #%s" % c["name"])
+    elif cmd == "category":
+        c = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": args[0], "type": 4})
+        print("已建立分類 %s（%s）" % (c["name"], c["id"]))
+        audit("建立分類 %s" % c["name"])
+    elif cmd == "rename":
+        c = find(args[0])
+        call("PATCH", "/channels/%s" % c["id"], {"name": args[1]})
+        print("已改名")
+        audit("#%s 改名為 #%s" % (c["name"], args[1]))
+    elif cmd == "topic":
+        c = find(args[0])
+        call("PATCH", "/channels/%s" % c["id"], {"topic": " ".join(args[1:])})
+        print("已更新主題")
+        audit("#%s 更新主題" % c["name"])
+    elif cmd in ("move", "archive"):
+        c = find(args[0])
+        catname = args[1] if cmd == "move" else "archive"
+        cat = next((x for x in channels() if x["type"] == 4 and (x["name"] == catname or str(x["id"]) == catname)), None)
+        if cat is None:
+            cat = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": catname, "type": 4})
+        call("PATCH", "/channels/%s" % c["id"], {"parent_id": cat["id"]})
+        print("已移到 %s" % cat["name"])
+        audit("#%s 移到 %s" % (c["name"], cat["name"]))
+    elif cmd == "delete":
+        if "--yes" not in args:
+            sys.exit("刪除需要使用者在對話中明確同意後，加上 --yes")
+        c = find(args[0])
+        call("DELETE", "/channels/%s" % c["id"])
+        print("已刪除 #%s" % c["name"])
+        audit("刪除頻道 #%s" % c["name"])
+    elif cmd == "send":
+        c = find(args[0])
+        call("POST", "/channels/%s/messages" % c["id"], {"content": " ".join(args[1:])[:2000]})
+        print("已送出")
+    elif cmd == "pin":
+        rest = [a for a in args if a != "--unpin"]
+        if len(rest) != 2:
+            sys.exit("用法：dcctl pin CHANNEL MESSAGE_ID [--unpin]")
+        cid, label = place(rest[0])
+        mid = message_id(rest[1])
+        off = "--unpin" in args
+        call("DELETE" if off else "PUT", "/channels/%s/messages/pins/%s" % (cid, mid))
+        print("已取消釘選" if off else "已釘選")
+        audit("%s %s訊息 %s" % (label, "取消釘選" if off else "釘選", mid))
+    elif cmd == "edit":
+        if len(args) != 2:
+            sys.exit("用法：dcctl edit CHANNEL MESSAGE_ID（新內容從 stdin 讀）")
+        text = edit_text(sys.stdin.read())  # before anything is asked of Discord
+        cid, label = place(args[0])
+        mid = message_id(args[1])
+        m = call("GET", "/channels/%s/messages/%s" % (cid, mid))
+        if str((m.get("author") or {}).get("id")) != str(call("GET", "/users/@me")["id"]):
+            sys.exit("dcctl edit：那則訊息不是機器人自己發的，不能改")
+        if (m.get("content") or "") == text:
+            print("內容相同，沒有改")
+            return
+        call("PATCH", "/channels/%s/messages/%s" % (cid, mid), {"content": text})
+        print("已修改")
+        audit("%s 修改訊息 %s（%d 字）" % (label, mid, len(text)))
+    elif cmd == "threads":
+        for t in threads(find(args[0])["id"] if args else None):
+            print("%-22s %-14s %s%s" % (t["id"], "#" + t["parent"], t["name"], "（已收起）" if t["archived"] else ""))
+    elif cmd == "post":
+        from bot import postbox  # standard library only: this runs with the system Python
+        post = json.load(sys.stdin)
+        pane = post.pop("pane", None)  # "socket|%id": the sender's tmux pane, if it ran inside one on this machine
+        if pane and not post.get("from_channel"):
+            post["from_channel"] = sender_channel(pane)
+        sender_cat, chans = None, None
+        if str(post.get("from_channel") or "").isdigit():
+            chans = channels()
+            me = next((c for c in chans if str(c["id"]) == str(post["from_channel"])), None)
+            sender_cat = next((c["name"] for c in chans if me and c["id"] == me.get("parent_id")), None)
+        problem, moved = None, None
+        if post.get("notify"):  # only notifications need the list here; the reporting path queues even without it
+            try:
+                chans = chans if chans is not None else channels()
+                notify_target(post, chans, sender_cat)
+                problem = post_target_error(post, sender_cat, chans)
+                ref = str(post.get("channel") or "").strip().lstrip("#")
+                if not problem and not ref.isdigit() and resolve(ref, chans, 0, sender_cat)[0] is None:
+                    moved = "（預設的通知頻道 %s 不存在：機器人會建立它再貼出）" % ref if ref == notify_default().lstrip("#") else \
+                        "（找不到頻道 #%s：通知會改送到預設的通知頻道 %s，開頭註明原本要送哪裡）" % (ref, notify_default())
+            except (Exception, SystemExit):  # call() exits on an HTTP error (5xx, 429, 401): that counts too
+                post["channel"] = post.get("channel") or notify_default()  # queued as it is: the bot resolves it
+        else:
+            problem = post_target_error(post, sender_cat)
+        if problem:
+            sys.exit("altention dc post：" + problem)
+        postbox.write(post)
+        print(moved or "已送出到 #%s" % str(post.get("channel", "")).lstrip("#"))
+        age = postbox.heartbeat_age()
+        if age is None or age > 90:  # still queued: delivered when the bot is back, nothing to resend
+            print("（機器人目前離線%s，訊息已排進佇列，上線後會送出，不用重送）" % ("（%d 秒沒有心跳）" % age if age is not None else ""))
+    elif cmd == "recap":
+        from bot import sessions
+        cid = args[0] if args[0].isdigit() else find(args[0])["id"]
+        try:
+            with open(os.path.join(config.STATE, "channels.json")) as f:
+                st = json.load(f).get(str(cid)) or {}
+        except (OSError, ValueError):
+            st = {}
+        sid, cwd = st.get("session_id"), st.get("cwd")
+        if st.get("pane"):  # the session in a pane may have changed since attaching (/clear, a new claude)
+            rec = cc_sessions.of_pane(st["pane"]["id"], st.get("pane_session"))
+            if rec:
+                sid, cwd = rec["sessionId"], rec.get("cwd") or cwd
+        if not sid:
+            sys.exit("這個頻道背後沒有 Claude 對話")
+        n = next((int(a) for a in args[1:2] if a.isdigit()), 5)
+        print(sessions.recap_text(sessions.recap(cc_sessions.transcript(cwd, sid), n), 2000, 4000))
+    elif cmd == "history":
+        n = next((int(a) for a in args[1:2] if a.isdigit()), 30)
+        chars = int(opt("--chars")) if opt("--chars") is not None else 600
+        where = args[0] if args[0].isdigit() else find(args[0])["id"]  # an ID may also be a thread's
+        for m in history(where, max(1, min(n, 500)), opt("--before")):
+            print(format_message(m, chars) + "\n")
+    elif cmd == "guide":
+        try:
+            print(guide_text()) if "--check" in args else guide(opt("--note"))
+        except GuideError as e:
+            sys.exit("dcctl guide：%s" % e)
+    elif cmd == "roles":
+        for r in call("GET", "/guilds/%d/roles" % config.GUILD_ID):
+            print("%-22s %s" % (r["id"], r["name"]))
+    else:
+        sys.exit("不認得的指令：%s（dcctl --help）" % cmd)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

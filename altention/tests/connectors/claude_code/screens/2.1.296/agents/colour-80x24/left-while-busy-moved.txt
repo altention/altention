@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · ~/proj
+ ▝▝   ▝▝   0 awaiting input · 1 working · 0 completed
+
+Your conversation moved to the background — enter opens it · esc returns to it ·
+ctrl+c twice quits
+
+Needs input
+ Sessions that have a question or need your decision land here
+
+Working
+ Sessions Claude is actively working on — they keep running even if you close
+ the terminal
+✻ ok            ANS-A-busy.                                                   2s
+
+ A different way to work with Claude: hand off a bigger task than you would chat
+ through, and Claude organizes it in the sections above so you know when it
+ needs you.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ describe a task for a new session
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions · enter to return · space to reply · ctrl+x to delete ·…

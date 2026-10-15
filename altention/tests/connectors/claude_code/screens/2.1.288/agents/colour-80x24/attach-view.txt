@@ -1,0 +1,24 @@
+
+
+❯ Q-A-one: this is conversation A
+
+● ANS-A-one: the first conversation (A) answered.
+
+✻ Churned for 1s · done 12:48 AM
+
+❯ Q-A-busy: a long turn in A
+
+● SAID-A-busy: A is working.
+
+  Ran 1 shell command
+
+● ANS-A-busy.
+
+✻ Cogitated for 27s · done 12:50 AM
+
+※ recap: ANS-A-busy. (disable recaps in /config)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · ~/proj
+ ▝▝   ▝▝   0 awaiting input · 4 working · 0 completed
+
+Your conversation moved to the background — enter opens it · esc returns to
+it · ctrl+c twice quits
+
+Working
+· Q-A-one: this is…       rig                                            1m
+✻ Q-D-one: one more…      ANS-opened-two: answered in the conversatio…  36s
+✻ Q-C-one: another task…  ANS-C-one: the third conversation (C) answe…  46s
+✻ ok                      ANS-B-one: the second conversation (B) answ…  55s
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────
+❯ describe a task for a new session
+───────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions · enter to return · space to reply · ? for shortcu…

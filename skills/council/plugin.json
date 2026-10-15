@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "council",
+  "title": "議會",
+  "description": "多視角議會 skill：多個角色平行分析同一個決定，產出決策面板，每次執行後把教訓寫回自己的資料。",
+  "pitch": "一個 skill：遇到難下的決定時，讓幾個角色從不同角度分析同一個決定。你說「召開議會」時會用，Claude 覺得這個問題適合時也可能自己用；平常不會跑，用的時候才花訂閱額度（一次會開好幾個子代理）。",
+  "keep": "遇到難下的決定時可以召開議會",
+  "lose": "說「召開議會」也沒有這個 skill",
+  "order": 40,
+  "machines": "all",
+  "skills": [
+    {
+      "name": "council",
+      "path": "."
+    }
+  ],
+  "data": [
+    {
+      "name": "council",
+      "path": "{instance}/skills/council/data",
+      "sync": "timer",
+      "private": true
+    }
+  ]
+}

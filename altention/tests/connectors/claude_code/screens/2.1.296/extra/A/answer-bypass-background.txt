@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ work a long while
+
+● ok.
+
+✻ Worked for 1m 0s · done 4:21 AM · 1 shell still running
+
+❯ a queued message
+
+● ok.
+
+✻ Brewed for 30s · done 4:22 AM · 1 shell still running
+
+❯ run it in the background
+
+  Ran 1 shell command
+
+● started.
+
+✻ Cooked for 2s · done 4:22 AM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+    /btw queue-and-bot
+    /btw with a background command
+
+      ANSWER-WITH-BACKGROUND.
+
+    ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close

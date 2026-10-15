@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "core": {
+    "language": "zh-TW",
+    "timezone": "Europe/London",
+    "update": "notify",
+    "secret_paths": ["~/.config/example-service/token.json"],
+    "notify_channel": "system/notifications",
+    "guide": {
+      "machine_titles": {"laptop": "Laptop"},
+      "example_channel_a": "#project-a",
+      "example_channel_b": "#project-b"
+    }
+  },
+  "dcbot": {
+    "default_model": "sonnet",
+    "default_permission": "auto",
+    "talk_limit": 10
+  },
+  "sync": {
+    "interval": "15m",
+    "owns": ["knowledge"],
+    "dirs": {
+      "chatlog": {"remote": "git@github.com:alice/altention-logs.git"},
+      "progress": {"remote": "git@github.com:alice/altention-progress.git"}
+    }
+  },
+  "usage": {
+    "channel": "100000000000000001",
+    "plan": ["Pro", 1],
+    "subscription_limits": false
+  },
+  "status": {
+    "channel": "100000000000000001"
+  },
+  "planner": {
+    "channel": "100000000000000002"
+  },
+  "plugins": {
+    "progress": {"on": "host-a"},
+    "planner": {"on": "host-a"},
+    "status": {"on": "host-a"},
+    "usage": {"on": "host-a", "sources": ["host-a", "host-b"]},
+    "chatlog": {"disabled_on": ["laptop"]}
+  }
+}

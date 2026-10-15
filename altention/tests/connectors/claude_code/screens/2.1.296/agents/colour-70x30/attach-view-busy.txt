@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   @claude · ~/proj
+
+
+❯ Q-B-one: a task typed in the list (conversation B)
+
+● ANS-B-one: the second conversation (B) answered.
+
+✻ Sautéed for 1s · done 12:30 PM
+
+❯ Q-attach-two: a long turn typed in the attach view
+
+● SAID-attach-busy.
+
+  Running 1 shell command · 3s…
+  ⎿  $ sleep 12; echo done (3s)
+     (ctrl+b to run in background)
+
+
+
+* Drizzling… (4s · ↓ 18 tokens)
+  ⎿  Tip: Use Plan Mode to prepare for a complex request before making
+     changes. Press shift+tab twice to enable.
+
+───────────────────────────────────────────────────────────────── ok ─
+❯ 
+──────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · es…

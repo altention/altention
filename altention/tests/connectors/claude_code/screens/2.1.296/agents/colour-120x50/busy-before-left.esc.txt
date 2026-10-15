@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj[39m
+
+
+[38;5;246m[48;5;237m❯ [38;5;231mQ-A-one: this is conversation A[39m
+
+[38;5;231m[49m●[39m ANS-A-one: the first conversation (A) answered.
+
+[38;5;246m✻[39m [38;5;246mCogitated for 1s · done 12:48 AM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mQ-A-busy: a long turn in A[39m
+
+[38;5;231m[49m●[39m SAID-A-busy: A is working.
+
+[38;5;246m●[39m Rig[38;5;246m · 3s[39m
+[38;5;246m  ⎿  $ sleep 16; echo done-busy (3s)[39m
+     [38;5;246m(ctrl+b ctrl+b (twice) to run in background)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;174m✶[39m [38;5;216mCanoodling…[38;5;174m [38;5;246m(4s · ↓[39m [38;5;246m22 tokens)[39m
+[38;5;246m  ⎿  Tip: Start with small features or bug fixes, tell Claude to propose a plan, and verify its suggested edits[39m
+                  [38;5;246mtmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;246m❯ [7m[39m [0m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle) · esc to interrupt · ← for agents[39m

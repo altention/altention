@@ -1,0 +1,24 @@
+
+
+[38;5;246m[48;5;237m❯ [38;5;231mplease touch the file[39m
+
+[38;5;246m[49m●[39m Running [1m1[0m shell command…
+[38;5;246m  ⎿  Interrupted · What should Claude do instead?[39m
+[38;5;246m  ⎿  $ touch sample-file[39m
+
+[38;5;246m✻[39m [38;5;246mChurned for 1s · done 3:32 AM[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/model[39m [49m
+[38;5;246m  ⎿  [39mKept model as [38;5;153mOpus 5.5 (default)[39m
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m    [38;5;246m/btw is anything wrong?[39m
+    [1m[38;5;220m/btw [0m[38;5;246mand a second one?[39m
+
+      The side answer: nothing is wrong.
+
+      A second paragraph of the answer, long enough to wrap onto a second row
+      of the overlay when the pane is 120 columns wide, and then some more
+      words.
+
+    [38;5;246m⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close[39m

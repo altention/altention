@@ -1,0 +1,24 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj
+
+
+
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔[39m [38;5;246m◐ medium · /effort[38;5;153m ▔
+
+[39m    [38;5;246m/btw first[39m
+    [1m[38;5;220m/btw [0m[38;5;246mtell me everything[39m
+
+      - item 01 of a long list, with a few more words in it.
+      - item 02 of a long list, with a few more words in it.
+      - item 03 of a long list, with a few more words in it.
+      - item 04 of a long list, with a few more words in it.
+      - item 05 of a long list, with a few more words in it.
+      - item 06 of a long list, with a few more words in it.
+      - item 07 of a long list, with a few more words in it.
+      - item 08 of a long list, with a few more words in it.
+      - item 09 of a long list, with a few more words in it.
+
+    [38;5;246m⇧←/→ to browse · c to copy · f to fork · x to clear history · [39m
+    [38;5;246mEsc to close[39m

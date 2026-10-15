@@ -1,0 +1,24 @@
+
+❯ please do the first thing
+
+● All done. Nothing else to report.
+
+✻ Crunched for 14s · done 3:31 AM
+
+❯ a second message while busy
+
+● All done. Nothing else to report.
+
+✻ Baked for 14s · done 3:31 AM
+
+❯ please touch the file
+
+
+  ❯ /model                      Set the AI model for Claude Code (currently
+                                Opus 5.5)
+    /code-review                Review the current diff, or a PR
+                                number/branch/path target, for correctness bu…
+────────────────────────────────────────────────────────────────────────────────
+❯ /model
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

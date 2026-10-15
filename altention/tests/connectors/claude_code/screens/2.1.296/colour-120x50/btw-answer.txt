@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ please do the first thing
+
+● All done. Nothing else to report.
+
+✻ Baked for 14s · done 3:31 AM
+
+❯ a second message while busy
+
+● All done. Nothing else to report.
+
+✻ Brewed for 14s · done 3:31 AM
+
+❯ please touch the file
+
+● Running 1 shell command…
+  ⎿  Interrupted · What should Claude do instead?
+  ⎿  $ touch sample-file
+
+✻ Worked for 1s · done 3:32 AM
+
+❯ /model
+  ⎿  Kept model as Opus 5.5 (default)
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+    /btw is anything wrong?
+
+      The side answer: nothing is wrong.
+
+      A second paragraph of the answer, long enough to wrap onto a second row of the overlay when the pane is 120
+      columns wide, and then some more words.
+
+    ↑/↓ to scroll · c to copy · f to fork · Esc to close

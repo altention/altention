@@ -1,0 +1,30 @@
+
+
+❯ Q-A-busy: a long turn in A
+
+● SAID-A-busy: A is working.
+
+  Ran 1 shell command
+
+● ANS-A-busy.
+
+✻ Churned for 27s · done 12:31 PM
+
+※ recap: ANS-A-busy. (disable recaps in /config)
+
+❯ Q-attach-two: a long turn typed in the attach view
+
+● SAID-attach-busy.
+
+  Running 1 shell command · 3s…
+  ⎿  $ sleep 12; echo done (3s)
+     (ctrl+b to run in background)
+
+* Crunching… (4s · ↓ 18 tokens)
+  ⎿  Tip: Hit Enter to queue up additional messages while Claude is
+     working.
+
+───────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · esc to …

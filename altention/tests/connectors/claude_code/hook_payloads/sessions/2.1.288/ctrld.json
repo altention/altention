@@ -1,0 +1,42 @@
+[
+ {
+  "session_id": "461fa709-f949-44aa-b65d-cce27ea7d59a",
+  "transcript_path": "/w/.claude/projects/-w-proj/461fa709-f949-44aa-b65d-cce27ea7d59a.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "461fa709-f949-44aa-b65d-cce27ea7d59a",
+  "transcript_path": "/w/.claude/projects/-w-proj/461fa709-f949-44aa-b65d-cce27ea7d59a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0f9e87dd-fd9e-42c8-b81b-acbc0092ad31",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "461fa709-f949-44aa-b65d-cce27ea7d59a",
+  "transcript_path": "/w/.claude/projects/-w-proj/461fa709-f949-44aa-b65d-cce27ea7d59a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0f9e87dd-fd9e-42c8-b81b-acbc0092ad31",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "461fa709-f949-44aa-b65d-cce27ea7d59a",
+  "transcript_path": "/w/.claude/projects/-w-proj/461fa709-f949-44aa-b65d-cce27ea7d59a.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0f9e87dd-fd9e-42c8-b81b-acbc0092ad31",
+  "hook_event_name": "SessionEnd",
+  "reason": "prompt_input_exit"
+ }
+]

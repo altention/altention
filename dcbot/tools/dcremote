@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""dcremote: the Discord bot's helper on another machine (standard library only; Python 3.8 is enough).
+
+The bot runs on one machine; Claude Code sessions attached to channels may live on others. There the global
+hook (`dchook --global`) writes events and reads the route table exactly as on the bot's machine, in this
+machine's own engine (dcbot/state/). The bot reaches it over SSH:
+
+  dcremote panes                    Claude Code panes in this user's tmux, as JSON (with project, route)
+  dcremote stream                   events as JSON lines, forever (with what Claude said since the last one)
+  dcremote bind KEY CHANNEL PID     route a pane ("socket|%id") to a channel
+  dcremote unbind CHANNEL
+  dcremote answer ASK_ID            hand a question's answer (JSON on stdin) to the waiting hook
+  dcremote backfill PANE SESSION    the session's earlier conversation: its turns, as data (JSON)
+  dcremote turn FILE START [ID]     one turn of a conversation of this machine, for 📋: as data, made small (JSON)
+  dcremote history FILE [SESSION]   a conversation of this machine, by its file: its turns, as data (JSON)
+  dcremote sessions FOLDER [REF]    the conversations Claude Code keeps for a folder of this machine, newest first;
+                                    with REF the one whose id begins so (JSON)
+  dcremote termrc CHANNEL           write a terminal channel's rc files here; their argv, env and done file (JSON)
+  dcremote done PATH                the exit statuses a terminal channel's shell has written so far (JSON)
+  dcremote info [FOLDER]            this user's tmux socket and home, and FOLDER made absolute if it exists (JSON)
+  dcremote files                    the file browser's request (JSON on stdin, see bot/filecore.py), answered in JSON
+"""
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from bot import envfile, events, filecore, routecore, termrc, tmuxio  # noqa: E402  (these import nothing outside the standard library)
+from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
+from altention.connectors.claude_code import transcript as cc_transcript  # noqa: E402
+from altention.connectors.claude_code import hooks as cc_hooks  # noqa: E402  (after bot: it puts the engine on the path)
+
+STATE = os.path.join(ROOT, "state")
+SPOOL = os.path.join(STATE, "events")
+
+
+def panes():
+    found = asyncio.run(tmuxio.claude_panes())
+    table = routecore.load()
+    for p in found:
+        p["project"] = routecore.project_name(p["cwd"])
+        p["routed"] = routecore.channel_of(table.get("%s|%s" % (p["socket"], p["id"])))
+    print(json.dumps(found, ensure_ascii=False))
+
+
+def command_of(pid):
+    """The command line of a process ("" if it is gone): /proc on Linux, ps on macOS."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        pass
+    r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       universal_newlines=True)
+    return r.stdout
+
+
+def stream():
+    """Events as they come, one JSON line each. A transcript is read here, where it is, so the bot gets what
+    Claude said along with the event (the bot's machine cannot read this machine's files)."""
+    pidfile = os.path.join(STATE, "stream.pid")
+    try:  # a stream left over from a bot that has gone would take the events: stop it
+        with open(pidfile) as f:
+            old = int(f.read().strip() or 0)
+        if old and old != os.getpid() and "dcremote" in command_of(old):
+            os.kill(old, 15)
+    except (OSError, ValueError):
+        pass
+    os.makedirs(STATE, exist_ok=True)
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+    sys.stdout.write('{"heartbeat": 1}\n')  # at once: the bot knows the line is up (code-review 2026-10-07)
+    sys.stdout.flush()
+    pos, last = {}, time.time()
+    while True:
+        if relay(SPOOL, pos, sys.stdout):
+            last = time.time()
+        if time.time() - last > 20:  # tells the bot the line is alive
+            sys.stdout.write('{"heartbeat": 1}\n')
+            sys.stdout.flush()
+            last = time.time()
+        time.sleep(0.1 if getattr(relay, "held", False) else 0.3)  # an event waits for its row (awaits()): look again soon
+
+
+def relay(spool, pos, out):
+    """One pass over the spool: each event goes out as a JSON line (with what Claude said since the last one,
+    read here where the transcript is), and only then is its spool file removed. Returns how many went out.
+    `pos`: how far each transcript has been read. The spool file and the transcript are different paths:
+    never mix them up (the transcript is the conversation itself)."""
+    sent, held = 0, set()
+    for spooled, ev in events.waiting(spool):
+        key = ev.get("transcript_path") or ev.get("channel")
+        cc_hooks.normalize(ev)  # what kind of thing it is: from the event alone, before the wait is decided
+        try:
+            wait = key in held or cc_hooks.awaits(ev, pos)
+        except Exception:
+            wait = False  # whatever went wrong looking: the event goes
+        if wait:  # a tool call, or a turn's end, whose own row is not written yet (for at most cc_hooks.HOLD_SECS,
+            # END_HOLD_SECS): left in the spool
+            held.add(key)  # with every later event of its conversation behind it; the other conversations' go on.
+            continue       # Not slept for: that would hold every channel of this machine back
+        try:
+            enrich(ev, pos)
+        except Exception as e:  # what Claude said is extra: the event itself still goes
+            ev["relay_error"] = "%s: %s" % (type(e).__name__, e)
+        try:
+            out.write(json.dumps(ev, ensure_ascii=False) + "\n")
+            out.flush()
+        except (TypeError, ValueError, UnicodeError):
+            events.set_aside(spooled, spool)  # cannot be sent at all: out of the way, kept for a look
+            continue
+        events.done(spooled)  # the spool file, only once its event is on its way to the bot
+        sent += 1
+    relay.held = bool(held)  # something was left for the next pass: stream() comes back sooner
+    return sent
+
+
+ADDED = cc_hooks.ADDED + cc_hooks.NORMALIZED + ("relay_error",)  # what the connector's enrich() and relay() add to an event (the bot's
+# stream() adds "host"). tests/test_hook_fields.py holds them against real payloads.
+def enrich(ev, pos):
+    """What only this machine can read is added to an event (the connector's enrich()); and for a subagent that has
+    just started, what it was started as: its files are written a moment after the event, and are waited for here,
+    asleep (the connector's agent_waits(): up to 1.5 s)."""
+    cc_hooks.enrich(ev, pos)
+    if ev.get("hook_event_name") == "SubagentStart" and ev.get("agent_id"):
+        for gap in cc_hooks.agent_waits(ev):
+            time.sleep(gap)
+
+
+def answer(ask_id):
+    folder = os.path.join(STATE, "answers")
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, os.path.basename(ask_id) + ".json.tmp")
+    with open(tmp, "w") as f:
+        f.write(sys.stdin.read())
+    os.replace(tmp, tmp[:-4])
+
+
+def backfill(pane_id, tmux_session, socket=""):
+    rec = cc_sessions.of_pane(pane_id, tmux_session or None)
+    screen, cwd = "", (rec or {}).get("cwd") or ""
+    if socket:  # what the pane shows now tells which transcript it writes to (its record may be stale or missing)
+        r = subprocess.run(["tmux", "-S", socket, "capture-pane", "-p", "-J", "-S", "-200", "-t", pane_id],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+        screen = r.stdout
+        if not cwd:
+            r = subprocess.run(["tmux", "-S", socket, "display-message", "-p", "-t", pane_id, "#{pane_current_path}"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+            cwd = r.stdout.strip()
+    sid = cc_sessions.live_session(cwd, screen, rec) if cwd else None
+    if not sid:
+        print(json.dumps({}))
+        return
+    rows = cc_sessions.turns(cc_sessions.transcript(cwd, sid), None, None)
+    print(json.dumps({"session_id": sid, "turns": rows}, ensure_ascii=False))  # as data: the bot words them
+
+
+def refuse(why):
+    """Exit code 3: asked for what this command does not give; 4: it could not be read (turn()). (1 is "no such
+    command": what a dcremote of before this one answers, and the bot takes for a machine a step behind.)"""
+    sys.stderr.write("dcremote：%s\n" % why)
+    sys.exit(3)
+
+
+def turn(path, start, own):
+    """The turn that begins at byte `start` of a transcript of this machine, to where it ends as the file is now
+    (`own`: the turn's id), as the connector reads it and makes it small; null when the file is gone. Only read,
+    and only a transcript of Claude Code's own (a .jsonl under its projects folder): this is a command that reads
+    a file for whoever can run it."""
+    real = cc_transcript.own(path, cc_sessions.config_dir())
+    if not real:
+        refuse("不是這台 Claude Code 的對話檔，不讀")
+    try:
+        start = int(start)
+    except ValueError:
+        start = -1
+    if start < 0:
+        refuse("起點不是數字")
+    try:
+        items = cc_transcript.turn(real, start, cc_transcript.turn_end(real, start, own or None))
+        out = json.dumps(None if items is None else cc_transcript.slim(items), ensure_ascii=False)
+    except Exception as e:  # not exit code 1 with a traceback: that is what "no such command" looks like to the bot
+        sys.stderr.write("dcremote turn：讀不出來（%s: %s）\n" % (type(e).__name__, e))
+        sys.exit(4)
+    print(out)
+
+
+def history(path, session_id=""):
+    """The turns of a conversation of this machine, named by its transcript (the file an event said the pane now
+    shows: after /resume in a pane the bot is told the file, and need not guess the conversation from the screen as
+    backfill() does). The same answer as backfill's ({"session_id", "turns"}: as data, the bot words them), null
+    when the file is gone. Only read, and only a transcript of Claude Code's own; the same exit codes as turn()."""
+    real = cc_transcript.own(path, cc_sessions.config_dir())
+    if not real:
+        refuse("不是這台 Claude Code 的對話檔，不讀")
+    try:
+        rows = cc_sessions.turns(real, None, None) if os.path.isfile(real) else None
+        out = json.dumps(None if rows is None else {"session_id": session_id or os.path.basename(real)[:-len(".jsonl")], "turns": rows},
+                         ensure_ascii=False)
+    except Exception as e:  # (as turn(): never exit code 1 with a traceback)
+        sys.stderr.write("dcremote history：讀不出來（%s: %s）\n" % (type(e).__name__, e))
+        sys.exit(4)
+    print(out)
+
+
+SESSIONS, ABOUT = 8, {"title": 80, "first": 40, "last": 50}  # how many `sessions` lists (as !resume lists on the bot's
+# own machine), and how much of what was said in each goes along: what the bot's list shows of it, no more
+
+
+def sessions(folder, ref=""):
+    """The conversations Claude Code keeps for a working directory of this machine, for `!resume` in a channel whose
+    window is here (#issues 35): a list, newest first, of what the connector's sessions.recent() gives ({"id",
+    "mtime", "title", "first", "last", "prompts"}; the three texts cut to what the bot's list shows) with each one's
+    transcript ("path"); with `ref`, the one conversation whose id begins so (sessions.find(): however old), or
+    null. Only read, and only what lies in Claude Code's own folder for that directory; a directory that is not
+    there is refused (3), a read that fails is 4, as turn() and history()."""
+    if not folder.strip():  # (abspath("") is wherever this was started from: nobody asked for that folder)
+        refuse("沒有這個資料夾，不列")
+    folder = os.path.abspath(os.path.expanduser(folder))
+    if not os.path.isdir(folder):
+        refuse("沒有這個資料夾，不列")
+
+    def told(s):
+        cut = lambda text, n: text if len(text) <= n else text[:n] + "…"  # noqa: E731
+        out = dict(s, path=cc_sessions.transcript(folder, s["id"]))
+        out.update({k: cut(" ".join(str(s.get(k) or "").split()), n) for k, n in ABOUT.items()})
+        return out
+    try:
+        if ref:
+            found = cc_sessions.find(folder, ref)
+            out = json.dumps(None if found is None else told(found), ensure_ascii=False)
+        else:
+            out = json.dumps([told(s) for s in cc_sessions.recent(folder, SESSIONS)], ensure_ascii=False)
+    except Exception as e:  # (as turn(): never exit code 1 with a traceback)
+        sys.stderr.write("dcremote sessions：讀不出來（%s: %s）\n" % (type(e).__name__, e))
+        sys.exit(4)
+    print(out)
+
+
+PART_MAX = 20000  # characters of a field `part` gives at most in one go
+
+
+def part(path, start, own, item, field, offset, limit="10000"):
+    """A stretch of one field of one item of the turn `turn` would give (the same file rule, the same exit codes): a
+    line of JSON as the connector's transcript.piece() gives it, null when the file is gone or the turn has no such
+    item or field. Only read."""
+    real = cc_transcript.own(path, cc_sessions.config_dir())
+    if not real:
+        refuse("不是這台 Claude Code 的對話檔，不讀")
+    try:
+        start, item, offset, limit = int(start), int(item), int(offset), int(limit)
+    except ValueError:
+        start = -1
+    if start < 0 or item < 0 or offset < 0 or limit < 0:
+        refuse("起點、第幾項、位置、長度要是不小於零的數字")
+    try:
+        items = cc_transcript.turn(real, start, cc_transcript.turn_end(real, start, own or None))
+        out = json.dumps(None if items is None else cc_transcript.piece(items, item, field, offset, min(limit, PART_MAX)), ensure_ascii=False)
+    except Exception as e:  # (as turn(): never exit code 1 with a traceback)
+        sys.stderr.write("dcremote part：讀不出來（%s: %s）\n" % (type(e).__name__, e))
+        sys.exit(4)
+    print(out)
+
+
+def main(argv):
+    # this tool has no tmux server of a bot's: it reads the owner's, and leaves alone that of a bot installed here
+    tmuxio.configure(socket=None, skip=(envfile.bot_server(),))
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+    elif argv[0] == "panes":
+        panes()
+    elif argv[0] == "stream":
+        stream()
+    elif argv[0] == "bind":
+        routecore.bind_key(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
+    elif argv[0] == "unbind":
+        routecore.unbind(argv[1])
+    elif argv[0] == "answer":
+        answer(argv[1])
+    elif argv[0] == "termrc":
+        folder = os.path.join(STATE, "term", os.path.basename(argv[1]))
+        args, env = termrc.rc_files(folder, os.path.join(folder, "done"))
+        print(json.dumps({"argv": args, "env": env, "done": os.path.join(folder, "done")}))
+    elif argv[0] == "done":
+        print(json.dumps(termrc.done_count(argv[1])))
+    elif argv[0] == "info":
+        folder = os.path.abspath(os.path.expanduser(argv[1])) if len(argv) > 1 else None
+        print(json.dumps({"socket": os.path.join(tmuxio.socket_dir(), "default"), "home": os.path.expanduser("~"),
+                          "folder": folder if folder and os.path.isdir(folder) else None}))
+    elif argv[0] == "files":
+        print(json.dumps(filecore.op(json.loads(sys.stdin.read() or "{}")), ensure_ascii=False))
+    elif argv[0] == "turn" and len(argv) >= 3:
+        turn(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
+    elif argv[0] == "sessions" and len(argv) >= 2:
+        sessions(argv[1], argv[2] if len(argv) > 2 else "")
+    elif argv[0] == "history" and len(argv) >= 2:
+        history(argv[1], argv[2] if len(argv) > 2 else "")
+    elif argv[0] == "part" and len(argv) >= 7:
+        part(*argv[1:8])
+    elif argv[0] == "backfill":
+        backfill(argv[1], argv[2] if len(argv) > 2 else "", argv[3] if len(argv) > 3 else "")
+    else:
+        sys.exit("dcremote：不認得 %s" % argv[0])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "name": "chatlog",
+  "title": "對話紀錄",
+  "description": "把這台機器每個 Claude Code 對話存成可以讀的 Markdown 和原始紀錄，放進一個 git repo。",
+  "pitch": "把這台機器所有 Claude Code 對話自動存成看得懂的文字檔，之後可以搜尋、回顧。不花訂閱額度。",
+  "keep": "對話會存成文字檔，可以搜尋",
+  "lose": "對話不會存成文字檔",
+  "order": 10,
+  "provides": "要找以前某次對話說了什麼、做了什麼：到對話紀錄的資料夾，每台機器的 README.md 是索引。",
+  "machines": "all",
+  "hooks": [
+    {
+      "event": "Stop",
+      "command": "{python} \"{plugin}/chatlog.py\" hook",
+      "timeout": 10
+    },
+    {
+      "event": "SessionEnd",
+      "command": "{python} \"{plugin}/chatlog.py\" hook",
+      "timeout": 10
+    }
+  ],
+  "schedules": [
+    {
+      "name": "sync",
+      "when": {
+        "every": "15m",
+        "offset": "machine"
+      },
+      "do": {
+        "run": "{python} \"{plugin}/chatlog.py\" sync",
+        "output": "none",
+        "trace": {
+          "file": "~/.cache/chatlog/state.json",
+          "key": "last_cron_sync"
+        }
+      }
+    }
+  ],
+  "setup": [
+    {
+      "name": "logs-repo",
+      "run": null,
+      "today": "chatlog/install.sh 第 1 步：clone 或 init 紀錄 repo"
+    },
+    {
+      "name": "machine-name",
+      "run": null,
+      "today": "chatlog/install.sh 第 1b 步：~/.config/altention/host"
+    }
+  ],
+  "data": [
+    {
+      "name": "chatlog",
+      "path": "{data}/logs",
+      "sync": "on-request",
+      "private": true
+    }
+  ]
+}

@@ -1,0 +1,161 @@
+[
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "efdd866d-1bde-4f7b-ae4e-5d82205dd0cb",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "efdd866d-1bde-4f7b-ae4e-5d82205dd0cb",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-subfail"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "failing sub",
+   "prompt": "SUBTASK-MARKER: this will fail.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_use_id": "toolu_rig1791851980365"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "agent_id": "a20d7426edf6c08f6",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "failing sub",
+   "prompt": "SUBTASK-MARKER: this will fail.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "a20d7426edf6c08f6",
+   "description": "failing sub",
+   "resolvedModel": "claude-opus-5-5",
+   "prompt": "SUBTASK-MARKER: this will fail.",
+   "outputFile": "/w/elsewhere",
+   "canReadOutputFile": true,
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_rig1791851980365",
+  "duration_ms": 16
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [
+   {
+    "id": "a20d7426edf6c08f6",
+    "type": "subagent",
+    "status": "running",
+    "description": "failing sub",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "754ddf9c-3189-4dde-b3db-e496dbab8d9d",
+  "agent_id": "a20d7426edf6c08f6",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "unknown",
+  "last_assistant_message": "API Error: 400 rig: sub refused"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f9a9b631-97e6-4e3e-a433-d4bc02eb225f",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>a20d7426edf6c08f6</task-id>\n<tool-use-id>toolu_rig1791851980365</tool-use-id>\n<output-file>/w/elsewhere</output-file>\n<status>failed</status>\n<summary>Agent \"failing sub\" failed: Agent terminated early due to an API error: API Error: 400 rig: sub refused (error type unknown, HTTP 400, model sent to the API: claude-opus-5-5)</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n</task-notification>"
+ },
+ {
+  "session_id": "67c78e08-a1b4-4d77-8ea2-36997e0a5017",
+  "transcript_path": "/w/.claude/projects/-w-proj/67c78e08-a1b4-4d77-8ea2-36997e0a5017.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f9a9b631-97e6-4e3e-a433-d4bc02eb225f",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+]

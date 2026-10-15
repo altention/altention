@@ -1,0 +1,9 @@
+{
+ "tests.test_menus.Pressed.test_another_dialog_in_its_place_gets_nothing": "F3: new test (a dialog's button re-reads the screen before pressing); the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_the_same_dialog_still_there_gets_the_key": "F3: new test; the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_the_same_choices_for_another_command_get_nothing": "F3: new test; the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_the_same_question_with_new_output_above_gets_the_key": "F3: new test; the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_what_a_dialog_asks": "F3: new test; the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_its_machine_not_answering_the_read_keeps_the_buttons": "F3 follow-up (#code-review low item): new test",
+ "tests.test_btw_guard.BtwGuard.test_a_key_in_the_answer_is_masked_before_posting": "B-12 /btw: new test; the existing tests' keys are unchanged"
+}

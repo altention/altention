@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# 這個使用者的私人設定和資料在實例（~/altention/instance），不在引擎（DESIGN.md 4.1，階段 2.3b）
+# 引擎裡的 knowledge、memory、docs/refactor 是同步建的連結，指向實例（結尾不加斜線：連結不算資料夾）
+/memory
+/knowledge
+/ops/machines.json
+/ops/ssh_config
+/docs/refactor
+# council 的資料（profile、lessons、CHANGELOG、runs）在實例；這裡是同步建的資料夾連結（階段 2.4d）
+/skills/council/data

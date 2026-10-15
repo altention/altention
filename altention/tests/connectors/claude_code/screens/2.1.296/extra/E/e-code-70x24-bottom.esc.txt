@@ -1,0 +1,24 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj
+
+
+
+[38;5;153m▔▔▔▔▔▔▔[39m [38;5;220mScroll wheel is sending arrow keys · use PgUp/PgDn to scroll[38;5;153m ▔
+
+[39m    [38;5;246m/btw first[39m
+    [1m[38;5;220m/btw [0m[38;5;246mtell me everything[39m
+
+      [38;5;153mline 32 of a long block[39m
+      [38;5;153mline 33 of a long block[39m
+      [38;5;153mline 34 of a long block[39m
+      [38;5;153mline 35 of a long block[39m
+      [38;5;153mline 36 of a long block[39m
+      [38;5;153mline 37 of a long block[39m
+      [38;5;153mline 38 of a long block[39m
+      [38;5;153mline 39 of a long block[39m
+      [38;5;153mline 40 of a long block[39m
+
+    [38;5;246m⇧←/→ to browse · c to copy · f to fork · x to clear history · [39m
+    [38;5;246mEsc to close[39m

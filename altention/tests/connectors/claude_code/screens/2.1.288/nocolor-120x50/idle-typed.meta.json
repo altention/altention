@@ -1,0 +1,25 @@
+{
+ "claude_code": "2.1.288 (Claude Code)",
+ "colour": false,
+ "env": "NO_COLOR=1",
+ "TERM": "tmux-256color",
+ "pane": [
+  120,
+  50
+ ],
+ "cursor_xy": [
+  29,
+  47
+ ],
+ "cursor_shown": false,
+ "alternate_screen": true,
+ "clients_attached": 0,
+ "claude_args": "--permission-mode default",
+ "how": "idle, text typed in the box, not sent",
+ "captured": "2026-10-12 15:37:13",
+ "files": {
+  "plain": "tmux capture-pane -p",
+  "esc": "tmux capture-pane -p -e"
+ },
+ "api": "a stand-in on 127.0.0.1 (no real model); scratch HOME, theme dark"
+}

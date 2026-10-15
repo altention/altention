@@ -1,0 +1,24 @@
+
+[38;5;246m[48;5;237m❯ [38;5;231mplease do the first thing[39m
+
+[38;5;231m[49m●[39m All done. Nothing else to report.
+
+[38;5;246m✻[39m [38;5;246mCogitated for 14s · done 3:40 PM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231ma second message while busy[39m
+[49m
+[38;5;231m●[39m All done. Nothing else to report.
+
+[38;5;246m✻[39m [38;5;246mSautéed for 14s · done 3:40 PM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mplease touch the file[39m
+
+[49m
+  [38;5;153m/[1mmodel[0m[38;5;153m                        Set the AI [1mmodel[0m[38;5;153m for Claude Code (currently[39m
+                                [38;5;153mOpus 5.5)[39m
+  [38;5;246m/code-review                  Review the current diff, or a PR[39m
+                                [38;5;246mnumber/branch/path target, for correctness bu…[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m❯ [38;5;153m/model[7m[39m [0m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on[39m

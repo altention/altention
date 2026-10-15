@@ -1,0 +1,1235 @@
+{
+"name": "leftbusy",
+"claude_code": "2.1.296",
+"old": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"new": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"steps": [
+{
+"t": 1791889627.33,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"hook_event_name": "SessionStart",
+"source": "startup",
+"model": "claude-opus-5-5"
+}
+},
+{
+"t": 1791889633.551,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"prompt_id": "d713139a-bcf4-421c-950b-5d442c5092c3",
+"permission_mode": "bypassPermissions",
+"hook_event_name": "UserPromptSubmit",
+"prompt": "Q-one"
+}
+},
+{
+"t": 1791889633.614,
+"write": {
+"type": "mode"
+},
+"into": "old"
+},
+{
+"t": 1791889633.614,
+"write": {
+"type": "permission-mode"
+},
+"into": "old"
+},
+{
+"t": 1791889633.614,
+"write": {
+"type": "atis-latch"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "file-history-snapshot"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"parentUuid": null,
+"isSidechain": false,
+"promptId": "d713139a-bcf4-421c-950b-5d442c5092c3",
+"type": "user",
+"message": {
+"role": "user",
+"content": "Q-one"
+},
+"uuid": "9d6744c1-c3c5-4be1-b1aa-0909c4ec6432",
+"timestamp": "2026-10-13T11:07:13.528Z",
+"permissionMode": "bypassPermissions",
+"origin": {
+"kind": "human"
+},
+"promptSource": "typed",
+"turnOrigin": "human",
+"turnPosition": {
+"promptIndex": 1,
+"turnIndex": 1
+},
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "1480dcf2-c4e6-41a0-9822-f9bf91148f00",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "3bbd9b65-15d8-4a1b-b249-10819b2380f9",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "6cc4f525-d07e-46ba-97c0-f3c8078854dc",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "1031aab2-fe46-4c0c-b11f-431074b0ea85",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "d9cc59cf-16c1-4ad7-80c9-3f20ba736abf",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "5056542c-6118-4e4c-b8a7-3a57addeddcf",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "2cfdf06b-39f6-4e0f-81b3-1fee18b86b34",
+"timestamp": "2026-10-13T11:07:13.579Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "49559bfd-f269-4836-9247-76419f8275fe",
+"timestamp": "2026-10-13T11:07:13.579Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "f62140fc-2f87-4054-946c-9b3eaae9ea15",
+"timestamp": "2026-10-13T11:07:13.583Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.715,
+"write": {
+"type": "attachment",
+"uuid": "15be20e6-4099-4137-a828-9f96903bc2b9",
+"timestamp": "2026-10-13T11:07:13.584Z"
+},
+"into": "old"
+},
+{
+"t": 1791889633.718,
+"write": {
+"type": "last-prompt"
+},
+"into": "old"
+},
+{
+"t": 1791889633.718,
+"write": {
+"type": "mode"
+},
+"into": "old"
+},
+{
+"t": 1791889633.718,
+"write": {
+"type": "permission-mode"
+},
+"into": "old"
+},
+{
+"t": 1791889633.718,
+"write": {
+"type": "atis-latch"
+},
+"into": "old"
+},
+{
+"t": 1791889634.645,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"prompt_id": "d713139a-bcf4-421c-950b-5d442c5092c3",
+"permission_mode": "bypassPermissions",
+"effort": {
+"level": "medium"
+},
+"hook_event_name": "Stop",
+"stop_hook_active": false,
+"last_assistant_message": "ANS-one.",
+"background_tasks": [],
+"session_crons": []
+}
+},
+{
+"t": 1791889634.749,
+"write": {
+"parentUuid": "15be20e6-4099-4137-a828-9f96903bc2b9",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889634607",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "text",
+"text": "ANS-one."
+}
+],
+"stop_reason": "end_turn",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 0,
+"type": "assistant",
+"uuid": "22a33c78-947e-4614-b1ec-6e42621e78e1",
+"timestamp": "2026-10-13T11:07:14.612Z",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889634.749,
+"write": {
+"type": "attachment",
+"uuid": "5aaaebc9-4535-4d75-9618-f63fbf6f993d",
+"timestamp": "2026-10-13T11:07:14.620Z"
+},
+"into": "old"
+},
+{
+"t": 1791889634.749,
+"write": {
+"parentUuid": "5aaaebc9-4535-4d75-9618-f63fbf6f993d",
+"isSidechain": false,
+"type": "system",
+"subtype": "stop_hook_summary",
+"hookCount": 1,
+"hookAdditionalContext": [],
+"preventedContinuation": false,
+"stopReason": "",
+"hasOutput": false,
+"level": "suggestion",
+"timestamp": "2026-10-13T11:07:14.650Z",
+"uuid": "d0059b7e-89f2-43a8-b278-374b07906b72",
+"toolUseID": "c7a11188-a4fa-47d7-bec4-b22962da49e9",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889634.749,
+"write": {
+"parentUuid": "d0059b7e-89f2-43a8-b278-374b07906b72",
+"isSidechain": false,
+"type": "system",
+"subtype": "turn_duration",
+"durationMs": 1134,
+"messageCount": 14,
+"timestamp": "2026-10-13T11:07:14.654Z",
+"uuid": "b03bbb63-c7ec-46ea-aeff-15c0e84b73ad",
+"isMeta": false,
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889634.752,
+"write": {
+"type": "last-prompt"
+},
+"into": "old"
+},
+{
+"t": 1791889634.752,
+"write": {
+"type": "mode"
+},
+"into": "old"
+},
+{
+"t": 1791889634.752,
+"write": {
+"type": "permission-mode"
+},
+"into": "old"
+},
+{
+"t": 1791889634.752,
+"write": {
+"type": "atis-latch"
+},
+"into": "old"
+},
+{
+"t": 1791889641.44,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"prompt_id": "086962a3-8fd3-43f4-8e35-4b66abb2d5f7",
+"permission_mode": "bypassPermissions",
+"hook_event_name": "UserPromptSubmit",
+"prompt": "Q-busy"
+}
+},
+{
+"t": 1791889641.549,
+"write": {
+"type": "file-history-snapshot"
+},
+"into": "old"
+},
+{
+"t": 1791889641.549,
+"write": {
+"parentUuid": "b03bbb63-c7ec-46ea-aeff-15c0e84b73ad",
+"isSidechain": false,
+"promptId": "086962a3-8fd3-43f4-8e35-4b66abb2d5f7",
+"type": "user",
+"message": {
+"role": "user",
+"content": "Q-busy"
+},
+"uuid": "01bb5c88-88d4-410c-9012-a7fa2f1f175c",
+"timestamp": "2026-10-13T11:07:21.412Z",
+"permissionMode": "bypassPermissions",
+"origin": {
+"kind": "human"
+},
+"promptSource": "typed",
+"turnOrigin": "human",
+"turnPosition": {
+"promptIndex": 2,
+"turnIndex": 2
+},
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889641.549,
+"write": {
+"type": "attachment",
+"uuid": "99ae63ca-f584-4253-a6b2-b307edc43ec2",
+"timestamp": "2026-10-13T11:07:21.412Z"
+},
+"into": "old"
+},
+{
+"t": 1791889642.807,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"prompt_id": "086962a3-8fd3-43f4-8e35-4b66abb2d5f7",
+"permission_mode": "bypassPermissions",
+"effort": {
+"level": "medium"
+},
+"hook_event_name": "PreToolUse",
+"tool_name": "Bash",
+"tool_input": {
+"command": "sleep 14; echo done-busy",
+"description": "rig"
+},
+"tool_use_id": "toolu_rig1791889642476"
+}
+},
+{
+"t": 1791889642.893,
+"write": {
+"parentUuid": "99ae63ca-f584-4253-a6b2-b307edc43ec2",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889642477",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "text",
+"text": "SAID-busy."
+}
+],
+"stop_reason": "tool_use",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 0,
+"type": "assistant",
+"uuid": "c1948eeb-8ede-4ed7-b09b-c79be48e7abc",
+"timestamp": "2026-10-13T11:07:22.478Z",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889642.893,
+"write": {
+"parentUuid": "c1948eeb-8ede-4ed7-b09b-c79be48e7abc",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889642477",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "tool_use",
+"id": "toolu_rig1791889642476",
+"name": "Bash",
+"input": {
+"command": "sleep 14; echo done-busy",
+"description": "rig"
+}
+}
+],
+"stop_reason": "tool_use",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 1,
+"type": "assistant",
+"uuid": "f2021ce1-bccd-41c6-a8c5-bf8ca8788234",
+"timestamp": "2026-10-13T11:07:22.778Z",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889646.522,
+"write": {
+"parentUuid": "f2021ce1-bccd-41c6-a8c5-bf8ca8788234",
+"isSidechain": false,
+"type": "system",
+"subtype": "informational",
+"content": "Backgrounding after the current tool finishes…",
+"isMeta": false,
+"timestamp": "2026-10-13T11:07:26.416Z",
+"uuid": "b5497bae-1da6-46fe-a38e-d3c673ebb41c",
+"level": "warning",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd"
+},
+"into": "old"
+},
+{
+"t": 1791889656.422,
+"write": {
+"type": "cost-state"
+},
+"into": "old"
+},
+{
+"t": 1791889656.552,
+"write": {
+"type": "continued-in",
+"timestamp": "2026-10-13T11:07:36.549Z",
+"sessionId": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"continuedInSessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "old"
+},
+{
+"t": 1791889656.898,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"hook_event_name": "SessionStart",
+"source": "fork",
+"seconds_since_last_response": 14,
+"context_tokens": 15,
+"prompt_cache_likely_expired": false,
+"estimated_cache_write_usd": 0.0001
+}
+},
+{
+"t": 1791889656.93,
+"write": {
+"type": "mode"
+},
+"into": "new"
+},
+{
+"t": 1791889656.93,
+"write": {
+"type": "permission-mode"
+},
+"into": "new"
+},
+{
+"t": 1791889656.93,
+"write": {
+"type": "atis-latch"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "file-history-snapshot"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "file-history-snapshot"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"parentUuid": null,
+"isSidechain": false,
+"type": "user",
+"message": {
+"role": "user",
+"content": "Q-one"
+},
+"uuid": "9d6744c1-c3c5-4be1-b1aa-0909c4ec6432",
+"timestamp": "2026-10-13T11:07:13.528Z",
+"permissionMode": "bypassPermissions",
+"origin": {
+"kind": "human"
+},
+"promptSource": "typed",
+"turnOrigin": "human",
+"turnPosition": {
+"promptIndex": 1,
+"turnIndex": 1
+},
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"sessionKind": "bg"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "1480dcf2-c4e6-41a0-9822-f9bf91148f00",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "3bbd9b65-15d8-4a1b-b249-10819b2380f9",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "6cc4f525-d07e-46ba-97c0-f3c8078854dc",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "1031aab2-fe46-4c0c-b11f-431074b0ea85",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "d9cc59cf-16c1-4ad7-80c9-3f20ba736abf",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "5056542c-6118-4e4c-b8a7-3a57addeddcf",
+"timestamp": "2026-10-13T11:07:13.527Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "2cfdf06b-39f6-4e0f-81b3-1fee18b86b34",
+"timestamp": "2026-10-13T11:07:13.579Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "49559bfd-f269-4836-9247-76419f8275fe",
+"timestamp": "2026-10-13T11:07:13.579Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "f62140fc-2f87-4054-946c-9b3eaae9ea15",
+"timestamp": "2026-10-13T11:07:13.583Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "15be20e6-4099-4137-a828-9f96903bc2b9",
+"timestamp": "2026-10-13T11:07:13.584Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"parentUuid": "15be20e6-4099-4137-a828-9f96903bc2b9",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889634607",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "text",
+"text": "ANS-one."
+}
+],
+"stop_reason": "end_turn",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 0,
+"type": "assistant",
+"uuid": "22a33c78-947e-4614-b1ec-6e42621e78e1",
+"timestamp": "2026-10-13T11:07:14.612Z",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"sessionKind": "bg"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "5aaaebc9-4535-4d75-9618-f63fbf6f993d",
+"timestamp": "2026-10-13T11:07:14.620Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"parentUuid": "5aaaebc9-4535-4d75-9618-f63fbf6f993d",
+"isSidechain": false,
+"type": "system",
+"subtype": "stop_hook_summary",
+"hookCount": 1,
+"hookAdditionalContext": [],
+"preventedContinuation": false,
+"stopReason": "",
+"hasOutput": false,
+"level": "suggestion",
+"timestamp": "2026-10-13T11:07:14.650Z",
+"uuid": "d0059b7e-89f2-43a8-b278-374b07906b72",
+"toolUseID": "c7a11188-a4fa-47d7-bec4-b22962da49e9",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"sessionKind": "bg"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"parentUuid": "d0059b7e-89f2-43a8-b278-374b07906b72",
+"isSidechain": false,
+"type": "system",
+"subtype": "turn_duration",
+"durationMs": 1134,
+"messageCount": 14,
+"timestamp": "2026-10-13T11:07:14.654Z",
+"uuid": "b03bbb63-c7ec-46ea-aeff-15c0e84b73ad",
+"isMeta": false,
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"sessionKind": "bg"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"parentUuid": "b03bbb63-c7ec-46ea-aeff-15c0e84b73ad",
+"isSidechain": false,
+"type": "user",
+"message": {
+"role": "user",
+"content": "Q-busy"
+},
+"uuid": "01bb5c88-88d4-410c-9012-a7fa2f1f175c",
+"timestamp": "2026-10-13T11:07:21.412Z",
+"permissionMode": "bypassPermissions",
+"origin": {
+"kind": "human"
+},
+"promptSource": "typed",
+"turnOrigin": "human",
+"turnPosition": {
+"promptIndex": 2,
+"turnIndex": 2
+},
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"sessionKind": "bg"
+},
+"into": "new"
+},
+{
+"t": 1791889657.03,
+"write": {
+"type": "attachment",
+"uuid": "99ae63ca-f584-4253-a6b2-b307edc43ec2",
+"timestamp": "2026-10-13T11:07:21.412Z"
+},
+"into": "new"
+},
+{
+"t": 1791889657.034,
+"write": {
+"type": "last-prompt"
+},
+"into": "new"
+},
+{
+"t": 1791889657.034,
+"write": {
+"type": "mode"
+},
+"into": "new"
+},
+{
+"t": 1791889657.034,
+"write": {
+"type": "permission-mode"
+},
+"into": "new"
+},
+{
+"t": 1791889657.034,
+"write": {
+"type": "atis-latch"
+},
+"into": "new"
+},
+{
+"t": 1791889658.313,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"permission_mode": "bypassPermissions",
+"effort": {
+"level": "medium"
+},
+"hook_event_name": "Stop",
+"stop_hook_active": false,
+"last_assistant_message": "ANS-busy.",
+"background_tasks": [],
+"session_crons": []
+}
+},
+{
+"t": 1791889658.351,
+"write": {
+"type": "ai-title"
+},
+"into": "new"
+},
+{
+"t": 1791889658.351,
+"write": {
+"type": "agent-name"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"parentUuid": "99ae63ca-f584-4253-a6b2-b307edc43ec2",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889658227",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "text",
+"text": "ANS-busy."
+}
+],
+"stop_reason": "end_turn",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 0,
+"type": "assistant",
+"uuid": "b4eb5060-5f42-4bc4-b8ee-a5b59027b682",
+"timestamp": "2026-10-13T11:07:38.232Z",
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "attachment",
+"uuid": "d8481fd5-9c6c-4eb4-b5bf-24bdb9c60a9e",
+"timestamp": "2026-10-13T11:07:38.237Z"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"parentUuid": "d8481fd5-9c6c-4eb4-b5bf-24bdb9c60a9e",
+"isSidechain": false,
+"type": "system",
+"subtype": "stop_hook_summary",
+"hookCount": 1,
+"hookAdditionalContext": [],
+"preventedContinuation": false,
+"stopReason": "",
+"hasOutput": false,
+"level": "suggestion",
+"timestamp": "2026-10-13T11:07:38.318Z",
+"uuid": "d32d4981-6342-4620-ae41-0b4ecf2a17e6",
+"toolUseID": "edfd90f5-8c5f-4dda-9fb7-84b9f24983db",
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"parentUuid": "d32d4981-6342-4620-ae41-0b4ecf2a17e6",
+"isSidechain": false,
+"type": "system",
+"subtype": "turn_duration",
+"durationMs": 1432,
+"messageCount": 20,
+"timestamp": "2026-10-13T11:07:38.319Z",
+"uuid": "f53f0787-c603-47e7-b85f-17ec1b6f8035",
+"isMeta": false,
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "last-prompt"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "ai-title"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "agent-name"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "mode"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "permission-mode"
+},
+"into": "new"
+},
+{
+"t": 1791889658.357,
+"write": {
+"type": "atis-latch"
+},
+"into": "new"
+},
+{
+"t": 1791889668.904,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"permission_mode": "bypassPermissions",
+"agent_id": "a7f8f331540c57f1c",
+"agent_type": "",
+"effort": {
+"level": "medium"
+},
+"hook_event_name": "SubagentStop",
+"stop_hook_active": false,
+"agent_transcript_path": "/w/.claude/projects/-w-proj/78cb859a-4150-4c2e-b027-033964dcd9b7/subagents/agent-a7f8f331540c57f1c.jsonl",
+"last_assistant_message": "ANS-busy.",
+"background_tasks": [],
+"session_crons": []
+}
+},
+{
+"t": 1791889669.021,
+"write": {
+"parentUuid": "f53f0787-c603-47e7-b85f-17ec1b6f8035",
+"isSidechain": false,
+"type": "system",
+"subtype": "away_summary",
+"content": "ANS-busy. (disable recaps in /config)",
+"timestamp": "2026-10-13T11:07:48.912Z",
+"uuid": "bd312f1e-b524-4fd1-b7ec-21d3417633b8",
+"isMeta": false,
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889672.177,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"prompt_id": "8bcf1127-c6c7-48bd-a144-45adbd00db3f",
+"permission_mode": "bypassPermissions",
+"hook_event_name": "UserPromptSubmit",
+"prompt": "Q-after-busy"
+}
+},
+{
+"t": 1791889672.285,
+"write": {
+"type": "file-history-snapshot"
+},
+"into": "new"
+},
+{
+"t": 1791889672.285,
+"write": {
+"parentUuid": "bd312f1e-b524-4fd1-b7ec-21d3417633b8",
+"isSidechain": false,
+"promptId": "8bcf1127-c6c7-48bd-a144-45adbd00db3f",
+"type": "user",
+"message": {
+"role": "user",
+"content": "Q-after-busy"
+},
+"uuid": "9152e1e2-b834-4a8b-892b-24e9efdfc4bd",
+"timestamp": "2026-10-13T11:07:52.163Z",
+"permissionMode": "bypassPermissions",
+"origin": {
+"kind": "human"
+},
+"promptSource": "typed",
+"turnOrigin": "human",
+"turnPosition": {
+"promptIndex": 3,
+"turnIndex": 3
+},
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889672.285,
+"write": {
+"type": "attachment",
+"uuid": "31137651-ba5c-4486-84e0-c6f0578a6201",
+"timestamp": "2026-10-13T11:07:52.163Z"
+},
+"into": "new"
+},
+{
+"t": 1791889673.279,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"prompt_id": "8bcf1127-c6c7-48bd-a144-45adbd00db3f",
+"permission_mode": "bypassPermissions",
+"effort": {
+"level": "medium"
+},
+"hook_event_name": "Stop",
+"stop_hook_active": false,
+"last_assistant_message": "ANS-after-busy.",
+"background_tasks": [],
+"session_crons": []
+}
+},
+{
+"t": 1791889673.307,
+"write": {
+"parentUuid": "31137651-ba5c-4486-84e0-c6f0578a6201",
+"isSidechain": false,
+"message": {
+"id": "msg_rig1791889673190",
+"type": "message",
+"role": "assistant",
+"model": "claude-opus-5-5",
+"content": [
+{
+"type": "text",
+"text": "ANS-after-busy."
+}
+],
+"stop_reason": "end_turn",
+"stop_sequence": null,
+"usage": {
+"input_tokens": 10,
+"cache_creation_input_tokens": 0,
+"cache_read_input_tokens": 0,
+"output_tokens": 5,
+"service_tier": "standard",
+"inference_geo": "",
+"speed": "standard"
+},
+"stop_details": null
+},
+"apiBlockIndex": 0,
+"type": "assistant",
+"uuid": "e811538e-84b4-4382-acfc-9ae0488aa636",
+"timestamp": "2026-10-13T11:07:53.193Z",
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889673.307,
+"write": {
+"parentUuid": "e811538e-84b4-4382-acfc-9ae0488aa636",
+"isSidechain": false,
+"type": "system",
+"subtype": "stop_hook_summary",
+"hookCount": 1,
+"hookAdditionalContext": [],
+"preventedContinuation": false,
+"stopReason": "",
+"hasOutput": false,
+"level": "suggestion",
+"timestamp": "2026-10-13T11:07:53.287Z",
+"uuid": "7368a9ca-c9f4-4b65-b4c7-227d7d1025a7",
+"toolUseID": "813d91c2-15ed-45cf-90ae-c87a1efd7497",
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889673.307,
+"write": {
+"parentUuid": "7368a9ca-c9f4-4b65-b4c7-227d7d1025a7",
+"isSidechain": false,
+"type": "system",
+"subtype": "turn_duration",
+"durationMs": 1129,
+"messageCount": 26,
+"timestamp": "2026-10-13T11:07:53.288Z",
+"uuid": "f3804274-940a-4253-93ee-081f0a8c55bc",
+"isMeta": false,
+"sessionKind": "bg",
+"sessionId": "78cb859a-4150-4c2e-b027-033964dcd9b7"
+},
+"into": "new"
+},
+{
+"t": 1791889682.054,
+"write": {
+"type": "cost-state"
+},
+"into": "new"
+},
+{
+"t": 1791889682.056,
+"write": {
+"type": "last-prompt"
+},
+"into": "new"
+},
+{
+"t": 1791889682.056,
+"write": {
+"type": "cost-state"
+},
+"into": "new"
+},
+{
+"t": 1791889682.077,
+"hook": {
+"session_id": "78cb859a-4150-4c2e-b027-033964dcd9b7",
+"transcript_path": "{new}",
+"cwd": "/w/proj",
+"prompt_id": "8bcf1127-c6c7-48bd-a144-45adbd00db3f",
+"hook_event_name": "SessionEnd",
+"reason": "other"
+}
+},
+{
+"t": 1791889688.641,
+"write": {
+"type": "last-prompt"
+},
+"into": "old"
+},
+{
+"t": 1791889688.641,
+"write": {
+"type": "cost-state"
+},
+"into": "old"
+},
+{
+"t": 1791889688.664,
+"hook": {
+"session_id": "a2511139-65da-48cd-8ea8-449b387b50dd",
+"transcript_path": "{old}",
+"cwd": "/w/proj",
+"prompt_id": "086962a3-8fd3-43f4-8e35-4b66abb2d5f7",
+"hook_event_name": "SessionEnd",
+"reason": "other"
+}
+}
+]
+}

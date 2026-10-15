@@ -1,0 +1,77 @@
+[
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "83c4bd40-6acc-480e-90bf-0ade3c787346",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "83c4bd40-6acc-480e-90bf-0ade3c787346",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "1aedf3f1-cbd1-48f5-847d-cfa50eac2b4d",
+  "hook_event_name": "SessionEnd",
+  "reason": "prompt_input_exit"
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "resume",
+  "seconds_since_last_response": 11,
+  "context_tokens": 15,
+  "prompt_cache_likely_expired": false,
+  "estimated_cache_write_usd": 0.0001
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "07916725-e0cd-4ccf-802e-c88ffe4bec55",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-two"
+ },
+ {
+  "session_id": "57a1bfa6-51a8-4162-845d-cd1437320797",
+  "transcript_path": "/w/.claude/projects/-w-proj/57a1bfa6-51a8-4162-845d-cd1437320797.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "07916725-e0cd-4ccf-802e-c88ffe4bec55",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-two.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+]

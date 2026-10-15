@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""privacy-scan: is there anything personal in a committed tree? (DESIGN.md 4.4)
+
+  privacy-scan [REV]                 personal information in the tree of REV (a commit or a tree; default HEAD)
+  privacy-scan [REV] --settings      the other list: settings of one instance written into the code
+  privacy-scan [REV] --all           both, reported apart
+
+What is scanned is what git has, never the working directory: file contents and file names; with --meta
+also the commit's message, author and committer.
+
+Two layers of rules for personal information:
+- general patterns, written here: Discord IDs, IPv4 addresses, e-mail addresses, home directories,
+  GitHub owners;
+- the instance's blacklist, made when it runs and written nowhere in the engine: machine names, SSH aliases
+  and accounts, the authors of the private repo, the addresses of private repos, and whatever the instance
+  lists in its privacy.json. Without an instance only the general patterns run, and the report says so.
+
+Made-up values pass: IDs 1000000000000000xx, machines host-a, the account alice, example.com, the
+documentation networks.
+
+The second list (--settings) is not personal but belongs to one instance: time zones, channels named in
+Chinese, the instance's own channel names, the names the repos had before.
+
+Exit status: 0 nothing personal; 1 something personal; 2 --require-blacklist and the instance gave no
+blacklist (its privacy.json must list terms: machine names alone are not enough) (one from the old ops/ files does not count; nothing may be published then); 3 wrong usage or git
+failed. The settings list never changes the status.
+
+Standard library only, Python 3.8.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+ENGINE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, ENGINE)
+from altention import config  # noqa: E402
+
+CLEAN, FOUND, NO_BLACKLIST, FAILED = 0, 1, 2, 3
+MAX_BYTES = 5 * 1024 * 1024
+NAME_LINE = 0  # the "line" of a hit in a file's name
+
+# ---------------------------------------------------------------------------------------- general patterns
+FAKE_ID = re.compile(r"1000000000000000\d\d$")
+DOC_NETS = ("192.0.2.", "198.51.100.", "203.0.113.", "127.")
+SAFE_IPS = {"0.0.0.0", "255.255.255.255"}
+SAFE_MAIL_LOCAL = {"git", "noreply", "no-reply", "alice", "bob", "you", "user", "name"}
+SAFE_MAIL_DOMAINS = ("example.com", "example.org", "example.net", "users.noreply.github.com", "noreply.github.com")
+SAFE_USERS = {"alice", "bob", "you", "me", "user", "username", "name", "runner", "shared"}
+SAFE_OWNERS = {"alice", "bob", "you", "owner", "user", "example", "anthropics"}
+PLACEHOLDER = re.compile(r"[<>{}$%*]")
+
+
+def _ipv4_ok(m):
+    text = m.group(0)
+    if any(int(p) > 255 for p in text.split(".")):
+        return True  # not an address (a version number, a date)
+    return text in SAFE_IPS or text.startswith(DOC_NETS)
+
+
+def _mail_ok(m):
+    local, domain = m.group(1).lower().lstrip("-._%+"), m.group(2).lower()  # "${X:-git@host:...}"
+    return (local in SAFE_MAIL_LOCAL or "noreply" in local or domain in SAFE_MAIL_DOMAINS
+            or domain.endswith((".example", ".test", ".invalid")))
+
+
+def _home_ok(m):
+    user = m.group(1)  # one or two letters (/home/u) is nobody's account
+    return len(user) < 3 or user.lower() in SAFE_USERS or bool(PLACEHOLDER.search(user))
+
+
+def general_rules(public_repos=(), allow_owners=()):
+    owners = SAFE_OWNERS | {o.lower() for o in allow_owners}
+    repos = {r.lower() for r in public_repos}
+
+    def owner_ok(m):
+        owner, repo = m.group(1).lower(), (m.group(2) or "").lower()
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return owner in owners or (owner + "/" + repo) in repos or bool(PLACEHOLDER.search(m.group(0)))
+
+    return [
+        ("discord-id", re.compile(r"(?<![0-9A-Za-z_.])\d{17,20}(?![0-9A-Za-z_]|\.\d)"),
+         lambda m: bool(FAKE_ID.match(m.group(0)))),
+        ("ipv4", re.compile(r"(?<![0-9.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9]|\.\d)"), _ipv4_ok),
+        ("email", re.compile(r"(?<![A-Za-z0-9._%+\-])([A-Za-z0-9._%+\-]+)@([A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+)"),
+         _mail_ok),
+        ("home-path", re.compile(r"/(?:home|Users)/([A-Za-z0-9._<>{}$%*\-]+)"), _home_ok),
+        ("github-owner", re.compile(r"github\.com[:/]([A-Za-z0-9<>{}$%*][A-Za-z0-9<>{}$%*\-]*)"
+                                    r"(?:/([A-Za-z0-9._\-]+))?"), owner_ok),
+    ]
+
+
+# ------------------------------------------------------------------------------------------ settings rules
+CJK = "㐀-鿿"
+SETTING_RULES = [
+    ("timezone", re.compile(r"\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)"
+                            r"/[A-Z][A-Za-z_]+(?:/[A-Z][A-Za-z_]+)?|\b(?:UTC|GMT)[+\-]\d{1,2}\b")),
+    ("cjk-channel", re.compile(r"#[%s]{1,12}|(?:\bdcpost|\bdcread|\bdcnotify(?:\s+-c)?|--category|--channel)"
+                               r"\s+[\"']?(?![<\-])[^\s\"'`]*[%s][^\s\"'`]*" % (CJK, CJK))),
+    # what the repos and folders were called before the project had its name (put together here so that
+    # this file is not on its own list)
+    ("legacy-name", re.compile(r"(?<![A-Za-z0-9])(?:%s)(?![A-Za-z0-9])"
+                               % "|".join(("agent" + "-(?:home|logs|pm)", "pm" + "-work", "super" + "skill")))),
+]
+
+# ----------------------------------------------------------------------------------------- the blacklist
+# Words too ordinary to be a secret even when a machine or an account is called that.
+ORDINARY = {"mac", "local", "localhost", "git", "github", "main", "master", "root", "user", "users", "admin",
+            "home", "work", "host", "server", "bot", "none", "true", "false", "claude", "linux", "macos"}
+MIN_TERM = 3
+
+
+def _git(repo, *args):
+    r = subprocess.run(["git", "-C", repo] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return r.returncode, r.stdout, r.stderr.decode("utf-8", "replace").strip()
+
+
+def _ssh_config_terms(path, add):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        parts = line.split("#", 1)[0].split()
+        if len(parts) < 2:
+            continue
+        key = parts[0].lower()
+        if key == "host":
+            for alias in parts[1:]:
+                if not re.search(r"[*?!]", alias):
+                    add("ssh-alias", alias)
+        elif key == "hostname":
+            add("machine", parts[1])
+        elif key == "user":
+            add("account", parts[1])
+    return True
+
+
+def _remote_terms(url, add, public):
+    m = re.search(r"[:/]([A-Za-z0-9][A-Za-z0-9\-]*)/([A-Za-z0-9._\-]+?)(?:\.git)?/?$", url or "")
+    if not m or (m.group(1) + "/" + m.group(2)).lower() in public:
+        return
+    add("private-repo", m.group(1) + "/" + m.group(2))
+    add("account", m.group(1))
+
+
+def build_blacklist(repo, rev, public_repos=(), channels_file=None):
+    """({rule: set of terms}, source, notes). source: "instance" or "none" (then there are no terms at all: a clone of the public repo has nothing private to compare with).
+    The dict's "usable" is False when the instance names no machine, account or term of its own."""
+    terms, notes, dropped = {}, [], set()
+    public = {r.lower() for r in public_repos}
+
+    def add(rule, term):
+        term = (term or "").strip()
+        if len(term) < MIN_TERM or term.lower() in ORDINARY:
+            if term:
+                dropped.add(term.lower())
+            return
+        terms.setdefault(rule, set()).add(term)
+
+    inst = config.instance_dir()
+    inventory, _ = config.load("machines.json")
+    for name, m in ((inventory or {}).get("machines") or {}).items():
+        if not isinstance(m, dict):
+            continue
+        add("machine", name)
+        for key in ("hostname",):
+            add("machine", m.get(key))
+        for alias in config.ssh_aliases(m):
+            add("ssh-alias", alias)
+        home = m.get("home") or ""
+        add("machine-home", home)
+        if home:
+            add("account", os.path.basename(home.rstrip("/")))
+        add("machine", (m.get("nas") or "").split(" ")[0])
+    if not inst:
+        return {}, "none", []
+    _ssh_config_terms(os.path.join(inst, "ssh_config"), add)
+    source = "instance"
+
+    own, own_source = config.load("privacy.json")
+    own = own if isinstance(own, dict) else {}  # the instance's own additions
+    for term in own.get("terms") or []:
+        add("instance-term", term)
+    channel_names = set(own.get("channels") or []) | set(own.get("categories") or [])
+    if channels_file:
+        with open(channels_file, encoding="utf-8") as f:
+            channel_names |= {line.strip().lstrip("#") for line in f if line.strip()}
+    # usable for publishing only when the instance's own privacy.json lists terms: machine names alone miss the
+    # personal words (school, lab, projects) that no general pattern can find (#code-review, 2026-10-06)
+    usable = bool(terms) and own_source == "instance" and any(t for t in own.get("terms") or [])
+    for d in (config.setting("sync.dirs") or {}).values():
+        if isinstance(d, dict):
+            _remote_terms(d.get("remote"), add, public)
+    for folder in [repo] + ([inst] if inst else []):
+        code, out, _ = _git(folder, "remote", "-v")
+        for line in out.decode("utf-8", "replace").splitlines() if code == 0 else []:
+            parts = line.split()
+            if len(parts) > 1:
+                _remote_terms(parts[1], add, public)
+    code, out, _ = _git(repo, "log", "--format=%an%n%ae%n%cn%n%ce", rev)
+    allowed_authors = {a.lower() for a in own.get("allow_authors") or []}
+    for line in set(out.decode("utf-8", "replace").splitlines()) if code == 0 else []:
+        if line.lower() in allowed_authors or "noreply" in line.lower():
+            continue
+        add("author", line)
+    if dropped:
+        notes.append("太普通而不列入黑名單的名稱：%d 個" % len(dropped))
+    return {"terms": terms, "channels": {c for c in channel_names if c}, "usable": usable}, source, notes
+
+
+def _term_regex(terms):
+    parts = []
+    for t in sorted(terms, key=len, reverse=True):
+        left = r"(?<![A-Za-z0-9])" if re.match(r"[A-Za-z0-9]", t[0]) else ""
+        right = r"(?![A-Za-z0-9])" if re.match(r"[A-Za-z0-9]", t[-1]) else ""
+        parts.append(left + re.escape(t) + right)
+    return re.compile("|".join(parts), re.IGNORECASE) if parts else None
+
+
+def blacklist_rules(black):
+    return [(rule, rx, None) for rule, rx in ((r, _term_regex(t)) for r, t in sorted(black.get("terms", {}).items()))
+            if rx]
+
+
+def channel_rule(names):
+    """The instance's channel and category names, where they are used as a channel: after #, /, a quote or
+    one of the posting commands (the bare word would catch ordinary prose)."""
+    names = [n for n in names if len(n) >= 2]
+    if not names:
+        return None
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return ("channel-name", re.compile(r"(?:[#/\"'`]|\bdcpost\s+|\bdcread\s+|\bdcnotify\s+-c\s+)(?:%s)(?![A-Za-z0-9_\-%s])"
+                                       % (alt, CJK)))
+
+
+# ------------------------------------------------------------------------------------------------ scanning
+def mask(text):
+    """The first half of what was found; the rest hidden."""
+    keep = (len(text) + 1) // 2
+    return text[:keep] + "*" * (len(text) - keep)
+
+
+def scan_text(text, rules, allowed_spans=None):
+    """[(rule, start, end)] in one line; a hit inside a longer hit or inside an allowed span is dropped."""
+    hits = []
+    for rule in rules:
+        name, rx, ok = rule if len(rule) == 3 else (rule[0], rule[1], None)
+        for m in rx.finditer(text):
+            if ok and ok(m):
+                continue
+            hits.append((name, m.start(), m.end()))
+    allowed = allowed_spans(text) if allowed_spans else []
+    kept = []
+    for h in hits:
+        if any(a <= h[1] and h[2] <= b for a, b in allowed):
+            continue
+        if any(o is not h and o[1] <= h[1] and h[2] <= o[2] and (o[2] - o[1]) > (h[2] - h[1]) for o in hits):
+            continue
+        if not any(k[1] == h[1] and k[2] == h[2] for k in kept):
+            kept.append(h)
+    return sorted(kept, key=lambda h: h[1])
+
+
+def public_spans(public_repos):
+    """Spans where the public repo's own address stands: its owner may be the account on the blacklist."""
+    if not public_repos:
+        return None
+    rx = re.compile("|".join(r"github\.com[:/]%s(?![A-Za-z0-9_\-])" % re.escape(r) for r in public_repos), re.IGNORECASE)
+    return lambda text: [(m.start(), m.end()) for m in rx.finditer(text)]
+
+
+def tree_files(repo, rev):
+    """([(path, sha, kind)], tree id). kind: "blob", "link" or "submodule"."""
+    code, out, err = _git(repo, "rev-parse", "--verify", "--quiet", rev + "^{tree}")
+    if code != 0:
+        raise RuntimeError("不是 commit 也不是 tree：%s %s" % (rev, err))
+    tree = out.decode().strip()
+    code, out, err = _git(repo, "ls-tree", "-r", "-z", tree)
+    if code != 0:
+        raise RuntimeError("git ls-tree 失敗：" + err)
+    files = []
+    for entry in out.split(b"\0"):
+        if not entry:
+            continue
+        meta, path = entry.split(b"\t", 1)
+        mode, typ, sha = meta.decode().split()
+        kind = "submodule" if typ == "commit" else "link" if mode == "120000" else "blob"
+        files.append((path.decode("utf-8", "surrogateescape"), sha, kind))
+    return files, tree
+
+
+def read_blobs(repo, shas):
+    """{sha: bytes} through one `git cat-file --batch`."""
+    if not shas:
+        return {}
+    r = subprocess.run(["git", "-C", repo, "cat-file", "--batch"], input="\n".join(shas).encode() + b"\n",
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0:
+        raise RuntimeError("git cat-file 失敗：" + r.stderr.decode("utf-8", "replace").strip())
+    out, pos, blobs = r.stdout, 0, {}
+    while pos < len(out):
+        end = out.index(b"\n", pos)
+        head = out[pos:end].decode().split()
+        pos = end + 1
+        if len(head) < 3:  # "<sha> missing"
+            continue
+        size = int(head[2])
+        blobs[head[0]] = out[pos:pos + size]
+        pos += size + 1
+    return blobs
+
+
+def commit_meta(repo, rev):
+    code, out, _ = _git(repo, "cat-file", "-t", rev)
+    if code != 0 or out.decode().strip() != "commit":
+        return None
+    code, out, _ = _git(repo, "log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", rev)
+    return out.decode("utf-8", "replace") if code == 0 else None
+
+
+def selected(path, only, exclude):
+    def under(p):
+        p = p.rstrip("/")
+        return path == p or path.startswith(p + "/")
+    return (not only or any(under(p) for p in only)) and not any(under(p) for p in exclude)
+
+
+def scan(repo, rev, rule_sets, allowed_spans=None, only=(), exclude=(), meta=False):
+    """rule_sets: {kind: rules}. Returns (findings, info). A finding: kind, rule, path, line, col, snippet."""
+    files, tree = tree_files(repo, rev)
+    files = [f for f in files if selected(f[0], only, exclude)]
+    blobs = read_blobs(repo, sorted({sha for _, sha, kind in files if kind != "submodule"}))
+    findings, skipped = [], []
+
+    def check(path, line_no, text):
+        for kind, rules in rule_sets.items():
+            for rule, start, end in scan_text(text, rules, allowed_spans):
+                findings.append({"kind": kind, "rule": rule, "path": path, "line": line_no, "col": start + 1,
+                                 "snippet": mask(text[start:end])})
+
+    for path, sha, kind in files:
+        shown = path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+        check(shown, NAME_LINE, shown)
+        if kind == "submodule":
+            skipped.append({"path": shown, "why": "submodule"})
+            continue
+        data = blobs.get(sha, b"")
+        if len(data) > MAX_BYTES:
+            skipped.append({"path": shown, "why": "too large"})
+            continue
+        if b"\0" in data[:8000]:
+            skipped.append({"path": shown, "why": "binary"})
+            continue
+        for n, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+            check(shown, n, line)
+    if meta:
+        text = commit_meta(repo, rev)
+        if text is None:
+            skipped.append({"path": "<commit>", "why": "not a commit"})
+        else:
+            for n, line in enumerate(text.splitlines(), 1):
+                check("<commit>", n, line)
+    return findings, {"tree": tree, "files": len(files), "skipped": skipped}
+
+
+# ----------------------------------------------------------------------------------------------- reporting
+KIND_TITLE = {"personal": "個人資訊", "settings": "寫死的實例設定"}
+
+
+def summarize(findings, top):
+    out = {}
+    for kind in KIND_TITLE:
+        mine = [f for f in findings if f["kind"] == kind]
+        by_rule, by_file = {}, {}
+        for f in mine:
+            by_rule[f["rule"]] = by_rule.get(f["rule"], 0) + 1
+            by_file[f["path"]] = by_file.get(f["path"], 0) + 1
+        out[kind] = {"total": len(mine), "files": len(by_file),
+                     "rules": dict(sorted(by_rule.items(), key=lambda kv: (-kv[1], kv[0]))),
+                     "top_files": sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))[:top]}
+    return out
+
+
+def print_report(findings, summary, kinds, info, black_source, notes, summary_only):
+    if black_source == "none":
+        print("沒有黑名單：這台找不到實例，只跑了通用樣式。機器名、帳號、私人 repo 這類東西沒有檢查。")
+    else:
+        print("黑名單來源：%s" % ("實例" if black_source == "instance" else "引擎裡的舊位置（ops/）"))
+    for note in notes:
+        print(note)
+    print("掃了 %d 個檔案（tree %s）" % (info["files"], info["tree"][:10]))
+    if info["skipped"]:
+        print("只看檔名、沒看內容：%d 個（二進位、太大或 submodule）" % len(info["skipped"]))
+    for kind in kinds:
+        s = summary[kind]
+        print("\n== %s：%d 筆，%d 個檔案" % (KIND_TITLE[kind], s["total"], s["files"]))
+        if not s["total"]:
+            continue
+        if not summary_only:
+            for f in findings:
+                if f["kind"] == kind:
+                    where = "%s:%s" % (f["path"], "(檔名)" if f["line"] == NAME_LINE else f["line"])
+                    print("%s  %s  %s" % (where, f["rule"], f["snippet"]))
+            print()
+        print("各規則：" + "、".join("%s %d" % kv for kv in s["rules"].items()))
+        print("最多的檔案：")
+        for path, n in s["top_files"]:
+            print("  %4d  %s" % (n, path))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="privacy-scan", description="個資掃描：掃一個 commit 或 tree 裡已提交的內容和檔名。",
+                                 epilog="結束碼：0 沒有個資；1 有個資；2 加了 --require-blacklist 但沒有來自實例的黑名單；3 用法或 git 錯誤。")
+    ap.add_argument("rev", nargs="?", default="HEAD", help="commit 或 tree（預設 HEAD）")
+    ap.add_argument("--repo", default=ENGINE, help="哪個 repo（預設這支程式所在的引擎）")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--settings", action="store_true", help="只列「寫死的實例設定」（時區、頻道名、舊名稱）")
+    mode.add_argument("--all", action="store_true", help="個資和寫死的設定都列，分開報")
+    ap.add_argument("--json", action="store_true", help="輸出 JSON")
+    ap.add_argument("--summary", action="store_true", help="只印統計，不逐項列")
+    ap.add_argument("--top", type=int, default=10, help="統計裡列幾個最多的檔案")
+    ap.add_argument("--meta", action="store_true", help="也掃這個 commit 的訊息、作者和提交者")
+    ap.add_argument("--require-blacklist", action="store_true", help="沒有來自實例的黑名單就以結束碼 2 結束（發佈時用；舊位置的不算）")
+    ap.add_argument("--public-repo", action="append", default=[], metavar="OWNER/NAME", help="公開 repo 自己，放行它的網址")
+    ap.add_argument("--allow-owner", action="append", default=[], metavar="OWNER", help="放行這個 GitHub owner")
+    ap.add_argument("--channels-file", metavar="FILE", help="頻道和分類名稱，一行一個（實例的 privacy.json 沒列時用）")
+    ap.add_argument("--path", action="append", default=[], metavar="DIR", help="只掃這個路徑底下")
+    ap.add_argument("--exclude", action="append", default=[], metavar="DIR", help="不掃這個路徑底下")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return CLEAN if e.code == 0 else FAILED
+
+    own = config.load("privacy.json")[0] or {}
+    public = args.public_repo + list(own.get("public_repos") or [])
+    owners = args.allow_owner + list(own.get("allow_owners") or [])
+    try:
+        black, source, notes = build_blacklist(args.repo, args.rev if commit_meta(args.repo, args.rev) else "HEAD",
+                                               public, args.channels_file)
+    except OSError as e:
+        sys.stderr.write("privacy-scan: %s\n" % e)
+        return FAILED
+    has_blacklist = bool(black.get("usable"))
+    publishable = has_blacklist and source == "instance"  # the old ops/ files do not count for a release
+    kinds = ["settings"] if args.settings else ["personal", "settings"] if args.all else ["personal"]
+    rule_sets = {}
+    if "personal" in kinds:
+        rule_sets["personal"] = general_rules(public, owners) + blacklist_rules(black or {})
+    if "settings" in kinds:
+        named = channel_rule((black or {}).get("channels", ()))
+        rule_sets["settings"] = SETTING_RULES + ([named] if named else [])
+    try:
+        findings, info = scan(args.repo, args.rev, rule_sets, public_spans(public), args.path, args.exclude, args.meta)
+    except RuntimeError as e:
+        sys.stderr.write("privacy-scan: %s\n" % e)
+        return FAILED
+    summary = summarize(findings, args.top)
+    personal = summary["personal"]["total"]
+    code = NO_BLACKLIST if args.require_blacklist and not publishable else FOUND if personal else CLEAN
+    if args.json:
+        print(json.dumps({
+            "rev": args.rev, "tree": info["tree"], "files": info["files"], "skipped": info["skipped"],
+            "blacklist": {"source": source, "usable": has_blacklist, "notes": notes,
+                          "terms": {r: len(t) for r, t in sorted((black or {}).get("terms", {}).items())},
+                          "channels": len((black or {}).get("channels", ()))},
+            "findings": [] if args.summary else findings,
+            "summary": {k: summary[k] for k in kinds}, "exit": code}, ensure_ascii=False, indent=2))
+    else:
+        print_report(findings, summary, kinds, info, source, notes, args.summary)
+        if code == NO_BLACKLIST:
+            print("\n沒有來自實例的黑名單，這個結果不能當成「沒有個資」。實例的 privacy.json 要列出 terms"
+                  "（學校、實驗室、專案名稱這類通用樣式找不到的詞）才算。")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

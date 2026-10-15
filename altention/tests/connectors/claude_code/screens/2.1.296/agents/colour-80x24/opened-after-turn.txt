@@ -1,0 +1,24 @@
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   @claude · ~/proj
+
+
+❯ Q-D-one: one more task typed in the list (conversation D)
+
+● ANS-D-one: the fourth conversation (D) answered.
+
+✻ Churned for 1s · done 12:49 AM
+
+※ recap: ANS-D-one: the fourth conversation (D) answered. (disable recaps in
+  /config)
+
+❯ Q-opened-two: typed in the conversation opened from the list
+
+● ANS-opened-two: answered in the conversation opened from the list.
+
+✻ Brewed for 1s · done 12:49 AM
+
+─────────────────────────────────────────────────────────────────────── claude ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

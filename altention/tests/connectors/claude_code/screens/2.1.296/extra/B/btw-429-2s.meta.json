@@ -1,0 +1,10 @@
+{
+ "claude_code": "2.1.296 (Claude Code)",
+ "colour": true,
+ "pane": [
+  120,
+  50
+ ],
+ "how": "the /btw request answered with HTTP 429: Claude Code retries; 2 s after sending",
+ "api": "a stand-in on 127.0.0.1 answering only the /btw request with that status; scratch HOME"
+}

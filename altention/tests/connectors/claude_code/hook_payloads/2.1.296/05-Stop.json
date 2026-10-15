@@ -1,0 +1,15 @@
+{
+ "session_id": "068f9b05-f64c-4fd5-a999-c7c8d5a30bb8",
+ "transcript_path": "/w/.claude/projects/-w-proj/068f9b05-f64c-4fd5-a999-c7c8d5a30bb8.jsonl",
+ "cwd": "/w/proj",
+ "prompt_id": "2f81d648-d8af-4df3-83c6-6234d36f1aee",
+ "permission_mode": "bypassPermissions",
+ "effort": {
+  "level": "medium"
+ },
+ "hook_event_name": "Stop",
+ "stop_hook_active": false,
+ "last_assistant_message": "done.",
+ "background_tasks": [],
+ "session_crons": []
+}

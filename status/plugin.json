@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "name": "status",
+  "title": "系統狀態",
+  "description": "把各對話頻道、各機器和機器人的狀態、需要注意的事和在等使用者回答的事，更新到 Discord 的看板。只讀機器人的狀態檔和 doctor 留下的檢查結果。",
+  "pitch": "在 #dashboard 放一個看板，顯示各頻道在做什麼、哪裡出錯、哪些在等你回答。不花額度。",
+  "keep": "看板顯示各頻道在做什麼、哪裡出錯",
+  "lose": "看不到各頻道在做什麼、哪裡出錯",
+  "order": 60,
+  "machines": "one",
+  "channels": [
+    {
+      "name": "dashboard",
+      "kind": "board",
+      "setting": "status.channel"
+    }
+  ],
+  "schedules": [
+    {
+      "name": "boards",
+      "when": {
+        "every": "2m"
+      },
+      "do": {
+        "run": "{python} \"{plugin}/boards.py\"",
+        "output": "none",
+        "timeout": "90s",
+        "log": "~/.cache/status.out"
+      }
+    }
+  ]
+}

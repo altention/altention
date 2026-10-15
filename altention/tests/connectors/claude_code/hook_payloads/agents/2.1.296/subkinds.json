@@ -1,0 +1,366 @@
+[
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "36edce08-6633-4bf6-9c77-9352666f8062",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "36edce08-6633-4bf6-9c77-9352666f8062",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-fork"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "fork sub",
+   "prompt": "do a thing as a fork",
+   "subagent_type": "fork"
+  },
+  "tool_use_id": "toolu_rig1791851980348"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "fork sub",
+   "prompt": "do a thing as a fork",
+   "subagent_type": "fork"
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "ad9f9919401b02b50",
+   "description": "fork sub",
+   "resolvedModel": "claude-opus-5-5",
+   "prompt": "do a thing as a fork",
+   "outputFile": "/w/elsewhere",
+   "canReadOutputFile": true,
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_rig1791851980348",
+  "duration_ms": 18
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "agent_id": "ad9f9919401b02b50",
+  "agent_type": "fork",
+  "hook_event_name": "SubagentStart"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "ad9f9919401b02b50",
+  "agent_type": "fork",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5/subagents/agent-ad9f9919401b02b50.jsonl",
+  "last_assistant_message": "ANS-fork.",
+  "background_tasks": [
+   {
+    "id": "ad9f9919401b02b50",
+    "type": "subagent",
+    "status": "running",
+    "description": "fork sub",
+    "agent_type": "fork"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "25ab724f-33a0-4778-8017-5d06117288b9",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-fork.",
+  "background_tasks": [
+   {
+    "id": "ad9f9919401b02b50",
+    "type": "subagent",
+    "status": "running",
+    "description": "fork sub",
+    "agent_type": "fork"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "167486d5-cf50-445c-a220-adf9c7f1b148",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>ad9f9919401b02b50</task-id>\n<tool-use-id>toolu_rig1791851980348</tool-use-id>\n<output-file>/w/elsewhere</output-file>\n<status>completed</status>\n<summary>Agent \"fork sub\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>ANS-fork.</result>\n<usage><subagent_tokens>17</subagent_tokens><tool_uses>0</tool_uses><duration_ms>1298</duration_ms></usage>\n</task-notification>"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "167486d5-cf50-445c-a220-adf9c7f1b148",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-fork.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-bg"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "bg sub",
+   "prompt": "SUBTASK-MARKER: slow thing.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_use_id": "toolu_rig1791851992790"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "bg sub",
+   "prompt": "SUBTASK-MARKER: slow thing.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "afa504606f3828208",
+   "description": "bg sub",
+   "resolvedModel": "claude-opus-5-5",
+   "prompt": "SUBTASK-MARKER: slow thing.",
+   "outputFile": "/w/elsewhere",
+   "canReadOutputFile": true,
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_rig1791851992790",
+  "duration_ms": 10
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "agent_id": "afa504606f3828208",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-bg.",
+  "background_tasks": [
+   {
+    "id": "afa504606f3828208",
+    "type": "subagent",
+    "status": "running",
+    "description": "bg sub",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "afa504606f3828208",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "echo in-sub; sleep 2",
+   "description": "rig"
+  },
+  "tool_use_id": "toolu_rig1791851994950"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "afa504606f3828208",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "echo in-sub; sleep 2",
+   "description": "rig"
+  },
+  "tool_response": {
+   "stdout": "in-sub",
+   "stderr": "",
+   "interrupted": false,
+   "isImage": false,
+   "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_rig1791851994950",
+  "duration_ms": 2055
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "57c938e5-932f-4aa8-878e-67af4b0ffd64",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "afa504606f3828208",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5/subagents/agent-afa504606f3828208.jsonl",
+  "last_assistant_message": "BG-SUB-DONE.",
+  "background_tasks": [
+   {
+    "id": "afa504606f3828208",
+    "type": "subagent",
+    "status": "running",
+    "description": "bg sub",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f5771765-80d9-4ff8-ab50-108f346f633e",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>afa504606f3828208</task-id>\n<tool-use-id>toolu_rig1791851992790</tool-use-id>\n<output-file>/w/elsewhere</output-file>\n<status>completed</status>\n<summary>Agent \"bg sub\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>BG-SUB-DONE.</result>\n<usage><subagent_tokens>23</subagent_tokens><tool_uses>1</tool_uses><duration_ms>6338</duration_ms></usage>\n</task-notification>"
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f5771765-80d9-4ff8-ab50-108f346f633e",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-bg.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "1d8333e3-acb2-4f22-a9d3-b5f9a0916af5",
+  "transcript_path": "/w/.claude/projects/-w-proj/1d8333e3-acb2-4f22-a9d3-b5f9a0916af5.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "1196fa72-cba6-4ebe-90d1-c3173f7d6c41",
+  "hook_event_name": "SessionEnd",
+  "reason": "prompt_input_exit"
+ }
+]

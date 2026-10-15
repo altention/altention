@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""home-pull: bring this engine up to date, under the lock every automated git job here shares.
+
+  home-pull           update (waits up to 2 minutes for the lock); exit 0 when up to date afterwards
+  home-pull --quiet   say nothing unless it fails
+  home-pull --take-refused   also when the upstream is the hash altention/update.py refused (only for a person's own
+                      command: ops/apply.py passes it)
+What is taken follows the instance's core.update (altention/update.py): "branch" the upstream branch, as always;
+"release" the newest vX.Y.Z tag; "notify" (the default) nothing, unless --take-refused (a person's command, as
+ops/apply.py's): then the newest release.
+An upstream update.py refused is not pulled (exit 1, said why): the bot's stream line, the usage collector and every
+channel's Claude call this without the flag, and the rule is that a refused commit reaches no machine by itself
+(code-review, manager 2026-10-07). No syntax or load check of its own: that stays update.py's.
+
+The work is altention/sync.py's (the lock, no autostash, a killed rebase undone first, git keeping the lock with a
+timeout); see there. Several Claude sessions, the core's sync and update cron jobs, deploy.sh, the bot's remote streams and the usage
+collector all update this folder, which is why nobody runs a bare `git pull` here. Standard library, Python 3.8.
+"""
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from altention import sync  # noqa: E402
+
+
+def unreadable(text):
+    """The refused record could not be read (taken as no record, as everywhere): into the alerts file too, since the
+    stream line and the usage collector throw this command's output away (code-review 2026-10-07)."""
+    sync._alert_plain("home-pull", "alive-unreadable", text)
+    print("home-pull：" + text, file=sys.stderr)
+
+
+def main(argv):
+    quiet, take = "--quiet" in argv, "--take-refused" in argv
+    repo = sync.Repo(REPO)
+    if repo.git_dir() is None:
+        sys.exit("home-pull：%s 不是 git repo" % REPO)
+    try:
+        with sync.locked(repo):
+            why = sync.recover(repo, lambda text: print("home-pull：" + text, file=sys.stderr))
+            mode, problem = sync.update_mode()
+            if problem and not quiet:
+                print("home-pull：讀不到引擎更新的模式（%s），照上次的 %s" % (problem, mode), file=sys.stderr)
+            if why:
+                code, note = 1, why
+            elif mode == "notify" and not take:  # nothing taken by itself (manager 2026-10-14); a person's command may
+                code, note = 0, ("core.update 是 notify：不自動更新引擎（有新的發佈版本時 doctor 會說；"
+                                 "要現在更新到最新的發佈版本：home-pull --take-refused）")
+            else:
+                up, code, note = "@{u}", None, None
+                if mode != "branch":  # release, or notify by a person's command: the newest release, never the branch
+                    if repo.git("fetch", "-q", "--tags", timeout=120).returncode != 0:
+                        code, note = 1, "fetch 失敗，沒有更新"
+                    else:
+                        rel = sync.latest_release(repo)
+                        if rel:
+                            up = rel[1]
+                        else:
+                            code, note = 0, "還沒有任何發佈版本（tag vX.Y.Z），不用更新"
+                if code is None:
+                    refused = "" if take else sync.held_back(repo, "沒有更新；要強制用 --take-refused", unreadable, up=up)
+                    code, note = (1, refused) if refused else sync.update(repo, to=None if up == "@{u}" else up)
+            try:  # the update may have taken the engine's copies of the instance's folders away: links now, not next sync
+                inst = sync.config.instance_dir()
+                if inst:
+                    sync.adopt_all(inst, lambda text: None)
+                    sync.push(repo)  # a hand-over commit adopt may have made
+            except Exception as e:
+                print("home-pull：改連結時出錯：%s" % e, file=sys.stderr)
+    except sync.Busy as e:
+        sys.exit("home-pull：%s（別的同步或部署還在跑），這次先不更新" % e)
+    if code != 0:
+        sys.exit("home-pull：" + note)
+    if not quiet:
+        print("home-pull：" + (note or "已更新到 %s" % repo.git("rev-parse", "--short", "HEAD", timeout=20).stdout.strip()))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

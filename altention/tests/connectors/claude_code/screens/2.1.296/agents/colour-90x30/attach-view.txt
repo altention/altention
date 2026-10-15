@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   @claude · ~/proj
+
+
+❯ Q-B-one: a task typed in the list (conversation B)
+
+● ANS-B-one: the second conversation (B) answered.
+
+✻ Churned for 1s · done 12:30 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────── ok ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

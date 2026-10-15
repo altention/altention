@@ -1,0 +1,259 @@
+[
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "15c628d7-89ca-461c-9752-40f39928c3f6",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "15c628d7-89ca-461c-9752-40f39928c3f6",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-subperm"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "perm sub",
+   "prompt": "SUBTASK-MARKER: touch a file.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_use_id": "toolu_rig1791851980328"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "agent_id": "a308ae6af5a92411e",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "perm sub",
+   "prompt": "SUBTASK-MARKER: touch a file.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "a308ae6af5a92411e",
+   "description": "perm sub",
+   "resolvedModel": "claude-opus-5-5",
+   "prompt": "SUBTASK-MARKER: touch a file.",
+   "outputFile": "/w/elsewhere",
+   "canReadOutputFile": true
+  },
+  "tool_use_id": "toolu_rig1791851980328",
+  "duration_ms": 24
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "agent_id": "a308ae6af5a92411e",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch subfile",
+   "description": "rig"
+  },
+  "tool_use_id": "toolu_rig1791851981540"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "agent_id": "a308ae6af5a92411e",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch subfile",
+   "description": "rig"
+  },
+  "permission_suggestions": [
+   {
+    "type": "addDirectories",
+    "directories": [
+     "/w/proj"
+    ],
+    "destination": "session"
+   },
+   {
+    "type": "setMode",
+    "mode": "acceptEdits",
+    "destination": "session"
+   }
+  ]
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [
+   {
+    "id": "a308ae6af5a92411e",
+    "type": "subagent",
+    "status": "running",
+    "description": "perm sub",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission",
+  "notification_type": "permission_prompt"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "agent_id": "a308ae6af5a92411e",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch subfile",
+   "description": "rig"
+  },
+  "tool_response": {
+   "stdout": "",
+   "stderr": "",
+   "interrupted": false,
+   "isImage": false,
+   "noOutputExpected": true
+  },
+  "tool_use_id": "toolu_rig1791851981540",
+  "duration_ms": 94
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "f418499b-6f65-4159-99c1-222accf3df6a",
+  "permission_mode": "default",
+  "agent_id": "a308ae6af5a92411e",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b/subagents/agent-a308ae6af5a92411e.jsonl",
+  "last_assistant_message": "SUB-DONE.",
+  "background_tasks": [
+   {
+    "id": "a308ae6af5a92411e",
+    "type": "subagent",
+    "status": "running",
+    "description": "perm sub",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c976dc47-1ab8-46af-af08-5b47d512905e",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>a308ae6af5a92411e</task-id>\n<tool-use-id>toolu_rig1791851980328</tool-use-id>\n<output-file>/w/elsewhere</output-file>\n<status>completed</status>\n<summary>Agent \"perm sub\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>SUB-DONE.</result>\n<usage><subagent_tokens>22</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9126</duration_ms></usage>\n</task-notification>"
+ },
+ {
+  "session_id": "7b00a024-29bb-4500-8741-031cecf2c25b",
+  "transcript_path": "/w/.claude/projects/-w-proj/7b00a024-29bb-4500-8741-031cecf2c25b.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c976dc47-1ab8-46af-af08-5b47d512905e",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-main.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+]

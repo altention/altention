@@ -1,0 +1,74 @@
+[
+ {
+  "session_id": "534a3ae9-8162-4897-b38b-ddc26a06a091",
+  "transcript_path": "/w/.claude/projects/-w-proj/534a3ae9-8162-4897-b38b-ddc26a06a091.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "534a3ae9-8162-4897-b38b-ddc26a06a091",
+  "transcript_path": "/w/.claude/projects/-w-proj/534a3ae9-8162-4897-b38b-ddc26a06a091.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c9a4a075-710d-49f5-9f7e-c14b75abbecb",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-one"
+ },
+ {
+  "session_id": "534a3ae9-8162-4897-b38b-ddc26a06a091",
+  "transcript_path": "/w/.claude/projects/-w-proj/534a3ae9-8162-4897-b38b-ddc26a06a091.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c9a4a075-710d-49f5-9f7e-c14b75abbecb",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-one.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "534a3ae9-8162-4897-b38b-ddc26a06a091",
+  "transcript_path": "/w/.claude/projects/-w-proj/534a3ae9-8162-4897-b38b-ddc26a06a091.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "c9a4a075-710d-49f5-9f7e-c14b75abbecb",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ {
+  "session_id": "692dc843-f163-496f-8e95-42c0a3374598",
+  "transcript_path": "/w/.claude/projects/-w-proj/692dc843-f163-496f-8e95-42c0a3374598.jsonl",
+  "cwd": "/w/proj",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+ },
+ {
+  "session_id": "692dc843-f163-496f-8e95-42c0a3374598",
+  "transcript_path": "/w/.claude/projects/-w-proj/692dc843-f163-496f-8e95-42c0a3374598.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0802b383-954f-43cb-bd7c-55fa1ed7329f",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Q-two"
+ },
+ {
+  "session_id": "692dc843-f163-496f-8e95-42c0a3374598",
+  "transcript_path": "/w/.claude/projects/-w-proj/692dc843-f163-496f-8e95-42c0a3374598.jsonl",
+  "cwd": "/w/proj",
+  "prompt_id": "0802b383-954f-43cb-bd7c-55fa1ed7329f",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "ANS-two.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+]

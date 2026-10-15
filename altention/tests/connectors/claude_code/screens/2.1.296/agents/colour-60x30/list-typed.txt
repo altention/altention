@@ -1,0 +1,30 @@
+
+Claude Code v2.1.296
+Opus 5.5 · ~/proj
+1 awaiting input · 0 working · 0 completed
+
+Your conversation moved to the background — enter opens it ·
+esc returns to it · ctrl+c twice quits
+
+Needs input
+✻ Q-A-one: this is…  ANS-A-one: the first conversation…   4s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────
+❯ half a task typed, not sent
+────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions · enter to create · esc to clear · …

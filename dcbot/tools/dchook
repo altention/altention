@@ -1,0 +1,520 @@
+#!/usr/bin/env python3
+"""dchook: Claude Code hook for sessions the bot runs in tmux (standard library only).
+
+Claude Code calls this on session events with a JSON payload on stdin. It drops the payload as one file
+into $DCBOT_ROOT/state/events/, where the bot picks it up and posts to Discord channel $DCBOT_CHANNEL.
+It must stay silent and always exit 0: hook output can end up in Claude's context, and a failing hook
+would get in the way of the session.
+
+Two ways a session is tied to a channel:
+- the bot started it: the bot sets DCBOT_ROOT and DCBOT_CHANNEL, and passes this hook through --settings;
+- the owner started it in their own tmux and attached it from Discord: `dchook --global`, installed for every
+  Claude Code on the machine (`dchook --install`), finds its own tmux pane in state/routes.json. A pane that
+  is not listed there costs one small file read and stays silent.
+
+`dchook --plan` does the same for plan mode's "ready to code?" dialog (see plan() below).
+
+`dchook --ask` is the one exception to "silent". It is registered for the AskUserQuestion tool only: it
+hands the questions to the bot (which shows them in Discord as buttons), waits for the answers file the
+bot writes into state/answers/, and prints them as the tool's input, so the tool returns the owner's
+choices without ever opening its on-screen menu, which nobody on Discord could operate.
+"""
+import io
+import json
+import os
+import re
+import sys
+import time
+
+MAX_TEXT = 20000
+
+# What this hook adds to the event Claude Code handed it. Claude Code's own fields are never written over: a field
+# added from now on starts with OURS_PREFIX (2026-10-11: the pane was first written into "source", which is
+# SessionStart's own field, and a /resume inside a window no longer had its history posted). The names of before
+# that rule are listed; tests/test_hook_fields.py holds both against what Claude Code really sends.
+OURS_PREFIX = "dc_"
+OURS_BEFORE = ("channel", "ts", "hint", "send_to", "send_text", "started")
+TAKEN_OUT = ("tool_input", "tool_response")  # too large to pass on: what is needed of them is in hint, send_*, started
+
+
+def clip(text):
+    """Text cut to MAX_TEXT characters, saying so: a reply cut short without a word reads as if it were whole."""
+    text = str(text or "")
+    return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + "\n…（已截斷：原文 %d 字，只轉了前 %d 字；完整內容在對話紀錄裡）" % (len(text), MAX_TEXT)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def ancestors(of=None):
+    """[(pid, command name)] from this hook's parent (or from the process `of`) up to init."""
+    pid, out = of or os.getppid(), []
+    for _ in range(40):
+        found = parent(pid)
+        if found is None:
+            break
+        comm, ppid = found
+        out.append((pid, comm))
+        pid = ppid
+        if pid <= 1:
+            break
+    return out
+
+
+def parent(pid):
+    """(command name, parent pid) of a process: from /proc on Linux, from ps elsewhere (macOS)."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            stat = f.read()
+        return stat[stat.index("(") + 1:stat.rindex(")")], int(stat[stat.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError):
+        pass
+    if os.path.exists("/proc/self"):
+        return None  # Linux, and the process is gone
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout.strip()
+        ppid, _, comm = out.partition(" ")
+        return os.path.basename(comm.strip()), int(ppid)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def nested(chain=None):
+    """Is this a Claude Code started by another Claude Code (a script calling `claude -p` from the session's
+    shell)? It inherits the pane, but what it says is not the session talking."""
+    return sum(1 for _, comm in (chain if chain is not None else ancestors()) if comm == "claude") > 1
+
+
+def route_of(table, socket, pane):
+    """The route table's entry for a pane of the tmux server at `socket`. The table's keys hold the socket's path
+    as the bot wrote it; $TMUX holds it as tmux itself names it. The two are the same file under two names where
+    a folder on the way is a link: on macOS /tmp is /private/tmp, the bot writes /tmp/tmux-501/default and tmux
+    says /private/tmp/tmux-501/default (#issues 25: such a pane found no channel and its events were not sent,
+    unless its session was known by its id). So: the same string, or else the same file (os.path.realpath on both;
+    it follows links and raises nothing for a path that is not there: that one stays as written)."""
+    key = route_key(table, socket, pane)
+    return None if key is None else table[key]
+
+
+def route_key(table, socket, pane):
+    """The key of the route table's entry for that pane (route_of() says how it is looked for), or None."""
+    if not isinstance(table, dict):
+        return None
+    if "%s|%s" % (socket, pane) in table:
+        return "%s|%s" % (socket, pane)
+    try:
+        real = os.path.realpath(socket)
+        for key in table:
+            there, bar, its_pane = str(key).rpartition("|")
+            if bar and its_pane == pane and os.path.realpath(there) == real:
+                return key
+    except (OSError, ValueError):  # a path no file system takes (a null byte): no route, never a failed hook
+        pass
+    return None
+
+
+def routed(root, where=None):
+    """The channel this session's tmux pane is attached to, if any. `where`, a dict: filled with the pane as the
+    table names it ({"socket", "pane"}: the socket as the bot wrote it into the key, which is not always how
+    tmux names it in $TMUX: a folder on the way may be a link). The bot compares it with what it remembers of the
+    channel's window, and cannot follow another machine's links (#code-review on d64eaee: said as $TMUX has it,
+    every event of a window on such a machine was taken for another window's)."""
+    pane, tmux = os.environ.get("TMUX_PANE"), os.environ.get("TMUX")
+    if not pane or not tmux:
+        return None
+    try:
+        with open(os.path.join(root, "state", "routes.json")) as f:
+            table = json.load(f)
+        key = route_key(table, tmux.split(",")[0], pane)
+        entry = None if key is None else table[key]
+    except (OSError, ValueError):
+        return None
+    channel, pid = (entry, "") if isinstance(entry, str) else ((entry or {}).get("channel"), (entry or {}).get("pid"))
+    if not channel:
+        return None
+    chain = ancestors()
+    if pid and not any(str(p) == str(pid) for p, _ in chain):
+        return None  # same pane number, but not the pane that was attached (its tmux server restarted)
+    if nested(chain):
+        return None
+    if isinstance(where, dict):
+        where.update({"socket": str(key).rpartition("|")[0], "pane": pane})
+    return channel
+
+
+def routed_session(root, session_id):
+    """The channel attached to a pane that shows this session through `claude attach` (a background session: it
+    runs under Claude Code's daemon, so neither $TMUX_PANE nor the pane's process is around it)."""
+    if not session_id:
+        return None
+    try:
+        with open(os.path.join(root, "state", "routes.json")) as f:
+            table = json.load(f)
+    except (OSError, ValueError):
+        return None
+    for entry in table.values():
+        if isinstance(entry, dict) and entry.get("session") and str(session_id).startswith(entry["session"]):
+            return entry.get("channel")
+    return None
+
+
+def parked_records(session_id):
+    sys.path.insert(0, os.path.dirname(ROOT))  # the engine: the connector lies beside dcbot/
+    from altention.connectors.claude_code import sessions as cc_sessions
+    return cc_sessions.parked(session_id)
+
+
+def environ_of(pid):
+    """A process's environment, as far as it can be read: /proc on Linux, ps elsewhere (macOS; values with blanks
+    in them are cut there, the two this is read for have none)."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as f:
+            pairs = f.read().decode("utf-8", "replace").split("\0")
+    except (OSError, ValueError, TypeError):
+        if os.path.exists("/proc/self"):
+            return {}
+        try:
+            import subprocess
+            pairs = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(int(pid))], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout.split()
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            return {}
+    return dict(p.split("=", 1) for p in pairs if "=" in p)
+
+
+def parked_pane(session_id):
+    """Where the conversation of this id was moved out of, as came_from() says a pane: the tmux server and pane of
+    the process that has it written down as moved (the connector's sessions.parked()), read from that process's own
+    environment. None when no process that is still there says so: a background process of Claude Code's that
+    never was a pane's conversation (the spare one it keeps, a conversation typed into its agents list)."""
+    for rec in parked_records(session_id):
+        env = environ_of(rec.get("pid"))
+        tmux, pane = env.get("TMUX"), env.get("TMUX_PANE")
+        if tmux and pane:
+            return {"socket": tmux.split(",")[0], "pane": pane}
+    return None
+
+
+def routed_parked(root, session_id):
+    """The channel attached to the pane this conversation was moved out of, into a background process (the left key
+    on an empty input box). Its hooks run under Claude Code's daemon, with no pane, and its id is a new one that no
+    route names; the record of the process still in the pane names it (the connector's sessions.parked()). That
+    process has to be the attached pane's own: the pane the record names is the route's, and the route's process is
+    it or above it. Looked for only by an event that has no pane and found no route otherwise, and only where some
+    pane is attached at all; nothing is written. (Reading every record of a machine took 0.6 to 2.1 ms, median.)"""
+    if not session_id or os.environ.get("TMUX_PANE"):
+        return None
+    try:
+        with open(os.path.join(root, "state", "routes.json")) as f:
+            table = json.load(f)
+        routes = [(str(key), e) for key, e in table.items() if isinstance(e, dict) and e.get("pid") and e.get("channel")]
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not routes:
+        return None
+    for rec in parked_records(session_id):
+        pane = str(rec.get("tmux") or "").rpartition(".")[2]
+        if not pane.startswith("%"):
+            continue
+        chain = None
+        for key, e in routes:
+            if key.rpartition("|")[2] != pane:
+                continue
+            if chain is None:
+                chain = [str(rec.get("pid"))] + [str(p) for p, _ in ancestors(int(rec["pid"]))]
+            if str(e["pid"]) in chain:
+                return e["channel"]
+    return None
+
+
+# COMPAT: hook 還由 dchook 自己寫的裝法（dcbot/install.sh、deploy.sh 和遠端串流的 --update）；hook 只由 plugins.py apply 寫、deploy.sh 和 tmux_bridge.py 不再叫 dchook --update 之後
+def install(remove=False, only_if_present=False):
+    """Add (or remove) the global hooks in ~/.claude/settings.json, leaving everything else as it is.
+    `only_if_present`: bring an existing installation up to date, but do not install where there is none."""
+    sys.path.insert(0, os.path.dirname(ROOT))  # the engine: the connector lies beside dcbot/
+    from altention.connectors.claude_code import hooks as cc_hooks, sessions as cc_sessions
+    path = os.path.join(cc_sessions.config_dir(), "settings.json")
+    try:
+        with open(path) as f:
+            s = json.load(f)
+    except OSError:
+        s = {}
+    before = json.dumps(s, sort_keys=True)
+    me = os.path.abspath(__file__)
+    mine = lambda g: any("dcbot/tools/dchook" in h.get("command", "") for h in g.get("hooks", []))  # noqa: E731
+    hooks = s.setdefault("hooks", {})
+    present = any(mine(g) for gs in hooks.values() for g in gs)
+    if only_if_present and not present:
+        return
+    for ev in list(hooks):
+        hooks[ev] = [g for g in hooks[ev] if not mine(g)]
+        if not hooks[ev]:
+            del hooks[ev]
+    if not remove:
+        for ev, groups in cc_hooks.hooks("'%s' --global" % me, 20).items():
+            hooks.setdefault(ev, []).extend(groups)
+    if not hooks:
+        del s["hooks"]
+    if json.dumps(s, sort_keys=True) == before:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".dcbot-tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+    print("%s dchook 的全域 hooks：%s" % ("已移除" if remove else "已安裝", path))
+ASK_WAIT = 12 * 3600 - 300  # a little less than the hook timeout the bot sets (tmux_bridge.ASK_SECS)
+
+
+def came_from():
+    """Where this hook runs, for an event that names its channel by DCBOT_CHANNEL: the tmux server's socket and
+    the pane ($TMUX, $TMUX_PANE). The bot takes the event only from the pane its channel has now: a window it
+    opened keeps DCBOT_CHANNEL for as long as it lives, also after its channel was detached from it and given
+    another conversation (#issues 11). None outside tmux."""
+    pane, tmux = os.environ.get("TMUX_PANE"), os.environ.get("TMUX")
+    return {"socket": tmux.split(",")[0], "pane": pane} if pane and tmux else None
+
+
+def spool_event(root, ev):
+    spool = os.path.join(root, "state", "events")
+    os.makedirs(spool, exist_ok=True)
+    name = "%020d-%d.json" % (time.time_ns(), os.getpid())  # sorts by time
+    tmp = os.path.join(spool, "." + name)
+    with open(tmp, "w") as f:
+        json.dump(ev, f, ensure_ascii=False)
+    os.rename(tmp, os.path.join(spool, name))  # the bot never sees a half-written file
+
+
+def decision(allow, inp=None, reason=None):
+    out = {"hookEventName": "PreToolUse", "permissionDecision": "allow" if allow else "deny"}
+    if allow:
+        out["updatedInput"] = inp
+    else:
+        out["permissionDecisionReason"] = reason
+    print(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
+
+
+def wait_answer(root, ask_id):
+    """What the bot wrote for this question (a dict); {} if the owner never answered; None if the session
+    that asked is gone."""
+    path = os.path.join(root, "state", "answers", ask_id + ".json")
+    deadline, parent = time.time() + ASK_WAIT, os.getppid()
+    while time.time() < deadline:
+        if os.path.exists(path):
+            with open(path) as f:
+                got = json.load(f)
+            os.remove(path)
+            return got
+        if os.getppid() != parent:
+            return None
+        time.sleep(0.4)
+    return {}
+
+
+CARRIED = ("transcript_path", "prompt_id", "tool_use_id")  # of what Claude Code hands the hook of a question or a plan,
+# what goes on into the event made of it, under Claude Code's own names and as they came: where the conversation is
+# written and which turn and tool call this is. What Claude said before asking is read with them (stage 3b step 1.5:
+# until then the bot read it from the file it remembered for the channel).
+
+
+def carried(ev):
+    return {k: ev[k] for k in CARRIED if ev.get(k) is not None}
+
+
+def ours(ev, source):
+    """What the hook says of its own with a question or a plan: the pane it runs in, and that the conversation is
+    one moved out of its pane, or a background process's that no pane accounts for (main() marked the event)."""
+    return dict({"dc_pane": source} if source else {}, **{k: True for k in ("dc_parked", "dc_unplaced", "dc_routed") if ev.get(k)})
+
+
+def ask(root, channel, ev, source=None):
+    inp = ev.get("tool_input") or {}
+    ask_id = "%d-%d" % (time.time_ns(), os.getpid())
+    spool_event(root, dict({"hook_event_name": "Ask", "ask_id": ask_id, "questions": inp.get("questions") or [],
+                            "session_id": ev.get("session_id"), "channel": channel, "ts": time.time()},
+                           **dict(carried(ev), **ours(ev, source))))
+    got = wait_answer(root, ask_id)
+    if got is None or got.get("pass"):
+        return  # (pass: not a question of the channel's conversation; the terminal's own menu takes it)
+    if got.get("answers"):
+        return decision(True, dict(inp, answers=got["answers"]))
+    decision(False, reason=got.get("reason") or "The user did not answer on Discord in time. Ask again in plain "
+                                                "text if it still matters.")
+
+
+def plan(root, channel, ev, source=None):
+    """`dchook --plan`, on the permission request of ExitPlanMode: the plan goes to Discord with an approve
+    button; the owner's click decides instead of the dialog in the terminal. Approving needs the tool's
+    input handed back unchanged, or Claude Code keeps waiting at its own dialog."""
+    inp = ev.get("tool_input") or {}
+    ask_id = "%d-%d" % (time.time_ns(), os.getpid())
+    spool_event(root, dict({"hook_event_name": "Plan", "ask_id": ask_id, "plan": clip(inp.get("plan")),
+                            "session_id": ev.get("session_id"), "channel": channel, "ts": time.time()},
+                           **dict(carried(ev), **ours(ev, source))))
+    got = wait_answer(root, ask_id)
+    if not got:
+        return  # nobody answered: the terminal's own dialog is still there
+    if got.get("approve"):
+        d = {"behavior": "allow", "updatedInput": inp}
+    else:
+        d = {"behavior": "deny", "message": got.get("reason") or "The user did not approve the plan."}
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": d}}, ensure_ascii=False))
+
+
+GUARD_LOG = os.path.join("~", ".local", "state", "altention", "secrets-guard.log")
+GUARD_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "NotebookRead")  # tools handed one file
+SEARCH_TOOLS = ("Grep", "Glob", "LS")  # tools handed a folder to look through
+REFUSED = ("%s (listed in altention/secrets.py). No tool may read, search or change it, and it must not be shown or sent "
+           "anywhere. If it is really needed, ask the user.")
+# (Not how the guard is turned off: that is for people, in SECURITY.md and the README; the manager, 2026-10-14.)
+
+
+def guard():
+    """Registered for PreToolUse in every Claude Code (the machine's global hooks, and the bot's own --settings):
+    a tool about to read, change or search a secret (altention/secrets.py: the bot's token, private SSH keys, the
+    instance's own list), or a shell command that names one, is refused, with the path and "ask the user". Fast and on its own: no network, no other process, one small file read (backlog K-03;
+    every tool call of every Claude Code waits for it). What goes wrong here never holds up an ordinary tool: the
+    instance's settings unreadable, only the default list counts; anything else, the call goes on and one line is
+    written to GUARD_LOG (at most one an hour)."""
+    try:
+        ev = json.load(sys.stdin)
+    except Exception:
+        return
+    if not isinstance(ev, dict) or ev.get("hook_event_name") != "PreToolUse" or not isinstance(ev.get("tool_input"), dict):
+        return
+    tool, inp, cwd = ev.get("tool_name"), ev["tool_input"], ev.get("cwd")
+    try:
+        sys.path.insert(0, os.path.dirname(ROOT))  # the engine: altention lies beside dcbot/
+        from altention import secrets
+        settings, problem = secrets.core()
+        if problem:
+            note_guard("the instance's settings cannot be read (%s): only the default list is guarded" % problem)
+        elif settings.get(secrets.SWITCH) is False:
+            return  # turned off by the owner
+        listed = secrets.patterns()[0]
+        named = []
+        if tool in GUARD_TOOLS:
+            named = [p for p in (inp.get("file_path"), inp.get("notebook_path"), inp.get("path")) if secrets.is_secret(p, listed, cwd)]
+        elif tool in SEARCH_TOOLS:
+            where = inp.get("path") or cwd
+            named = [where] if secrets.is_secret(where, listed, cwd) or secrets.holds(where, listed, cwd=cwd) else []
+        elif tool == "Bash":
+            named = secrets.mentions(inp.get("command"), listed, cwd=cwd)
+    except Exception as e:
+        note_guard("the guard failed (%s: %s); %s was let through" % (type(e).__name__, e, tool))
+        return
+    if named:
+        what = ("%s holds some of this installation's secrets" if tool in SEARCH_TOOLS else "%s is one of this installation's secrets")
+        decision(False, reason=REFUSED % (what % named[0]))
+
+
+def note_guard(line):
+    """One line in GUARD_LOG, at most one an hour (every tool call comes here). Never raises."""
+    try:
+        path = os.path.expanduser(GUARD_LOG)
+        if os.path.exists(path) and time.time() - os.path.getmtime(path) < 3600:
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line))
+        if os.path.getsize(path) > 64 * 1024:
+            os.replace(path, path + ".old")
+    except Exception:
+        pass
+
+
+def main():
+    if "--guard" in sys.argv[1:]:
+        return guard()
+    root, channel = os.environ.get("DCBOT_ROOT"), os.environ.get("DCBOT_CHANNEL")
+    source = came_from()  # for the channel named by the environment: the bot takes the event only from its window
+    routed_pane = None
+    if "--global" in sys.argv[1:]:
+        source = None
+        # Only the route table counts here. A session the bot started is never in it (the hooks in its own
+        # --settings report for it), and DCBOT_* may be inherited by a tmux server started from such a session.
+        named = {}
+        root, channel = ROOT, routed(ROOT, named)
+        if channel:
+            # The pane the table went by is said too ("dc_pane", with "dc_routed"): for a window the bot opened on
+            # another machine, which reports this way, the bot tells by it an event of a window it has closed
+            # since from one of the window the channel has (as it does on its own machine; #issues 35: the end of
+            # a window the bot closed itself was said as "the window was closed?"). An attached pane's events are
+            # not judged by it: the table is what says whose they are.
+            routed_pane = named or None  # (as the table names it, not as $TMUX does: routed())
+        if not channel:
+            ev = json.load(sys.stdin)
+            channel = routed_session(ROOT, ev.get("session_id"))
+            if not channel:
+                channel = routed_parked(ROOT, ev.get("session_id"))
+                if not channel:
+                    return
+                ev["dc_parked"] = True  # the conversation of the channel's pane, moved to a background process
+            sys.stdin = io.StringIO(json.dumps(ev))
+    if not root or not channel:
+        return  # not a session any channel is waiting for
+    if source and routed(root):
+        # A window the bot opened, detached and then attached again with /attach: it still has these hooks (its
+        # --settings) and DCBOT_CHANNEL, and now the route table names its pane too, so the global hook reports
+        # every event of it. One report is enough, and the table's is the one that follows the pane.
+        return
+    ev = json.load(sys.stdin)
+    if routed_pane:
+        source, ev["dc_routed"] = routed_pane, True
+    if source is None and "--global" not in sys.argv[1:] and os.environ.get("CLAUDE_JOB_DIR"):
+        # A background process of Claude Code's daemon that names the channel by DCBOT_CHANNEL: it has the variable,
+        # and these hooks, from a window the bot opened, whose conversation was moved to the background (the left
+        # key on an empty input box). So have the spare process started beside it and every conversation typed into
+        # the agents list: their events overwrote the channel's session id and their turns were posted in it. Only
+        # the conversation that was moved out of a pane is that pane's, and comes as from it: whether the pane is
+        # the channel's window is the bot's to say, as for any event (from_elsewhere()). CLAUDE_JOB_DIR is in the
+        # environment of every hook of such a process and of none of a pane's (measured, 2.1.288 and 2.1.296).
+        # The variable only decides whether this is looked into: an event without it goes on as it always did, and
+        # a version that no longer sets it leaves things as they were before this.
+        source = parked_pane(ev.get("session_id"))
+        if source is not None and routed_parked(root, ev.get("session_id")):
+            return  # the route table names that pane, and the global hook reports for it
+        # No process still there says the conversation was moved out of it: the spare process, a conversation typed
+        # into the list; or the moved conversation itself once its window's Claude Code has ended (it runs on under
+        # the daemon, and the turn it was in ends there: measured). Which, the hook cannot tell: passed on with no
+        # pane and marked, and the bot goes by the session the channel has (unplaced()).
+        ev["dc_parked" if source is not None else "dc_unplaced"] = True
+    if "--ask" in sys.argv[1:]:
+        return ask(root, channel, ev, source)
+    if "--plan" in sys.argv[1:]:
+        return plan(root, channel, ev, source)
+    kind = ev.get("hook_event_name")
+    if kind in ("PreToolUse", "PostToolUse"):  # tool inputs can be huge (file contents); keep a hint only
+        inp = ev.pop("tool_input", None) or {}
+        hint = inp.get("description") or inp.get("command") or inp.get("file_path") or ""
+        if ev.get("tool_name") == "SendMessage":  # to another session (or a subagent): who and what
+            ev["send_to"] = str(inp.get("to") or inp.get("recipient") or "")[:200]
+            ev["send_text"] = str(inp.get("message") or inp.get("content") or "")[:3000]
+            hint = "→ " + ev["send_to"]
+        if ev.get("tool_name") == "Workflow":
+            found = re.search(r"name:\s*['\"]([^'\"]+)['\"]", str(inp.get("script") or ""))
+            hint = found.group(1) if found else (inp.get("name") or "")
+        ev["hint"] = str(hint)[:200]
+    if kind == "PostToolUse":  # only asked for Agent / Workflow: what was started, not what it produced
+        resp = ev.pop("tool_response", None)
+        ev["started"] = dict((k, resp[k]) for k in ("runId", "workflowName", "summary", "taskId", "agentId", "status")
+                             if k in resp and isinstance(resp[k], (str, int))) if isinstance(resp, dict) else {}
+    if isinstance(ev.get("last_assistant_message"), str):
+        ev["last_assistant_message"] = clip(ev["last_assistant_message"])
+    if isinstance(ev.get("prompt"), str):
+        ev["prompt"] = clip(ev["prompt"])
+    ev["channel"], ev["ts"] = channel, time.time()
+    if source:
+        ev["dc_pane"] = source  # a name of the bot's own: "source" is Claude Code's (SessionStart: startup, resume, clear)
+    spool_event(root, ev)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] in (["--install"], ["--uninstall"], ["--update"]):
+        install(remove=sys.argv[1] == "--uninstall", only_if_present=sys.argv[1] == "--update")
+        sys.exit(0)
+    try:
+        main()
+    except Exception:
+        pass

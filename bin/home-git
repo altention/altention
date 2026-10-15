@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""home-git: run a git command in this engine holding the lock every automated git job here shares.
+
+  home-git commit -m "…" -- docs/x.md      e.g. a commit by hand or by a session
+  home-git push
+
+Automated jobs (the sync, home-pull, deploy.sh) take `<git dir>/agent-git.lock` before touching the repo; a
+commit made without it can land while one of them is moving the branch. This takes the same lock (waits up to
+2 minutes), runs `git -C <this engine> <arguments>` with the lock held, and exits with git's status. Standard
+library, Python 3.8.
+"""
+import os
+import subprocess
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from altention import sync  # noqa: E402
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    repo = sync.Repo(REPO)
+    try:
+        with sync.locked(repo):
+            return subprocess.run(["git", "-C", REPO] + argv).returncode
+    except sync.Busy as e:
+        sys.exit("home-git：%s（別的同步或部署還在跑），稍後再試" % e)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

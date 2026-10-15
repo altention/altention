@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""Engine updater (stage 3a.10): brings this machine's engine up to its upstream, behind a syntax check.
+
+  python3 altention/update.py            # one round (its own cron line, ahead of the sync's)
+  python3 altention/update.py --release  # one round now, to the newest release whatever core.update says (the
+                                         # person asked to update; the same checks); then run install.sh
+
+Standard library only, and no other module of the engine is imported (as the supervisor): a bug anywhere else
+must not stop the fixes from arriving. One round:
+- not this machine's engine (its own copy of altention/engine_id.py's rules, for the same reason) → nothing;
+- an engine unpacked from an archive (no .git at all) → nothing to update from: said, and the round counts as done;
+- the repo's git lock (agent-git.lock, shared with the sync and deploy.sh) taken by someone else, a rebase underway,
+  an index.lock → this round skipped;
+- which upstream: the instance's core.update (update_mode): "branch" the checkout's upstream branch, as it always
+  was; "release" the highest vX.Y.Z tag, never the branch; "notify" (the default) moves nothing and only writes the
+  newer release down (update-available, for doctor). Settings that cannot be read: the mode last read, and told;
+- fetch; nothing new → done. Else the files that changed, plus update.py, sync.py, config.py and engine_id.py every
+  time, are taken out of the upstream tree into a folder of its own and checked with this machine's own python3
+  (py_compile) and bash -n: anything that does not pass, or a check that fails or takes too long → not moved, told;
+- a fast-forward when it can (edits in the working tree that do not overlap carry over); with local commits, the
+  sync's update() (a rebase in a throwaway worktree, reset --keep) in a child process of its own session, killed
+  whole after 300 seconds; however that fails, this round did not update: told, the old version runs on. Never
+  autostash.
+Before moving, besides the syntax check, a load check: the upstream altention/ is imported (update, sync, config,
+engine_id) in a child; their top-level code runs, in an isolated throwaway place (python3 -I, HOME and cwd there).
+A commit that compiles but throws when loaded never arrives this way.
+After a move that changes what the supervisor counts as the bot's version (the trees of dcbot/ and altention/), and
+only while this engine's supervisor runs here, dcbot/state/restart-requested is written as deploy.sh writes it: the
+bot restarts once nothing is half done, the new version gets the supervisor's trial and a bad one is rolled back
+(the rollback commit sits on top of what was taken, so the next round finds nothing new: no loop).
+A refused upstream stays refused (last_alive-update names its hash and why): the sync does not pull it while
+update.py is alive, nor do the launchers' fallbacks; it moves on only when upstream changes (a fix pushed) or a
+person runs ops/apply.py from the control machine (its home-pull --take-refused; a plain home-pull, as the bot's
+stream line, the usage collector and each channel's Claude run it, does not pull it either: 2026-10-07). There is no
+"refused too long, let it through". When update.py itself is broken nobody checks: the launcher's plain
+fast-forward runs as it must (a known, needed trade-off; manager 2026-10-06).
+cron does not run this file but altention/cron_update.py: when a round here does not come to its end (prints no
+ALT-UPDATE-DONE: it did not load, it threw, it took too long), that launcher fast-forwards by plain git and writes
+the reason down itself (manager 2026-10-06).
+Each round that works writes ~/.local/state/altention/last_ok-update; the sync writes last_ok-sync. Each looks at
+the other's: more than 45 minutes old (three rounds) → told; the sync then also moves the engine itself, so a fix
+still arrives while this one is broken (manager 2026-10-06).
+Telling: a line in ~/.local/state/altention/alerts first (one per line, the last 200 kept; doctor reads it from the
+control machine), then altention dc notify, at most once in 6 hours per kind (every time when that record cannot be
+written). The notification may fail exactly when there is something to tell: the alerts file is the record.
+"""
+import fcntl
+import json
+import os
+import pwd
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+ENGINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ALWAYS = ("altention/update.py", "altention/sync.py", "altention/config.py", "altention/engine_id.py",
+          "altention/cron_update.py", "altention/cron_sync.py",  # the cron entries themselves
+          "altention/dc/post.py", "altention/dc/notify.py",  # every Claude's message and every notice
+          # tools without an extension every Claude or every notice goes through (manager 2026-10-06)
+          "dcbot/tools/dchook", "dcbot/tools/dcctl", "dcbot/tools/dcremote",
+          "bin/home-pull", "bin/home-git", "bin/altention")
+CHECK_DIR = "altention-update-check"  # the fixed name of the parent; each round makes its own folder inside
+STALE = 45 * 60          # three 15-minute rounds
+TELL_EVERY = 6 * 3600
+CHECK_TIMEOUT, CHILD_TIMEOUT, GIT_TIMEOUT = 120, 300, 120
+ALERTS_KEPT = 200
+LOCK_NAME = "agent-git.lock"  # COMPAT: the name the sync and deploy.sh use today; renamed with them after stage 4
+
+UPDATE_MODES = ("notify", "release", "branch")  # the instance's core.update (manager 2026-10-14); notify when not set
+RELEASE_TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")  # what the release command tags a published commit with
+
+
+def state_dir():
+    return os.path.join(os.path.expanduser("~/.local/state/altention"))
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def last_ok(name):
+    """When `name` ("update", "sync") last worked, or None when it never has (or the file cannot be read)."""
+    try:
+        with open(os.path.join(state_dir(), "last_ok-%s" % name)) as f:
+            return float(json.load(f)["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+BLOCKED = []  # (upstream hash, why) when this round refused the upstream
+REACHED = []  # set when this round compared with the upstream (updated, nothing new, refused): only then alive
+SKIPPED = []  # why this round did not get that far (the lock, a rebase left, a path not readable, fetch…)
+SAID = []     # what this round came to, in words (updated X → Y, nothing new, refused): the summary line
+
+
+def mark_skipped(why):
+    """last_skip-update: since when rounds in a row have not compared with the upstream, and the latest reason.
+    doctor shows it (a fault after 45 minutes) and --watch tells: the sync takes over, but a person has to know
+    why (manager 2026-10-06). Removed by a round that does compare."""
+    path = os.path.join(state_dir(), "last_skip-update")
+    try:
+        with open(path) as f:
+            since = float(json.load(f).get("since"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        since = time.time()
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump({"since": since, "at": time.time(), "why": why}, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def update_mode():
+    """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
+    reading is copied into cron_update.py, cron_sync.py and sync.py; the agreement test holds them together).
+    plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
+    yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
+    UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
+    machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
+    "notify" when there is none."""
+    def last():
+        try:
+            with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
+                m = json.load(f).get("mode")
+        except (OSError, ValueError, AttributeError):
+            m = None
+        return m if m in UPDATE_MODES else "notify"
+    named = os.environ.get("ALT_INSTANCE")
+    pointer = os.path.expanduser("~/.config/altention/instance")
+    if not named and os.path.exists(pointer):
+        try:
+            with open(pointer) as f:
+                named = f.readline().strip()
+        except (OSError, UnicodeDecodeError) as e:
+            return last(), "讀不了 %s（%s）" % (pointer, e)
+    if named == "-":  # this machine has left its instance
+        return last(), ""
+    if named:
+        inst = os.path.expanduser(named)
+        if not os.path.isdir(inst):
+            return last(), "實例資料夾不存在：%s" % inst
+    else:
+        inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
+        if not os.path.isdir(inst):
+            return last(), ""
+    path = os.path.join(inst, "plugins.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+    except FileNotFoundError:
+        return last(), ""
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return last(), "讀不出 %s（%s）" % (path, e)
+    core = got.get("core", {}) if isinstance(got, dict) else None
+    if not isinstance(core, dict):
+        return last(), "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容")
+    mode = core.get("update", "notify")
+    if mode not in UPDATE_MODES:
+        return last(), "%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40])
+    return mode, ""
+
+
+def remember_mode(mode):
+    """update-mode: the mode last read, for when the settings cannot be read (never fails the round)."""
+    path = os.path.join(state_dir(), "update-mode")
+    try:
+        with open(path) as f:
+            if json.load(f).get("mode") == mode:
+                return
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump({"mode": mode, "at": now_iso()}, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def latest_release(rnd):
+    """(tag, commit) of the highest vX.Y.Z tag this repo has, or None."""
+    best = None
+    for tag in rnd.git("tag", "-l", "v*").stdout.split():
+        m = RELEASE_TAG.match(tag)
+        if m and (best is None or tuple(map(int, m.groups())) > best[0]):
+            best = (tuple(map(int, m.groups())), tag)
+    if best is None:
+        return None
+    commit = rnd.git("rev-parse", "-q", "--verify", best[1] + "^{commit}").stdout.strip()
+    return (best[1], commit) if commit else None
+
+
+def available(found):
+    """update-available: the release newer than HEAD that notify mode saw ({tag, commit, at}), for doctor; removed
+    when there is none or the mode is not notify."""
+    path = os.path.join(state_dir(), "update-available")
+    try:
+        if found:
+            os.makedirs(state_dir(), exist_ok=True)
+            with open(path + ".tmp", "w") as f:
+                json.dump({"tag": found[0], "commit": found[1], "at": time.time()}, f)
+            os.replace(path + ".tmp", path)
+        elif os.path.lexists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def last_alive():
+    """{"at", "blocked": {"hash", "why", "since"} or None} written at the end of every round that came to its end
+    (updated, nothing new, or refused), or None. The sync moves the engine only when this is old (manager
+    2026-10-06): a refused upstream is never pulled in by the sync just because update.py keeps refusing it."""
+    try:
+        with open(os.path.join(state_dir(), "last_alive-update")) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) and isinstance(got.get("at"), (int, float)) else None
+    except (OSError, ValueError):
+        return None
+
+
+def blocked_hash():
+    """The upstream hash update.py is refusing now, or "": the same reading as sync.refused_hash() and the
+    launchers' refused() (no file or an unreadable one: no record; the latter written down)."""
+    path = os.path.join(state_dir(), "last_alive-update")
+    try:
+        with open(path) as f:
+            got = json.load(f)
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError) as e:
+        alert("update", "alive-unreadable", "讀不出 %s（%s），當成沒有被擋的紀錄" % (path, e), notify=False)
+        return ""
+    if not isinstance(got, dict):  # [] or a bare value: no record either, and said like an unreadable one
+        alert("update", "alive-unreadable", "%s 不是物件，當成沒有被擋的紀錄" % path, notify=False)
+        return ""
+    b = got.get("blocked")
+    return b.get("hash", "") if isinstance(b, dict) and isinstance(b.get("hash"), str) else ""
+
+
+def mark_alive():
+    path = os.path.join(state_dir(), "last_alive-update")
+    blocked = None
+    if BLOCKED:
+        h, why = BLOCKED[-1]
+        before = (last_alive() or {}).get("blocked") or {}
+        blocked = {"hash": h, "why": why, "since": before.get("since") if before.get("hash") == h else time.time()}
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump({"at": time.time(), "when": now_iso(), "blocked": blocked}, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def mark_ok(name, extra=None):
+    """Worked: written down, and what this one was told about is told again next time it goes wrong (a second,
+    different problem within six hours must not stay silent: #code-review-2 2026-10-06)."""
+    told_path = os.path.join(state_dir(), "alerts-told.json")
+    try:
+        with open(told_path) as f:
+            told = json.load(f)
+        if isinstance(told, dict) and any(k.startswith(name + "/") for k in told):
+            told = dict((k, v) for k, v in told.items() if not k.startswith(name + "/"))
+            with open(told_path + ".tmp", "w") as f:
+                json.dump(told, f)
+            os.replace(told_path + ".tmp", told_path)
+    except (OSError, ValueError):
+        pass
+    path = os.path.join(state_dir(), "last_ok-%s" % name)
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump(dict({"at": time.time(), "when": now_iso()}, **(extra or {})), f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def add_alert(rows, stamp, source, kind, text, keep=200):
+    """The alerts file's rows with this one added: one source and kind keeps one row, the newest, counted (an
+    earlier one is taken out), so kinds repeating, even in turn, never push the others out; then the last `keep`. The same in update.py,
+    sync.py and both cron launchers (manager 2026-10-07)."""
+    text = " ".join(str(text).split())
+    for i in range(len(rows) - 1, -1, -1):  # an earlier row of the same source and kind: this one takes its place
+        row = rows[i].rstrip("\n").split("\t", 3)
+        if len(row) == 4 and row[1] == source and row[2] == kind:
+            head, mark, count = row[3].rpartition("（共 ")
+            n = int(count[:-3]) + 1 if mark and count.endswith(" 次）") and count[:-3].isdigit() else 2
+            text, rows = "%s（共 %d 次）" % (text, n), rows[:i] + rows[i + 1:]
+            break
+    return (rows + ["%s\t%s\t%s\t%s\n" % (stamp, source, kind, text)])[-keep:]
+
+
+def alert(source, kind, text, notify=True):
+    """Write it down here first (doctor reads it), then push it out, at most once in TELL_EVERY per kind."""
+    folder = state_dir()
+    try:
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "alerts")
+        with open(path, "a+", errors="replace") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            kept = add_alert(f.readlines(), now_iso(), source, kind, text, ALERTS_KEPT)
+            f.seek(0)
+            f.truncate()
+            f.writelines(kept)
+    except OSError:
+        pass
+    if not notify:
+        return
+    told_path = os.path.join(folder, "alerts-told.json")
+    try:
+        with open(told_path) as f:
+            told = json.load(f)
+        if not isinstance(told, dict):
+            told = {}
+    except (OSError, ValueError):
+        told = {}
+    key = "%s/%s" % (source, kind)
+    try:
+        last = float(told.get(key) or 0)
+    except (TypeError, ValueError):  # a record someone broke: told again, and written over below
+        last = 0
+    if time.time() - last < TELL_EVERY:
+        return
+    told[key] = time.time()
+    try:
+        with open(told_path + ".tmp", "w") as f:
+            json.dump(told, f)
+        os.replace(told_path + ".tmp", told_path)
+    except OSError:
+        pass  # cannot write the record: then every time (better twice than never)
+    try:
+        subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", "⚠️ %s：%s" % (source, text)], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+BOT_PATHS = ("dcbot", "altention")  # dcbot/supervisor.py version(): what makes the bot's next start a trial
+
+
+def bot_version(rnd, rev):
+    return "+".join(rnd.git("rev-parse", "-q", "--verify", "%s:%s" % (rev, p)).stdout.strip() for p in BOT_PATHS)
+
+
+def bot_running():
+    """This engine's supervisor runs on this machine: its pid file names a live process that is a supervisor."""
+    try:
+        with open(os.path.join(ENGINE, "dcbot", "state", "supervisor.pid")) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return b"supervisor" in f.read()
+    except OSError:  # no /proc (macOS): the live pid is all there is
+        return True
+
+
+def ask_bot_restart(rnd, before, after):
+    """deploy.sh's flag after a move that changed the bot's version, when the bot runs here. True when written."""
+    if bot_version(rnd, before) == bot_version(rnd, after) or not bot_running():
+        return False
+    flag = os.path.join(ENGINE, "dcbot", "state", "restart-requested")
+    try:
+        with open(flag + ".tmp", "w") as f:
+            f.write('{"channel": ""}\n')  # no channel: the bot says it in #audit only
+        os.replace(flag + ".tmp", flag)
+        return True
+    except OSError as e:
+        alert("update", "restart", "引擎更新了，但寫不了機器人的重啟旗標（%s）：機器人還在跑舊版，請用 !restart" % e)
+        return False
+
+
+def verdict():
+    """("ok", "") | ("other", why) | ("wait", why): altention/engine_id.py's rules without the machine list, as the
+    supervisor has them (update.py must keep working when engine_id.py is the file that broke)."""
+    if os.environ.get("ALT_TEST_ANY_ENGINE") == "1":
+        try:
+            if os.path.realpath(os.path.expanduser("~")) != os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir):
+                return ("ok", "")
+        except KeyError:
+            pass
+    here = os.path.realpath(ENGINE)
+    dotgit = os.path.join(here, ".git")
+    if os.path.isfile(dotgit):
+        return ("other", "%s 是 git worktree，不是這台的引擎" % here)
+    if os.path.lexists(dotgit) and not os.path.isdir(dotgit):  # a link to somewhere not there: a share not mounted yet
+        return ("wait", "%s 讀不到" % dotgit)
+    if not os.path.lexists(dotgit) and not os.path.isfile(os.path.join(here, "altention", "engine_id.py")):
+        return ("wait", "%s 讀不到" % dotgit)  # not an engine's folder (yet)
+    # no .git but the engine's files: unpacked from an archive, decided by the places below like a clone
+    try:
+        with open(os.path.expanduser("~/.config/altention/engine")) as f:
+            named = os.path.expanduser(f.readline().strip())
+    except (OSError, UnicodeDecodeError):
+        named = ""
+    if named and os.path.isdir(named):
+        return ("ok", "") if os.path.realpath(named) == here else ("other", "這台的引擎在 %s" % os.path.realpath(named))
+    root = os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention")
+    for place in (os.path.join(root, "engine"),):
+        if os.path.islink(place) and not os.path.exists(place):
+            return ("wait", "%s 指到讀不到的地方" % place)
+        if os.path.isdir(place):
+            return ("ok", "") if os.path.realpath(place) == here else ("other", "這台的引擎在 %s" % os.path.realpath(place))
+    cmd = os.path.expanduser("~/.local/bin/altention")
+    if os.path.islink(cmd):
+        if not os.path.exists(cmd):
+            return ("wait", "%s 指到讀不到的地方" % cmd)
+        other = os.path.dirname(os.path.dirname(os.path.realpath(cmd)))
+        if os.path.realpath(other) != here:
+            return ("other", "這台的引擎在 %s" % os.path.realpath(other))
+    return ("ok", "")
+
+
+class Round(object):
+    def __init__(self):
+        self.lock = None
+
+    def git(self, *args, timeout=GIT_TIMEOUT):
+        try:
+            return subprocess.run(["git", "-C", ENGINE] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                                  pass_fds=(self.lock.fileno(),) if self.lock else ())
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(args, 124, "", "git %s：%d 秒沒有回應" % (args[0], timeout))
+
+    def git_dir(self):
+        r = self.git("rev-parse", "--git-common-dir")
+        d = r.stdout.strip()
+        return (d if os.path.isabs(d) else os.path.join(ENGINE, d)) if r.returncode == 0 and d else None
+
+
+def check_tree(rnd, upstream, files):
+    """"" when every file in `files` (paths in the upstream tree) passes; else why not. Taken out with git archive
+    into a folder of its own under the state folder (or ALT_TMP), removed afterwards; one left by a killed round is
+    removed the next time."""
+    # ALT_TMP may be a shared folder: only what this round made (mkdtemp, under a parent of our fixed name) is
+    # ever removed, and leftovers of killed rounds only from inside that parent (manager 2026-10-06)
+    parent = os.path.join(os.environ.get("ALT_TMP") or state_dir(), CHECK_DIR)
+    try:
+        os.makedirs(parent, exist_ok=True)
+        for old in os.listdir(parent):
+            if old.startswith("round-") and time.time() - os.path.getmtime(os.path.join(parent, old)) > 3600:
+                shutil.rmtree(os.path.join(parent, old), ignore_errors=True)
+        base = tempfile.mkdtemp(prefix="round-", dir=parent)
+    except OSError as e:
+        return "建不了檢查用的資料夾 %s（%s）" % (parent, e)
+    try:
+        listed = rnd.git("ls-tree", "-r", "--name-only", upstream, "--", *files)
+        present = [f for f in listed.stdout.splitlines() if f]
+        if listed.returncode != 0:
+            return "列不出上游的檔案（%s）" % listed.stderr.strip()[:160]
+        if not present:
+            return ""
+        arch = subprocess.Popen(["git", "-C", ENGINE, "archive", upstream, "--"] + present, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        tar = subprocess.run(["tar", "-x", "-C", base], stdin=arch.stdout, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, timeout=CHECK_TIMEOUT)
+        arch.stdout.close()
+        if arch.wait(timeout=CHECK_TIMEOUT) != 0 or tar.returncode != 0:
+            return "拿不出上游的檔案來檢查（%s）" % tar.stderr.decode("utf-8", "replace").strip()[:160]
+        def first_line(f):
+            try:
+                with open(os.path.join(base, f), "rb") as fh:
+                    return fh.readline(200)
+            except OSError:
+                return b""
+        # by name, or by the #! line for tools without one (dchook, dcctl, home-pull, altention…)
+        load = load_check(rnd, upstream, base)
+        if load:
+            return load
+        py = [os.path.join(base, f) for f in present if f.endswith(".py") or
+              (b"python" in first_line(f) and first_line(f).startswith(b"#!"))]
+        sh = [os.path.join(base, f) for f in present if f.endswith(".sh") or
+              (first_line(f).startswith(b"#!") and any(w in first_line(f) for w in (b"/sh", b"bash", b" sh")))]
+        if py:
+            code = ("import py_compile, sys\nbad = []\nfor p in sys.argv[1:]:\n    try:\n"
+                    "        py_compile.compile(p, cfile=p + 'c', doraise=True)\n    except Exception as e:\n"
+                    "        bad.append('%s: %s' % (p, e))\nprint('\\n'.join(bad))\nsys.exit(1 if bad else 0)\n")
+            r = subprocess.run([sys.executable, "-c", code] + py, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               universal_newlines=True, timeout=CHECK_TIMEOUT, stdin=subprocess.DEVNULL)
+            if r.returncode != 0:
+                return "Python 語法檢查沒過（%s）：%s" % (sys.executable, r.stdout.replace(base + "/", "").strip()[:300])
+        for p in sh:
+            r = subprocess.run(["bash", "-n", p], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               universal_newlines=True, timeout=CHECK_TIMEOUT, stdin=subprocess.DEVNULL)
+            if r.returncode != 0:
+                return "bash -n 沒過：%s" % r.stdout.replace(base + "/", "").strip()[:300]
+        return ""
+    except (OSError, subprocess.SubprocessError) as e:  # the check itself failed or took too long: not moved
+        return "檢查本身出錯（%s）" % e
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+LOADED = ("altention.update", "altention.sync", "altention.config", "altention.engine_id")
+
+
+def load_check(rnd, upstream, base):
+    """"" when the upstream altention/ loads (each of LOADED imported in a child; their top-level code does run, but
+    in an isolated throwaway place); else why not. Catches a commit that compiles but throws as soon as it is
+    loaded (manager 2026-10-06)."""
+    tree = os.path.join(base, "load")
+    try:
+        os.makedirs(tree)
+        arch = subprocess.Popen(["git", "-C", ENGINE, "archive", upstream, "--", "altention"], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        tar = subprocess.run(["tar", "-x", "-C", tree], stdin=arch.stdout, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.PIPE, timeout=CHECK_TIMEOUT)
+        arch.stdout.close()
+        if arch.wait(timeout=CHECK_TIMEOUT) != 0 or tar.returncode != 0:
+            return "拿不出上游的 altention/ 來載入檢查"
+        # the modules are loaded (their top-level code runs) in an isolated throwaway place: python3 -I, HOME and
+        # cwd in this round's folder, no PYTHON* or ALT_*, no stdin; anything they write lands there and goes
+        # with it (#code-review-2 2026-10-06)
+        home = os.path.join(base, "home")
+        os.makedirs(home)
+        env = dict((k, v) for k, v in os.environ.items() if not k.startswith(("PYTHON", "ALT_")) and k != "HOME")
+        env.update(HOME=home, TMPDIR=home, XDG_STATE_HOME=os.path.join(home, ".local", "state"),
+                   XDG_CONFIG_HOME=os.path.join(home, ".config"), XDG_CACHE_HOME=os.path.join(home, ".cache"))
+        code = ("import importlib, sys\nsys.path.insert(0, sys.argv[1])\nfor m in sys.argv[2:]:\n"
+                "    importlib.import_module(m)\n")
+        r = subprocess.run([sys.executable, "-I", "-B", "-c", code, tree] + list(LOADED), cwd=home,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace",
+                           timeout=60, stdin=subprocess.DEVNULL, env=env)
+        if r.returncode != 0:
+            return "載入檢查沒過（%s）：%s" % (sys.executable, r.stdout.strip()[-300:])
+        return ""
+    except (OSError, subprocess.SubprocessError) as e:
+        return "載入檢查本身出錯（%s）" % e
+
+
+def rebase_in_child(rnd, to=None):
+    """The sync's update() (rebase in a throwaway worktree, reset --keep), in a child of its own session holding the
+    same lock (its fd passed on), killed whole after CHILD_TIMEOUT. "" when it worked, else why not."""
+    code = ("import sys; sys.path.insert(0, %r)\n"
+            "from altention import sync\nrepo = sync.Repo(%r)\nrepo.lock_fd = %d\n"
+            "c, note = sync.update(repo%s)\nprint(note or '')\nsys.exit(c)\n"
+            % (ENGINE, ENGINE, rnd.lock.fileno(), "" if to is None else ", to=%r" % to))  # branch: as it always was
+    try:
+        p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             universal_newlines=True, stdin=subprocess.DEVNULL, start_new_session=True,
+                             pass_fds=(rnd.lock.fileno(),))
+    except OSError as e:
+        return "起不了更新的子行程（%s）" % e
+    try:
+        out, _ = p.communicate(timeout=CHILD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)  # the whole session: no git left running without the lock
+        except OSError:
+            pass
+        p.wait()
+        return "更新的子行程 %d 秒沒有結束，已中止" % CHILD_TIMEOUT
+    return "" if p.returncode == 0 else "更新失敗（結束碼 %s）：%s" % (p.returncode, (out or "").strip()[-300:])
+
+
+def watch_sync():
+    """The sync's last_ok, once it has one: more than STALE old → told."""
+    t = last_ok("sync")
+    if t is not None and time.time() - t > STALE:
+        alert("update", "sync-stale", "引擎和實例的同步已經 %d 分鐘沒有成功" % ((time.time() - t) // 60))
+
+
+def one_round(force_release=False):
+    """0 fine (or skipped on purpose), 1 something to tell (told). force_release: update.py --release."""
+    kind, why = verdict()
+    if kind == "other":  # another checkout: not this one's business; nothing written, the reason said on stdout
+        print("不是這台的正式引擎：%s；什麼都沒做" % why)
+        return 0
+    if kind != "ok":
+        SKIPPED.append("判斷不了這份是不是這台的引擎（%s）" % why)
+        return 0
+    if not os.path.lexists(os.path.join(os.path.realpath(ENGINE), ".git")):  # unpacked from an archive: no upstream
+        REACHED.append("not a checkout")
+        SAID.append("這份引擎不是 git checkout（解開的壓縮檔），不會自動更新：新版請重新下載")
+        mark_ok("update", {"note": "不是 git checkout，不會自動更新", "checkout": False})  # doctor shows it
+        return 0
+    rnd = Round()
+    gd = rnd.git_dir()
+    if gd is None:
+        SKIPPED.append("讀不到 git 資料")
+        alert("update", "not-a-repo", "%s 讀不到 git 資料" % ENGINE)
+        return 1
+    if any(os.path.exists(os.path.join(gd, n)) for n in ("rebase-merge", "rebase-apply", "index.lock")):
+        SKIPPED.append("rebase 做到一半或有 index.lock（殘局）")
+        return 0
+    try:
+        rnd.lock = open(os.path.join(gd, LOCK_NAME), "a")
+        fcntl.flock(rnd.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        SKIPPED.append("git 鎖被別人拿著")
+        return 0  # the sync or a deploy has it: next round
+    try:
+        if force_release:  # asked for now: the newest release, this round only; the setting is left as it is
+            mode, problem = "release", None
+        else:
+            mode, problem = update_mode()
+        if problem:
+            alert("update", "mode", "讀不到引擎更新的模式（%s），照上次的 %s" % (problem, mode))
+        elif not force_release:
+            remember_mode(mode)
+        if rnd.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").returncode != 0:
+            REACHED.append("no upstream")
+            SAID.append("沒有上游，不用更新")
+            mark_ok("update", {"note": "沒有上游，不用更新"})
+            return 0
+        r = rnd.git("fetch", "-q") if mode == "branch" else rnd.git("fetch", "-q", "--tags")
+        if r.returncode != 0:
+            SKIPPED.append("fetch 失敗")
+            alert("update", "fetch", "引擎 fetch 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:200])
+            return 1
+        head = rnd.git("rev-parse", "HEAD").stdout.strip()
+        if mode == "branch":
+            up = rnd.git("rev-parse", "@{u}").stdout.strip()
+        else:
+            rel = latest_release(rnd)
+            newer = rel if rel and head and rnd.git("merge-base", "--is-ancestor", rel[1], head).returncode != 0 else None
+            if mode == "notify" or not newer:
+                available(newer if mode == "notify" else None)
+                REACHED.append(mode)
+                SAID.append("有新版 %s（core.update 是 notify：不自動更新）" % newer[0] if newer
+                            else "沒有比現在新的發佈版本（%s）" % (rel[0] if rel else "還沒有任何發佈版本"))
+                mark_ok("update", {"head": head[:12], "mode": mode})
+                return 0
+            up = newer[1]
+        available(None)
+        if not head or not up:
+            SKIPPED.append("讀不到 HEAD 或上游的版本")
+            alert("update", "rev-parse", "讀不到 HEAD 或上游的版本")
+            return 1
+        was = blocked_hash()
+        if was and rnd.git("merge-base", "--is-ancestor", was, head).returncode == 0:  # came in while not checking
+            alert("update", "took-refused", "HEAD 已經包含擋過的 %s（update 沒在檢查時被拉進來，或有人用了 --take-refused），"
+                  "這一輪重新判斷、清掉紀錄" % was[:12])
+        if head == up or rnd.git("merge-base", "--is-ancestor", up, head).returncode == 0:
+            REACHED.append("nothing new")
+            SAID.append("沒有新的（%s）" % head[:12])
+            mark_ok("update", {"head": head[:12]})
+            return 0
+        changed = [f for f in rnd.git("diff", "--name-only", "--diff-filter=d", head, up).stdout.splitlines() if f]
+        why = check_tree(rnd, up, sorted(set(changed) | set(ALWAYS)))
+        if why:  # refused, and remembered: neither the sync nor a launcher pulls this hash while update.py is alive
+            BLOCKED.append((up, why))
+            REACHED.append("refused")
+            SAID.append("擋下 %s：%s" % (up[:12], " ".join(why.split())[:150]))  # one line: the log takes one
+            alert("update", "check", "上游 %s 沒通過檢查，沒有更新，照舊版跑：%s" % (up[:12], why))
+            return 1
+        if rnd.git("merge-base", "--is-ancestor", head, up).returncode == 0:
+            r = rnd.git("merge", "--ff-only", "-q", up)
+            if r.returncode != 0:
+                SKIPPED.append("快轉失敗（工作樹的修改跟它重疊？）")
+                alert("update", "ff", "快轉到 %s 失敗（工作樹的修改跟它重疊？），照舊版跑：%s"
+                      % (up[:12], (r.stderr.strip() or r.stdout.strip())[:200]))
+                return 1
+        else:
+            why = rebase_in_child(rnd, None if mode == "branch" else up)
+            if why:
+                SKIPPED.append("有本機 commit，rebase 沒成功")
+                alert("update", "rebase", "有本機 commit，更新到 %s 沒成功，照舊版跑：%s" % (up[:12], why))
+                return 1
+        REACHED.append("updated")
+        now = rnd.git("rev-parse", "HEAD").stdout.strip()
+        restart = ask_bot_restart(rnd, head, now)
+        SAID.append("更新了 %s → %s%s" % (head[:12], now[:12], "；機器人會自己重啟套用新版（#audit 看得到）" if restart else ""))
+        mark_ok("update", {"head": now[:12]})
+        return 0
+    finally:
+        rnd.lock.close()
+
+
+def main(argv):
+    if argv not in ([], ["--release"]):
+        print(__doc__)
+        return 2
+    del BLOCKED[:], REACHED[:], SKIPPED[:], SAID[:]  # this round's own
+    try:
+        code = one_round(force_release=bool(argv))
+    except Exception as e:  # written down; no DONE line, so cron_update.py fast-forwards by plain git
+        alert("update", "error", "引擎更新這一輪出錯（%s: %s）" % (type(e).__name__, e))
+        return 1
+    if REACHED:  # only a round that compared with the upstream; a skipped one leaves the record (and its block) as it was
+        mark_alive()
+        try:
+            os.remove(os.path.join(state_dir(), "last_skip-update"))
+        except OSError:
+            pass
+    elif SKIPPED:
+        mark_skipped(SKIPPED[-1])
+    try:
+        watch_sync()
+    except Exception:
+        pass
+    # the round in one line, just before DONE: cron_update.py writes it into cron-update.log (manager 2026-10-07)
+    print(" ".join((SAID[-1] if SAID else "沒有更新：%s" % SKIPPED[-1] if SKIPPED else "沒有更新").split()))
+    print("ALT-UPDATE-DONE")  # cron_update.py: this round came to its end
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

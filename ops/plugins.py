@@ -1,0 +1,602 @@
+#!/usr/bin/env python3
+"""alt plugins: the plugins this engine knows and where each one runs (stage 3a; read only for now).
+
+  python3 ops/plugins.py list               # every plugin found, and any plugin.json that cannot be read
+  python3 ops/plugins.py questions [--json] # the install's question for each optional plugin, word for word
+  python3 ops/plugins.py questions --setup [--json]  # the install's first five questions (time zone … talk limit)
+  python3 ops/plugins.py show [machine]     # where each plugin stands on a machine (default: this one)
+  python3 ops/plugins.py show --json        # the same as JSON
+  python3 ops/plugins.py apply [--write] [--allow-time 插件/項目]…
+                                            # without --write: what would change (nothing is written);
+                                            # with --write: plan's result written into this machine's crontab and
+                                            # settings.json (ops/applycore.py: markers, missing items; backup first)
+  python3 ops/plugins.py report             # 3a.12: what apply --write would change here, as JSON; reads only
+  python3 ops/plugins.py backups | restore <時間> # the backups apply made, and putting one back
+  python3 ops/plugins.py plan               # what plugin.json asks this machine to have (cron lines, hooks; run it
+                                            # from the engine that is installed, not a worktree)
+                                            # next to what it has, compared by content (ops/plancore.py)
+
+Placements: on, off (not its machine), disabled (turned off there on purpose), unknown (what decides it could not
+be read; nothing is ever added or removed for an unknown one). Where a plugin runs is plugin.json's and the
+instance's plugins.json (plugins.<name>.on); the machine list's roles only say where the bot runs (dcbot) and which
+machines' panes may be attached (dcattach).
+Exit status: 0, or 1 when there is a problem or an unknown placement (a machine the list does not have is an
+error). Standard library only, Python 3.8.
+"""
+import json
+import re
+import subprocess
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from altention import config, plugin  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import applycore  # noqa: E402
+import plancore  # noqa: E402
+
+def placements(machine):
+    """(rows, problems, unknown) for `machine` as this engine and instance see it: where each plugin runs, and the
+    plugins that cannot be placed (ops/apply.py does nothing on a machine with any of those: manager 2026-10-06)."""
+    rows, problems = plugin.on_this_machine(machine)
+    unknown = ["%s：不知道（%s）" % (n, r) for n, _, _, w, r in rows if w == "unknown"]
+    return rows, problems, unknown
+
+
+def show(machine=None, as_json=False, out=sys.stdout):
+    named = []
+    machine = machine or plugin.this_machine(named)
+    try:
+        listed = config.inventory().get("machines") or {}
+    except Exception:
+        listed = {}
+    if listed and machine not in listed:
+        out.write("機器清單上沒有 %s（有：%s）\n" % (machine, "、".join(sorted(listed))))
+        return 1
+    rows, problems, unknown = placements(machine)
+    problems = named + problems
+    if as_json:
+        json.dump({"machine": machine,
+                   "plugins": [{"name": n, "folder": f, "placement": w, "reason": r} for n, f, _, w, r in rows],
+                   "problems": problems, "unknown": unknown}, out, ensure_ascii=False, indent=1)
+        out.write("\n")
+    else:
+        out.write("== %s\n" % machine)
+        for name, _, _, where, reason in rows:
+            out.write("%-8s %-9s%s\n" % (name, where, "  " + reason if reason else ""))
+        for p in problems:
+            out.write("問題：%s\n" % p)
+        for u in unknown:
+            out.write("%s\n" % u)
+    return 1 if problems or unknown else 0
+
+
+LABEL = {"same": "一致", "time differs": "時間不同", "paused": "暫停中", "missing": "少了", "extra": "多的",
+         "unclaimed": "沒認領", "duplicate": "重複", "short": "不足", "elsewhere": "不在這台", "replaced": "換掉舊的"}
+
+
+def unlisted(machine):
+    """Why nothing is compared or written here when this machine's name is not on a machine list that was read (it
+    could not work out its own name: hostname changed, host file wrong), or "" (code-review 2026-10-06)."""
+    try:
+        known = set(config.inventory().get("machines") or {})
+    except Exception:
+        return ""  # an unreadable list: each plugin is unknown already
+    if known and machine not in known:
+        return ("這台（%s）不在機器清單上（%s）：認不出自己的名字時什麼都不比對、不寫；檢查 ~/.config/altention/host 或清單的"
+                " hostname 欄位" % (machine, "、".join(sorted(known))))
+    return ""
+
+
+def gather():
+    """What plan and apply both need: (machine, rows, problems, want, unknown, crontab lines or None, cron, paused,
+    settings text or None, settings or None, hooks, engine). None marks what could not be read."""
+    problems = []
+    machine = plugin.this_machine(problems)
+    rows, found = plugin.on_this_machine(machine)
+    problems += found
+    try:
+        settings = config.settings()
+    except Exception:
+        settings = None
+    try:
+        bot = config.bot_machine()[0]
+    except Exception:
+        bot = None
+    want, unknown = plancore.wanted(rows, machine, settings or {}, bot)
+    why = unlisted(machine)
+    if why:
+        problems.append(why)
+        want = []
+    engine = os.path.realpath(plugin.ENGINE)
+    try:
+        raw = plancore.read_crontab_raw()
+        lines = [t for t in (plancore.text(l) for l in plancore.raw_lines(raw)) if t is not None]
+        cron, paused, unreadable = plancore.installed_cron(lines, engine)
+        for line in unreadable:
+            problems.append("crontab 裡我們的一行讀不懂（引號不成對？），這一行不比對：%s" % line)
+    except plancore.Unknown as e:  # not read is not "no lines": nothing about cron is compared, or ever written
+        problems.append("%s：cron 不比對（不知道）" % e)
+        raw, cron, paused, want = None, [], [], [w for w in want if w["kind"] != "cron"]
+    try:
+        text, cc = plancore.read_settings_raw()  # one read: parsed and compared from the same bytes
+        hooks = plancore.installed_hooks(cc, engine)
+    except (plancore.Unknown, OSError) as e:  # an unreadable settings.json is not "no hooks"
+        problems.append("%s：hook 不比對（不知道）" % e)
+        cc, text, hooks, want = None, None, [], [w for w in want if w["kind"] != "hook"]
+    try:
+        known = set(config.inventory().get("machines") or {})
+    except Exception:
+        known = set()
+    away = plancore.elsewhere(rows, machine, settings, bot, known)
+    return machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away
+
+
+def plan(out=sys.stdout):
+    """This machine (plan reads its own crontab and settings): each cron line and hook, same, time differs, paused,
+    missing, extra or unclaimed. Exit 1 when anything differs, or something could not be read or placed."""
+    machine, rows, problems, want, unknown, lines, cron, paused, text, cc, hooks, engine, away = gather()
+    result = plancore.compare(want, cron, hooks, paused, away)
+    out.write("== %s 的 plan（只讀，什麼都沒改）\n" % machine)
+    counts = {}
+    for status, w, text_, note in result:
+        counts[status] = counts.get(status, 0) + 1
+        what = "%s/%s %s" % (w["plugin"], w["name"], w["kind"]) if w else (
+            "（看起來像舊的，但對不上任何宣告的項目：當成別人的，不會動）" if status == "unclaimed" else "（帶我們的標記，但沒有插件要它）")
+        out.write("%-4s %s%s\n" % (LABEL[status], what, "  標記：%s" % note if note else ""))
+        if status != "same":
+            if w:
+                out.write("     要的：%s\n" % w["text"])
+            if text_:
+                out.write("     現在：%s\n" % text_)
+    items, odd_items = plancore.settings_wanted(rows)
+    unknown = unknown + odd_items
+    if cc is not None:
+        for name, key, least, now in plancore.settings_short(cc, items):
+            counts["short"] = counts.get("short", 0) + 1
+            out.write("%-4s %s/%s setting  要的：至少 %d，現在：%s\n" % (LABEL["short"], name, key, least,
+                                                                     "沒有" if now is None else now))
+        unknown = unknown + [("%s/%s" % (n, k), "settings.json 裡的值不是數字，不比對") for n, k in plancore.settings_odd(cc, items)]
+    for name, reason in unknown:
+        out.write("不知道 %s：%s（不比對，不會加也不會拿掉）\n" % (name, reason))
+    for p in problems:
+        out.write("問題：%s\n" % p)
+    differ = sum(v for k, v in counts.items() if k not in ("same", "paused", "unclaimed"))  # on purpose / not ours
+    out.write("合計：%s\n" % "、".join("%s %d" % (LABEL[k], v) for k, v in sorted(counts.items())))
+    if unlisted(machine):
+        verdict = "不知道（這台不在機器清單上；上面列的不比對）"
+    elif problems and not differ:
+        verdict = "不知道（有讀不出來或判斷不了的，見上面的問題）"
+    elif not differ and not unknown:
+        verdict = "零差異"
+    else:
+        verdict = "有 %d 項不同%s" % (differ, "、%d 個插件不知道" % len(unknown) if unknown else "")
+    out.write("內容：%s\n" % verdict)
+    return 1 if differ or unknown or problems else 0
+
+
+REMOVALS_MAX = 1  # more would-be removals than this in one report: refused as a mass removal (manager 2026-10-09:
+MARKED_SHARE = 3  # two or more, or over a third of this machine's marked lines; rather too often than once too few)
+
+
+def _head(folder):
+    try:
+        r = subprocess.run(["git", "-C", folder, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           universal_newlines=True, timeout=20)
+        return r.stdout.strip()[:12] or None if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def report():
+    """3a.12, report only: what `apply --write` would change on this machine, as a dict, from what plan reads and
+    compares (gather, plancore.compare). Nothing is written here and nothing that writes is called: not a
+    crontab, not settings.json, no backup, no cleaning of leftovers (the dry `apply` does that one).
+    add / remove / retime: the plugins' own items, as apply would add, remove (counted widely: every line with
+    our marker that nothing asks for) and, when named by hand, retime. core: the core's lines and hooks that are
+    not as asked: listed, and never changed by any automatic apply (a person's to put right). disabled, unknown,
+    unclaimed, paused: said, nothing follows from them. refuse: why this report must never be written out
+    automatically, a mass removal (REMOVALS_MAX, MARKED_SHARE), every plugin off or unknown at once, or the
+    instance or the machine list not read: most likely this machine not knowing what it is, not a real change."""
+    machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away = gather()
+    result = plancore.compare(want, cron, hooks, paused, away)
+    out = {"format": 1, "machine": machine, "engine": _head(engine), "instance": None, "add": [], "remove": [], "retime": [],
+           "core": [], "paused": [], "unclaimed": 0, "problems": list(problems), "refuse": None}
+    try:
+        out["instance"] = _head(config.instance_dir())
+    except Exception:
+        pass
+
+    def item(status, w, installed):
+        d = {"status": status, "plugin": w["plugin"] if w else plancore.marked(installed or "") or None,
+             "name": w["name"] if w else None, "kind": w["kind"] if w else "cron"}
+        if installed:
+            d["installed"] = installed[:300]
+        if w and status != "same":
+            d["wanted"] = w["text"][:300]
+        return d
+    for status, w, installed, _note in result:
+        if status == "same":
+            continue
+        if status == "unclaimed":
+            out["unclaimed"] += 1
+        elif status == "paused":
+            out["paused"].append(item(status, w, installed))
+        elif (w["plugin"] if w else plancore.marked(installed or "")) == "core":
+            out["core"].append(item(status, w, installed))
+        elif status in ("missing", "replaced"):  # replaced: the new line in the old one's place
+            out["add"].append(item(status, w, installed))
+        elif status == "time differs":
+            out["retime"].append(item(status, w, installed))
+        else:  # extra, elsewhere, duplicate: a line with our marker that apply may take away
+            out["remove"].append(item(status, w, installed))
+    items, odd_items = plancore.settings_wanted(rows)
+    if cc is not None:
+        for name, key, least, now in plancore.settings_short(cc, items):
+            (out["core"] if name == "core" else out["add"]).append(
+                {"status": "short", "plugin": name, "name": key, "kind": "setting", "wanted": "至少 %d" % least,
+                 "installed": "沒有" if now is None else str(now)})
+        odd_items = odd_items + [("%s/%s" % (n, k), "settings.json 裡的值不是數字") for n, k in plancore.settings_odd(cc, items)]
+    out["unknown"] = [[n, r] for n, r in unknown + odd_items]
+    out["disabled"] = sorted(n for n, _f, _d, where, _r in rows if where == "disabled")
+    marked = len([h for h in cron if h[3]])
+    out["marked_lines"] = marked
+    why = []
+    if len(out["remove"]) > REMOVALS_MAX or (marked and len(out["remove"]) * MARKED_SHARE > marked):
+        why.append("會拿掉 %d 項（這台帶記號的有 %d 行）" % (len(out["remove"]), marked))
+    placed = [where for n, _f, _d, where, _r in rows if n != "core"]
+    if placed and all(w in ("off", "unknown") for w in placed):
+        why.append("這台所有的插件都是 off 或不知道")
+    try:
+        config.settings()
+    except Exception as e:
+        why.append("實例設定讀不到（%s）" % type(e).__name__)
+    try:
+        inv = config.inventory()
+        listed = inv.get("machines") or {}
+        if inv and machine not in listed:  # no machines.json at all is the one-machine install (config.machines())
+            why.append("機器清單讀不到這台（%s）" % machine)
+    except Exception as e:
+        why.append("機器清單讀不到（%s）" % type(e).__name__)
+    if raw is None or cc is None:
+        why.append("crontab 或 settings.json 讀不出來")
+    if why:
+        out["refuse"] = "mass-removal：" + "；".join(why)
+    return out
+
+
+def apply(write=False, allow_time=(), out=sys.stdout, hold=()):
+    """Without `write`: what would change, nothing written. With it: plan's result written into this machine's crontab
+    and settings.json under applycore's rules and guards, each step said on its own (one may be written and the
+    other not); nothing is written when anything could not be read."""
+    machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away = gather()
+    applycore.MACHINE[0] = machine
+    applycore.clean_if_free()
+    result = plancore.compare(want, cron, hooks, paused, away)
+    out.write("== %s 的 apply%s\n" % (machine, "" if write else "（只看，不寫；要寫加 --write）"))
+    # --hold: not a byte of these changes, neither added nor marked nor retimed (#code-review-2 2026-10-06), until
+    # ops/apply.py finds no other machine runs it or the installer can place the plugin again
+    held = lambda w: w is not None and (w["plugin"] in hold or (  # noqa: E731
+        "bot" in hold and "bot" in plugin._names(w.get("on", "all"))))  # bot: only the items whose own on is bot
+    held_back = [r for r in result if r[0] in ("missing", "same", "time differs", "replaced") and held(r[1])]
+    result = [r for r in result if r not in held_back]  # left out: its installed line stays exactly as it is
+    for r in held_back:
+        if r[0] != "same" or r[3] not in (applycore.MARK + r[1]["plugin"], applycore.MARK + plancore.marker(r[1])):  # what would have changed
+            out.write("- 先不動（--hold）：%s/%s\n" % (r[1]["plugin"], r[1]["name"]))
+    for p in problems:
+        out.write("問題：%s\n" % p)
+    if raw is None or cc is None:
+        out.write("crontab 或 settings.json 讀不出來：什麼都不寫\n")
+        return 1
+    if unlisted(machine):
+        out.write("這台不在機器清單上：什麼都不寫\n")
+        return 1
+    lines = plancore.raw_lines(raw)
+    new_lines, cron_actions, removed, kept = applycore.new_crontab(lines, result, rows, allow_time)
+    new_cc, hook_actions, added = applycore.new_settings(cc, result)
+    items, odd_items = plancore.settings_wanted(rows)
+    new_cc, setting_actions, raised = applycore.raise_settings(new_cc, plancore.settings_short(cc, items))
+    hook_actions += setting_actions
+    unknown = unknown + odd_items + [("%s/%s" % (n, k), "settings.json 裡的值不是數字") for n, k in plancore.settings_odd(cc, items)]
+    try:
+        settings = config.settings()
+    except Exception:
+        settings = None
+    files = applycore.schedule_files(rows, settings)
+    defaults = applycore.default_schedule_files(rows, settings)
+    preview = applycore.create_missing(files, machine, dry_run=True, defaults=defaults)
+    for a in cron_actions + hook_actions + preview:
+        out.write("- %s\n" % a)
+    for name, reason in unknown:
+        out.write("不動 %s：不知道（%s）\n" % (name, reason))
+    if new_lines == lines and new_cc == cc and not [p for p in preview if p.startswith("建空")]:
+        out.write("沒有要改的\n")
+        return 0
+    if not write:
+        return 0
+    try:
+        with applycore.one_at_a_time():
+            backup = applycore.make_backup(raw, text)
+            out.write("備份：%s\n" % backup)
+            try:
+                wrote = applycore.write_crontab(raw, new_lines, removed, kept, backup)
+                if wrote:
+                    applycore.note_added({w["plugin"] for st, w, _t, _n in result if st in ("missing", "replaced") and w["kind"] == "cron"})
+                out.write("crontab：%s\n" % ("寫好了（重讀確認過）" if wrote else "沒有要改的"))
+            except applycore.Refused as e:
+                out.write("crontab：沒寫（%s）；settings.json 也就不寫了\n" % e)
+                return 1
+            try:
+                with applycore.home_lock():
+                    wrote_cc = applycore.write_settings(text, cc, new_cc, added, backup, raised)
+                out.write("settings.json：%s\n" % ("寫好了（重讀確認過）" if wrote_cc else "沒有要改的"))
+            except (applycore.Refused, OSError) as e:
+                out.write("settings.json：沒寫（%s）\n" % e)
+                if wrote:
+                    out.write("注意：crontab 已經改了、settings.json 沒改。要退回 crontab：python3 ops/plugins.py restore %s\n"
+                              % os.path.basename(backup))
+                return 1
+            for line in applycore.create_missing(files, machine, defaults=defaults):
+                out.write("- %s\n" % line)
+    except applycore.Refused as e:  # the lock, or the backup
+        out.write("沒寫：%s\n" % e)
+        return 1
+    return 0
+
+
+# COMPAT: crontab 還是舊格式的機器（# planner、# usage，或沒有標記的行）；每台的 crontab 都沒有舊格式的行（plugins.py plan 沒有 old、unclaimed）之後
+def held(names, out=sys.stdout):
+    """Whether this machine's crontab still has lines of the plugins `names` ("bot" for the bot's supervisor lines):
+    one JSON object {name: false, "marked" (every such line carries our new marker: plugins.py apply can take them
+    out) or "old" (some line is in an old format: apply never removes those)}, or {"unknown": why} when the crontab
+    cannot be read. ops/apply.py asks before it adds a single-machine plugin anywhere (manager 2026-10-06). A line is
+    the plugin's when it carries its marker, new or old, or runs a file in its folder of this engine (the bot's: its
+    supervisor lines, new marker "core"); commented-out lines do not run and do not count."""
+    engine = os.path.realpath(plugin.ENGINE)
+    try:
+        lines = [t for t in (plancore.text(l) for l in plancore.raw_lines(plancore.read_crontab_raw())) if t is not None]
+    except plancore.Unknown as e:
+        json.dump({"unknown": str(e)}, out, ensure_ascii=False)
+        out.write("\n")
+        return 2
+    forms = plancore.engine_forms(engine) + plancore.engine_forms(os.path.abspath(plugin.ENGINE))
+    found = {}
+    for n in names:
+        folder = "dcbot" if n == "bot" else n + "/"  # the supervisor's lines: cd "<engine>/dcbot" && … supervisor.py
+        mark = re.compile(r"#\s*(altention:)?%s(/[A-Za-z0-9_.-]+)?\s*$" % re.escape(n)) if n != "bot" else None
+        mine = [l for l in lines if not l.lstrip().startswith("#") and
+                ((mark is not None and mark.search(l)) or (any(f + "/" + folder in l for f in forms)
+                                                             and (n != "bot" or "supervisor.py" in l)))]
+        new = "core" if n == "bot" else n
+        found[n] = False if not mine else ("marked" if all(plancore.marked(l) == new for l in mine) else "old")
+    json.dump(found, out, ensure_ascii=False)
+    out.write("\n")
+    return 0
+
+
+def backups(out=sys.stdout):
+    applycore.MACHINE[0] = plugin.this_machine([])
+    root = applycore.backup_root()
+    try:
+        stamps = sorted(os.listdir(root))
+    except OSError:
+        stamps = []
+    for s in stamps:
+        out.write("%s：%s\n" % (s, "、".join(sorted(os.listdir(os.path.join(root, s))))))
+    if not stamps:
+        out.write("沒有備份\n")
+    return 0
+
+
+def _ordered(plugins):
+    """The core first, then by each plugin.json's "order" (none: last, by name)."""
+    return sorted(plugins, key=lambda p: (p[0] != "core", p[2].get("order") is None, p[2].get("order") or 0, p[0]))
+
+
+def list_all(out=sys.stdout):
+    """One line per plugin, in _ordered's order; under each, its "pitch" (what it does for the user, for the install's
+    questions) and the plugins it needs."""
+    plugins, problems = plugin.discover()
+    for name, folder, d in _ordered(plugins):
+        out.write("%-8s %-4s %s（%s）\n" % (name, d.get("machines", "all"), d["title"], folder))
+        needs = [x["plugin"] for x in d.get("requires", [])]
+        if d.get("pitch") or needs:
+            out.write("  %s%s\n" % (d.get("pitch", ""), "（需要：%s）" % "、".join(needs) if needs else ""))
+    for p in problems:
+        out.write("問題：%s\n" % p)
+    return 1 if problems else 0
+
+
+def questions(plugins):
+    """The install's question for each plugin but the core, in _ordered's order, ready for AskUserQuestion: the install
+    skill passes them on word for word (Claude left out progress's need when it wrote them itself, 2026-10-15).
+    Words from plugin.json: "title", "pitch", "keep" (what keeping it gives) and "lose" (what is missing without it);
+    the sentences on needs are written here, with titles, from "requires"."""
+    title = {n: d.get("title") or n for n, _, d in plugins}
+    needs = {n: [x["plugin"] for x in d.get("requires", [])] for n, _, d in plugins}
+    asked = []
+    for name, _, d in _ordered(plugins):
+        if name == "core":
+            continue
+        mine = "、".join(title.get(x, x) for x in needs[name])
+        users = "、".join(title[n] for n, _, _ in _ordered(plugins) if name in needs[n])
+        pitch = d.get("pitch", "").strip()
+        q = "%s：%s" % (title[name], pitch) if pitch else title[name]
+        q += "" if q.endswith("。") else "。"
+        if mine:
+            q += "注意：要靠%s；保留%s，%s也會一起保留。" % (mine, title[name], mine)
+        q += "要保留嗎？之後想開，跟 Claude 說一聲就好。"
+        keep = d.get("keep") or "%s照常運作" % title[name]
+        lose = "少了%s" % title[name] + ("，" + d["lose"] if d.get("lose") else "")
+        asked.append({"plugin": name, "header": title[name], "question": q, "multiSelect": False, "options": [
+            {"label": "保留", "description": keep + ("（%s也會一起保留）" % mine if mine else "")},
+            {"label": "關掉", "description": lose + ("；%s也要靠它" % users if users else "")}]})
+    return asked
+
+
+def first_question(plugins):
+    """The question asked before questions(): keep every optional plugin or turn some off, naming them by title in
+    the same order (Claude wrote the list itself once, mixing names and titles, 2026-10-15). Single choice: a
+    multi-select left empty counts as not answered."""
+    titles = "、".join(q["header"] for q in questions(plugins))
+    return {"key": "plugins", "values": ["keep", "some"],
+            "header": "選用功能", "question": "選用的功能（%s）要全部保留，還是關掉一些？" % titles, "multiSelect": False,
+            "options": [{"label": "全部保留（建議）", "description": "所有功能都裝上"},
+                        {"label": "關掉一些", "description": "接著一個一個問"}]}
+
+
+def setup_questions(plugins, zone, unpacked):
+    """The install's first five questions, word for word as the skill passes them on (Claude wrote them itself once
+    and mixed in English and setting names, 2026-10-15). The permission modes keep Claude Code's own names, the ones
+    its screen shows, with their meaning in front of each description. "key" and "values" are for the skill: the
+    setting each answer goes into and the value of each option, in order; the person sees neither. zone: this machine's time zone
+    (None: nothing says); unpacked: the engine has no .git (it never updates itself, nor says a release is out)."""
+    def ask(key, header, question, options, values):
+        return {"key": key, "values": values, "header": header, "question": question, "multiSelect": False,
+                "options": [{"label": l, "description": d} for l, d in options]}
+    if zone is None:  # nothing on this machine says
+        zones = [("UTC（建議）", "世界標準時間；讀不到這台機器的時區設定"), ("Asia/Taipei", "台北時間")]
+    elif zone == "UTC":
+        zones = [("UTC（建議）", "世界標準時間，也是這台機器目前的時區"), ("Asia/Taipei", "台北時間")]
+    else:
+        zones = [("%s（建議）" % zone, "這台機器目前的時區"), ("UTC", "世界標準時間")]
+    return [
+        ask("core.timezone", "時區", "提醒和排程要用哪個時區？要用別的時區，選「其他」打它的名稱，例如 Europe/Berlin。",
+            zones, [z.replace("（建議）", "") for z, _ in zones]),
+        first_question(plugins),
+        ask("core.update", "引擎更新", "有新版本時要怎麼做？" + (
+            "這份引擎是從壓縮檔解開的，不管選哪個都不會自己更新，也不會通知新版；要新版請重新下載。" if unpacked else ""),
+            [("只通知（建議）", "有新版時在狀態看板和健康檢查裡告訴你，不會自己更新"),
+             ("自動更新", "每次出新版就自己更新，更新前先檢查程式能不能正常載入")], ["notify", "release"]),
+        ask("dcbot.default_permission", "權限", "機器人開的 Claude Code 對話，可以不問你就做多少事？之後每個頻道可以各自設定。",
+            [("auto（建議）", "自動判斷：安全的直接做；有風險的（刪工作資料夾以外的東西、強制推送、執行從網路下載的程式、改開機會自動啟動的東西等）"
+                                "會被擋下，Claude 改走別的路或停下來說明，不會先問你；被擋幾次之後才改成在 Discord 用按鈕問你。"
+                                "目前被擋下時 Discord 不會另外顯示"),
+             ("manual", "每次都問：每個需要權限的動作都先在 Discord 用按鈕問你。最安全，要按的按鈕也最多"),
+             ("bypassPermissions", "從不問：不問你，有風險的動作也不先擋（只剩機器人自己的禁止規則和保護密碼、金鑰的檢查照樣擋）。"
+                        "誰控制你的 Discord 帳號，幾乎就能在這台機器上執行任何指令")],
+            ["auto", "manual", "bypassPermissions"]),
+        ask("dcbot.talk_limit", "來回上限", "各頻道的 Claude 可以互相交辦工作、回覆對方。連續來回幾次、中間你都沒說話時，"
+            "機器人要先停下來問你要不要繼續？它會標註你，手機會跳通知。之後每個頻道可以各自設定。",
+            [("10 次（建議）", "一般的交辦和回覆都夠用"), ("30 次", "讓長一點的來回不被打斷"),
+             ("不限", "一直來回到做完為止，可能用掉很多訂閱額度")], [10, 30, 0]),
+    ]
+
+
+def questions_main(as_json, setup=False, out=None):
+    out = out or sys.stdout
+    plugins, problems = plugin.discover()
+    if setup:
+        import instance
+        asked = setup_questions(plugins, instance.system_timezone(None), not os.path.exists(os.path.join(plugin.ENGINE, ".git")))
+    else:
+        asked = questions(plugins)
+    if as_json:
+        json.dump(asked, out, ensure_ascii=False, indent=1)
+        out.write("\n")
+    else:
+        for a in asked:
+            out.write("%s\n%s\n" % (a["question"], "".join("  %s：%s\n" % (o["label"], o["description"]) for o in a["options"])))
+    for p in problems:
+        (sys.stderr if as_json else out).write("問題：%s\n" % p)
+    return 1 if problems else 0
+
+
+def refresh_report(now=None):
+    """After apply --write: this machine's report of what apply would change (3a.12, the minute round writes it every
+    15 minutes for doctor) is worked out again at once, so doctor never shows one older than what was just written
+    (it said "會補 planner/…" for a quarter hour after install.sh had added them, and a Claude took that for "not
+    installed", 2026-10-15). Never stops apply: a report that cannot be made is removed, so it is not shown stale."""
+    import time
+    path = None
+    try:
+        from altention import cron_schedule
+        if cron_schedule.load():
+            raise RuntimeError(cron_schedule.BROKEN)
+        machine = plugin.this_machine([])
+        if not machine:
+            raise RuntimeError("不知道這台叫什麼")
+        path = cron_schedule.report_paths(machine)[0]
+        rep = report()
+        rep["at"] = int(now if now is not None else time.time())
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(rep, ensure_ascii=False, indent=1) + "\n")
+        os.replace(tmp, path)
+    except Exception as e:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        print("套用報告沒有重算（%s: %s）；下一個 15 分鐘會再算" % (type(e).__name__, str(e)[:120]))
+
+
+def main(argv):
+    from altention import engine_id
+    if (argv[:1] == ["apply"] and "--write" in argv) or argv[:1] == ["restore"]:
+        why = engine_id.refusal(plugin.ENGINE, "plugins.py %s" % argv[0])
+        if why:  # a worktree or a second clone would add every line and hook again (code-review 2026-10-06)
+            print(why)
+            return 1
+    elif argv[:1] in (["plan"], ["show"], ["held"], ["apply"], ["list"], ["backups"]):
+        said = engine_id.warning(plugin.ENGINE)
+        if said:
+            print(said)
+    if argv == ["report"]:  # 3a.12: read only; the minute round takes the JSON and keeps it (cron_schedule.py)
+        json.dump(report(), sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if argv[:1] == ["list"]:
+        return list_all()
+    if argv[:1] == ["questions"] and set(argv[1:]) <= {"--json", "--setup"}:
+        return questions_main("--json" in argv, "--setup" in argv)
+    if argv[:1] == ["plan"]:
+        return plan()
+    if argv[:1] == ["apply"]:
+        write, allow, hold, rest = False, [], [], argv[1:]
+        while rest:  # nothing unknown is ignored: a mistyped flag must not turn into a write
+            a = rest.pop(0)
+            if a == "--write":
+                write = True
+            elif a == "--allow-time" and rest and not rest[0].startswith("-"):
+                allow.append(rest.pop(0))
+            elif a == "--hold" and rest and not rest[0].startswith("-"):
+                hold.append(rest.pop(0))
+            else:
+                print("apply：不認得 %r（只有 --write、--allow-time 插件/項目、--hold 插件或 bot），什麼都沒做" % a)
+                return 2
+        rc = apply(write, allow, hold=hold)
+        if write:
+            refresh_report()
+        if rc == 0 and write:
+            print("ALT-STEP-OK plugins-apply")  # ops/apply.py's remote step checks for it (not just the exit status)
+        return rc
+    if argv[:1] == ["backups"]:
+        return backups()
+    if argv[:1] == ["held"] and len(argv) > 1:
+        return held(argv[1:])
+    if argv[:1] == ["restore"] and len(argv) == 2:
+        try:
+            problems = []
+            applycore.MACHINE[0] = plugin.this_machine(problems)
+            with applycore.one_at_a_time(), applycore.home_lock():
+                try:
+                    done = applycore.restore(argv[1], os.path.realpath(plugin.ENGINE))
+                except (OSError, ValueError) as e:
+                    raise applycore.Refused("還原時出錯（%s），請看備份資料夾手動處理" % e)
+            print("還原了：%s" % "、".join(done))
+            return 0
+        except applycore.Refused as e:
+            print("沒還原：%s" % e)
+            return 1
+    if argv[:1] == ["show"]:
+        rest = [a for a in argv[1:] if a != "--json"]
+        return show(rest[0] if rest else None, "--json" in argv)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

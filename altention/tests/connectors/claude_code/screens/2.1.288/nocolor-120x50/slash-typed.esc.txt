@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ please do the first thing
+
+● All done. Nothing else to report.
+
+✻ Worked for 14s · done 3:37 PM
+
+❯ a second message while busy
+
+● All done. Nothing else to report.
+
+✻ Cogitated for 14s · done 3:37 PM
+
+❯ please touch the file
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Worked for 1s · done 3:38 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /model                        Set the AI model for Claude Code (currently Opus 5.5)
+  /code-review                  Review the current diff, or a PR number/branch/path target, for correctness bugs (plus
+                                reuse/simplification/efficiency cleanups where the model's review recipe covers them)…
+  /update-config                Use this skill to configure the Claude Code harness via settings.json. Automated
+                                behaviors ("from now on when X", "each time X", "whenever X", "before/after X") requi…
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /model[7m [0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

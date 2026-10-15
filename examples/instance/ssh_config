@@ -1,0 +1,15 @@
+# SSH aliases for the machines in machines.json (no keys here). install.sh adds an `Include` of this file to
+# ~/.ssh/config. Keys stay in ~/.ssh as usual; every alias must work without a password prompt (BatchMode).
+
+Host host-b
+  HostName host-b.example.com
+  User alice
+
+Host host-b-via-gateway
+  HostName host-b.internal.example
+  User alice
+  ProxyJump gateway.example.com
+
+Host laptop
+  HostName laptop.example.com
+  User alice

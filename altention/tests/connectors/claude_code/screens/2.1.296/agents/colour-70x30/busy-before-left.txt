@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ Q-A-one: this is conversation A
+
+● ANS-A-one: the first conversation (A) answered.
+
+✻ Worked for 1s · done 12:32 PM
+
+❯ Q-A-busy: a long turn in A
+
+● SAID-A-busy: A is working.
+
+● Rig · 3s
+  ⎿  $ sleep 16; echo done-busy (3s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+
+
+✶ Sock-hopping… (4s · ↓ 22 tokens)
+  ⎿  Tip: Start with small features or bug fixes, tell Claude to
+     propose a plan, and verify its suggested edits
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.c…
+──────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt …

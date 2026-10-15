@@ -1,0 +1,30 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · ~/proj[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m1 awaiting input · 0 working · 0 completed[39m
+
+[38;5;246mYour conversation moved to the background — enter opens it · esc [39m
+[38;5;246mreturns to it · ctrl+c twice quits[39m
+
+[1m[38;5;246mNeeds input[0m
+ [38;5;246mSessions that have a question or need your decision land here[39m
+[38;5;220m[48;5;237m✻[38;5;231m [1mQ-A-one: this is…[0m[48;5;237m  [38;5;246mANS-A-one: the first conversation (A) answe…[39m   [38;5;246m0s
+
+[49mWorking[39m
+ [38;5;246mSessions Claude is actively working on — they keep running even if [39m
+ [38;5;246myou close the terminal[39m
+
+[38;5;246mCompleted[39m
+ [38;5;246mFinished sessions wait here for you to review[39m
+
+
+
+
+ [38;5;246mA different way to work with Claude: hand off a bigger task than you
+[39m [38;5;246mwould chat through, and Claude organizes it in the sections above so
+[39m [38;5;246myou know when it needs you.[39m
+
+[2m──────────────────────────────────────────────────────────────────────
+[0m[38;5;246m❯[39m [7md[0m[38;5;246mescribe a task for a new session[39m
+[2m──────────────────────────────────────────────────────────────────────
+[0m  [38;5;211m⏵⏵ bypass permissions[38;5;246m · enter to return · space to reply · ? for sh…

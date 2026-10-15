@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ Scroll wheel is sending arrow keys · use PgUp/PgDn to scroll ▔
+
+    /btw first
+    /btw tell me everything
+
+      line 32 of a long block
+      line 33 of a long block
+      line 34 of a long block
+      line 35 of a long block
+      line 36 of a long block
+      line 37 of a long block
+      line 38 of a long block
+      line 39 of a long block
+      line 40 of a long block
+
+    ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close

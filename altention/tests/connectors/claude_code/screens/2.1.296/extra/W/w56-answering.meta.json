@@ -1,0 +1,25 @@
+{
+ "claude_code": "2.1.296 (Claude Code)",
+ "colour": true,
+ "env": "NO_COLOR= FORCE_COLOR=3",
+ "TERM": "tmux-256color",
+ "pane": [
+  56,
+  30
+ ],
+ "cursor_xy": [
+  0,
+  29
+ ],
+ "cursor_shown": false,
+ "alternate_screen": true,
+ "clients_attached": 0,
+ "claude_args": "--permission-mode default",
+ "how": "pane resized to 56x30: second /btw of the session, not answered yet",
+ "captured": "2026-10-11 04:18:57",
+ "files": {
+  "plain": "tmux capture-pane -p",
+  "esc": "tmux capture-pane -p -e"
+ },
+ "api": "a stand-in on 127.0.0.1 (no real model); scratch HOME, theme dark"
+}

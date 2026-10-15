@@ -1,0 +1,66 @@
+{
+  "format": 1,
+  "name": "progress",
+  "title": "進度",
+  "description": "讀所有對話紀錄，把每段工作歸到專案、寫進度日誌、產生每個專案的最新狀態。",
+  "pitch": "每 10 分鐘讀新的對話紀錄，用 Claude 整理每個專案做到哪裡。會用訂閱額度。",
+  "keep": "自動整理每個專案的進度",
+  "lose": "不會自動整理專案做到哪裡，也沒有 /report 匯報",
+  "order": 20,
+  "provides": "要知道某個專案做到哪、接續之前的工作：讀進度資料夾的 STATUS.md 和 projects/<專案>/STATUS.md。要留正式紀錄用 /report。",
+  "machines": "one",
+  "requires": [
+    {
+      "plugin": "chatlog",
+      "data": "chatlog"
+    }
+  ],
+  "schedules": [
+    {
+      "name": "run",
+      "when": {
+        "every": "10m"
+      },
+      "do": {
+        "run": "{python} \"{plugin}/progress.py\" run",
+        "env": {
+          "PROGRESS_CLAUDE": "{claude}"
+        },
+        "output": "none",
+        "log": "~/.cache/progress/cron.out",
+        "trace": {
+          "file": "~/.cache/progress/state.json",
+          "key": "last_run",
+          "within": "9m"
+        }
+      }
+    }
+  ],
+  "setup": [
+    {
+      "name": "claude-cli",
+      "run": null,
+      "today": "progress/install.sh：找不到 claude CLI 就失敗；建 ~/.cache/progress"
+    }
+  ],
+  "skills": [
+    {
+      "name": "report",
+      "path": "../skills/report"
+    }
+  ],
+  "data": [
+    {
+      "name": "progress",
+      "path": "{data}/progress",
+      "sync": "on-request",
+      "private": true
+    },
+    {
+      "name": "logs-mirror",
+      "path": "{data}/logs-mirror",
+      "sync": "none",
+      "private": true
+    }
+  ]
+}

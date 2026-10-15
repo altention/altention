@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ Q-A-one: this is conversation A
+
+● ANS-A-one: the first conversation (A) answered.
+
+✻ Cogitated for 1s · done 12:30 PM
+
+❯ Q-A-busy: a long turn in A
+
+● SAID-A-busy: A is working.
+
+● Running 1 shell command · 9s…
+  ⎿  $ sleep 25; echo done (9s)
+     (ctrl+b to run in background)
+
+
+
+
+
+✻ Swooping… (11s · ↓ 21 tokens)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · esc to interrupt

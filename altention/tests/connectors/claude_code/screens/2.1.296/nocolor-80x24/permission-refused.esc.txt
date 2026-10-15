@@ -1,0 +1,24 @@
+
+❯ please do the first thing
+
+● All done. Nothing else to report.
+
+✻ Crunched for 14s · done 3:31 AM
+
+❯ a second message while busy
+
+● All done. Nothing else to report.
+
+✻ Baked for 14s · done 3:31 AM
+
+❯ please touch the file
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Worked for 1s · done 3:32 AM
+                                                            ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ [7m [0m
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   ~/proj
+
+
+❯ Q-A-one: this is conversation A
+
+● ANS-A-one: the first conversation (A) answered.
+
+✻ Cooked for 1s · done 12:48 AM
+
+❯ Q-A-busy: a long turn in A
+
+● SAID-A-busy: A is working.
+
+  Ran 1 shell command
+
+● ANS-A-busy.
+
+✻ Cooked for 27s · done 12:50 AM
+
+※ recap: ANS-A-busy. (disable recaps in /config)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

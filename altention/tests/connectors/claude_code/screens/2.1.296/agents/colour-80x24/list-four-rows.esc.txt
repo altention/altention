@@ -1,0 +1,24 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.296[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · ~/proj[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m1 awaiting input · 3 working · 0 completed[39m
+
+[38;5;246mYour conversation moved to the background — enter opens it · esc returns to it ·
+ctrl+c twice quits[39m
+
+[38;5;246mNeeds input[39m
+[38;5;220m✻[39m [1mQ-A-one: this is…[0m       [38;5;246mANS-A-one: the first conversation (A) answered.[39m    [38;5;246m30s
+
+[1mWorking[0m
+[38;5;246m[48;5;237m✻[38;5;231m Q-D-one: one more…[39m      [38;5;246mANS-D-one: the fourth conversation (D) answered.[39m    [38;5;246m5s
+[49m✻ Q-C-one: another task…[39m  [38;5;246mANS-C-one: the third conversation (C) answered.[39m    [38;5;246m14s
+✻ ok[39m                      [38;5;246mANS-B-one: the second conversation (B) answered.[39m   [38;5;246m24s
+
+[39m
+
+
+
+[2m────────────────────────────────────────────────────────────────────────────────
+[0m[38;5;246m❯[39m [7md[0m[38;5;246mescribe a task for a new session[39m
+[2m────────────────────────────────────────────────────────────────────────────────
+[0m  [38;5;211m⏵⏵ bypass permissions[38;5;246m · enter to open · space to reply · ctrl+x to delete · ?…
