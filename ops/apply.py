@@ -8,6 +8,7 @@ machine set up by hand and one set up from here go the same way.
   python3 ops/apply.py all --dry-run          # what each would change; nothing updated, installed or written
   python3 ops/apply.py host-b --force-move    # see "single-machine plugins" below
   python3 ops/apply.py mac --allow-time chatlog/sync   # passed on to plugins.py apply there (a line's time changed)
+  python3 ops/apply.py lap --moved-from ~/old-engine   # the engine moved and its old folder is gone: its lines go too
 
 Where each plugin runs comes from plugin.json and the instance's plugins.json (ops/plugins.py show). A machine where
 that cannot be worked out is left alone and said (exit 1); the other machines are done (manager 2026-10-06).
@@ -110,8 +111,9 @@ if [ -n "$INSTANCE" ]; then step "更新實例" "ALT-STEP-OK instance-pull" pyth
 if [ {bot_leaves} = 1 ]; then  # the bot has moved away: stop it first, the installer's plugins.py apply then takes its two lines out
   step "停掉機器人（dcbot/uninstall.sh；先停行程，cron 的兩行接著由安裝拿掉）" "ALT-STEP-OK dcbot-uninstall" "$H/dcbot/uninstall.sh"
 fi
-# the one installer (3a.9): the same steps a person or a new machine runs, one copy of them
-"$H/install.sh" {allow} </dev/null > "$HOME/.cache/apply-step.out" 2>&1 && SRC=0 || SRC=$?
+# the one installer (3a.9): the same steps a person or a new machine runs, one copy of them; not its PATH check,
+# which would run the user's rc files on every apply (#code-review on 5601ddb)
+ALT_NO_PATH_CHECK=1 "$H/install.sh" {allow} </dev/null > "$HOME/.cache/apply-step.out" 2>&1 && SRC=0 || SRC=$?
 DONE=0; STOPPED=0; TODO=0
 while IFS= read -r L || [ -n "$L" ]; do
   case "$L" in
@@ -198,7 +200,7 @@ def still_held(name, needs, inv):
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     dry = force = False
-    allow, names, odd = [], [], []
+    allow, moved, names, odd = [], [], [], []
     while args:  # nothing unknown is ignored: a mistyped flag must not turn into a write
         a = args.pop(0)
         if a == "--dry-run":
@@ -207,15 +209,18 @@ def main(argv=None):
             force = True
         elif a == "--allow-time" and args and not args[0].startswith("-"):
             allow.append(args.pop(0))  # passed on to plugins.py apply on every machine done (the Mac's minute)
+        elif a == "--moved-from" and args and not args[0].startswith("-"):
+            moved.append(args.pop(0))  # passed on too: an old engine folder that is gone (C-17), ~ is that machine's
         elif a.startswith("-"):
             odd.append(a)
         else:
             names.append(a)
     if odd or not names:
-        print("不認得：%s。用法：python3 ops/apply.py <機器…|all> [--dry-run] [--force-move] [--allow-time 插件/項目]…"
+        print("不認得：%s。用法：python3 ops/apply.py <機器…|all> [--dry-run] [--force-move] [--allow-time 插件/項目]… [--moved-from 舊引擎資料夾]…"
               % " ".join(odd or ["（沒有機器）"]))
         return 2
-    allow_args = " ".join("--allow-time " + config.shell_quote(x) for x in allow)
+    allow_args = " ".join(["--allow-time " + config.shell_quote(x) for x in allow] +
+                          ["--moved-from " + config.shell_quote(x) for x in moved])  # quoted: plugins.py expands ~ there
     try:
         inv = inventory()
     except Exception as e:  # a one-off tool: fail, plainly, before touching any machine

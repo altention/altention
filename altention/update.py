@@ -9,7 +9,7 @@ Standard library only, and no other module of the engine is imported (as the sup
 must not stop the fixes from arriving. One round:
 - not this machine's engine (its own copy of altention/engine_id.py's rules, for the same reason) → nothing;
 - an engine unpacked from an archive (no .git at all) → nothing to update from: said, and the round counts as done;
-- the repo's git lock (agent-git.lock, shared with the sync and deploy.sh) taken by someone else, a rebase underway,
+- the repo's git lock (altention-git.lock, shared with the sync and deploy.sh) taken by someone else, a rebase underway,
   an index.lock → this round skipped;
 - which upstream: the instance's core.update (update_mode): "branch" the checkout's upstream branch, as it always
   was; "release" the highest vX.Y.Z tag, never the branch; "notify" (the default) moves nothing and only writes the
@@ -20,14 +20,24 @@ must not stop the fixes from arriving. One round:
 - a fast-forward when it can (edits in the working tree that do not overlap carry over); with local commits, the
   sync's update() (a rebase in a throwaway worktree, reset --keep) in a child process of its own session, killed
   whole after 300 seconds; however that fails, this round did not update: told, the old version runs on. Never
-  autostash.
+  autostash. To a release, rollback commits the supervisor made here are left behind, never put on top of it, and
+  rollbacks mixed with other local commits stop the round (C-07; sync.local_commits).
 Before moving, besides the syntax check, a load check: the upstream altention/ is imported (update, sync, config,
 engine_id) in a child; their top-level code runs, in an isolated throwaway place (python3 -I, HOME and cwd there).
 A commit that compiles but throws when loaded never arrives this way.
 After a move that changes what the supervisor counts as the bot's version (the trees of dcbot/ and altention/), and
 only while this engine's supervisor runs here, dcbot/state/restart-requested is written as deploy.sh writes it: the
 bot restarts once nothing is half done, the new version gets the supervisor's trial and a bad one is rolled back
-(the rollback commit sits on top of what was taken, so the next round finds nothing new: no loop).
+(the rollback commit sits on top of what was taken, so the next round finds nothing new: no loop). The other paths
+that move the engine (the sync standing in, home-pull; the launcher's fallback by its own short copy) call the same
+after_move (C-09). When dcbot/requirements.txt changed and the bot's venv is here, the restart waits for its packages
+(C-08): deps-pending is written under the lock, and pip runs as dcbot/install.sh does once the lock is let go
+(install_pending); worked → the flag; failing → no flag, the bot keeps the old code (whose packages it has), doctor
+says it, told once, tried again an hour later; killed halfway → the record is there, the round after takes it up. A machine restarted meanwhile starts the new
+code without the package: its trial fails and the supervisor rolls it back.
+Nothing else here runs install.sh: a skill the new version brings gets its link from the sync's next round (sync.new_skills,
+five minutes after this one); a new cron line or hook waits for install.sh or ops/apply.py, and doctor's
+plugins.would-apply says it meanwhile.
 A refused upstream stays refused (last_alive-update names its hash and why): the sync does not pull it while
 update.py is alive, nor do the launchers' fallbacks; it moves on only when upstream changes (a fix pushed) or a
 person runs ops/apply.py from the control machine (its home-pull --take-refused; a plain home-pull, as the bot's
@@ -38,7 +48,8 @@ cron does not run this file but altention/cron_update.py: when a round here does
 ALT-UPDATE-DONE: it did not load, it threw, it took too long), that launcher fast-forwards by plain git and writes
 the reason down itself (manager 2026-10-06).
 Each round that works writes ~/.local/state/altention/last_ok-update; the sync writes last_ok-sync. Each looks at
-the other's: more than 45 minutes old (three rounds) → told; the sync then also moves the engine itself, so a fix
+the other's: more than three of its rounds old (stale_of: the interval apply wrote to intervals.json, as the
+instance may set it; 45 minutes without that file) → told; the sync then also moves the engine itself, so a fix
 still arrives while this one is broken (manager 2026-10-06).
 Telling: a line in ~/.local/state/altention/alerts first (one per line, the last 200 kept; doctor reads it from the
 control machine), then altention dc notify, at most once in 6 hours per kind (every time when that record cannot be
@@ -64,11 +75,12 @@ ALWAYS = ("altention/update.py", "altention/sync.py", "altention/config.py", "al
           "dcbot/tools/dchook", "dcbot/tools/dcctl", "dcbot/tools/dcremote",
           "bin/home-pull", "bin/home-git", "bin/altention")
 CHECK_DIR = "altention-update-check"  # the fixed name of the parent; each round makes its own folder inside
-STALE = 45 * 60          # three 15-minute rounds
+STALE = 45 * 60          # three 15-minute rounds: when apply has not written intervals.json
+STALE_ROUNDS = 3         # rounds of the other's line missed before it is told (or the sync stands in)
 TELL_EVERY = 6 * 3600
 CHECK_TIMEOUT, CHILD_TIMEOUT, GIT_TIMEOUT = 120, 300, 120
 ALERTS_KEPT = 200
-LOCK_NAME = "agent-git.lock"  # COMPAT: the name the sync and deploy.sh use today; renamed with them after stage 4
+LOCK_NAME = "altention-git.lock"
 
 UPDATE_MODES = ("notify", "release", "branch")  # the instance's core.update (manager 2026-10-14); notify when not set
 RELEASE_TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")  # what the release command tags a published commit with
@@ -95,6 +107,7 @@ BLOCKED = []  # (upstream hash, why) when this round refused the upstream
 REACHED = []  # set when this round compared with the upstream (updated, nothing new, refused): only then alive
 SKIPPED = []  # why this round did not get that far (the lock, a rebase left, a path not readable, fetch…)
 SAID = []     # what this round came to, in words (updated X → Y, nothing new, refused): the summary line
+ALERTED = []  # the kinds this round wrote down: mark_ok keeps their record of being told
 
 
 def mark_skipped(why):
@@ -118,19 +131,24 @@ def mark_skipped(why):
 
 def update_mode():
     """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
-    reading is copied into cron_update.py, cron_sync.py and sync.py; the agreement test holds them together).
+    reading is copied into cron_update.py, cron_sync.py, sync.py and dcbot/supervisor.py; the agreement test holds
+    them together).
     plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
     yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
     UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
     machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
-    "notify" when there is none."""
-    def last():
+    "notify" when there is none, and then `problem` says that too (C-04)."""
+    def last(problem="", unseen=""):
+        """The mode last read, with `problem`; none (or not one of UPDATE_MODES): notify, and why, `unseen` being
+        what was not seen (C-04: a machine that never read its settings is told it does not update by itself)."""
         try:
             with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
                 m = json.load(f).get("mode")
         except (OSError, ValueError, AttributeError):
             m = None
-        return m if m in UPDATE_MODES else "notify"
+        if m in UPDATE_MODES:
+            return m, problem
+        return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
     named = os.environ.get("ALT_INSTANCE")
     pointer = os.path.expanduser("~/.config/altention/instance")
     if not named and os.path.exists(pointer):
@@ -138,31 +156,31 @@ def update_mode():
             with open(pointer) as f:
                 named = f.readline().strip()
         except (OSError, UnicodeDecodeError) as e:
-            return last(), "讀不了 %s（%s）" % (pointer, e)
+            return last("讀不了 %s（%s）" % (pointer, e))
     if named == "-":  # this machine has left its instance
-        return last(), ""
+        return last(unseen="這台已經離開實例")
     if named:
         inst = os.path.expanduser(named)
         if not os.path.isdir(inst):
-            return last(), "實例資料夾不存在：%s" % inst
+            return last("實例資料夾不存在：%s" % inst)
     else:
         inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
         if not os.path.isdir(inst):
-            return last(), ""
+            return last(unseen="看不到實例（%s）" % inst)
     path = os.path.join(inst, "plugins.json")
     try:
         with open(path, encoding="utf-8") as f:
             got = json.load(f)
     except FileNotFoundError:
-        return last(), ""
+        return last(unseen="實例裡沒有 %s" % path)
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return last(), "讀不出 %s（%s）" % (path, e)
+        return last("讀不出 %s（%s）" % (path, e))
     core = got.get("core", {}) if isinstance(got, dict) else None
     if not isinstance(core, dict):
-        return last(), "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容")
+        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
     mode = core.get("update", "notify")
     if mode not in UPDATE_MODES:
-        return last(), "%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40])
+        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
     return mode, ""
 
 
@@ -198,19 +216,43 @@ def latest_release(rnd):
 
 
 def available(found):
-    """update-available: the release newer than HEAD that notify mode saw ({tag, commit, at}), for doctor; removed
-    when there is none or the mode is not notify."""
+    """update-available: the release newer than HEAD that notify mode saw ({tag, commit, at, told}), for doctor;
+    removed when there is none or the mode is not notify. A release not told yet is told (C-18: once per release,
+    pushed out like a notice; told: the tag whose notice went out, kept while the file is). True when told now."""
     path = os.path.join(state_dir(), "update-available")
     try:
+        with open(path) as f:
+            told = json.load(f).get("told")
+    except (OSError, ValueError, AttributeError):
+        told = None
+    try:
         if found:
+            if told != found[0] and tell_release(found[0]):
+                told = found[0]
             os.makedirs(state_dir(), exist_ok=True)
             with open(path + ".tmp", "w") as f:
-                json.dump({"tag": found[0], "commit": found[1], "at": time.time()}, f)
+                json.dump({"tag": found[0], "commit": found[1], "at": time.time(), "told": told}, f)
             os.replace(path + ".tmp", path)
+            return told == found[0]
         elif os.path.lexists(path):
             os.remove(path)
     except OSError:
         pass
+    return False
+
+
+def tell_release(tag):
+    """The notice that `tag` is out (altention dc notify, the default channel), with how to take it. True when it
+    went out; not, and it is tried again next round."""
+    text = ("🆕 引擎有新的發佈版本 %s（這台的 core.update 是 notify：不會自己更新）。要更新：跟 Claude 說「更新引擎」"
+            "（它照全域說明在引擎跑 python3 altention/update.py --release、./install.sh、python3 ops/doctor.py；"
+            "這版改了什麼在 CHANGELOG.md）。要以後自動跟著發佈版本：實例 plugins.json 的 core.update 設成 release。" % tag)
+    try:
+        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", text], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def last_alive():
@@ -264,11 +306,12 @@ def mark_ok(name, extra=None):
     """Worked: written down, and what this one was told about is told again next time it goes wrong (a second,
     different problem within six hours must not stay silent: #code-review-2 2026-10-06)."""
     told_path = os.path.join(state_dir(), "alerts-told.json")
+    gone = lambda k: k.startswith(name + "/") and k not in ALERTED  # noqa: E731 (told this round: still so)
     try:
         with open(told_path) as f:
             told = json.load(f)
-        if isinstance(told, dict) and any(k.startswith(name + "/") for k in told):
-            told = dict((k, v) for k, v in told.items() if not k.startswith(name + "/"))
+        if isinstance(told, dict) and any(gone(k) for k in told):
+            told = dict((k, v) for k, v in told.items() if not gone(k))
             with open(told_path + ".tmp", "w") as f:
                 json.dump(told, f)
             os.replace(told_path + ".tmp", told_path)
@@ -301,6 +344,7 @@ def add_alert(rows, stamp, source, kind, text, keep=200):
 
 def alert(source, kind, text, notify=True):
     """Write it down here first (doctor reads it), then push it out, at most once in TELL_EVERY per kind."""
+    ALERTED.append("%s/%s" % (source, kind))
     folder = state_dir()
     try:
         os.makedirs(folder, exist_ok=True)
@@ -367,10 +411,13 @@ def bot_running():
         return True
 
 
-def ask_bot_restart(rnd, before, after):
-    """deploy.sh's flag after a move that changed the bot's version, when the bot runs here. True when written."""
-    if bot_version(rnd, before) == bot_version(rnd, after) or not bot_running():
-        return False
+REQUIREMENTS = "dcbot/requirements.txt"  # what dcbot/install.sh installs into the bot's venv
+PIP_TIMEOUT = 600
+DEPS_PENDING = "deps-pending"  # in the state folder: {head, why, at} while the bot's packages are not installed
+
+
+def write_restart_flag(tell=None):
+    """deploy.sh's flag (the bot restarts once nothing is half done). True when written."""
     flag = os.path.join(ENGINE, "dcbot", "state", "restart-requested")
     try:
         with open(flag + ".tmp", "w") as f:
@@ -378,8 +425,124 @@ def ask_bot_restart(rnd, before, after):
         os.replace(flag + ".tmp", flag)
         return True
     except OSError as e:
-        alert("update", "restart", "引擎更新了，但寫不了機器人的重啟旗標（%s）：機器人還在跑舊版，請用 !restart" % e)
+        (tell or alert)("update", "restart", "引擎更新了，但寫不了機器人的重啟旗標（%s）：機器人還在跑舊版，請用 !restart" % e)
         return False
+
+
+def install_deps():
+    """pip install -r dcbot/requirements.txt into the bot's venv, as dcbot/install.sh does it: "" or why not."""
+    try:
+        r = subprocess.run([os.path.join(ENGINE, "dcbot", ".venv", "bin", "python"), "-m", "pip", "install", "-q", "-r",
+                            "requirements.txt"], cwd=os.path.join(ENGINE, "dcbot"), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, errors="replace", timeout=PIP_TIMEOUT,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return "pip install %d 秒沒有結束" % PIP_TIMEOUT
+    except OSError as e:
+        return "跑不了 pip（%s）" % e
+    return "" if r.returncode == 0 else "pip install 失敗（結束碼 %d）：%s" % (r.returncode, " ".join(r.stdout.split())[-300:])
+
+
+RETRY_AFTER = 3600  # a pip that failed is tried again an hour later, not every round (#code-review of df95bc2)
+INSTALLING = "安裝中…"
+
+
+def deps_pending():
+    """The deps-pending record ({head, why, at, next}) or None."""
+    try:
+        with open(os.path.join(state_dir(), DEPS_PENDING)) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def mark_deps(head, why, next_try=0, tries=0):
+    """deps-pending written (the head it is for, why, when to try pip next, how many pips failed for it) or, with
+    why "", removed. Never fails the round."""
+    path = os.path.join(state_dir(), DEPS_PENDING)
+    try:
+        if why:
+            os.makedirs(state_dir(), exist_ok=True)
+            with open(path + ".tmp", "w") as f:
+                json.dump({"head": head, "why": why, "at": time.time(), "next": next_try, "tries": tries}, f)
+            os.replace(path + ".tmp", path)
+        elif os.path.lexists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def has_venv():
+    return os.path.exists(os.path.join(ENGINE, "dcbot", ".venv", "bin", "python"))
+
+
+def after_move(rnd, before, after, tell=None):
+    """After HEAD moved from `before` to `after` by any path (this round, the sync standing in, home-pull; C-09),
+    under the git lock. dcbot/requirements.txt changed and the bot's venv here, or packages still pending from an
+    earlier move: deps-pending for `after`, no flag; install_pending() runs pip once the lock is let go (C-08;
+    #code-review of df95bc2: pip needs no git lock, and its record is there before it runs, so a pip killed halfway
+    is not forgotten). Else, the bot's version changed and its supervisor runs here: the restart flag. `rnd`:
+    anything with git(). True when the flag was written."""
+    tell = tell or alert
+    pending = deps_pending()
+    if has_venv() and (pending or rnd.git("rev-parse", "-q", "--verify", "%s:%s" % (before, REQUIREMENTS)).stdout.strip()
+                       != rnd.git("rev-parse", "-q", "--verify", "%s:%s" % (after, REQUIREMENTS)).stdout.strip()):
+        mark_deps(after, INSTALLING if not pending else str(pending.get("why") or INSTALLING),
+                  0 if not pending else pending.get("next") or 0, 0 if not pending else tries_of(pending))
+        return False
+    if bot_version(rnd, before) == bot_version(rnd, after) or not bot_running():
+        return False
+    return write_restart_flag(tell)
+
+
+def tries_of(pending):
+    n = pending.get("tries")
+    return n if type(n) is int and n >= 0 else 0
+
+
+def install_pending(tell=None):
+    """pip for a deps-pending record, outside the git lock, when its time has come ("next"; one at a time, by a lock
+    of its own). The record says 安裝中… before pip starts, with a next try past PIP_TIMEOUT: killed halfway, the
+    round after takes it up. Failed: why, next try in RETRY_AFTER, told the first time only (doctor keeps saying it). Worked and HEAD is still
+    the head it was for: the record goes, and the restart flag if the bot runs here; HEAD moved meanwhile: the record
+    stays for that HEAD, tried again at once. "" or what it did."""
+    tell = tell or alert
+    pending = deps_pending()
+    if not pending:
+        return ""
+    if not has_venv():  # the bot is not installed here (any more): nothing to install into
+        mark_deps("", "")
+        return ""
+    try:
+        if time.time() < float(pending.get("next") or 0):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    try:
+        lock = open(os.path.join(state_dir(), DEPS_PENDING + ".lock"), "a")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return ""  # another one is installing
+    try:
+        head, tries = str(pending.get("head") or ""), tries_of(pending)
+        mark_deps(head, INSTALLING, time.time() + PIP_TIMEOUT + 60, tries)
+        why = install_deps()
+        if why:
+            mark_deps(head, why, time.time() + RETRY_AFTER, tries + 1)
+            (tell if not tries else lambda *a: alert(*a, notify=False))("update", "deps", "引擎更新到 %s，但機器人要的套件沒裝上（%s）：沒有重啟，機器人繼續跑舊版。一小時後會再試；"
+                 "要現在處理：在這台的引擎跑 dcbot/install.sh，再在 Discord 打 !restart" % (head[:12], why))
+            return "機器人要的套件沒裝上，沒有重啟（見 alerts）"
+        now = subprocess.run(["git", "-C", ENGINE, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             universal_newlines=True, timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL).stdout.strip()
+        if now != head:  # moved on while pip ran: what it needs is the next try's
+            mark_deps(now, INSTALLING, 0, tries)
+            return "套件裝好了，但引擎又前進了，下一輪再對新的版本裝一次"
+        mark_deps("", "")
+        restart = bot_running() and write_restart_flag(tell)
+        return "機器人要的套件裝好了%s" % ("，機器人會自己重啟套用新版" if restart else "")
+    finally:
+        lock.close()
 
 
 def verdict():
@@ -542,8 +705,9 @@ def load_check(rnd, upstream, base):
 
 
 def rebase_in_child(rnd, to=None):
-    """The sync's update() (rebase in a throwaway worktree, reset --keep), in a child of its own session holding the
-    same lock (its fd passed on), killed whole after CHILD_TIMEOUT. "" when it worked, else why not."""
+    """The sync's update() (rebase in a throwaway worktree, reset --keep; to a release, this machine's rollback
+    commits left behind), in a child of its own session holding the same lock (its fd passed on), killed whole after
+    CHILD_TIMEOUT. (why not, "") when it did not work; ("", what it said) when it did."""
     code = ("import sys; sys.path.insert(0, %r)\n"
             "from altention import sync\nrepo = sync.Repo(%r)\nrepo.lock_fd = %d\n"
             "c, note = sync.update(repo%s)\nprint(note or '')\nsys.exit(c)\n"
@@ -553,7 +717,7 @@ def rebase_in_child(rnd, to=None):
                              universal_newlines=True, stdin=subprocess.DEVNULL, start_new_session=True,
                              pass_fds=(rnd.lock.fileno(),))
     except OSError as e:
-        return "起不了更新的子行程（%s）" % e
+        return "起不了更新的子行程（%s）" % e, ""
     try:
         out, _ = p.communicate(timeout=CHILD_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -562,14 +726,30 @@ def rebase_in_child(rnd, to=None):
         except OSError:
             pass
         p.wait()
-        return "更新的子行程 %d 秒沒有結束，已中止" % CHILD_TIMEOUT
-    return "" if p.returncode == 0 else "更新失敗（結束碼 %s）：%s" % (p.returncode, (out or "").strip()[-300:])
+        return "更新的子行程 %d 秒沒有結束，已中止" % CHILD_TIMEOUT, ""
+    if p.returncode == 0:
+        return "", " ".join((out or "").split())[:300]
+    return "更新失敗（結束碼 %s）：%s" % (p.returncode, (out or "").strip()[-300:]), ""
+
+
+def stale_of(part):
+    """How old the last_ok of `part` ("sync", or "engine-update" for this file's own) may be: STALE_ROUNDS of the
+    interval its cron line runs at, as apply wrote it (intervals.json, C-37 C: the instance may change it); STALE when
+    that cannot be read."""
+    try:
+        with open(os.path.join(state_dir(), "intervals.json")) as f:
+            v = json.load(f).get(part)
+        if type(v) is int and 60 <= v <= 86400:
+            return STALE_ROUNDS * v
+    except (OSError, ValueError, AttributeError):
+        pass
+    return STALE
 
 
 def watch_sync():
-    """The sync's last_ok, once it has one: more than STALE old → told."""
+    """The sync's last_ok, once it has one: more than stale_of("sync") old → told."""
     t = last_ok("sync")
-    if t is not None and time.time() - t > STALE:
+    if t is not None and time.time() - t > stale_of("sync"):
         alert("update", "sync-stale", "引擎和實例的同步已經 %d 分鐘沒有成功" % ((time.time() - t) // 60))
 
 
@@ -608,7 +788,7 @@ def one_round(force_release=False):
         else:
             mode, problem = update_mode()
         if problem:
-            alert("update", "mode", "讀不到引擎更新的模式（%s），照上次的 %s" % (problem, mode))
+            alert("update", "mode", "讀不到引擎更新的模式（%s），這一輪照 %s" % (problem, mode))
         elif not force_release:
             remember_mode(mode)
         if rnd.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").returncode != 0:
@@ -628,9 +808,9 @@ def one_round(force_release=False):
             rel = latest_release(rnd)
             newer = rel if rel and head and rnd.git("merge-base", "--is-ancestor", rel[1], head).returncode != 0 else None
             if mode == "notify" or not newer:
-                available(newer if mode == "notify" else None)
+                told = available(newer if mode == "notify" else None)
                 REACHED.append(mode)
-                SAID.append("有新版 %s（core.update 是 notify：不自動更新）" % newer[0] if newer
+                SAID.append("有新版 %s（core.update 是 notify：不自動更新%s）" % (newer[0], "；已推播" if told else "") if newer
                             else "沒有比現在新的發佈版本（%s）" % (rel[0] if rel else "還沒有任何發佈版本"))
                 mark_ok("update", {"head": head[:12], "mode": mode})
                 return 0
@@ -657,6 +837,7 @@ def one_round(force_release=False):
             SAID.append("擋下 %s：%s" % (up[:12], " ".join(why.split())[:150]))  # one line: the log takes one
             alert("update", "check", "上游 %s 沒通過檢查，沒有更新，照舊版跑：%s" % (up[:12], why))
             return 1
+        note = ""
         if rnd.git("merge-base", "--is-ancestor", head, up).returncode == 0:
             r = rnd.git("merge", "--ff-only", "-q", up)
             if r.returncode != 0:
@@ -665,15 +846,16 @@ def one_round(force_release=False):
                       % (up[:12], (r.stderr.strip() or r.stdout.strip())[:200]))
                 return 1
         else:
-            why = rebase_in_child(rnd, None if mode == "branch" else up)
+            why, note = rebase_in_child(rnd, None if mode == "branch" else up)
             if why:
                 SKIPPED.append("有本機 commit，rebase 沒成功")
                 alert("update", "rebase", "有本機 commit，更新到 %s 沒成功，照舊版跑：%s" % (up[:12], why))
                 return 1
         REACHED.append("updated")
         now = rnd.git("rev-parse", "HEAD").stdout.strip()
-        restart = ask_bot_restart(rnd, head, now)
-        SAID.append("更新了 %s → %s%s" % (head[:12], now[:12], "；機器人會自己重啟套用新版（#audit 看得到）" if restart else ""))
+        restart = after_move(rnd, head, now)
+        SAID.append("更新了 %s → %s%s%s" % (head[:12], now[:12], "；" + note if note else "",
+                                         "；機器人會自己重啟套用新版（#audit 看得到）" if restart else ""))
         mark_ok("update", {"head": now[:12]})
         return 0
     finally:
@@ -684,12 +866,18 @@ def main(argv):
     if argv not in ([], ["--release"]):
         print(__doc__)
         return 2
-    del BLOCKED[:], REACHED[:], SKIPPED[:], SAID[:]  # this round's own
+    del BLOCKED[:], REACHED[:], SKIPPED[:], SAID[:], ALERTED[:]  # this round's own
     try:
         code = one_round(force_release=bool(argv))
     except Exception as e:  # written down; no DONE line, so cron_update.py fast-forwards by plain git
         alert("update", "error", "引擎更新這一輪出錯（%s: %s）" % (type(e).__name__, e))
         return 1
+    try:  # C-08: the bot's packages, with the git lock let go (one_round's), for this move or an earlier one
+        done = install_pending()
+        if done:
+            SAID.append(done)
+    except Exception as e:
+        alert("update", "deps", "裝機器人的套件這一步出錯（%s: %s）" % (type(e).__name__, e))
     if REACHED:  # only a round that compared with the upstream; a skipped one leaves the record (and its block) as it was
         mark_alive()
         try:
@@ -703,7 +891,7 @@ def main(argv):
     except Exception:
         pass
     # the round in one line, just before DONE: cron_update.py writes it into cron-update.log (manager 2026-10-07)
-    print(" ".join((SAID[-1] if SAID else "沒有更新：%s" % SKIPPED[-1] if SKIPPED else "沒有更新").split()))
+    print(" ".join(("；".join(SAID) if SAID else "沒有更新：%s" % SKIPPED[-1] if SKIPPED else "沒有更新").split()))
     print("ALT-UPDATE-DONE")  # cron_update.py: this round came to its end
     return code
 

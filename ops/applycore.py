@@ -13,6 +13,10 @@ What it changes, and only that:
   chatlog minute, by decision);
 - extra lines: removed only when they carry our new marker AND that plugin's plugin.json was read and it is plainly
   off or disabled here (manager 2026-10-06). Hooks carry no marker: apply never removes a hook.
+- the engine moved (C-14, C-17): a line or hook of an item at an old engine folder (a link to this engine, another
+  checkout of it, or a folder no longer there) is given the new path in its place; a marked line of that old folder
+  with no counterpart, of a plugin that has items here, is removed ("moved"). Someone else's folder is never taken.
+- a line marked with the plugin alone that plan finds the same gets the item's name in its marker (C-15).
 Never touched: other people's lines, old-looking lines that match nothing exactly ("unclaimed"), our lines commented
 out by hand (paused), everything of a plugin whose place is unknown. A crontab or settings.json that cannot be read
 is not written.
@@ -35,6 +39,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -139,9 +144,10 @@ class one_at_a_time(object):
 def mark_line(raw, plugin_name, mark=None):
     """Our marker at the end of a raw line: an old marker or our own at the very end is replaced, anything else is
     kept as it is and the marker follows (the command's bytes never change). A line already marked for this plugin
-    is left as it is (a name added later is no reason to rewrite it)."""
+    keeps its bytes; one marked with the plugin alone gets the item's name in its marker (C-15: the marker's end is
+    the only part rewritten)."""
     t = plancore.text(raw)
-    if plancore.marked(t) == plugin_name:
+    if plancore.marked(t) == plugin_name and (mark in (None, plugin_name) or plancore.marked_name(t) is not None):
         return raw
     mark = mark or plugin_name
     for pattern in (plancore.NEW_MARK, plancore.OLD_MARK):
@@ -172,13 +178,25 @@ def removable(rows):
     return {n for n, f, d, w, r in rows if d is not None and w in ("off", "disabled")}
 
 
-def new_crontab(lines, result, rows, allow_time=()):
+def auto_time(w, installed, recorded=None):
+    """C-37: whether a line whose time differs is retimed without --allow-time: the instance set this item's time
+    (w["override"]), or the installed time is the very time apply wrote for an override that is gone now
+    (`recorded`, overrides.json: {"<plugin>/<name>": time}). A time changed by hand in the crontab is neither."""
+    if w.get("override"):
+        return True
+    t = " ".join((installed or "").split()[:5])
+    return bool(recorded) and recorded.get("%s/%s" % (w["plugin"], w["name"])) == t
+
+
+def new_crontab(lines, result, rows, allow_time=(), recorded=None):
     """(new raw lines, [action], removed, kept): plan's result applied to the raw crontab lines under the rules
-    above. `kept` is the raw lines this run did not mean to change, in order (guard a)."""
+    above. `kept` is the raw lines this run did not mean to change, in order (guard a). `recorded`: the times apply
+    wrote for the instance's overrides (read_overrides), for auto_time."""
     out, actions, removed, kept = [], [], 0, []
     by_text = {}
     for status, w, txt, note in result:
-        if txt and status in ("same", "time differs", "extra", "elsewhere", "replaced") and (w is None or w["kind"] == "cron"):
+        if txt and status in ("same", "time differs", "extra", "elsewhere", "replaced", "moved", "gone", "turned off") and \
+                (w is None or w["kind"] in ("cron", "off")):
             by_text.setdefault(txt, []).append((status, w))
     off = removable(rows)
     for raw in lines:
@@ -200,15 +218,28 @@ def new_crontab(lines, result, rows, allow_time=()):
                 actions.append("標記：%s/%s\n     前：%s\n     後：%s" % (w["plugin"], w["name"], t, new.decode("utf-8")))
             else:
                 kept.append(raw)
+        elif status == "turned off":  # plancore.compare: the instance turned this item off (C-37)
+            removed += 1
+            actions.append("拿掉（實例設定關掉了 %s/%s）：%s" % (w["plugin"], w["name"], t.strip()))
         elif status == "time differs":
-            if "%s/%s" % (w["plugin"], w["name"]) in allow_time:
+            auto = auto_time(w, t, recorded)
+            if auto or "%s/%s" % (w["plugin"], w["name"]) in allow_time:
                 new = mark_line(retime(raw, w["key"][0]), w["plugin"], plancore.marker(w))
                 out.append(new)
-                actions.append("改時間：%s/%s\n     前：%s\n     後：%s" % (w["plugin"], w["name"], t, new.decode("utf-8")))
+                actions.append("改時間%s：%s/%s\n     前：%s\n     後：%s" % (
+                    "（實例設定改的）" if w.get("override") else "（實例的設定拿掉了，回到插件的時間）" if auto else "",
+                    w["plugin"], w["name"], t, new.decode("utf-8")))
             else:
                 out.append(raw)
                 kept.append(raw)
                 actions.append("沒改（時間不同，要改請加 --allow-time %s/%s）" % (w["plugin"], w["name"]))
+        elif status == "gone":  # plancore.compare: would be replaced, but its old folder is gone and nobody named it
+            out.append(raw)
+            kept.append(raw)
+            actions.append("留著（像是引擎搬家前的行，但那個資料夾已經不在；確定是引擎的舊資料夾就加 --moved-from <資料夾> 再跑）：%s" % t.strip())
+        elif status == "moved":  # plancore.compare: a line of the engine's old folder, its plugin's new lines written here
+            removed += 1
+            actions.append("拿掉（引擎搬家前的舊路徑，%s 的新行已經寫上）：%s" % (plancore.marked(t), t.strip()))
         elif status == "elsewhere":  # plancore.elsewhere: the item's own "on" plainly leaves this machine out
             removed += 1
             actions.append("拿掉（%s/%s 不在這台跑）：%s" % (w["plugin"], w["name"], t.strip()))
@@ -234,26 +265,62 @@ def hook_list(settings):
 
 
 def new_settings(settings, result):
-    """(new settings, [action], added): missing hooks added; nothing is ever removed, nothing else changes."""
+    """(new settings, [action], added): missing hooks added, each in a group of its own (so a tool rewriting its own
+    group, as dchook did, takes nothing of ours with it); a hook plan found replaced (the same hook at an old engine
+    folder) given the item's command and timeout in its place; a twin plan found moved (it would run twice) taken
+    out. Nothing else is removed or changed. `added` holds the commands added (str), ("swap", old command, new
+    command, had a timeout, its timeout, the item's timeout) and ("drop", event, matcher, command): write_settings
+    checks the result by undoing them."""
     new = copy.deepcopy(settings)
     actions, added = [], []
     for status, w, txt, note in result:
-        if status == "missing" and w["kind"] == "hook":
+        if w is not None and w["kind"] == "hook" and status in ("replaced", "moved"):
             event, matcher, _, timeout = w["key"]
-            groups = new.setdefault("hooks", {}).setdefault(event, [])
-            group = next((g for g in groups if (g.get("matcher") or "") == matcher), None)
-            if group is None:
-                group = {"matcher": matcher, "hooks": []} if matcher else {"hooks": []}
-                groups.append(group)
+            groups = new.get("hooks", {}).get(event, [])
+            for g in groups:
+                if (g.get("matcher") or "") != matcher:
+                    continue
+                h = next((h for h in g.get("hooks") or [] if h.get("command") == txt), None)
+                if h is None:
+                    continue
+                if status == "replaced":  # the same hook at the engine's old folder (C-17): in place
+                    added.append(("swap", txt, w["text"], "timeout" in h, h.get("timeout"), timeout))
+                    h["command"] = w["text"]
+                    if timeout is not None:
+                        h["timeout"] = timeout
+                    else:
+                        h.pop("timeout", None)
+                    actions.append("換掉 hook（引擎搬家前的舊路徑）：%s/%s\n     前：%s\n     後：%s" % (w["plugin"], w["name"], txt, w["text"]))
+                else:  # a second copy of the item at an old engine folder: it would run twice
+                    added.append(("drop", event, matcher, txt))
+                    g["hooks"].remove(h)
+                    actions.append("拿掉 hook（引擎搬家前的舊路徑，同一項已經有一個）：%s/%s：%s" % (w["plugin"], w["name"], txt))
+                break
+            tidy(new)
+        elif status == "missing" and w["kind"] == "hook":
+            event, matcher, _, timeout = w["key"]
             entry = {"type": "command", "command": w["text"]}
             if timeout is not None:
                 entry["timeout"] = timeout
-            group["hooks"].append(entry)
+            group = {"matcher": matcher, "hooks": [entry]} if matcher else {"hooks": [entry]}
+            new.setdefault("hooks", {}).setdefault(event, []).append(group)
             added.append(w["text"])
             actions.append("加上 hook：%s/%s" % (w["plugin"], w["name"]))
+        elif status == "gone" and w is not None and w["kind"] == "hook":
+            actions.append("留著（像是引擎搬家前的 hook，但那個資料夾已經不在；確定是引擎的舊資料夾就加 --moved-from <資料夾> 再跑）：%s" % txt)
         elif status == "unclaimed" and w is None and any(txt == h.get("command") for _, _, h in hook_list(settings)):
             actions.append("留著（沒有插件要的 hook；hook 沒有標記，apply 不拿掉 hook）：%s" % txt)
     return new, actions, added
+
+
+def tidy(settings):
+    """Groups, events and a "hooks" left empty dropped, in place."""
+    for event, groups in list((settings.get("hooks") or {}).items()):
+        settings["hooks"][event] = [g for g in groups if g.get("hooks")]
+        if not settings["hooks"][event]:
+            del settings["hooks"][event]
+    if "hooks" in settings and not settings["hooks"]:
+        del settings["hooks"]
 
 
 def raise_settings(settings, short):
@@ -289,6 +356,136 @@ def private_write(path, data):
         f.flush()
         os.fsync(f.fileno())
     os.chmod(path, 0o600)
+
+
+def overrides_path():
+    return os.path.join(state_root(), "overrides.json")
+
+
+def read_overrides():
+    """{"<plugin>/<name>": cron time} apply wrote for the instance's overrides here; {} when none or unreadable (then
+    a line left at an old override's time is only changed by --allow-time, as any other)."""
+    try:
+        with open(overrides_path(), encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return dict((k, v) for k, v in got.items() if isinstance(k, str) and isinstance(v, str)) if isinstance(got, dict) else {}
+
+
+def note_overrides(result, new_lines, engine):
+    """After a crontab write: the time each overridden item's line now has, so taking the override away later puts
+    the plugin's time back by itself (auto_time); items no longer overridden are dropped. Never raises."""
+    try:
+        texts = [t for t in (plancore.text(l) for l in new_lines) if t is not None]
+        have = set(h[0] for h in plancore.installed_cron(texts, engine)[0])
+    except Exception:
+        return
+    rec = read_overrides()
+    before = dict(rec)
+    for status, w, _txt, _note in result:
+        if not w or w.get("kind") not in ("cron", "off"):
+            continue
+        k = "%s/%s" % (w["plugin"], w["name"])
+        if w["kind"] == "off":
+            rec.pop(k, None)
+            continue
+        written = w["key"] in have  # the item's line, as asked (by content), is in the crontab now
+        if written and w.get("override"):
+            rec[k] = w["key"][0]
+        elif written:
+            rec.pop(k, None)  # the plugin's own time is in place
+    if rec == before:
+        return
+    tmp = overrides_path() + ".tmp-%d" % os.getpid()
+    try:
+        os.makedirs(state_root(), exist_ok=True)
+        private_write(tmp, json.dumps(rec, sort_keys=True).encode("utf-8"))
+        os.replace(tmp, overrides_path())
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+INTERVALS = ("engine-update", "sync", "watch")  # the core's lines whose interval update.py and the sync read
+
+
+def intervals_path():
+    """{"engine-update": seconds, "sync": seconds, "watch": seconds}: what update.py and the sync read for "three
+    rounds missed" (they import nothing of the engine's settings code); beside their last_ok files."""
+    return os.path.join(os.path.expanduser("~/.local/state/altention"), "intervals.json")
+
+
+def cron_interval(fields):
+    """Seconds between runs of a cron time (five fields) that runs evenly: */N or evenly spread minutes every hour, a
+    minute every hour, a minute every H hours (*/H or a-23/H), or once a day; None for anything else (days of the
+    week, irregular lists)."""
+    if len(fields) != 5 or fields[2:] != ["*", "*", "*"]:
+        return None
+    minute, hour = fields[0], fields[1]
+
+    def num(x, top):
+        return int(x) if x.isdigit() and int(x) < top else None
+    if hour == "*":
+        if minute.startswith("*/") and minute[2:].isdigit() and 0 < int(minute[2:]) <= 60 and 60 % int(minute[2:]) == 0:
+            return int(minute[2:]) * 60
+        ms = [num(x, 60) for x in minute.split(",")]
+        if None in ms or ms != sorted(set(ms)) or 60 % len(ms):
+            return None
+        step = 60 // len(ms)
+        return step * 60 if all(b - a == step for a, b in zip(ms, ms[1:])) else None
+    if num(minute, 60) is None:
+        return None
+    if num(hour, 24) is not None:
+        return 86400
+    m = re.match(r"^(\*|\d+-23)/(\d+)$", hour)
+    if m and 0 < int(m.group(2)) <= 24 and 24 % int(m.group(2)) == 0:
+        return int(m.group(2)) * 3600
+    return None
+
+
+def note_intervals(new_lines, engine=None):
+    """After apply wrote the crontab (or found nothing to change): the interval each of the core's INTERVALS lines
+    runs at, read from that line in the crontab itself (#code-review on bcc099a: worked out from the settings, an
+    override that could not be used, or a time changed by hand, was not what runs), this engine's lines only when
+    `engine` is given. A line not there, or a time with no even interval: the value the file had is kept. Never raises: no file means the old 45 minutes there."""
+    try:
+        with open(intervals_path(), encoding="utf-8") as f:
+            before = json.load(f)
+        before = before if isinstance(before, dict) else {}
+    except (OSError, ValueError):
+        before = {}
+    got = dict((k, v) for k, v in before.items() if k in INTERVALS and type(v) is int)
+    for raw in new_lines:
+        t = plancore.text(raw)
+        if t is None or t.lstrip().startswith("#") or plancore.marked(t) != "core":
+            continue
+        name = plancore.marked_name(t)
+        if engine:  # this engine's line only (another engine's with the same marker says nothing of this one's)
+            try:
+                if not plancore.in_engine(plancore.words(t), engine):
+                    continue
+            except ValueError:
+                continue
+        if name in INTERVALS:
+            v = cron_interval(t.split()[:5])
+            if v:
+                got[name] = v
+    if got == before:
+        return
+    tmp = intervals_path() + ".tmp-%d" % os.getpid()
+    try:
+        os.makedirs(os.path.dirname(intervals_path()), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(got, f, sort_keys=True)
+        os.replace(tmp, intervals_path())
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def note_added(plugins, now=None):
@@ -437,17 +634,44 @@ def replace_keeping_mode(path, data, mode):
 
 
 def write_settings(raw_before, before, after, added, backup, raised=()):
-    """Guards a and b around writing `after` (only hooks added and the `raised` keys made larger: taking those out
-    must give `before` back exactly); not written if the file changed since it was read (Claude Code may be writing
+    """Guards a and b around writing `after` (only hooks added, hooks replaced in place and the `raised` keys made
+    larger: undoing those must give `before` back exactly); not written if the file changed since it was read (Claude Code may be writing
     it). The file keeps its mode (it may hold keys). True if written."""
-    def rest(s):
-        s = without(s, set(added))
+    adds = [a for a in added if isinstance(a, str)]
+    swaps = [a[1:] for a in added if isinstance(a, tuple) and a[0] == "swap"]
+    drops = [a[1:] for a in added if isinstance(a, tuple) and a[0] == "drop"]
+
+    def rest(s):  # `after` with every change it means undone (a hook dropped is taken from `before` in base())
+        s = copy.deepcopy(s)
+        for old, new, had, timeout, wanted in swaps:  # a hook replaced in place (C-17): put back as it was
+            h = next((h for _, _, h in hook_list(s) if h.get("command") == new), None)
+            if h is not None:
+                if h.get("timeout") != wanted or (wanted is None and "timeout" in h):
+                    raise Refused("換掉的 hook 的 timeout 不是那一項要的（%r，要 %r），沒寫" % (h.get("timeout"), wanted))
+                h["command"] = old
+                if had:
+                    h["timeout"] = timeout
+                else:
+                    h.pop("timeout", None)
+        s = without(s, set(adds))
         for k in raised:
             s.pop(k, None)
         return s
     grew = all(isinstance(after.get(k), int) and not isinstance(after.get(k), bool) and
                (before.get(k) is None or (isinstance(before.get(k), (int, float)) and after[k] > before[k])) for k in raised)
-    if rest(after) != rest(before) or len(hook_list(after)) != len(hook_list(before)) + len(added) or not grew:
+    def base(s):  # `before` without the hooks meant to be dropped
+        s = copy.deepcopy(s)
+        for event, matcher, command in drops:
+            for g in (s.get("hooks") or {}).get(event, []):
+                h = next((h for h in g.get("hooks") or [] if h.get("command") == command), None)
+                if (g.get("matcher") or "") == matcher and h is not None:
+                    g["hooks"].remove(h)
+                    break
+        s = without(s, set(adds))  # as rest(): the same command may already run on another event
+        for k in raised:
+            s.pop(k, None)
+        return s
+    if rest(after) != base(before) or len(hook_list(after)) != len(hook_list(before)) + len(adds) - len(drops) or not grew:
         raise Refused("新的 settings.json 動到了不打算改的設定，沒寫")
     if before == after:
         return False

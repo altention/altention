@@ -31,7 +31,7 @@ fi
 # stop-flag: end
 ENVF="$HOME/.config/dcbot/env"
 if [ ! -s "$ENVF" ]; then
-  echo "⚠ 還沒有設定檔 $ENVF（需要 DISCORD_TOKEN、OWNER_ID、GUILD_ID），機器人不會啟動"
+  echo "⚠ 還沒有設定檔 $ENVF，機器人不會啟動：在自己的終端機跑 $(dirname "$ROOT")/install.sh discord"
 fi
 echo "✓ dcbot 的程式已裝好（cron 和 hook 由 plugins.py apply 寫）"
 if [ -n "${ALT_NO_START:-}" ]; then

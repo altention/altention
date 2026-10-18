@@ -178,7 +178,7 @@ def behind(landing=False):
     if not landing:
         import fcntl
         gd = git("rev-parse", "--git-common-dir").stdout.strip()
-        lock = open(os.path.join(gd if os.path.isabs(gd) else os.path.join(root(), gd), "agent-git.lock"), "a")
+        lock = open(os.path.join(gd if os.path.isabs(gd) else os.path.join(root(), gd), "altention-git.lock"), "a")
         for _ in range(120):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

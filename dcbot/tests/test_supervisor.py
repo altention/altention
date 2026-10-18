@@ -62,7 +62,8 @@ class Rig(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="sup 中文 ")
         os.environ.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
                            "GIT_COMMITTER_EMAIL": "t@example.com"})
-        self.saved_env = {k: os.environ.get(k) for k in ("GIT_SSH_COMMAND", "FAKE_BAD")}
+        self.saved_env = {k: os.environ.get(k) for k in ("GIT_SSH_COMMAND", "FAKE_BAD", "ALT_INSTANCE")}
+        self.mode("branch")  # what our machines keep; the release and notify cases set their own
         self.origin = os.path.join(self.tmp, "origin.git")
         sh(self.tmp, "git", "init", "-q", "--bare", self.origin)
         sh(self.origin, "git", "symbolic-ref", "HEAD", "refs/heads/main")
@@ -101,6 +102,12 @@ class Rig(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    def mode(self, value):
+        """The instance's core.update, as the supervisor reads it (update_mode, a copy of update.py's)."""
+        inst = os.path.join(self.tmp, "instance")
+        write(os.path.join(inst, "plugins.json"), '{"format": 1, "core": {"update": "%s"}}' % value)
+        os.environ["ALT_INSTANCE"] = inst
 
     def hang_remote(self):
         """A remote that never answers: an ssh that sleeps whatever it is given (GIT_SSH_COMMAND="sleep 60" gets
@@ -252,7 +259,7 @@ class Partial(Rig):
 class Remote(Rig):
     def test_the_shared_lock_held_elsewhere_is_waited_for_then_gone_past(self):
         self.break_altention()
-        held = open(os.path.join(self.engine, ".git", "agent-git.lock"), "a")
+        held = open(os.path.join(self.engine, ".git", "altention-git.lock"), "a")
         fcntl.flock(held, fcntl.LOCK_EX)
         self.sup.LOCK_WAIT = 1
         t0 = time.time()
@@ -339,11 +346,74 @@ class Remote(Rig):
         t = self.run_main()
         self.assertTrue(self.wait(self.ready_for_head, 60), "the rolled-back bot came up")
         self.assertIn("roll back", self.last_log())
-        lock = open(os.path.join(self.engine, ".git", "agent-git.lock"), "a")
+        lock = open(os.path.join(self.engine, ".git", "altention-git.lock"), "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if still held
         lock.close()
         open(os.path.join(self.dc, "state", "stop"), "w").close()
         t.join(10)
+
+
+class Releases(Rig):
+    """C-07: a machine on releases keeps its rollback here: nothing fetched, rebased onto the remote's branch (not
+    released) or pushed; the commit is one altention/sync.py's local_commits knows as a rollback."""
+
+    def remote_ahead(self):
+        other = os.path.join(self.tmp, "other")
+        sh(self.tmp, "git", "clone", "-q", self.origin, other)
+        write(os.path.join(other, "ops", "y.py"), "Y = 1\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "on the branch, not released")
+        sh(other, "git", "push", "-q")
+        return sh(other, "git", "rev-parse", "HEAD").stdout.strip()
+
+    def test_release_and_notify_keep_the_rollback_here_and_take_nothing(self):
+        for value in ("release", "notify"):
+            with self.subTest(mode=value):
+                self.mode(value)
+                bad = self.break_altention()
+                ahead = self.remote_ahead()
+                shutil.rmtree(os.path.join(self.tmp, "other"))
+                self.assertTrue(self.sup.rollback(self.good, "test"))
+                self.assertEqual(sh(self.engine, "git", "rev-parse", "HEAD~1").stdout.strip(), bad, "on top of the bad one, here")
+                self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+                self.assertNotEqual(sh(self.engine, "git", "rev-parse", "origin/main").stdout.strip(), ahead, "nothing fetched")
+                remote = sh(self.origin, "git", "rev-parse", "main").stdout.strip()
+                self.assertEqual(remote, ahead, "nothing pushed")
+                self.assertIn("core.update 是 %s" % value, self.notice())
+                self.assertNotIn("home-git push", self.notice(), "no push asked of a machine on releases")
+                from altention import sync
+                backs, others = sync.local_commits(sync.Repo(self.engine), bad)
+                self.assertEqual((len(backs), others), (1, []), "the reader knows the writer's commit")
+                self.assertTrue(sync.ROLLBACK_SUBJECT.match(self.last_log().splitlines()[0]))
+                os.remove(os.path.join(self.dc, "state", "notice.txt"))
+                self.good = self.head()
+
+    def test_a_partial_rollback_is_known_too(self):
+        self.mode("release")
+        write(os.path.join(self.engine, ".gitignore"), "__pycache__/\nmoved/\n")  # changed in between: partial
+        sh(self.engine, "git", "add", ".gitignore")
+        bad = self.break_altention()
+        self.assertTrue(self.sup.rollback(self.good, "test"))
+        self.assertIn("(partial)", self.last_log())
+        from altention import sync
+        self.assertEqual(len(sync.local_commits(sync.Repo(self.engine), bad)[0]), 1)
+
+    def test_no_instance_seen_and_nothing_read_before_is_notify(self):
+        os.environ["ALT_INSTANCE"] = os.path.join(self.tmp, "不在")
+        self.assertEqual(self.sup.update_mode()[0], "notify")
+        self.break_altention()
+        ahead = self.remote_ahead()
+        self.assertTrue(self.sup.rollback(self.good, "test"))
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), ahead, "nothing pushed")
+        self.assertIn("core.update 是 notify", self.notice())
+
+    def test_a_mode_reading_that_raises_still_rolls_back_and_touches_no_remote(self):
+        self.sup.update_mode = lambda: 1 / 0
+        self.break_altention()
+        ahead = self.remote_ahead()
+        self.assertTrue(self.sup.rollback(self.good, "test"))
+        self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), ahead)
 
 
 class Trial(Rig):
@@ -436,7 +506,7 @@ class MainLoop(Rig):
         open(os.path.join(self.dc, "state", "stop"), "w").close()
         t.join(10)
 
-    def test_a_push_that_cannot_happen_in_time_is_left_for_the_sync_and_said(self):
+    def test_a_push_that_cannot_happen_in_time_is_left_here_and_said(self):
         self.break_altention()
         self.sup.DOWN_MAX = 3  # less than any network step needs: none is tried
         self.hang_remote()
@@ -445,6 +515,9 @@ class MainLoop(Rig):
         self.assertLess(time.time() - t0, 10)
         self.assertEqual(self.sup.tree(), self.sup.tree(self.good), "rolled back here all the same")
         self.assertIn("還沒推出去", self.notice())
+        self.assertIn("bin/home-git push", self.notice(), "the sync does not push the engine (C-31)")
+        self.assertIn("bin/home-pull", self.notice(), "a refused push: pull first")
+        self.assertNotIn("doctor", self.notice(), "the owner's word is 系統檢查")
 
     def test_last_good_does_not_follow_a_new_bot_version_not_yet_restarted(self):
         self.sup.STABLE_SECS, self.sup.FOLLOW_SECS = 1, 0.5
@@ -460,3 +533,105 @@ class MainLoop(Rig):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NEEDS_PACKAGES_BOT = FAKE_BOT.replace("import altention.thing", '''import altention.thing
+if not os.path.exists(os.environ["FAKE_INSTALLED"]):  # this version needs packages pip has not installed
+    sys.exit(1)''')
+
+
+class PackagesPending(Rig):
+    """C-40 (manager 2026-10-17): a new version whose packages are not installed yet (update.py's deps-pending) is
+    no bad version. The supervisor installs them first (a fake python: `-m pip` is logged and works only when told
+    to, never touching a real environment); when they will not install, the new version failing its trial rolls
+    nothing back, commits nothing and pushes nothing (branch mode, the machine just booted), and it is said."""
+
+    def setUp(self):
+        super().setUp()
+        self.piplog, self.pipok = os.path.join(self.tmp, "pip.log"), os.path.join(self.tmp, "pip-works")
+        self.installed = os.path.join(self.tmp, "installed")
+        py = os.path.join(self.dc, ".venv", "bin", "python")
+        os.remove(py)
+        write(py, '#!/bin/sh\nif [ "$1" = "-m" ] && [ "$2" = "pip" ]; then echo "$*" >> "%s"; '
+                  '[ -f "%s" ] && { touch "%s"; exit 0; }; echo "error: no compiler"; exit 1; fi\nexec "%s" "$@"\n'
+              % (self.piplog, self.pipok, self.installed, sys.executable))
+        os.chmod(py, 0o755)
+        self.saved_env["FAKE_INSTALLED"] = os.environ.get("FAKE_INSTALLED")
+        os.environ["FAKE_INSTALLED"] = self.installed
+        self.sup.DEPS_RETRY, self.sup.TRIAL_SECS, self.sup.STABLE_SECS = 2, 6, 1
+
+    def new_version(self):
+        """HEAD moved to a version needing packages, and update.py's record for it, as after_move() writes it."""
+        new = self.commit({"dcbot/requirements.txt": "discord.py==2.4.0\nnewthing==1.0\n", "dcbot/bot/main.py": NEEDS_PACKAGES_BOT},
+                          "a version needing a new package")
+        state = os.path.join(os.path.expanduser("~"), ".local", "state", "altention")
+        write(os.path.join(state, "deps-pending"), '{"head": "%s", "why": "安裝中…", "at": 1, "next": 0, "tries": 0}' % new)
+        sh(self.engine, "git", "push", "-q")
+        with open(os.path.join(self.dc, "state", "last_good"), "w") as f:
+            f.write(self.good)
+        return new, os.path.join(state, "deps-pending")
+
+    def test_the_packages_are_installed_first_and_the_new_version_starts(self):
+        open(self.pipok, "w").close()
+        new, record = self.new_version()
+        self.run_main()
+        self.assertTrue(self.wait(self.ready_for_head), self.notice())
+        self.assertEqual(self.head(), new, "nothing rolled back")
+        self.assertIn("-m pip install -q -r requirements.txt", slurp(self.piplog))
+        self.assertFalse(os.path.exists(record), "installed for that HEAD: update.py's record goes")
+
+    def test_packages_that_will_not_install_roll_nothing_back_and_push_nothing(self):
+        new, record = self.new_version()
+        upstream = sh(self.origin, "git", "rev-parse", "main").stdout.strip()
+        self.run_main()  # as cron's @reboot line starts it after the machine came back
+        self.assertTrue(self.wait(lambda: "套件還沒裝上" in self.notice()), self.notice())
+        self.assertIn("error: no compiler", self.notice())
+        self.assertIn("這不算新版壞掉，沒有退回", self.notice())
+        time.sleep(1)
+        self.assertEqual(self.head(), new, "no rollback commit")
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), upstream, "nothing pushed to main")
+        self.assertEqual(sh(self.engine, "git", "status", "--porcelain", "--untracked-files=no").stdout, "", "the tree untouched")
+        self.assertTrue(os.path.exists(record), "still pending for update.py and doctor")
+        tries = slurp(self.piplog).count("pip install")
+        open(self.pipok, "w").close()  # a person ran dcbot/install.sh, or the network came back
+        self.assertTrue(self.wait(self.ready_for_head), "the next try installs and the new version comes up")
+        self.assertGreater(slurp(self.piplog).count("pip install"), tries)
+        self.assertEqual((self.head(), sh(self.origin, "git", "rev-parse", "main").stdout.strip()), (new, upstream))
+
+    def test_a_record_of_another_head_does_not_keep_a_broken_version(self):
+        """#code-review on e9622a9: HEAD moved by a path that does not update the record (deploy.sh, a hand pull): pip
+        works, the record goes whatever head it names, and a version that is broken all the same is rolled back."""
+        open(self.pipok, "w").close()
+        new, record = self.new_version()
+        bad = self.break_altention()
+        self.run_main()
+        self.assertTrue(self.wait(lambda: self.head() not in (new, bad) and "roll back" in self.last_log()), self.notice())
+        self.assertFalse(os.path.exists(record), "pip worked: the record went")
+        self.assertNotIn("套件還沒裝上", self.notice())
+
+    def test_a_record_written_during_the_trial_is_no_reason_not_to_roll_back(self):
+        """No pip before this start (no record then), a record written meanwhile for a newer HEAD: the failure is the
+        version's own."""
+        bad = self.break_altention()
+        with open(os.path.join(self.dc, "state", "last_good"), "w") as f:
+            f.write(self.good)
+        state = os.path.join(os.path.expanduser("~"), ".local", "state", "altention")
+        real = self.sup.version
+
+        def version(rev="HEAD"):  # the record appears once the bot has been started
+            if os.path.exists(os.path.join(self.dc, "state", "bot.pid")) and not os.path.exists(os.path.join(state, "deps-pending")):
+                write(os.path.join(state, "deps-pending"), '{"head": "later", "why": "安裝中…", "at": 1, "next": 0, "tries": 0}')
+            return real(rev)
+        self.sup.version = version
+        self.run_main()
+        self.assertTrue(self.wait(lambda: self.head() != bad and "roll back" in self.last_log()), self.notice())
+        self.assertNotIn("套件還沒裝上", self.notice())
+
+    def test_a_broken_version_with_its_packages_installed_is_rolled_back_as_before(self):
+        open(self.pipok, "w").close()
+        new, record = self.new_version()
+        bad = self.break_altention()
+        with open(record, "w") as f:
+            f.write('{"head": "%s", "why": "安裝中…", "at": 1, "next": 0, "tries": 0}' % bad)
+        self.run_main()
+        self.assertTrue(self.wait(lambda: self.head() not in (new, bad) and "roll back" in self.last_log()), self.notice())

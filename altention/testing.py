@@ -26,7 +26,13 @@ RUNTIME = {"sync.json", "bot.json", "global.last", "global.lock", "handback.json
            "watch-check-error.json",  # doctor --watch's own (the bot's machine): which machines cannot be checked
            "doctor-records.json",  # doctor --watch: each whole round's records, for the status boards
            "status-posted.json",  # the status plugin (the bot's machine): what its boards last said
-           "cron-update.log", "cron-sync.log", "cron-watch.log", "cron-schedule.log"}
+           "cron-update.log", "cron-sync.log", "cron-watch.log", "cron-schedule.log",
+           "remote-checks.json",  # C-25: the pre-push hook's cache (ops/remote.py), written when the real rounds push
+           "update-mode",  # update.py: the mode last read, rewritten by a real round when it changes
+           "deps-pending.lock"}  # C-40: update.py's and the supervisor's lock for the bot's packages (made once, kept)
+# Not here on purpose (#code-review of 42a1663): deps-pending, update-available and instance-held. The real rounds
+# make them rarely; the tests write them a lot, and a leaked deps-pending keeps the bot from restarting. A real round
+# that makes or removes one during the tests is said once here, and the run is done again.
 # 3a.11: what the scheduler's record-only round writes every minute in scheduler/ (names end in the machine's name),
 # with its trace sampling (manager 2026-10-08)
 RUNTIME_SCHEDULER = ("dry.", "files-dry.", "round-dry.", "said-dry.", "would-run.", "trace-history.", "trace-seen.",

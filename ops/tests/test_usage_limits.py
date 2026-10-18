@@ -201,15 +201,19 @@ class TheRequest(unittest.TestCase):
 
 
 class TheSwitch(unittest.TestCase):
-    """usage.subscription_limits: off unless true (each reading is a request made with the owner's subscription)."""
+    """usage.subscription_limits: on when true or not set (owner 2026-10-16), off when false; anything else is said
+    and taken as off (each reading is a request made with the owner's subscription)."""
 
-    def round(self, value, given=True, core=None):
+    def round(self, value, given=True, core=None, plan=None):
         """One main() with everything around it stood in for: (read_limits called, the boards posted, stderr)."""
         settings = {"usage": {"channel": "100000000000000001"}, "plugins": {"usage": {"sources": ["host-a"]}}}
         if core is not None:
             settings["core"] = core
+        if plan is not None:
+            settings["usage"]["plan"] = plan
         if given:
             settings["usage"]["subscription_limits"] = value
+        self.charted = []
         tmp = tempfile.mkdtemp(prefix="usage switch ")
         self.addCleanup(shutil.rmtree, tmp, True)
         called, posted = [], {}
@@ -230,20 +234,29 @@ class TheSwitch(unittest.TestCase):
                 mock.patch.object(collect, "read_limits", lambda zone=None: called.append(zone) or (
                     [["Current session", 5, "7pm"], ["Current week (all models)", 9, "Oct 18, 9pm"]], None)), \
                 mock.patch.object(collect, "post", lambda board, text, file=None: posted.__setitem__(board, text) or 0), \
-                mock.patch.object(collect, "chart", lambda *a: None), \
+                mock.patch.object(collect, "chart", lambda *a: self.charted.append(collect.PLAN)), \
                 mock.patch.object(collect, "SAMPLES", os.path.join(tmp, "samples.jsonl")), \
                 mock.patch.object(collect.time, "sleep", lambda s: None), \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             collect.main()
+        if not os.path.exists(os.path.join(tmp, "samples.jsonl")):  # a skipped round writes no sample
+            return called, posted, err.getvalue(), None
         with open(os.path.join(tmp, "samples.jsonl")) as f:
             last = json.loads(f.read().strip().split("\n")[-1])
         return called, posted, err.getvalue(), last
 
-    def test_off_when_not_given(self):
+    def test_on_when_not_given(self):
         called, posted, err, last = self.round(None, given=False)
+        self.assertTrue(called, "on by default")
+        self.assertIn("這 5 小時：**5%**", posted["訂閱額度"])
+        self.assertEqual(last["week"], 9)
+
+    def test_off_when_false(self):
+        called, posted, err, last = self.round(False)
         self.assertFalse(called, "no request")
-        self.assertIn("不讀訂閱額度：沒有打開", posted["訂閱額度"])
-        self.assertIn('"subscription_limits": true', posted["訂閱額度"], "says how to turn it on")
+        self.assertIn("不讀訂閱額度：關掉了", posted["訂閱額度"])
+        self.assertIn("usage.subscription_limits 是 false", posted["訂閱額度"])
+        self.assertIn("打開訂閱額度看板", posted["訂閱額度"], "says how to turn it on")
         self.assertIn("haiku", posted["訂閱額度"])
         self.assertEqual(err, "", "a plain off is not an error")
         self.assertEqual((last["limits"], last["week"]), ([], None))
@@ -260,11 +273,69 @@ class TheSwitch(unittest.TestCase):
             called, posted, err, _ = self.round(value)
             self.assertFalse(called, value)
             if value is False:
-                self.assertIn("沒有打開", posted["訂閱額度"])
+                self.assertIn("關掉了", posted["訂閱額度"])
                 self.assertEqual(err, "")
             else:
                 self.assertIn("要是 true 或 false，現在是 %s" % json.dumps(value, ensure_ascii=False), posted["訂閱額度"])
                 self.assertIn("subscription_limits", err, "and in the cron log")
+
+
+class ThePlan(unittest.TestCase):
+    """usage.plan: never guessed (a new user on Pro was shown "Max 20x"). Not set: the boards say so and show the
+    percentages without Pro multiples; malformed: the round is skipped as before."""
+
+    round = TheSwitch.round
+
+    def chart_data(self, plan):
+        """What collect.chart() hands chart.py for this PLAN (chart.py stood in for by a copy)."""
+        tmp = tempfile.mkdtemp(prefix="usage chart ")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        venv = os.path.join(tmp, "python")
+        with open(venv, "w") as f:
+            f.write('#!/bin/sh\ncp "$2" "$3"\n')
+        os.chmod(venv, 0o755)
+        with mock.patch.object(collect, "VENV", venv), mock.patch.object(collect, "CHART", os.path.join(tmp, "out")), \
+                mock.patch.object(collect, "PLAN", plan):
+            out = collect.chart("2026-10-14", [], [])
+        with open(out) as f:
+            return json.load(f)
+
+    def test_not_set(self):
+        called, posted, err, last = self.round(True)
+        board = posted["訂閱額度"]
+        self.assertIn('方案沒設定（在實例的 plugins.json 設 usage.plan，例如 ["Pro", 1]）', board)
+        self.assertNotIn("目前方案", board)
+        self.assertNotIn("Max 20x", board, "no guessed plan")
+        self.assertIn("這週（所有模型）：**9%**", board, "the percentages are shown")
+        self.assertNotIn("換算", board)
+        self.assertNotIn("倍", board)
+        self.assertIn("每週最高的週用量（方案沒設定）和", posted["每週"])
+        self.assertNotIn("usage.plan", posted["每週"], "how to set it is said once, on the limits board")
+        self.assertIn("那週：**9%**，", posted["每週"])
+        self.assertNotIn("倍", posted["每週"])
+        self.assertEqual(err, "")
+        self.assertEqual(self.charted, [None])
+        data = self.chart_data(None)
+        self.assertEqual((data["plan_pro"], data["plan_name"]), (None, None))
+
+    def test_pro(self):
+        called, posted, err, last = self.round(True, plan=["Pro", 1])
+        board = posted["訂閱額度"]
+        self.assertIn("目前方案 Pro", board)
+        self.assertNotIn("方案沒設定", board)
+        self.assertIn("約 Pro 一週額度的 **0.1 倍**", board)
+        self.assertIn("那週：**9%**（≈ Pro 的 0.1 倍）", posted["每週"])
+        self.assertEqual(self.charted, [("Pro", 1)])
+        data = self.chart_data(("Pro", 1))
+        self.assertEqual((data["plan_pro"], data["plan_name"]), (1, "Pro"))
+
+    def test_malformed_skips_the_round(self):
+        for plan in (["Pro"], "Pro", ["Pro", "1"], [1, "Pro"], ["Pro", True], {"name": "Pro"}):
+            called, posted, err, last = self.round(True, plan=plan)
+            self.assertEqual((posted, last), ({}, None), plan)
+            self.assertFalse(called, plan)
+            self.assertIn("usage.plan 要是 [方案名稱, 相當於幾個 Pro]", err, plan)
+            self.assertIn("這一輪跳過", err, plan)
 
 
 class ThisMachinesTimeZone(unittest.TestCase):
@@ -347,7 +418,8 @@ class AFreshInstance(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         for name, value in (("SAMPLES", os.path.join(self.tmp, "share", "samples.jsonl")),
-                            ("VENV", os.path.join(self.tmp, "no venv", "python"))):  # no chart: matplotlib is not here
+                            ("VENV", os.path.join(self.tmp, "no venv", "python")),  # no chart: matplotlib is not here
+                            ("read_limits", lambda zone=None: ([], "stood in"))):  # on when not set: never a real request
             p = mock.patch.object(collect, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -516,6 +588,37 @@ class WithoutTheEngine(unittest.TestCase):
             got = collect.machine_usage("host-a", {"ssh": ["local"], "engine": "/somewhere/else"}, days=8)
         self.assertEqual(got["machine"], "host-a")
         self.assertEqual(seen, [[sys.executable, os.path.join(ENGINE, "usage", "remote.py"), "8"]])
+
+    def test_another_machine_runs_its_remote_py_and_pulls_nothing(self):
+        """Over SSH too: the command runs that engine's remote.py and nothing else; no home-pull, no git (it took a
+        release there every hour, past update.py's load check, and a plain git pull on an engine without home-pull:
+        C-10). The command is run by a real shell, in an engine laid out with a home-pull and a git that leave a mark."""
+        root = os.path.join(self.tmp, "其他台 engine")
+        marks = os.path.join(self.tmp, "marks")
+        stubs = os.path.join(self.tmp, "stubs")
+        for d in ("bin", "usage"):
+            os.makedirs(os.path.join(root, d))
+        os.makedirs(stubs)
+        for path, body in ((os.path.join(root, "bin", "home-pull"), "echo home-pull >> \"%s\"\n" % marks),
+                           (os.path.join(stubs, "git"), "echo git \"$@\" >> \"%s\"\n" % marks),
+                           (os.path.join(root, "usage", "remote.py"),
+                            "import json, sys; print(json.dumps({'daily': [], 'projects': [], 'days': sys.argv[1]}))\n")):
+            with open(path, "w") as f:
+                f.write(("#!/bin/sh\n" + body) if not path.endswith(".py") else body)
+            os.chmod(path, stat.S_IRWXU)
+        seen, real = [], subprocess.run
+
+        def run(argv, **kw):  # ssh <options> <alias> <command>: the command, as that machine's shell would run it
+            seen.append(argv)
+            return real(["/bin/sh", "-c", argv[-1]], env={"PATH": stubs + ":/usr/bin:/bin"},
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+        with mock.patch.object(collect.subprocess, "run", run), \
+                mock.patch.object(collect.os, "uname", lambda: mock.Mock(nodename="elsewhere")):
+            got = collect.machine_usage("host-a", {"ssh": ["host-a"], "engine": root}, days=8)
+        self.assertEqual((got.get("error"), got["machine"], got.get("days")), (None, "host-a", "8"))
+        self.assertEqual([a[:-1] for a in seen], [["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "host-a"]])
+        self.assertNotIn("pull", seen[0][-1])
+        self.assertFalse(os.path.exists(marks), open(marks).read() if os.path.exists(marks) else "")
 
 
 if __name__ == "__main__":

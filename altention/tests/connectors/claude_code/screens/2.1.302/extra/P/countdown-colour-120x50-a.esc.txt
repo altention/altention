@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.302[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj[39m
+
+[38;5;174m▎[39m [1mAuto mode is now Claude Code's default permission mode.[0m
+[38;5;174m▎[39m [38;5;246mAuto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and [39m
+[38;5;174m▎[39m [38;5;246mprompt injection before executing, runs the ones it assesses as lower-risk, and blocks the rest.[39m
+[38;5;174m▎[39m [38;5;246mhttps://code.claude.com/docs/en/permission-modes[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mrun it[39m
+
+[38;5;246m[49m [39m Rig
+[38;5;246m  ⎿  $ rm -rf ~[39m
+
+[38;5;153m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [1m[38;5;153mBash command[0m
+ [38;5;246mrig[39m
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m rm -rf ~
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m [2m│[0m Dangerous rm operation on critical path: /tmp/claude-1000001/-mnt-nfs-work-someone123-altention-engine/138759c1-a567
+ [2m│[0m -4d16-a9d3-492e907cf770/scratchpad/pc/w/cap-colour-120x50-1978598/home
+ [38;5;220m⚠ Claude Code will automatically deny this request in 1:58, to avoid blocking progress on an unattended session[39m
+
+
+ Do you want to proceed?
+ [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes[39m
+   [38;5;246m2. [39mNo
+
+ [38;5;246mEsc to cancel · Tab to amend[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

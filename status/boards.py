@@ -198,6 +198,21 @@ def channels_board(channels, here, now, top=TOP):
 
 
 # ------------------------------------------------------------------------------------------------ doctor's records
+def watch_stale():
+    """How old doctor's records may be before the board calls them old: two rounds of --watch missed, as the
+    instance may have set its interval (core.schedules.watch, C-37), plus ten minutes; STALE when that cannot be
+    worked out."""
+    try:
+        from altention import config, plugin
+        d = plugin.load(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "altention", "core.plugin.json"), core=True)
+        items, _ = plugin.effective_schedules("core", d, config.settings())
+        when = next(i for i in items if i.get("name") == "watch")
+        every = plugin._span_minutes(when["when"]["every"]) if not when.get("unknown") and isinstance(when.get("when"), dict) else None
+        return 2 * every * 60 + 600 if every else STALE
+    except Exception:
+        return STALE
+
+
 def doctor_records(path, now):
     """(records, at, note): the records of doctor's last whole round, when it was, and a line saying the records
     are old or missing (None while they are fresh)."""
@@ -205,9 +220,9 @@ def doctor_records(path, now):
     recs = data.get("records") if isinstance(data, dict) else None
     at = moment(data.get("at")) if isinstance(data, dict) else None
     if not isinstance(recs, list) or at is None:
-        return [], None, "-# 還沒有機器的檢查結果（doctor --watch 還沒寫下，或檔案讀不懂）"
+        return [], None, "-# 系統檢查還沒跑完第一輪（每 15 分鐘一次），或結果檔讀不懂"
     recs = [r for r in recs if isinstance(r, dict) and isinstance(r.get("id"), str)]
-    if now - at > STALE:
+    if now - at > watch_stale():
         return recs, at, "-# 機器的資料是 %s 的，之後沒有新的檢查結果" % clock(at, now)
     return recs, at, None
 

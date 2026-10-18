@@ -10,7 +10,10 @@ from tests import tmuxguard  # noqa: F401,E402  (no test reaches a real tmux ser
 
 
 class FakeAttachment(object):
+    ids = iter(range(500, 10 ** 6))
+
     def __init__(self, filename, data=b"x", size=None, fail=False):
+        self.id = next(FakeAttachment.ids)
         self.filename, self.data, self.size, self.fail = filename, data, size or len(data), fail
         self.url = "https://cdn.example/" + filename
 
@@ -48,7 +51,7 @@ class Attachments(unittest.TestCase):
         msg = FakeMessage(FakeAttachment("a b.png", b"PNG"), FakeAttachment("bad.bin", fail=True),
                           FakeAttachment("huge.iso", size=attachments.MAX_BYTES + 1))
         lines = asyncio.run(attachments.save(msg))
-        path = os.path.join(self.tmp.name, "7", "99-a_b.png")
+        path = os.path.join(self.tmp.name, "7", "99-%d-a_b.png" % msg.attachments[0].id)
         self.assertIn(path, lines[0])
         with open(path, "rb") as f:
             self.assertEqual(f.read(), b"PNG")
@@ -56,6 +59,18 @@ class Attachments(unittest.TestCase):
         self.assertIn("https://cdn.example/huge.iso", lines[2])
         self.assertNotIn("\n", "".join(lines))
         self.assertEqual(asyncio.run(attachments.save(FakeMessage())), [])
+
+    def test_two_attachments_with_one_name_are_two_files(self):
+        msg = FakeMessage(FakeAttachment("image.png", b"one"), FakeAttachment("image.png", b"two"))
+        lines = asyncio.run(attachments.save(msg))
+        paths = [os.path.join(self.tmp.name, "7", "99-%d-image.png" % a.id) for a in msg.attachments]
+        self.assertNotEqual(paths[0], paths[1])
+        self.assertNotEqual(lines[0], lines[1])
+        for path, line, data in zip(paths, lines, (b"one", b"two")):
+            self.assertIn(path, line)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), data)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp.name, "7"))), 2)
 
     def test_prune(self):
         old, new = os.path.join(self.tmp.name, "7", "old"), os.path.join(self.tmp.name, "7", "new")

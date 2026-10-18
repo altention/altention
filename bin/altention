@@ -33,7 +33,9 @@ def target(argv):
 def link(bindir=None, which=shutil.which, say=print):
     """Link ~/.local/bin/altention, and alt, to this file's real path (install.sh calls `altention --link`). Never
     replaces what belongs to something else: a plain file, or a link to another program (pipx and npm put theirs
-    there too). A link that already points at an `altention` (an engine that moved) or at nothing is updated. alt is
+    there too). A link that points at an engine's bin/altention (one whose folder has altention/config.py: an engine
+that moved, even by an old name that is now a link to this one) or at nothing is updated; any other program, even one
+called altention, is left. alt is
     made only when nothing else called alt is on PATH. Returns True when altention is linked; never raises."""
     src = os.path.realpath(os.path.abspath(__file__))
     bindir = bindir or os.path.expanduser("~/.local/bin")
@@ -42,12 +44,15 @@ def link(bindir=None, which=shutil.which, say=print):
         path = os.path.join(bindir, name)
         try:
             if os.path.islink(path):
-                if os.path.realpath(path) == src:
+                if os.readlink(path) == src:  # the very text: through an old name left as a link it would break later (C-17 S4)
                     say("✓ %s → %s" % (path, src))
                     ok = ok or name == "altention"
                     continue
                 points = os.readlink(path)
-                if os.path.basename(points) != "altention" and os.path.exists(path):
+                engine = os.path.dirname(os.path.dirname(os.path.realpath(path)))
+                if os.path.exists(path) and not os.path.isfile(os.path.join(engine, "altention", "config.py")):
+                    # an engine's (this one by an old name, or another checkout) is rewritten; anything else that is
+                    # there is someone's own program, whatever it is called (#code-review-2 2026-10-16)
                     say("略過 %s：%s 是別的程式的連結（→ %s），請用 altention" % (name, path, points))
                     continue
             elif os.path.lexists(path):

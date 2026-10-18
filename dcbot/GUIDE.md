@@ -43,6 +43,7 @@
 ## Claude Code 的指令和 skill
 Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字就能搜尋。這些只能用 `/`，會送進 Claude。
 - `/btw`：順便問一句，在討論串裡回答，可以追問。
+- `/tour`：上手導覽，一步步試主要功能。
 - `/cc`：選單裡沒有的 Claude Code 指令也能執行。
 
 ## 接上你自己開的 Claude

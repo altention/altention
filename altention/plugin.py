@@ -214,6 +214,163 @@ def instance_entry(name, settings):
     return entry if isinstance(entry, dict) else None
 
 
+# C-37: the instance may override a plugin's schedules (plugins.<name>.schedules) and, of the core's own cron lines,
+# only these (core.schedules); the sync and the engine update follow in a batch of their own (manager 2026-10-17)
+CORE_OVERRIDABLE = ("watch", "sync", "engine-update")
+CORE_ALWAYS_ON = ("sync", "engine-update")  # the way fixes reach a machine: their time may change, they never go
+OVERRIDE_KEYS = ("when", "enabled", "timezone")
+DAY_NAMES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def _span_minutes(text):
+    m = re.match(r"^([1-9][0-9]*)([mh])$", text) if isinstance(text, str) else None
+    return None if m is None else int(m.group(1)) * (60 if m.group(2) == "h" else 1)
+
+
+def when_problem(when, core=False):
+    """Why an instance's "when" cannot be used, or "" (C-37). Only what a cron line can say: "at" HH:MM with "days"
+    ("daily" or a list of sun..sat), or "every" (minutes dividing an hour, or hours dividing a day) with "offset"
+    ("machine" or a length shorter than every); the core's lines also take "after"; never "once"."""
+    if not isinstance(when, dict):
+        return "when 要是物件"
+    allowed = {"at", "days", "every", "offset"} | ({"after"} if core else set())
+    odd = sorted(k for k in when if k not in allowed)
+    if odd:
+        return "when 不認得 %s（只能有 %s）" % ("、".join(odd), "、".join(sorted(allowed)))
+    if core and "every" not in when:
+        return "核心的排程只能寫 every（加 offset、after）"
+    if ("at" in when) == ("every" in when):
+        return "when 要剛好一種：at 或 every"
+    if "at" in when:
+        if "offset" in when or "after" in when:
+            return "at 不能配 offset"
+        if not (isinstance(when["at"], str) and re.match(r"^([01]\d|2[0-3]):[0-5]\d$", when["at"])):
+            return "at 要寫成 HH:MM（例如 08:05），不是 %r" % (when["at"],)
+        days = when.get("days", "daily")
+        if days != "daily" and not (isinstance(days, list) and days and all(d in DAY_NAMES for d in days)
+                                    and len(set(days)) == len(days)):
+            return "days 要是 \"daily\" 或像 [\"mon\", \"fri\"] 的清單（sun mon tue wed thu fri sat）"
+        return ""
+    if "days" in when:
+        return "every 不能配 days"
+    every = _span_minutes(when["every"])
+    if every is None:
+        return "every 要寫成像 10m、2h 的長度，不是 %r" % (when["every"],)
+    if not ((every < 60 and 60 % every == 0) or (every % 60 == 0 and 1440 % every == 0)):
+        return "every %s 寫不成 cron：要能整除一小時（例如 5m、15m、30m）或一天（例如 1h、6h、24h）" % when["every"]
+    off = when.get("offset")
+    if off is not None and off != "machine":
+        m = _span_minutes(off) if off != "0m" else 0
+        if m is None or m >= every:
+            return "offset 要是 machine，或比 every 短的長度"
+    if "after" in when and _span_minutes(when["after"]) is None:
+        return "after 要是像 3m 的長度"
+    return ""
+
+
+def schedule_overrides(name, settings):
+    """({item name: the instance's override}, problem or None): plugins.<name>.schedules, core.schedules for the core.
+    {} when there are none; (None, why) when the block is there but not an object (every item is then unknown)."""
+    if not isinstance(settings, dict):
+        return {}, None
+    if name == "core":
+        block, where = settings.get("core", {}), "core"
+        block = block if isinstance(block, dict) else {}
+    else:
+        block, where = instance_entry(name, settings), "plugins.%s" % name
+        if block is None:
+            return None, "%s 不是物件" % where
+    found = block.get("schedules", {})
+    if not isinstance(found, dict):
+        return None, "%s.schedules 要是物件（{\"排程名\": {\"when\": …}}）" % where
+    return found, None
+
+
+def with_sync_interval(found, settings, base):
+    """(overrides, {item: label}): the instance's sync.interval (written by `instance.py init`, said by its README) as
+    the short way of core.schedules.sync's every, the rest of the core's when kept (C-37 C). core.schedules.sync, when
+    written, comes first; an interval equal to the core's own is no override."""
+    block = settings.get("sync") if isinstance(settings, dict) else None
+    if not isinstance(block, dict) or "interval" not in block or "sync" in (found or {}):
+        return found, {}
+    own = next((s.get("when") for s in base if isinstance(s, dict) and s.get("name") == "sync"), None)
+    if not isinstance(own, dict) or block["interval"] == own.get("every"):
+        return found, {}
+    found = dict(found or {})
+    found["sync"] = {"when": dict(own, every=block["interval"])}
+    return found, {"sync": "sync.interval"}
+
+
+def effective_schedules(name, d, settings):
+    """([item], [problem]): a plugin's schedules (the core's cron lines for the core) with the instance's overrides
+    put in (C-37), the one reading of them (apply, plan, the scheduler). Each item is a copy, with "source":
+    "instance" when the instance changed its when, enabled or timezone, else "plugin"; an override that cannot be
+    used makes its item {"unknown": why}: not compared and its installed line never touched, never quietly the
+    plugin.json's time instead. A name that matches no item, or a core line not open to overriding, is a problem
+    (said by plan and doctor), and changes nothing."""
+    core = name == "core"
+    base = (d or {}).get("cron" if core else "schedules", []) if isinstance(d, dict) else []
+    found, bad = schedule_overrides(name, settings)
+    where = "core.schedules" if core else "plugins.%s.schedules" % name
+    items, problems = [], []
+    names = [s.get("name") for s in base if isinstance(s, dict)]
+    labels = {}
+    if core and not bad:
+        found, labels = with_sync_interval(found, settings, base)
+    for s in base:
+        item = dict(s, source="plugin")
+        if bad:
+            if not core or s.get("name") in CORE_OVERRIDABLE:
+                item["unknown"] = bad
+            items.append(item)
+            continue
+        o = found.get(s.get("name")) if found else None
+        if o is None or (core and s.get("name") not in CORE_OVERRIDABLE):
+            items.append(item)
+            continue
+        label = labels.get(s.get("name")) or "%s.%s" % (where, s.get("name"))
+        why = ""
+        if not isinstance(o, dict):
+            why = "要是物件"
+        else:
+            odd = sorted(k for k in o if k not in OVERRIDE_KEYS)
+            if odd:
+                why = "不認得 %s（只能改 %s）" % ("、".join(odd), "、".join(OVERRIDE_KEYS if not core else ("when", "enabled")))
+            elif core and "timezone" in o:
+                why = "核心的排程不能改 timezone"
+            elif "enabled" in o and not isinstance(o["enabled"], bool):
+                why = "enabled 只能是 true 或 false"
+            elif core and o.get("enabled") is False and s.get("name") in CORE_ALWAYS_ON:
+                why = "不能關（引擎更新和同步是修正送到這台的路），只能改時間"
+            elif "timezone" in o and o["timezone"] not in ("machine", None):
+                why = "timezone 只能是 \"machine\" 或 null（照 core.timezone）"
+            elif "when" in o:
+                why = when_problem(o["when"], core)
+        if why:
+            item["unknown"] = "%s：%s" % (label, why)
+        else:
+            if s.get("name") in labels:
+                item["from"] = labels[s.get("name")]  # where it came from, when not under its own schedules (sync.interval)
+            if "when" in o:
+                item["when"] = o["when"]
+            if "enabled" in o:
+                item["enabled"] = o["enabled"]
+            if "timezone" in o:
+                if o["timezone"] is None:
+                    item.pop("timezone", None)
+                else:
+                    item["timezone"] = o["timezone"]
+            item["source"] = "instance"
+        items.append(item)
+    for key in sorted(k for k in (found or {}) if k not in labels):
+        if key not in names:
+            problems.append("%s.%s：%s 沒有叫 %s 的排程（有：%s）" % (where, key, name, key, "、".join(n for n in names if isinstance(n, str)
+                                                                                        and (not core or n in CORE_OVERRIDABLE)) or "沒有"))
+        elif core and key not in CORE_OVERRIDABLE:
+            problems.append("%s.%s：這一版還不能改（核心只開放 %s）" % (where, key, "、".join(CORE_OVERRIDABLE)))
+    return items, problems
+
+
 def _names(value):
     if isinstance(value, str):
         return [value]
@@ -338,13 +495,88 @@ def skill_owners(rows, engine=None):
 
 def skills_off(machine=None, engine=None):
     """The skills under <engine>/skills whose plugin is turned off on `machine` (default: this one) on purpose
-    ("disabled": its disabled_on names it). Only what the settings plainly say: unknown is not off. Never raises."""
+    ("disabled": its disabled_on names it). Only what the settings plainly say: unknown is not off (skills_unsure
+    has those). Never raises."""
     try:
         rows, _ = on_this_machine(machine, engine)
     except Exception:
         return set()
     where = dict((r[0], r[3]) for r in rows)
     return set(sk for sk, owner in skill_owners(rows, engine).items() if where.get(owner) == "disabled")
+
+
+def skills_unsure(machine=None, engine=None):
+    """The skills under <engine>/skills whose plugin's place on `machine` is "unknown" (settings or a machine list
+    that cannot be read): it may be turned off there, so such a skill is neither linked nor taken away (C-11), and
+    not missing. All of them when the plugins cannot be told at all. Never raises."""
+    try:
+        rows, _ = on_this_machine(machine, engine)
+    except Exception:
+        folder = os.path.join(engine or ENGINE, "skills")
+        try:
+            return set(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d)))
+        except OSError:
+            return set()
+    where = dict((r[0], r[3]) for r in rows)
+    return set(sk for sk, owner in skill_owners(rows, engine).items() if where.get(owner) == "unknown")
+
+
+def link_skills(engine=None, add_only=False):
+    """~/.claude/skills/<name> linked to each skill folder under <engine>/skills, except those whose plugin is
+    turned off here (skills_off). {"names", "off", "made", "removed", "taken", "kept", "waiting"}: made = links made
+    or pointed again, removed = links of a turned-off plugin taken away (only a link resolving to this engine's own
+    folder), taken = a file or folder under a name we need, kept = something under a turned-off name that is not
+    our link (both left alone), waiting = skills with no link that were not made because their plugin's place here
+    is unknown, why = {skill: the reason its place is unknown} for every such skill. add_only (the sync's round, after an update brought a new skill): only links that are missing are
+    made; nothing is taken away or pointed elsewhere (a broken link stays broken). A plugin's skill is neither
+    linked nor taken away when that plugin's place here is unknown, as with settings that cannot be read (a
+    turned-off plugin must not get its skill back by a comma too many: C-11); a link it already has is still
+    pointed at this engine (install.sh), and a skill no plugin owns (tour) is linked. install.sh does the rest."""
+    engine = engine or ENGINE
+    home_skills = os.path.expanduser("~/.claude/skills")
+    folder = os.path.join(engine, "skills")
+    names = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))) if os.path.isdir(folder) else []
+    out = {"names": names, "off": set(), "made": [], "removed": [], "taken": [], "kept": [], "waiting": [], "why": {}}
+    try:
+        rows, _ = on_this_machine(None, engine)
+    except Exception as e:
+        rows = None
+        out["why"] = dict((n, "插件讀不出來（%s: %s）" % (type(e).__name__, e)) for n in names)
+    if rows is None:  # nothing can be told: every skill waits
+        unsure = set(names)
+    else:
+        where = dict((r[0], r[3]) for r in rows)
+        why = dict((r[0], r[4]) for r in rows)
+        owners = skill_owners(rows, engine)
+        out["off"] = set(sk for sk, owner in owners.items() if where.get(owner) == "disabled")
+        unsure = set(sk for sk, owner in owners.items() if where.get(owner) == "unknown")
+        out["why"] = dict((sk, why.get(owners[sk]) or "原因不明") for sk in unsure)
+    for name in names:
+        src, link = os.path.join(folder, name), os.path.join(home_skills, name)
+        if name in out["off"]:
+            if add_only:
+                continue
+            if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(src):
+                os.remove(link)
+                out["removed"].append(name)
+            elif os.path.lexists(link):
+                out["kept"].append(link)
+            continue
+        if os.path.islink(link):
+            if not add_only and os.readlink(link) != src:
+                os.remove(link)
+                os.symlink(src, link)
+                out["made"].append(name)
+        elif name in unsure:
+            if not os.path.lexists(link):
+                out["waiting"].append(name)
+        elif os.path.lexists(link):
+            out["taken"].append(link)
+        else:
+            os.makedirs(home_skills, exist_ok=True)
+            os.symlink(src, link)
+            out["made"].append(name)
+    return out
 
 
 def step_here(step, machine, plugin_on, bot=None, sources=()):
@@ -365,8 +597,10 @@ def unknown_on(step, known):
 def schedule_files(d, folder, settings):
     """The schedule files a plugin.json names, ~ expanded: "schedule_files" is a list of paths, or text (a path,
     or "{setting:x.y}" for a setting that is a path or a list of them; spaces around it do not count). Not
-    there, or a setting not set: none. The one reading, for apply (which makes missing ones) and the scheduler.
-    PluginError when it is something else."""
+    there, or a setting not set: none. A plugin's own default file (default_schedule_file) is always one of them,
+    first, whatever the setting lists (manager 2026-10-17: the secretary's file is never left out, and its
+    briefings never go into a file another channel keeps). The one reading, for apply (which makes missing ones),
+    the scheduler and remind. PluginError when it is something else."""
     value = (d or {}).get("schedule_files")
     if isinstance(value, str):
         m = TOKEN.fullmatch(value.strip())
@@ -377,30 +611,32 @@ def schedule_files(d, folder, settings):
             value = node
         else:
             value = [expand(value.strip(), folder, settings)]
+    default = default_schedule_file(d, folder, settings)
     if value is None:
-        default = default_schedule_file(d, folder, settings)
         return [default] if default else []
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
         raise PluginError("schedule_files 要是路徑或路徑的清單，不是 %s" % json.dumps(value, ensure_ascii=False)[:80])
-    return [os.path.expanduser(v.strip()) for v in value]
+    listed = [os.path.expanduser(v.strip()) for v in value]
+    if default is None:
+        return listed
+    same = os.path.realpath(default)
+    return [default] + [p for p in listed if os.path.realpath(p) != same]
 
 
 def default_schedule_file(d, folder, settings):
-    """The schedule file a plugin.json's "schedule_files_default" names ({data} and the like filled in), used when
-    its "schedule_files" is a {setting:…} that is not set; None when it names none or the setting is set. planner's
-    reminders need nothing set on a new install (owner's install 2026-10-15)."""
+    """The schedule file a plugin.json's "schedule_files_default" names ({data} and the like filled in), when its
+    "schedule_files" is a {setting:…}: the plugin's own file, read whether the setting is set or not (schedule_files
+    puts it first); None when it names none. planner's reminders need nothing set on a new install (owner's install
+    2026-10-15), and the secretary's briefings always live in it (manager 2026-10-17)."""
     value, default = (d or {}).get("schedule_files"), (d or {}).get("schedule_files_default")
     if not isinstance(default, str) or not default.strip() or not isinstance(value, str):
         return None
     m = TOKEN.fullmatch(value.strip())
     if not m or not m.group(1).startswith("setting:"):
         return None
-    node = settings or {}
-    for part in m.group(1)[len("setting:"):].split("."):
-        node = node.get(part) if isinstance(node, dict) else None
-    return None if node is not None else os.path.expanduser(expand(default.strip(), folder, settings))
+    return os.path.expanduser(expand(default.strip(), folder, settings))
 
 
 def expand(text, folder=None, settings=None):

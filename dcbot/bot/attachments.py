@@ -20,15 +20,17 @@ def safe_name(name):
     return name.lstrip(".")[:80] or "file"
 
 
-def target(channel_id, message_id, name):
-    return os.path.join(DIR, str(channel_id), "%s-%s" % (message_id, safe_name(name)))
+def target(channel_id, message_id, attachment_id, name):
+    """<message id>-<attachment id>-<name>: Discord names every pasted screenshot image.png, so the
+    attachment's own id keeps several of them in one message apart."""
+    return os.path.join(DIR, str(channel_id), "%s-%s-%s" % (message_id, attachment_id, safe_name(name)))
 
 
 async def save(message):
     """Save the message's attachments. Returns the lines to add to the text Claude receives."""
     lines = []
     for a in message.attachments:
-        path = target(message.channel.id, message.id, a.filename)
+        path = target(message.channel.id, message.id, a.id, a.filename)
         try:
             if a.size and a.size > MAX_BYTES:
                 raise ValueError("too large")

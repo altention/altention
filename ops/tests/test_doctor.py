@@ -113,7 +113,7 @@ def healthy(**changes):
          "this_machine": "host-a", "sync": {"engine": {}, "instance": {}, "links": {"memory": "instance"}},
          "tmp_inodes": 5, "tmp_space": 10, "engine_paths": {"knowledge": "link", "memory": "link", "docs/refactor": "link"},
          "kept_twice": [], "global_edited": [], "adopted": [], "events_bad": 0, "open_dirs": [],
-         "skills": ["council", "report"], "slept": 0.0}
+         "skills": ["council", "report", "tour"], "slept": 0.0}
     o.update(changes)
     return o
 
@@ -318,7 +318,7 @@ class Records(unittest.TestCase):
         code, r = run(bot_heartbeat_age=None, bot_last_exit="login")
         self.assertEqual((code, r["dcbot.heartbeat"]["status"]), (1, "fail"))
         self.assertIn("token 不對", r["dcbot.heartbeat"]["msg"])
-        self.assertIn("install.sh --token", r["dcbot.heartbeat"]["fix"])
+        self.assertIn("install.sh discord", r["dcbot.heartbeat"]["fix"])
         code, r = run(bot_heartbeat_age=900, bot_last_exit="login")
         self.assertIn("token 不對", r["dcbot.heartbeat"]["msg"], "a heartbeat left from an earlier token")
         code, r = run(bot_heartbeat_age=None, bot_last_exit="intents")
@@ -388,6 +388,22 @@ class Records(unittest.TestCase):
         self.assertNotIn("~/.cache", got["core.private-dirs"]["msg"])
         _, recs = self.records({"host-a": healthy()})
         self.assertNotIn("core.cache-open", [r["id"] for r in recs])
+
+    def test_an_override_that_cannot_be_used_is_said_on_the_only_machine_too(self):
+        """#code-review on c45394d: a typo in plugins.<name>.schedules went unsaid on a one-machine install (unknown is
+        not listed there); the instance's overrides are said on every machine, with why."""
+        now = 1791500000
+        rep = {"format": 1, "at": now - 300, "add": [], "remove": [], "retime": [], "core": [], "refuse": None, "problems": [],
+               "disabled": [], "unknown": [
+                   ["progress", "x"],
+                   ["progress/run", "實例的設定不能用：plugins.progress.schedules.run：every 7m 寫不成 cron；這一項現在的行不動"],
+                   ["plugins.planner.schedules.remnd", "這一筆不用：planner 沒有叫 remnd 的排程（有：remind）"]]}
+        for alone in (True, False):
+            r = doctor.would_apply_record("host-a", rep, now, True, alone)
+            self.assertEqual(r["status"], "warn", alone)
+            self.assertIn("實例的排程設定有 2 筆不能用（apply 不動那幾行）：plugins.progress.schedules.run：every 7m 寫不成 cron；"
+                          "plugins.planner.schedules.remnd：planner 沒有叫 remnd 的排程（有：remind）", r["msg"])
+            self.assertEqual("不知道 1 項：progress" in r["msg"], not alone)
 
     def test_the_only_machine_does_not_list_plugins_placed_nowhere_yet(self):
         """Before the bot's token nothing places the bot's plugins: on the only machine the report does not say so
@@ -864,6 +880,69 @@ class Records(unittest.TestCase):
         self.assertEqual(by["core.alerts"]["status"], "warn")
         self.assertIn("上游沒通過檢查", by["core.alerts"]["msg"])
 
+    def test_engine_commits_not_on_the_upstream_are_shown_not_a_problem(self):
+        """C-31: the sync never pushes the engine; commits left here are said, with how to push them by hand."""
+        def ahead(value):
+            code, recs = self.records({"host-a": healthy(sync={"engine": {"ok": True, "error": None, "ahead": value},
+                                                                    "instance": {}, "links": {"memory": "instance"}})})
+            return code, {r["id"]: r for r in recs if r["machine"] == "host-a"}
+        code, by = ahead(2)
+        self.assertEqual(code, 0)
+        self.assertEqual((by["sync.engine-ahead"]["status"], by["sync.engine-ahead"]["value"]), ("warn", 2))
+        self.assertIn("2 個", by["sync.engine-ahead"]["msg"])
+        self.assertIn("home-git push", by["sync.engine-ahead"]["fix"])
+        self.assertIn("log @{u}..", by["sync.engine-ahead"]["fix"])
+        self.assertEqual(by["sync.engine"]["status"], "ok")
+        for value in (0, None, True, 1e300, "3"):  # level, an older sync.json, hand-edited
+            code, by = ahead(value)
+            self.assertNotIn("sync.engine-ahead", by, value)
+
+    def test_packages_not_installed_after_a_move_are_a_fault_with_the_fix(self):
+        """C-08: deps-pending as altention/update.py's mark_deps writes it ({head, why, at})."""
+        def by(dp):
+            code, recs = self.records({"host-a": healthy(deps_pending=dp)})
+            return code, {r["id"]: r for r in recs if r["machine"] == "host-a"}["core.deps-pending"]
+        code, r = by({"head": "0123456789abcdef", "why": "pip install 失敗（結束碼 1）：no network", "at": 1})
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("0123456789ab", r["msg"])
+        self.assertIn("no network", r["msg"])
+        self.assertIn("機器人還在跑舊版", r["msg"])
+        self.assertIn("dcbot/install.sh", r["fix"])
+        self.assertIn("!restart", r["fix"])
+        code, r = by(None)
+        self.assertEqual(r["status"], "ok")
+        code, r = by({})
+        self.assertEqual(r["status"], "ok", "an empty record says nothing")
+
+    def test_rollbacks_kept_on_a_machine_on_releases_are_not_to_push(self):
+        """#bot-dev on fd23d9e (C-07): the supervisor's notice says the rollback stays here; doctor must not say to
+        push it. The sync's engine record has "rollbacks" (altention/tests/test_update.py makes it with the sync)."""
+        def by(engine):
+            code, recs = self.records({"host-a": healthy(sync={"engine": dict({"ok": True, "error": None}, **engine),
+                                                                    "instance": {}, "links": {"memory": "instance"}})})
+            return code, {r["id"]: r for r in recs if r["machine"] == "host-a"}["sync.engine-ahead"]
+        code, r = by({"ahead": 1, "rollbacks": 1})
+        self.assertEqual((code, r["status"], r["fix"]), (0, "ok", ""))
+        self.assertIn("不用推", r["value"])
+        self.assertNotIn("home-git push", r["value"])
+        code, r = by({"ahead": 2, "rollbacks": 1})
+        self.assertEqual((r["status"], r["value"]), ("warn", 2))
+        self.assertIn("home-git push", r["fix"], "the owner's own commit: as before")
+        self.assertIn("其中 1 個是 supervisor 的退回 commit", r["fix"])
+        self.assertIn("不要推它們", r["fix"])
+        self.assertIn("請人看 git log", r["fix"])
+        self.assertNotIn("只推自己的", r["fix"], "#code-review of 239abcc: not possible with a rollback under them")
+        code, r = by({"ahead": 1, "rollbacks": 0, "rollbacks_unsure": 1})
+        self.assertEqual((r["status"], r["value"]), ("warn", 1), "#code-review-2 of 7daa3df: an amended rollback")
+        self.assertTrue(r["fix"].startswith("不要直接推"), r["fix"])
+        self.assertIn("amend", r["fix"])
+        self.assertIn("等於把退回推上上游", r["fix"])
+        self.assertNotIn("要推的話", r["fix"])
+        for odd in (None, True, -1, "1", 1.0):  # an older sync.json, hand-edited: as before
+            code, r = by({"ahead": 1, "rollbacks": odd, "rollbacks_unsure": odd})
+            self.assertEqual(r["status"], "warn", odd)
+            self.assertNotIn("退回", r["fix"], odd)
+
     def test_a_progress_round_that_keeps_failing_says_why(self):
         """Owner's re-install 2026-10-15: every round stopped on the logs' place and doctor said only "not run yet"
         and all well. A failure newer than the last finished round is a problem with its line; an older one is not."""
@@ -946,6 +1025,7 @@ class Records(unittest.TestCase):
         code, recs = self.records({"host-a": healthy(usage_last_run=None, usage_log_tail="x")})
         self.assertNotIn("usage.last-run", [r["id"] for r in recs], "usage not on this machine")
 
+    @mock.patch.object(doctor, "schedule_of", lambda *a: None)  # the fixed numbers (C-37: when no schedule is told)
     def test_an_output_older_than_the_code_or_the_line_is_what_ran_before(self):
         """Owner's update 2026-10-15: usage.out still said "no usage sources" from the old code, and doctor failed and
         told them to set what is no longer needed. An output older than the plugin's code here (an update) or its
@@ -990,17 +1070,73 @@ class Records(unittest.TestCase):
         """council (or progress, report's owner) turned off on a machine: its skill is not there on purpose."""
         def got(skills):
             code, recs = self.records({"host-a": healthy(skills=skills)})
-            return [r for r in recs if r["machine"] == "host-a" and r["id"] == "chatlog.skills"][0]
-        r = got(["report"])
+            return [r for r in recs if r["machine"] == "host-a" and r["id"] == "core.skills"][0]
+        r = got(["report", "tour"])
         self.assertEqual(r["status"], "fail")
         self.assertIn("缺少 skill：council", r["msg"])
         self.off = {"host-a": {"council"}}
         try:
-            self.assertEqual(got(["report"])["status"], "ok")
-            self.assertIn("缺少 skill：report", got([])["msg"])
-            self.assertNotIn("council", got([])["msg"])
+            self.assertEqual(got(["report", "tour"])["status"], "ok")
+            self.assertIn("缺少 skill：report", got(["tour"])["msg"])
+            self.assertNotIn("council", got(["tour"])["msg"])
+            self.assertIn("缺少 skill：report, tour", got([])["msg"])  # the tour belongs to no plugin: never off
         finally:
             self.off = {}
+
+    def test_a_skill_whose_plugin_cannot_be_placed_is_not_missing(self):
+        """C-11: install.py makes no link for a plugin's skill whose place cannot be read (settings that cannot be
+        read): doctor does not then say it is missing and send someone to apply; core.config says why."""
+        inst = tempfile.mkdtemp(prefix="實例 ")
+        try:
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                f.write("{ not json")
+            with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}):
+                self.assertEqual(doctor.skills_off("host-a"), {"council", "report"})
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                json.dump({"format": 1, "plugins": {"council": {"disabled_on": ["host-a"]}, "progress": {"on": ["host-a"]}}}, f)
+            with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}):
+                self.assertEqual(doctor.skills_off("host-a"), {"council"})
+        finally:
+            shutil.rmtree(inst, True)
+
+    def test_the_skills_checked_are_those_of_that_machines_engine(self):
+        """manager 2026-10-17: the list was fixed (council, report, tour); a new skill was never checked. The probe
+        lists the folders under that machine's engine's skills/ (install.sh links each one) and which are linked."""
+        home = tempfile.mkdtemp()
+        try:
+            engine = os.path.join(home, "altention", "engine")
+            for n in ("council", "newone"):
+                os.makedirs(os.path.join(engine, "skills", n))
+            with open(os.path.join(engine, "skills", "README.md"), "w") as f:
+                f.write("not a skill\n")
+            os.makedirs(os.path.join(home, ".claude", "skills"))
+            os.symlink(os.path.join(engine, "skills", "council"), os.path.join(home, ".claude", "skills", "council"))
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % "~/altention/engine" + doctor.PROBE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               env=dict(os.environ, HOME=home), timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual((o["skills_expected"], o["skills"]), (["council", "newone"], ["council"]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+        def got(**probe):
+            _, recs = self.records({"host-a": healthy(**probe)})
+            return [r for r in recs if r["machine"] == "host-a" and r["id"] == "core.skills"][0]
+        self.assertIn("缺少 skill：newone", got(skills=["council"], skills_expected=["council", "newone"])["msg"])
+        self.assertEqual(got(skills=["council", "newone"], skills_expected=["council", "newone"])["status"], "ok")
+        self.assertIn("缺少 skill：report, tour", got(skills=["council"])["msg"], "an older probe: this engine's skills/")
+        self.assertIn("缺少 skill：report, tour", got(skills=["council"], skills_expected=7)["msg"], "not a list: the same")
+
+    def test_skills_are_checked_on_a_machine_without_chatlog(self):
+        """Every machine links the engine's skills, so a missing one is said wherever chatlog does not run too (the
+        check used to sit in chatlog's part: #code-review-2 on 81ef970)."""
+        inv = {"machines": {"host-a": {"ssh": ["HOST-A"], "roles": ["dcbot"]}}}
+        code, recs = self.records({"host-a": healthy(skills=["council", "report"])}, inv=inv)
+        r = [r for r in recs if r["machine"] == "host-a" and r["id"] == "core.skills"][0]
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("缺少 skill：tour", r["msg"])
+        self.assertIn("跑 altention apply host-a", r["fix"], "a broken link is apply's: the sync only adds missing ones")
+        self.assertFalse([r for r in recs if r["id"] == "chatlog.skills"], "said once, under core")
 
     def test_a_secretary_still_in_another_folder_is_told_how_to_move(self):
         """Installed before #secretary (owner 2026-10-15): planner.channel names #chat, working in the instance. A note
@@ -1038,6 +1174,9 @@ class Records(unittest.TestCase):
                                    env=dict(os.environ, HOME=home, ALT_INSTANCE=inst, ALT_DATA=os.path.join(home, "data")))
                 return json.loads(r.stdout.strip().splitlines()[-1]).get("planner_secretary")
             self.assertEqual(probe(), {"cwd": os.path.realpath(inst), "folder": os.path.realpath(os.path.join(home, "data", "planner"))})
+            with open(os.path.join(inst, "plugins.json"), "w") as f:  # planner.folder: the owner's own folder (C-17: ~/life)
+                json.dump({"format": 1, "planner": {"channel": "42", "folder": inst}}, f)
+            self.assertEqual(probe(), {"cwd": os.path.realpath(inst), "folder": os.path.realpath(inst)})
             with open(os.path.join(state, "channels.json"), "w") as f:
                 json.dump({}, f)
             self.assertEqual(probe()["cwd"], None)
@@ -1087,6 +1226,75 @@ class Records(unittest.TestCase):
         finally:
             shutil.rmtree(home)
 
+    def test_would_apply_says_kept_lines_are_kept(self):
+        """#code-review-2 2026-10-16: an extra line apply leaves (its plugin on) was said as "會拿掉"."""
+        kept = {"status": "extra", "plugin": "pm", "name": None, "kind": "cron", "installed": "*/10 * * * * x/pm.py  # altention:pm"}
+        rep = {"format": 1, "add": [], "remove": [], "retime": [], "core": [], "unknown": [], "problems": [], "disabled": [],
+               "kept": [kept], "at": 2000000000}
+        r = doctor.would_apply_record("host-a", rep, 2000000000)
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("留著", r["msg"])
+        self.assertNotIn("會拿掉", r["msg"])
+        self.assertEqual(doctor.report_odd(dict(rep, kept="x")), "kept 不是項目的清單")
+
+    def test_the_entry_links_by_what_they_name(self):
+        """C-17 S4: ~/.local/bin/altention naming the engine by an old name that is a link now resolves today and
+        breaks once that name goes: the probe tells it apart from a link naming the engine itself."""
+        home = tempfile.mkdtemp(prefix="家 entry ")
+        try:
+            eng = os.path.join(home, "engine")
+            os.makedirs(os.path.join(eng, "bin"))
+            open(os.path.join(eng, "bin", "altention"), "w").close()
+            os.symlink(eng, os.path.join(home, "old name"))
+            other = os.path.join(home, "other", "bin")
+            os.makedirs(other)
+            open(os.path.join(other, "altention"), "w").close()
+            os.makedirs(os.path.join(home, "other", "altention"))
+            open(os.path.join(home, "other", "altention", "config.py"), "w").close()  # another engine's checkout
+            mine = os.path.join(home, "tools")
+            os.makedirs(mine)
+            open(os.path.join(mine, "altention"), "w").close()  # someone's own program called altention
+            bindir = os.path.join(home, ".local", "bin")
+            os.makedirs(bindir)
+
+            def probe():
+                r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, universal_newlines=True, timeout=120, env=dict(os.environ, HOME=home))
+                return json.loads(r.stdout.strip().splitlines()[-1])["entry_links"]
+            self.assertEqual(probe(), {"altention": "missing", "alt": "missing"})
+            os.symlink(os.path.join(eng, "bin", "altention"), os.path.join(bindir, "altention"))
+            os.symlink(os.path.join(home, "old name", "bin", "altention"), os.path.join(bindir, "alt"))
+            self.assertEqual(probe(), {"altention": "ok", "alt": "old-name"})
+            os.remove(os.path.join(bindir, "altention"))
+            os.symlink(os.path.join(other, "altention"), os.path.join(bindir, "altention"))
+            os.remove(os.path.join(home, "old name"))
+            self.assertEqual(probe(), {"altention": "elsewhere", "alt": "broken"})
+            os.remove(os.path.join(bindir, "altention"))
+            os.symlink(os.path.join(mine, "altention"), os.path.join(bindir, "altention"))
+            self.assertEqual(probe()["altention"], "other", "a program called altention that is no engine's")
+        finally:
+            shutil.rmtree(home)
+
+    def test_the_entry_record(self):
+        def got(links):
+            code, recs = self.records({"host-a": healthy(entry_links=links)})
+            return [r for r in recs if r["machine"] == "host-a" and r["id"] == "core.entry"][0]
+        self.assertEqual(got({"altention": "ok", "alt": "ok"})["status"], "ok")
+        self.assertEqual(got({"altention": "ok", "alt": "other"})["status"], "ok", "someone else's alt: theirs")
+        r = got({"altention": "old-name", "alt": "ok"})
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("舊名字拿掉就斷", r["msg"])
+        self.assertIn("bin/altention --link", r["fix"])
+        for broken in ("missing", "broken", "elsewhere"):
+            self.assertEqual(got({"altention": broken, "alt": "ok"})["status"], "fail", broken)
+        self.assertEqual(got({"altention": "ok", "alt": "broken"})["status"], "warn")
+        r = got({"altention": "other", "alt": "ok"})
+        self.assertEqual(r["status"], "warn", "someone's own program called altention: left, said")
+        self.assertIn("指到別的程式", r["msg"])
+        code, recs = self.records({"host-a": healthy()})
+        self.assertFalse([r for r in recs if r["id"] == "core.entry"], "an older probe without it: nothing said")
+
+    @mock.patch.object(doctor, "schedule_of", lambda *a: None)  # the fixed numbers (C-37: when no schedule is told)
     def test_a_cron_line_added_a_moment_ago_waits_for_its_first_turn(self):
         """Owner's install 2026-10-15: progress, chatlog and the sync with no run yet right after install are a note
         while their line has not had its first turn (apply noted when it added it); past that, a problem; with no
@@ -1394,7 +1602,8 @@ class Records(unittest.TestCase):
         av = next(r for r in recs if r["id"] == "core.update-available")
         self.assertEqual(av["status"], "warn")
         self.assertIn("v0.2.0", av["msg"])
-        self.assertIn("home-pull --take-refused", av["fix"])
+        self.assertIn("更新引擎", av["fix"])
+        self.assertIn("altention/update.py --release", av["fix"], "the global instructions' way (C-18)")
         up = next(r for r in recs if r["id"] == "core.update-unpacked")
         self.assertEqual(up["status"], "warn")
         self.assertIn("不會自動更新", up["msg"])
@@ -1443,6 +1652,21 @@ class Records(unittest.TestCase):
             return json.loads(r.stdout.strip().splitlines()[-1])
         finally:
             shutil.rmtree(home, ignore_errors=True)
+
+    def test_only_the_last_days_alerts_are_reported(self):
+        """Manager 2026-10-16 (choice a): alerts from before the engine moved stayed on the dashboard for days. The
+        probe takes the last 24 hours only (as its comment always said); the file is left as the record. A time that
+        cannot be read counts as recent."""
+        def line(ago, text):
+            at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - ago))
+            return "%s\tsync\tupdate-stale\t%s\n" % (at, text)
+        o = self.probe(line(2 * 86400, "old one") + line(25 * 3600, "a day and an hour") + line(23 * 3600, "recent one")
+                       + "not-a-time\tsync\tx\tno time\n")
+        self.assertEqual([r[3] for r in o["alerts"]], ["recent one", "no time"])
+        self.assertEqual(self.probe(line(2 * 86400, "old one"))["alerts"], [], "nothing to report")
+        now = time.time()
+        _, recs = self.records({"host-a": healthy(now=now, last_ok={"sync": now, "update": now}, alerts=[])})
+        self.assertNotIn("core.alerts", [r["id"] for r in recs if r["status"] != "ok"])
 
     def test_something_pulled_in_unchecked_is_told_until_update_is_back(self):
         """Manager 2026-10-07: the sync's stand-in or a launcher's fallback pulled a commit stacked on a refused
@@ -1710,6 +1934,301 @@ class Records(unittest.TestCase):
         late = next(r for r in recs if r["id"] == "chatlog.last-sync")
         self.assertEqual(late["status"], "ok", "a machine that sleeps is not late")
         self.assertEqual([r["id"] for r in recs if r["status"] == "fail"], ["core.tmp-space"])
+
+
+def backup_row(name, **kw):
+    """One row as ops/remote.py status() writes it (the probe adds mode): a repo with an origin, our hook, all pushed."""
+    row = {"name": name, "folder": "/home/alice/data/%s" % name, "repo": True, "origin": "git@example.com:alice/%s.git" % name,
+           "hook": True, "ahead": 0, "last_push": time.time() - 600, "mode": 0o700,
+           "check": {"verdict": "private", "why": "要登入", "at": time.time()}}
+    if name != "instance":
+        row["setting"] = row["origin"]
+    row.update(kw)
+    return row
+
+
+class Backups(unittest.TestCase):
+    """C-25 (data-safety 2.5, 3): each backup said on its own line: none, set but not attached, public, could not be
+    told, the last push; and the private folders that are not 700."""
+    ROLES = ["chatlog", "progress", "planner", "usage", "dcbot"]
+
+    def got(self, rows, roles=None, **probe):
+        t = Records("test_an_engine_from_an_archive_is_no_missing_engine")  # its helpers, not its test
+        inv = {"machines": {"host-a": {"ssh": ["HOST-A"], "roles": roles if roles is not None else self.ROLES}}}
+        probe.setdefault("usage_mode", 0o700)
+        _, recs = t.records({"host-a": healthy(backup=rows, **probe)}, inv=inv)
+        return {r["id"]: r for r in recs if r["id"].startswith("backup.") or r["id"] == "instance.remote"}
+
+    def test_each_one_said(self):
+        rows = [backup_row("instance", origin="", check=None),
+                backup_row("logs", origin="", check=None),
+                backup_row("progress", check={"verdict": "public", "why": "讀得到", "at": 1}),
+                backup_row("planner", check={"verdict": "unknown", "why": "連不上", "at": 1})]
+        got = self.got(rows)
+        self.assertEqual(got["backup.instance"]["status"], "warn")
+        self.assertIn("沒有備份：只在這台，電腦壞了就救不回來", got["backup.instance"]["msg"])
+        self.assertIn("python3 ops/remote.py set instance <private repo 網址>", got["backup.instance"]["fix"])
+        self.assertIn("備份與還原", got["backup.instance"]["fix"])
+        self.assertIn("設了遠端 git@example.com:alice/logs.git", got["backup.logs"]["msg"])
+        self.assertIn("沒有接上", got["backup.logs"]["msg"])
+        self.assertIn("python3 ops/remote.py set logs git@example.com:alice/logs.git", got["backup.logs"]["fix"])
+        self.assertEqual(got["backup.progress"]["status"], "fail")
+        self.assertIn("公開的 repo", got["backup.progress"]["msg"])
+        self.assertEqual(got["backup.planner"]["status"], "warn")
+        self.assertIn("沒辦法確認是不是公開的", got["backup.planner"]["msg"])
+        self.assertIn("照樣推送", got["backup.planner"]["msg"])
+        self.assertNotIn("instance.remote", got, "said once, as a backup")
+
+    def test_all_backed_up_is_ok_with_the_last_push(self):
+        got = self.got([backup_row(n) for n in ("instance", "logs", "progress", "planner")])
+        for n in ("instance", "logs", "progress", "planner"):
+            self.assertEqual(got["backup.%s" % n]["status"], "ok", got["backup.%s" % n])
+            self.assertIn("上次推送：", got["backup.%s" % n]["msg"])
+        self.assertEqual(got["backup.private"]["status"], "ok")
+
+    def test_the_branch_a_backup_came_from_is_said(self):
+        """C-43: the records or progress cloned from a remote whose only branch was not main push to a new main."""
+        got = self.got([backup_row("instance"), backup_row("logs", branch="main", remote_branches=["master", "main"]),
+                        backup_row("planner", branch="mine", remote_branches=["mine"])])
+        self.assertEqual(got["backup.logs"]["status"], "ok")
+        self.assertIn("遠端原本的分支是 master，之後推到 main", got["backup.logs"]["msg"])
+        self.assertNotIn("遠端原本的分支", got["backup.planner"]["msg"])
+        self.assertNotIn("遠端原本的分支", got["backup.instance"]["msg"])
+
+    def test_set_but_not_a_repo_yet_and_an_origin_not_the_setting(self):
+        rows = [backup_row("instance"), backup_row("progress", repo=False, origin=None, hook=None),
+                backup_row("logs", origin="git@example.com:alice/other.git"),
+                backup_row("planner", hook=False)]
+        got = self.got(rows)
+        self.assertIn("還不是 git repo：還沒接上", got["backup.progress"]["msg"])
+        self.assertIn("./install.sh", got["backup.progress"]["fix"])
+        self.assertIn("跟設定的 git@example.com:alice/logs.git 不一樣", got["backup.logs"]["msg"])
+        self.assertIn("--replace", got["backup.logs"]["fix"])
+        self.assertIn("pre-push hook", got["backup.planner"]["msg"])
+        self.assertIn("python3 ops/remote.py hook planner", got["backup.planner"]["fix"])
+
+    def test_commits_not_pushed_for_a_day_and_the_sync_failing(self):
+        rows = [backup_row("instance", ahead=3, last_push=time.time() - 3 * 86400, waiting_since=time.time() - 2 * 86400),
+                backup_row("planner")]
+        sync = {"engine": {}, "instance": {}, "links": {"memory": "instance"},
+                "data": {"planner/reminders": {"at": 1, "ok": False, "error": "rebase 失敗（兩台改到同一段）", "path": "/x"}}}
+        got = self.got(rows, sync=sync)
+        self.assertIn("3 個 commit 一天以上沒推上去", got["backup.instance"]["msg"])
+        self.assertIn("rebase 失敗", got["backup.planner"]["msg"])
+        got = self.got([backup_row("instance", ahead=3, last_push=time.time() - 3 * 86400, waiting_since=time.time() - 600)])
+        self.assertEqual(got["backup.instance"]["status"], "ok", "made ten minutes ago: the next round pushes them")
+        got = self.got([backup_row("instance", ahead=None, last_push=None, unpushed=2, waiting_since=time.time() - 2 * 86400)])
+        self.assertIn("2 個 commit 一天以上沒推上去", got["backup.instance"]["msg"], "#code-review of bc09467: no @{u}")
+        self.assertIn("還沒有上游分支", got["backup.instance"]["msg"])
+        got = self.got([backup_row("planner", ahead=1, last_push=None, waiting_since=time.time() - 60)])
+        self.assertEqual(got["backup.planner"]["status"], "ok", "just cloned back (the clean-container run): no push yet")
+
+    def test_a_part_not_on_there_or_never_made_is_not_said(self):
+        rows = [backup_row("instance"), backup_row("logs"), backup_row("progress"),
+                backup_row("planner", repo=False, origin=None, setting="")]
+        got = self.got(rows, roles=["chatlog"])
+        self.assertEqual(sorted(got), ["backup.instance", "backup.logs", "backup.private"])
+        got = self.got(rows)
+        self.assertNotIn("backup.planner", got, "no folder and nothing set: nothing to lose yet")
+
+    def test_folders_not_700_are_named_with_chmod(self):
+        rows = [backup_row("instance", mode=0o755, folder="/home/alice/我的 實例"), backup_row("logs")]
+        got = self.got(rows, usage_mode=None)
+        self.assertEqual(got["backup.private"]["status"], "warn")
+        self.assertIn("/home/alice/我的 實例", got["backup.private"]["msg"])
+        self.assertIn("chmod 700 '/home/alice/我的 實例'", got["backup.private"]["fix"])
+        t = Records("test_an_engine_from_an_archive_is_no_missing_engine")
+        inv = {"machines": {"host-a": {"ssh": ["HOST-A"], "roles": self.ROLES}}}
+        _, recs = t.records({"host-a": healthy(backup=[backup_row("instance")], usage_mode=0o755)}, inv=inv)
+        private = [r for r in recs if r["id"] == "backup.private"][0]
+        self.assertIn("~/.local/share/usage", private["fix"])
+
+    def test_an_older_engine_keeps_the_old_line_and_a_status_not_read_is_unknown(self):
+        t = Records("test_an_engine_from_an_archive_is_no_missing_engine")
+        inv = {"machines": {"host-a": {"ssh": ["HOST-A"], "roles": self.ROLES}}}
+        _, recs = t.records({"host-a": healthy(instance_remote="")}, inv=inv)
+        self.assertIn("instance.remote", [r["id"] for r in recs])
+        got = self.got([], backup_error="ImportError: no module named remote")
+        self.assertEqual(got["backup.status"]["status"], "unknown")
+        self.assertIn("python3 ops/remote.py status", got["backup.status"]["fix"])
+
+    def test_the_owners_own_secretary_folder_is_never_asked_to_get_our_hook(self):
+        """planner.folder (our ~/life): our hook would have the sync commit and push all of it (batch 4 ruling);
+        found on our own machines in the read-only run, 2026-10-17."""
+        got = self.got([backup_row("instance"), backup_row("planner", hook=False, setting="", own=True, folder="/home/alice/life")])
+        self.assertEqual(got["backup.planner"]["status"], "ok")
+        self.assertIn("planner.folder", got["backup.planner"]["msg"])
+        self.assertNotIn("hook", got["backup.planner"]["fix"])
+        got = self.got([backup_row("planner", origin="", hook=False, setting="", own=True)])
+        self.assertEqual(got["backup.planner"]["status"], "warn")
+        self.assertNotIn("remote.py", got["backup.planner"]["fix"])
+        got = self.got([backup_row("planner", own=True, check={"verdict": "public", "why": "讀得到", "at": 1})])
+        self.assertEqual(got["backup.planner"]["status"], "fail")
+
+    def test_odd_fields_cost_the_field_not_the_check(self):
+        rows = [backup_row("instance", ahead="many", mode="rwx", check="private"), "not a row"]
+        t = Records("test_an_engine_from_an_archive_is_no_missing_engine")
+        inv = {"machines": {"host-a": {"ssh": ["HOST-A"], "roles": self.ROLES}}}
+        _, recs = t.records({"host-a": healthy(backup=rows)}, inv=inv)
+        odd = [r for r in recs if r["id"] == "core.probe-odd"]
+        self.assertTrue(odd)
+        _, recs = t.records({"host-a": healthy(backup=[backup_row("instance", ahead="many", mode="rwx", check="private")])}, inv=inv)
+        self.assertEqual([r["status"] for r in recs if r["id"] == "backup.instance"], ["ok"])
+
+    def test_the_probe_reads_each_backup_there(self):
+        """The real probe, in a throwaway home: ops/remote.py status's rows, with each folder's mode."""
+        home = tempfile.mkdtemp(prefix="家 備份 ")
+        try:
+            inst = os.path.join(home, "altention", "instance")
+            os.makedirs(inst)
+            os.chmod(inst, 0o755)
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                json.dump({"format": 1, "sync": {"dirs": {"chatlog": {"remote": "git@example.com:alice/logs.git"}}},
+                       "planner": {"folder": os.path.join(home, "life")}}, f)
+            subprocess.run(["git", "-C", inst, "init", "-q"], check=True)
+            bare = os.path.join(home, "inst.git")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", inst]
+            subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+            subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "a"], check=True)
+            subprocess.run(git + ["remote", "add", "origin", bare], check=True)
+            subprocess.run(git + ["push", "-q", "-u", "origin", "HEAD:main"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(git + ["branch", "-q", "--set-upstream-to=origin/main"], check=True)
+            subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "b"], check=True)
+            env = dict(os.environ, HOME=home, ALT_INSTANCE=inst, ALT_DATA=os.path.join(home, "data"))
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % doctor.ENGINE_DIR + doctor.PROBE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, env=env, timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertNotIn("backup_error", o, o.get("backup_error"))
+            rows = {row["name"]: row for row in o["backup"]}
+            self.assertEqual(sorted(rows), ["instance", "logs", "planner", "progress"])
+            self.assertEqual((rows["instance"]["repo"], rows["instance"]["origin"], rows["instance"]["mode"]), (True, bare, 0o755))
+            self.assertEqual(rows["instance"]["ahead"], 1)
+            self.assertLess(abs(rows["instance"]["waiting_since"] - time.time()), 120, "the commit not pushed, just made")
+            self.assertEqual(rows["instance"]["unpushed"], 1)
+            subprocess.run(git + ["branch", "-q", "--unset-upstream"], check=True)
+            o = json.loads(subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % doctor.ENGINE_DIR + doctor.PROBE,
+                                          stdout=subprocess.PIPE, universal_newlines=True, env=env, timeout=120).stdout.strip().splitlines()[-1])
+            row = [r for r in o["backup"] if r["name"] == "instance"][0]
+            self.assertEqual((row["ahead"], row["unpushed"]), (None, 1), "no upstream: still counted")
+            self.assertIsNotNone(row["waiting_since"])
+            self.assertEqual((rows["logs"]["repo"], rows["logs"]["setting"]), (False, "git@example.com:alice/logs.git"))
+            self.assertIs(rows["planner"].get("own"), True, "planner.folder: the owner's own")
+            self.assertNotIn("own", rows["logs"])
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+class Schedules(unittest.TestCase):
+    """C-37 B (manager 2026-10-16/17): how long without a run is a problem comes from the schedule as it runs (the
+    instance's override included): two turns in a row missed; a new line's first turn the same way; an item the
+    instance turned off is no problem; an override that cannot be used is said."""
+    ZONE = {"core": {"timezone": "Asia/Taipei"}}
+    unset, off, needs = {}, {}, {}
+    run_doctor, records = Records.run_doctor, Records.records
+
+    def settings(self, **schedules):
+        s = json.loads(json.dumps(self.ZONE))
+        s["plugins"] = {n: {"schedules": o} for n, o in schedules.items()}
+        return mock.patch("altention.config.settings", return_value=s)
+
+    @staticmethod
+    def at(text):
+        return doctor.datetime.strptime(text + " +0800", "%Y-%m-%d %H:%M %z").timestamp()
+
+    def test_two_turns_missed_daily_and_every_ten_minutes(self):
+        with self.settings(progress={"run": {"when": {"at": "03:00", "days": "daily"}}}):
+            sched = doctor.schedule_of("progress", "run", "host-a")
+        self.assertEqual(sched["within"], 9 * 60, "progress's own within")
+        now = self.at("2026-10-20 10:00")
+        self.assertFalse(doctor.missed_two(sched, self.at("2026-10-19 03:20"), now), "yesterday's ran: today's missed is one")
+        self.assertTrue(doctor.missed_two(sched, self.at("2026-10-18 03:20"), now), "yesterday's and today's missed")
+        self.assertTrue(doctor.missed_two(sched, None, now))
+        self.assertFalse(doctor.missed_two(sched, self.at("2026-10-18 03:20"), self.at("2026-10-20 03:05")),
+                         "today's has its 9 minutes to finish")
+        with self.settings():
+            sched = doctor.schedule_of("progress", "run", "host-a")
+        now = self.at("2026-10-20 10:00")
+        self.assertFalse(doctor.missed_two(sched, now - 15 * 60, now))
+        self.assertTrue(doctor.missed_two(sched, now - 35 * 60, now))
+
+    def test_a_new_lines_first_turn_follows_its_time(self):
+        with self.settings(progress={"run": {"when": {"at": "03:00", "days": "daily"}}}):
+            sched = doctor.schedule_of("progress", "run", "host-a")
+        self.assertEqual(doctor.first_wait(sched, self.at("2026-10-20 10:00")), 17 * 60 + 9 + 5, "tomorrow 03:00, its within, slack")
+        with self.settings():
+            sched = doctor.schedule_of("progress", "run", "host-a")
+        self.assertEqual(doctor.first_wait(sched, self.at("2026-10-20 10:02")), 8 + 9 + 5)
+
+    def test_progress_once_a_day_is_not_said_late_after_twenty_hours(self):
+        """The owner's report: progress set to once a day, and the dashboard said 「進度上次執行」 all day."""
+        def last_run(hours):
+            return (doctor.datetime.now(doctor.timezone.utc) - doctor.timedelta(hours=hours)).isoformat(timespec="seconds")
+        with self.settings(progress={"run": {"when": {"at": "03:00", "days": "daily"}}}):
+            _, recs = self.records({"host-a": healthy(progress_last_run=last_run(20))})
+            self.assertNotIn("progress.last-run", [r["id"] for r in recs if r["status"] != "ok"])
+            _, recs = self.records({"host-a": healthy(progress_last_run=last_run(50))})
+            self.assertIn("進度上次執行", [r for r in recs if r["id"] == "progress.last-run"][0]["msg"])
+        with self.settings():
+            _, recs = self.records({"host-a": healthy(progress_last_run=last_run(20))})
+            self.assertIn("進度上次執行", [r for r in recs if r["id"] == "progress.last-run"][0]["msg"], "every 10 minutes: late")
+
+    def test_an_item_turned_off_is_no_problem_and_said(self):
+        with self.settings(progress={"run": {"enabled": False}}):
+            code, recs = self.records({"host-a": healthy(cron_progress=False, progress_last_run=None)})
+        by = {r["id"]: r for r in recs if r["machine"] == "host-a"}
+        self.assertEqual((by["progress.cron"]["status"], by["progress.cron"]["value"]), ("ok", "關掉了（實例設定 plugins.progress.schedules.run）"))
+        self.assertNotIn("progress.last-run", by)
+        self.assertEqual((by["progress.schedules"]["status"], by["progress.schedules"]["value"]), ("ok", "run 關掉了（實例設定）"))
+
+    def test_an_override_in_effect_is_shown(self):
+        """(One that cannot be used is plugins.would-apply's to say, from the machine's own report.)"""
+        with self.settings(progress={"run": {"when": {"every": "1h"}}}):
+            _, recs = self.records({"host-a": healthy()})
+        r = [r for r in recs if r["id"] == "progress.schedules"][0]
+        self.assertEqual((r["status"], r["value"]), ("ok", 'run {"every": "1h"}（實例設定）'))
+        with self.settings(progress={"run": {"when": {"every": "7m"}}, "rn": {"enabled": False}}):
+            _, recs = self.records({"host-a": healthy()})
+        self.assertFalse([r for r in recs if r["id"] == "progress.schedules"], "not shown as in effect, nor said twice")
+        with self.settings():
+            _, recs = self.records({"host-a": healthy()})
+        self.assertFalse([r for r in recs if r["id"].endswith(".schedules")], "no override: nothing said")
+
+    def test_the_sync_and_the_update_are_late_after_three_of_their_rounds(self):
+        """C-37 C: as update.py and the sync count it, at the interval the instance set (sync.interval); 45 minutes
+        when it cannot be told."""
+        now = time.time()
+
+        def late(intervals, minutes):
+            _, recs = self.records({"host-a": healthy(now=now, last_ok={"sync": now - minutes * 60, "update": now}, intervals=intervals)})
+            return [r for r in recs if r["id"] == "core.last-sync-ok" and r["status"] != "ok"]
+        iv = {"sync": 3600, "engine-update": 900}
+        self.assertEqual((doctor.core_stale("sync", iv), doctor.core_stale("engine-update", iv), doctor.core_stale("watch", iv)),
+                         (3 * 3600, 45 * 60, 45 * 60))
+        self.assertEqual(late(iv, 50), [], "once an hour on that machine: 50 minutes is not late")
+        self.assertIn("已經 50 分鐘沒有成功", late(None, 50)[0]["msg"], "no intervals.json there: 45 minutes")
+        for bad in ({"sync": "1h"}, {"sync": True}, {"sync": 5}, [1]):
+            self.assertEqual(doctor.core_stale("sync", bad), 45 * 60, bad)
+
+    def test_the_board_calls_records_old_after_two_watch_rounds(self):
+        sys.path.insert(0, os.path.join(doctor.ENGINE_DIR, "status"))
+        import boards
+        with self.settings():
+            self.assertEqual(boards.watch_stale(), 40 * 60)
+        with mock.patch("altention.config.settings", return_value={"core": {"schedules": {"watch": {"when": {"every": "30m"}}}}}):
+            self.assertEqual(boards.watch_stale(), 70 * 60)
+        with mock.patch("altention.config.settings", side_effect=ValueError("broken")):
+            self.assertEqual(boards.watch_stale(), boards.STALE)
+
+
+class SilentSsh(unittest.TestCase):
+    def test_ssh_failing_with_nothing_on_stderr_is_said_as_unreachable(self):
+        """C-45 drill (2026-10-17): ssh exited 255 and printed nothing; `(err or rc)[:80]` took the int and the
+        machine came out as 檢查出錯 (TypeError) instead of 連不上."""
+        with mock.patch.object(doctor, "run_on", return_value=("OLDUP", 255, "", "")), \
+                mock.patch.object(doctor, "plugins_on", return_value=(set(), set())):
+            recs = doctor.check("old-laptop", {"ssh": ["OLDUP"], "roles": []}, "abc1234")
+        reach = [r for r in recs if r["id"] == "core.reachable"]
+        self.assertEqual([(r["status"], r["msg"]) for r in reach], [("fail", "連不上（255）")])
 
 
 if __name__ == "__main__":

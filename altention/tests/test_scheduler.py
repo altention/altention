@@ -1256,6 +1256,22 @@ class Round(Home):
         self.assertRaises(s.ScheduleError, s.load, write(os.path.join(self.home, "w", "other.json"), {"title": "neither"}))
         self.assertRaises(s.ScheduleError, s.load, write(os.path.join(self.home, "w", "old.json"), {"name": "p", "items": "x"}))
 
+    def test_a_plugin_json_is_read_as_the_instance_overrides_it(self):
+        """C-37: the record-only scheduler reads a plugin's schedules as apply writes them: the instance's when, an
+        item turned off not scheduled, one whose override cannot be used left out."""
+        plug = write(os.path.join(self.home, "p", "plugin.json"), {"name": "notes", "title": "x", "schedules": [
+            {"name": "tick", "when": {"every": "10m"}, "do": {"run": "t"}},
+            {"name": "tock", "when": {"at": "08:00"}, "do": {"run": "u"}},
+            {"name": "bad", "when": {"at": "09:00"}, "do": {"run": "v"}}]})
+        over = {"plugins": {"notes": {"schedules": {"tick": {"when": {"at": "03:00"}}, "tock": {"enabled": False},
+                                                     "bad": {"when": {"every": "7m"}}}}}}
+        with mock.patch.object(s.config, "settings", return_value=over):
+            got = dict((i["name"], i) for i in s.load(plug)["items"])
+        self.assertEqual(sorted(got), ["tick", "tock"], "the unusable one is left out")
+        self.assertEqual((got["tick"]["kind"], got["tick"]["at"], got["tock"]["enabled"]), ("at", 180, False))
+        with mock.patch.object(s.config, "settings", side_effect=s.config.ConfigError("壞了")):
+            self.assertEqual([i["kind"] for i in s.load(plug)["items"]], ["every", "at", "at"], "unreadable: its own, as before")
+
     def test_every_plugin_file_of_this_engine_loads_as_a_schedule(self):
         engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         found = [os.path.join(engine, "altention", "core.plugin.json")]

@@ -30,9 +30,9 @@ DIALOG_TOP = re.compile(r"^\s*(─{20,}|▔{20,})")  # the full-width rule a dia
 def asked(view):
     """What a dialog on the screen `view` asks, to tell one question from the next (F3): its rows from the rule it is
     drawn under down to its first option (a permission's title and the command or file, another menu's title and
-    words). What runs above it (output, timers, spinners) is not part of it. No such rule: the three rows above the
-    first option."""
-    rows = view.rstrip("\n").split("\n")
+    words). What runs above it (output, timers, spinners) is not part of it, nor the row counting down to an
+    automatic denial (2.1.302: it changes every second). No such rule: the three rows above the first option."""
+    rows = panels.without_auto_deny(view.rstrip("\n").split("\n"))
     first = [i for i, r in enumerate(rows) if (lambda m: m is not None and m.group(1) == "1")(panels.OPTION.match(r))]
     if not first:
         return ""
@@ -54,8 +54,17 @@ def cut(text, n):
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
-def body(title, excerpt, note=""):
-    return ("🔔 **%s**\n```\n%s\n```%s" % (title, excerpt.replace("```", "'''")[-1500:] or "（畫面是空的）", note))[:1990]
+def body(title, excerpt, note="", deadline=None):
+    """`deadline`: when Claude Code denies the dialog by itself (epoch seconds), said under the screen; Discord counts
+    the time down by itself."""
+    due = "\n⏳ 沒有回覆的話，Claude Code 會在 <t:%d:R> 自動拒絕（它當作沒人在顧）" % deadline if deadline else ""
+    return ("🔔 **%s**\n```\n%s\n```%s%s" % (title, excerpt.replace("```", "'''")[-1500:] or "（畫面是空的）", due, note))[:1990]
+
+
+def deadline_of(view):
+    """When the dialog on `view` is denied by itself (epoch seconds), or None."""
+    left = panels.auto_deny(view)
+    return None if left is None else int(time.time() + left)
 
 
 class TypeModal(discord.ui.Modal):
@@ -133,12 +142,13 @@ class Menus(object):
         token = "%d" % (time.time() * 1000)
         try:
             v = self.view(token, options)
-            msg = await ch.send(body(title, excerpt, "" if options else "\n-# 看不出選項：用下面的按鍵，或 `/key` 送其他按鍵"), view=v)
+            due = deadline_of(view)
+            msg = await ch.send(body(title, excerpt, "" if options else "\n-# 看不出選項：用下面的按鍵，或 `/key` 送其他按鍵", due), view=v)
             v.stop()
         except Exception:
             traceback.print_exc()
             return
-        self.open[token] = {"channel": ch.id, "msg": msg.id, "title": title, "shown": [asked(view), options]}
+        self.open[token] = {"channel": ch.id, "msg": msg.id, "title": title, "shown": [asked(view), options], "deadline": due}
 
     async def resolve(self, ch):
         """The session moved on: drop the buttons of whatever menu is still shown in this channel."""
@@ -224,7 +234,8 @@ class Menus(object):
         try:
             if options:  # still a menu on screen (or a new one): show it again, buttons follow it
                 v = self.view(token, options)
-                await msg.edit(content=body(m["title"], excerpt, "\n-# " + did), view=v)
+                m["deadline"] = deadline_of(view)
+                await msg.edit(content=body(m["title"], excerpt, "\n-# " + did, m["deadline"]), view=v)
                 v.stop()
                 m["shown"] = [asked(view), options]
             else:
@@ -239,10 +250,13 @@ class Menus(object):
         is there now, with buttons for it if it is a dialog still, and says so."""
         msg = interaction.channel.get_partial_message(m["msg"])
         note = "\n⚠️ 選單已經變了，沒有送出。上面是現在的畫面%s。" % ("，按鈕已換成它的選項" if options else "")
+        if not options and m.get("deadline") and time.time() >= m["deadline"] - 2:  # its own deadline passed
+            note = "\n⚠️ 對話框已經不在了，沒有送出：期限到了，Claude Code 已經自動拒絕（上面是現在的畫面）。"
         try:
             if options:
                 v = self.view(token, options)
-                await msg.edit(content=body(m["title"], excerpt, note), view=v)
+                m["deadline"] = deadline_of(view)
+                await msg.edit(content=body(m["title"], excerpt, note, m["deadline"]), view=v)
                 v.stop()
                 m["shown"] = [asked(view), options]
             else:

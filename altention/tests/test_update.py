@@ -387,6 +387,31 @@ class EitherKeepsFixesComing(Rig):
         self.assertEqual(calls, [True], "the sync moves the engine itself")
         self.assertIn("sync\tupdate-stale\t", self.alerts())
 
+    def test_three_rounds_count_at_the_interval_apply_wrote(self):
+        """C-37 C: the sync once an hour (sync.interval) is not stale after 50 minutes, nor is the sync taken to stand
+        in for an update.py that runs every 30; without intervals.json, or with one that cannot be used, 45 minutes."""
+        os.makedirs(update.state_dir(), exist_ok=True)
+        path = os.path.join(update.state_dir(), "intervals.json")
+        self.assertEqual((update.stale_of("sync"), update.stale_of("engine-update")), (45 * 60, 45 * 60))
+        for bad in ('{"sync": "1h"}', '{"sync": true}', '{"sync": 5}', "[1]", "{ half"):
+            with open(path, "w") as f:
+                f.write(bad)
+            self.assertEqual(update.stale_of("sync"), 45 * 60, bad)
+        with open(path, "w") as f:
+            json.dump({"sync": 3600, "engine-update": 1800}, f)
+        self.assertEqual((update.stale_of("sync"), update.stale_of("engine-update")), (3 * 3600, 90 * 60))
+        with open(os.path.join(self.state, "last_ok-sync"), "w") as f:
+            json.dump({"at": time.time() - 50 * 60}, f)
+        update.watch_sync()
+        self.assertNotIn("sync-stale", self.alerts(), "50 minutes is under three of its rounds")
+        with open(os.path.join(update.state_dir(), "last_ok-update"), "w") as f:
+            json.dump({"at": time.time() - 60 * 60}, f)
+        calls = []
+        with mock.patch.object(sync, "sync_repo", side_effect=lambda *a, **k: calls.append(k.get("pull")) or {"ok": True, "error": None, "at": 0}), \
+                mock.patch.object(sync.config, "instance_dir", return_value=None):
+            sync.run()
+        self.assertEqual(calls, [False], "an hour is under three rounds of a 30-minute update.py: it is left to it")
+
     def test_update_alive_sync_leaves_the_engine_to_it(self):
         update.mark_ok("update")
         calls = []
@@ -591,10 +616,42 @@ class Modes(BrokenSomewhere):
         self.assertEqual(self.head(), old, "notify takes nothing")
         self.assertEqual(self.available()["tag"], "v0.1.0")
         self.assertIn("有新版 v0.1.0", out.getvalue())
-        self.assertEqual((self.alerts(), self.told), ("", []), "shown by doctor, never told")
+        self.assertEqual(self.alerts(), "", "not a fault")
+        self.assertEqual(len(self.told), 1, "C-18: the new release pushed out once")
+        self.assertIn("v0.1.0", self.told[0])
+        self.assertIn("更新引擎", self.told[0])
+        self.assertIn("已推播", out.getvalue())
+        for _ in range(2):
+            self.round()
+        self.assertEqual(len(self.told), 1, "the same release: once")
+        self.assertEqual(self.available()["told"], "v0.1.0")
         git(self.engine, "merge", "-q", "--ff-only", "v0.1.0")  # a person took it
         self.round()
         self.assertIsNone(self.available(), "nothing newer: the note goes")
+
+    def test_notify_tells_each_new_release_and_tries_again_when_the_notice_fails(self):
+        self.mode("notify")
+        self.publish("tool.py", "X = 21\n")
+        self.tag("v0.5.0")
+        failing = []
+
+        def notify_fails(argv, *a, **k):
+            if argv and str(argv[0]).endswith("altention") and argv[1:3] == ["dc", "notify"]:
+                failing.append(argv[3])
+                return subprocess.CompletedProcess(argv, 1)
+            return self.real_run(argv, *a, **k)
+        with mock.patch.object(update.subprocess, "run", notify_fails):
+            update.one_round()
+        self.assertEqual((len(failing), self.available()["told"]), (1, None), "not out: not marked")
+        self.round()
+        self.assertEqual(len(self.told), 1, "tried again, out now")
+        self.publish("tool.py", "X = 22\n")
+        self.tag("v0.6.0")
+        self.round()
+        self.assertEqual(len(self.told), 2)
+        self.assertIn("v0.6.0", self.told[1])
+        self.round()
+        self.assertEqual(len(self.told), 2)
 
     def test_release_asked_for_takes_the_newest_release_in_notify_mode(self):
         """The person asked to update (update.py --release): this round takes the newest release, the branch never,
@@ -718,6 +775,209 @@ class Modes(BrokenSomewhere):
                 self.assertNotIn("由同步代為更新引擎", self.alerts())
 
 
+class ReleaseRollbacks(Rig):
+    """C-07: to a newer release, the rollback commits the supervisor made here are left behind (not put on top of
+    it), only when every local commit is one (manager 2026-10-17: its subject, this repo's author, on no remote);
+    a rollback mixed with anything else stops the round and says so. The rollback is made by the real supervisor."""
+
+    mode, tag = Modes.mode, Modes.tag
+
+    def setUp(self):
+        super().setUp()
+        self.inst = os.path.join(self.tmp, "實例 instance")
+        os.makedirs(self.inst)
+        self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst})
+        self.env.start()
+        os.makedirs(os.path.join(self.up, "dcbot"))
+        shutil.copy(os.path.join(ENGINE_REAL, "dcbot", "supervisor.py"), os.path.join(self.up, "dcbot", "supervisor.py"))
+        self.good = self.publish("dcbot/.gitignore", "state/\n")
+        self.tag("v0.1.0")
+        git(self.engine, "pull", "-q", "--ff-only")
+        os.makedirs(os.path.join(self.engine, "dcbot", "state"))
+
+    def tearDown(self):
+        self.env.stop()
+        super().tearDown()
+
+    def rolled_back(self, mode):
+        """v0.2.0 brought a bad altention/; this machine took it, then its supervisor rolled it back."""
+        self.mode(mode)
+        self.bad = self.publish("altention/x.py", "BAD = 1\n")
+        self.tag("v0.2.0")
+        git(self.engine, "fetch", "-q", "--tags")
+        git(self.engine, "merge", "-q", "--ff-only", "v0.2.0")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sup_r", os.path.join(self.engine, "dcbot", "supervisor.py"))
+        sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sup)
+        sup.LOCK_WAIT = 1
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(sup.rollback(self.good, "新版本 `%s` 啟動失敗（exit 1）" % self.bad[:7]))
+        self.assertFalse(os.path.exists(os.path.join(self.engine, "altention", "x.py")))
+        return self.head()
+
+    def fixed(self):
+        git(self.up, "rm", "-q", "altention/x.py")
+        git(self.up, "commit", "-qm", "the fix")
+        git(self.up, "push", "-q")
+        self.tag("v0.3.0")
+        return git(self.up, "rev-parse", "HEAD").stdout.strip()
+
+    def main(self, *argv):
+        out = io.StringIO()
+        with self.notify, redirect_stdout(out):
+            code = update.main(list(argv))
+        return code, out.getvalue()
+
+    def test_the_next_release_leaves_the_rollback_behind(self):
+        for mode, argv in (("release", ()), ("notify", ("--release",))):
+            with self.subTest(mode=mode):
+                back = self.rolled_back(mode)
+                code, out = self.main(*argv)
+                self.assertEqual((code, self.head()), (0, back), "nothing newer than v0.2.0 yet: the rollback stays")
+                fix = self.fixed()
+                code, out = self.main(*argv)
+                self.assertEqual((code, self.head()), (0, fix), "exactly the release: the rollback not put on it\n" + out)
+                self.assertIn("退回 commit（%s）沒有帶到新版上" % back[:7], out)
+                self.tearDown()
+                self.setUp()
+
+    def test_a_rollback_with_a_commit_of_the_owners_stops_and_says_so(self):
+        back = self.rolled_back("release")
+        self.write(self.engine, "mine.txt", "local\n")
+        git(self.engine, "add", "mine.txt")
+        git(self.engine, "commit", "-qm", "my own change")
+        mine = self.head()
+        self.fixed()
+        code, out = self.main()
+        self.assertEqual((code, self.head()), (1, mine), out)
+        self.assertIn("不猜哪些要留", self.alerts())
+        self.assertIn("%s（退回）" % back[:7], self.alerts())
+        self.assertTrue(os.path.exists(os.path.join(self.engine, "mine.txt")))
+
+    def looks_like_one_but(self, how):
+        back = self.rolled_back("release")
+        if how == "another author":
+            git(self.engine, "reset", "-q", "--hard", "HEAD~1")
+            subject = git(self.engine, "log", "-1", "--format=%s", back).stdout.strip()
+            git(self.engine, "rm", "-q", "altention/x.py")
+            other = dict(os.environ, GIT_AUTHOR_NAME="o", GIT_AUTHOR_EMAIL="other@example.com")  # over any set before
+            subprocess.run(["git", "-C", self.engine, "commit", "-qm", subject], check=True, stdout=subprocess.PIPE, env=other)
+            self.assertEqual(git(self.engine, "log", "-1", "--format=%ae").stdout.strip(), "other@example.com")
+        else:
+            git(self.engine, "push", "-q", "origin", "HEAD:refs/heads/side")
+            git(self.engine, "fetch", "-q")
+        back = self.head()
+        self.fixed()
+        code, out = self.main()
+        self.assertEqual((code, self.head()), (1, back), out)
+        self.assertIn("%s（退回）" % back[:7], self.alerts())
+
+    def test_a_rollback_that_carries_a_file_of_the_owners_stops(self):
+        """#code-review of 239abcc: the author is this repo's for the owner's commits too, so only what the commit
+        does tells it apart. An amended rollback with a file of theirs, a commit of theirs with that subject, a
+        subject naming a commit git does not know: none is left behind."""
+        for how in ("amended", "by hand", "unknown good"):
+            with self.subTest(how=how):
+                back = self.rolled_back("release")
+                subject = git(self.engine, "log", "-1", "--format=%s", back).stdout.strip()
+                if how == "amended":
+                    self.write(self.engine, "mine.txt", "local\n")
+                    git(self.engine, "add", "mine.txt")
+                    git(self.engine, "commit", "-q", "--amend", "--no-edit")
+                elif how == "by hand":
+                    git(self.engine, "reset", "-q", "--hard", "HEAD~1")
+                    git(self.engine, "rm", "-q", "altention/x.py")
+                    self.write(self.engine, "mine.txt", "local\n")
+                    git(self.engine, "add", "mine.txt")
+                    git(self.engine, "commit", "-qm", subject)
+                else:
+                    git(self.engine, "commit", "-q", "--amend", "-m", subject.replace(self.good[:7], "0000000"))
+                self.assertTrue(sync.ROLLBACK_SUBJECT.match(git(self.engine, "log", "-1", "--format=%s").stdout.strip()))
+                back = self.head()
+                self.fixed()
+                code, out = self.main()
+                self.assertEqual((code, self.head()), (1, back), out)
+                self.assertIn("%s（退回）" % back[:7], self.alerts())
+                if how != "unknown good":
+                    self.assertTrue(os.path.exists(os.path.join(self.engine, "mine.txt")), "theirs still here")
+                self.tearDown()
+                self.setUp()
+
+    def test_a_rollback_looking_commit_by_another_author_stops(self):
+        self.looks_like_one_but("another author")
+
+    def test_a_rollback_looking_commit_on_a_remote_branch_stops(self):
+        self.looks_like_one_but("on a remote branch")
+
+    def test_the_sync_counts_the_rollback_kept_here_for_doctor(self):
+        """#bot-dev on fd23d9e: doctor's sync.engine-ahead told a machine on releases to push the rollback its notice
+        says to keep. The sync's engine record says how many of the commits ahead are rollbacks (local_commits)."""
+        for mode, mine in (("release", False), ("notify", False), ("release", True), ("branch", False)):
+            with self.subTest(mode=mode, mine=mine):
+                self.rolled_back(mode if mode != "branch" else "release")
+                self.mode(mode)
+                if mine:
+                    self.write(self.engine, "mine.txt", "local\n")
+                    git(self.engine, "add", "mine.txt")
+                    git(self.engine, "commit", "-qm", "my own change")
+                with mock.patch.object(sync.config, "ENGINE", self.engine), \
+                        mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                        mock.patch.object(update.subprocess, "run", self.fake_run):
+                    st = sync.run()
+                eng = st["engine"]
+                if mode == "branch":
+                    self.assertNotIn("rollbacks", eng, "branch: pushed like any commit, nothing told apart")
+                else:
+                    self.assertEqual((eng["ahead"], eng["rollbacks"], eng["rollbacks_unsure"]), (2 if mine else 1, 1, 0), eng)
+                self.tearDown()
+                self.setUp()
+
+    def test_the_sync_counts_an_amended_rollback_as_unsure(self):
+        """#code-review-2 of 7daa3df: a rollback amended with a file of the owner's is no rollback (restores() fails),
+        and doctor then told how to push it. The sync counts it apart: rollbacks_unsure."""
+        self.rolled_back("release")
+        self.write(self.engine, "mine.txt", "local\n")
+        git(self.engine, "add", "mine.txt")
+        git(self.engine, "commit", "-q", "--amend", "--no-edit")
+        with mock.patch.object(sync.config, "ENGINE", self.engine), \
+                mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                mock.patch.object(update.subprocess, "run", self.fake_run):
+            st = sync.run()
+        eng = st["engine"]
+        self.assertEqual((eng["ahead"], eng["rollbacks"], eng["rollbacks_unsure"]), (1, 0, 1), eng)
+
+    def test_home_pull_leaves_it_behind_too(self):
+        """bin/home-pull in release mode goes through the same sync.update(to=the release)."""
+        self.rolled_back("release")
+        fix = self.fixed()
+        git(self.engine, "fetch", "-q", "--tags")
+        repo = sync.Repo(self.engine)
+        with sync.locked(repo):
+            code, note = sync.update(repo, to=fix)
+        self.assertEqual((code, self.head()), (0, fix), note)
+        self.assertIn("沒有帶到新版上", note)
+
+
+class NoModeSeen(Rig):
+    """C-04: no instance seen and no mode read before: notify, said in the alerts file and told once (the next rounds
+    that work do not tell it again every 15 minutes)."""
+
+    def test_said_once(self):
+        os.remove(os.path.join(self.state, "update-mode"))
+        with mock.patch.dict(os.environ, {"ALT_INSTANCE": "", "ALT_ROOT": os.path.join(self.tmp, "沒有")}):
+            old = self.head()
+            self.publish("tool.py", "X = 2\n")
+            for _ in range(3):
+                with self.notify, redirect_stdout(io.StringIO()):
+                    self.assertEqual(update.main([]), 0)
+            self.assertEqual(self.head(), old, "notify: nothing taken")
+            self.assertIn("update\tmode\t", self.alerts())
+            self.assertIn("照 notify，不自動更新", self.alerts())
+            self.assertEqual(len(self.told), 1, self.told)
+            self.assertFalse(os.path.exists(os.path.join(self.state, "update-mode")), "nothing remembered from not seeing it")
+
+
 class BotRestart(Rig):
     """A move that changes the bot's version (dcbot/ or altention/) writes deploy.sh's restart flag while this
     engine's supervisor runs here, so the bot does not keep running the old code it has in memory (owner's
@@ -827,8 +1087,250 @@ class BotRestart(Rig):
                          sorted(update.BOT_PATHS))
 
 
+class Deps(Rig):
+    """C-08: a move that changes dcbot/requirements.txt installs the bot's packages (pip into its venv, as
+    dcbot/install.sh) before the restart flag; pip failing writes no flag (the bot keeps the old code, which has its
+    packages), deps-pending for doctor, told once, retried each round until it works. C-09: the other paths that move
+    the engine (the launcher's plain fast-forward, the sync standing in, home-pull) write the flag too."""
+    supervisor, main = BotRestart.supervisor, BotRestart.main
+    BREAK = BrokenSomewhere.BREAK
+
+    def setUp(self):
+        Rig.setUp(self)
+        self.flag = os.path.join(self.engine, "dcbot", "state", "restart-requested")
+        self.procs = []
+        self.write(self.up, "dcbot/requirements.txt", "discord.py\n")
+        self.publish("dcbot/bot.py", "B = 1\n")
+        git(self.engine, "pull", "-q", "--ff-only")
+        venv = os.path.join(self.engine, "dcbot", ".venv", "bin")
+        os.makedirs(venv)
+        self.pip_log = os.path.join(self.tmp, "pip.log")
+        self.pip_fails = os.path.join(self.tmp, "pip-fails")
+        self.pip_sleeps = os.path.join(self.tmp, "pip-sleeps")
+        with open(os.path.join(venv, "python"), "w") as f:  # the venv's python: only `-m pip install`, logged
+            # it also writes down whether the engine's git lock was free while it ran, and sleeps if pip-sleeps says
+            f.write('#!/bin/sh\necho "$PWD|$*" >> "%s"\n'
+                    '/usr/bin/python3 -c "import fcntl,sys; fcntl.flock(open(sys.argv[1], \'a\'), fcntl.LOCK_EX | fcntl.LOCK_NB)" '
+                    '"%s" 2>/dev/null && echo free >> "%s.lock" || echo held >> "%s.lock"\n'
+                    '[ -e "%s" ] && sleep "$(cat "%s")"\n'
+                    '[ -e "%s" ] && { echo "no network" ; exit 1; }\nexit 0\n'
+                    % (self.pip_log, os.path.join(self.engine, ".git", "altention-git.lock"), self.pip_log, self.pip_log,
+                       self.pip_sleeps, self.pip_sleeps, self.pip_fails))
+        os.chmod(os.path.join(venv, "python"), 0o755)
+
+    def tearDown(self):
+        for p in self.procs:
+            p.kill()
+            p.wait()
+        Rig.tearDown(self)
+
+    def pips(self):
+        try:
+            with open(self.pip_log) as f:
+                return [l.split("|", 1)[1].strip() for l in f.read().splitlines()]
+        except OSError:
+            return []
+
+    def pending(self):
+        return update.deps_pending()
+
+    def test_new_packages_come_before_the_restart(self):
+        self.supervisor()
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        code, out = self.main()
+        self.assertEqual((code, self.head()), (0, new))
+        self.assertEqual(self.pips(), ["-m pip install -q -r requirements.txt"])
+        with open(self.pip_log) as f:
+            self.assertTrue(f.read().startswith(os.path.join(self.engine, "dcbot") + "|"), "run in dcbot/, as install.sh")
+        self.assertTrue(os.path.exists(self.flag))
+        self.assertIsNone(self.pending())
+        self.assertIn("機器人會自己重啟", out)
+
+    def test_pip_failing_writes_no_flag_says_so_once_and_is_tried_again(self):
+        self.supervisor()
+        open(self.pip_fails, "w").close()
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        code, out = self.main()
+        self.assertEqual((code, self.head()), (0, new), "HEAD moved on; the bot did not")
+        self.assertFalse(os.path.exists(self.flag), "no restart into code whose packages are missing")
+        self.assertEqual(self.pending()["head"], new)
+        self.assertIn("no network", self.pending()["why"])
+        self.assertIn("update\tdeps\t", self.alerts())
+        self.assertIn("dcbot/install.sh", self.alerts())
+        self.assertIn("套件沒裝上，沒有重啟", out)
+        self.assertEqual(len(self.told), 1)
+        for _ in range(2):  # within the hour: not tried again (#code-review of df95bc2: a hung network every round)
+            self.main()
+        self.assertEqual(len(self.pips()), 1)
+        self.an_hour_later()
+        self.main()
+        self.assertEqual(len(self.pips()), 2, "an hour later: tried again")
+        self.assertEqual(len(self.told), 1, "told the first time only: doctor keeps saying it")
+        self.assertEqual(self.pending()["tries"], 2)
+        self.assertFalse(os.path.exists(self.flag))
+        os.remove(self.pip_fails)  # the network back, or install.sh run by hand
+        self.an_hour_later()
+        code, out = self.main()
+        self.assertIsNone(self.pending())
+        self.assertTrue(os.path.exists(self.flag), "now the bot restarts into it")
+        self.assertIn("套件裝好了，機器人會自己重啟", out)
+        with open(self.pip_log + ".lock") as f:
+            self.assertEqual(set(f.read().split()), {"free"}, "pip never runs holding the engine's git lock")
+
+    def an_hour_later(self):
+        p = self.pending()
+        p["next"] = time.time() - 1
+        with open(os.path.join(update.state_dir(), update.DEPS_PENDING), "w") as f:
+            json.dump(p, f)
+
+    def test_a_pip_killed_halfway_is_taken_up_by_the_next_round(self):
+        """#code-review of df95bc2: the round killed (cron_update's 900 s, a Bash 2-minute limit) while pip ran
+        left neither the flag nor a record, and nothing ever tried again. The record is there before pip runs."""
+        self.supervisor()
+        with open(self.pip_sleeps, "w") as f:
+            f.write("30")
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        p = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0, %r)\nfrom unittest import mock\n"
+                              "from altention import update\nupdate.ENGINE = %r\nupdate.main([])" % (ENGINE_REAL, self.engine)],
+                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        until = time.time() + 30
+        while time.time() < until and not self.pips():
+            time.sleep(0.2)
+        self.assertEqual(len(self.pips()), 1, "pip started")
+        os.killpg(p.pid, 9)  # as cron_update does after 900 s
+        p.wait()
+        self.assertEqual(self.head(), new)
+        self.assertFalse(os.path.exists(self.flag))
+        self.assertEqual((self.pending()["head"], self.pending()["why"]), (new, update.INSTALLING), "the record is there")
+        rec = self.pending()
+        rec["next"] = time.time() - 1  # the round after: past PIP_TIMEOUT (15 minutes later)
+        with open(os.path.join(update.state_dir(), update.DEPS_PENDING), "w") as f:
+            json.dump(rec, f)
+        os.remove(self.pip_sleeps)
+        code, out = self.main()
+        self.assertEqual(len(self.pips()), 2, "taken up")
+        self.assertIsNone(self.pending())
+        self.assertTrue(os.path.exists(self.flag))
+        self.assertGreater(update.PIP_TIMEOUT + 60, 0)
+
+    def test_head_moving_on_while_pip_runs_keeps_the_record_for_the_new_head(self):
+        self.supervisor()
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        real = update.install_deps
+        newer = []
+
+        def moved_meanwhile():
+            newer.append(self.publish("dcbot/bot.py", "B = 9\n"))
+            git(self.engine, "pull", "-q", "--ff-only")  # say, home-pull in another channel
+            return real()
+        with mock.patch.object(update, "install_deps", moved_meanwhile):
+            code, out = self.main()
+        self.assertEqual(self.head(), newer[0])
+        self.assertFalse(os.path.exists(self.flag), "not for a HEAD it did not install for")
+        self.assertEqual((self.pending()["head"], self.pending()["why"]), (newer[0], update.INSTALLING))
+        self.assertIn("引擎又前進了", out)
+        code, out = self.main()
+        self.assertIsNone(self.pending())
+        self.assertTrue(os.path.exists(self.flag))
+
+    def test_a_move_while_packages_are_pending_does_not_restart_into_it(self):
+        self.supervisor()
+        open(self.pip_fails, "w").close()
+        self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        self.main()
+        newer = self.publish("dcbot/bot.py", "B = 7\n")  # requirements unchanged since: still missing
+        self.main()
+        self.assertEqual(self.head(), newer)
+        self.assertFalse(os.path.exists(self.flag))
+        self.assertEqual(self.pending()["head"], newer)
+        self.assertIn("no network", self.pending()["why"], "the reason kept")
+
+    def test_the_same_requirements_or_no_venv_run_no_pip(self):
+        self.supervisor()
+        new = self.publish("dcbot/bot.py", "B = 2\n")
+        self.main()
+        self.assertEqual((self.head(), self.pips()), (new, []))
+        self.assertTrue(os.path.exists(self.flag))
+        os.remove(self.flag)
+        shutil.rmtree(os.path.join(self.engine, "dcbot", ".venv"))  # the bot is not installed on this machine
+        self.publish("dcbot/requirements.txt", "other\n")
+        self.main()
+        self.assertEqual(self.pips(), [])
+        self.assertTrue(os.path.exists(self.flag), "the version changed all the same")
+
+    def test_the_launchers_plain_fast_forward_restarts_the_bot_too(self):
+        self.supervisor()
+        self.publish("altention/update.py", BrokenSomewhere.broken(self, "altention/update.py", "load"))
+        git(self.engine, "pull", "-q", "--ff-only")  # update.py itself is what broke here
+        new = self.publish("dcbot/bot.py", "B = 3\n")
+        r = BrokenSomewhere.launch(self, "cron_update.py")
+        self.assertEqual(self.head(), new, r.stdout[-400:])
+        self.assertTrue(os.path.exists(self.flag), r.stdout[-400:])
+        os.remove(self.flag)
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        r = BrokenSomewhere.launch(self, "cron_update.py")
+        self.assertEqual(self.head(), new, r.stdout[-400:])
+        self.assertFalse(os.path.exists(self.flag), "packages not installed by the fallback: no restart")
+        self.assertEqual(self.pending()["head"], new)
+        self.assertIn("cron-update\tdeps\t", self.alerts())
+        self.assertEqual(self.pips(), [])
+
+    def test_the_fallback_does_not_restart_while_packages_are_pending(self):
+        """#code-review of 5c3ee2f: packages pending from an earlier move, then the launcher's fast-forward (update.py
+        broken) to a version with only dcbot/ changed: it wrote the flag, the bot restarting into code without its
+        packages. As update.py's after_move: no flag, the record kept for the new HEAD."""
+        self.supervisor()
+        open(self.pip_fails, "w").close()
+        self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        self.main()
+        self.assertIn("no network", self.pending()["why"])
+        tries = self.pending()["tries"]
+        self.publish("altention/update.py", BrokenSomewhere.broken(self, "altention/update.py", "load"))
+        git(self.engine, "pull", "-q", "--ff-only")  # update.py itself is what broke here
+        self.assertFalse(os.path.exists(self.flag))
+        new = self.publish("dcbot/bot.py", "B = 5\n")
+        r = BrokenSomewhere.launch(self, "cron_update.py")
+        self.assertEqual(self.head(), new, r.stdout[-400:])
+        self.assertFalse(os.path.exists(self.flag), "no restart into code whose packages are missing")
+        self.assertEqual(self.pending()["head"], new, "the record kept, for the new HEAD")
+        self.assertIn("no network", self.pending()["why"], "with its reason")
+        self.assertEqual(self.pending()["tries"], tries)
+
+    def test_the_sync_standing_in_restarts_the_bot_too(self):
+        self.supervisor()
+        os.makedirs(update.state_dir(), exist_ok=True)
+        with open(os.path.join(update.state_dir(), "last_ok-update"), "w") as f:
+            json.dump({"at": time.time() - 2 * 3600}, f)  # update.py stopped two hours ago
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        with mock.patch.object(sync.config, "ENGINE", self.engine), \
+                mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                mock.patch.object(update.subprocess, "run", self.fake_run):
+            sync.run()
+        self.assertEqual(self.head(), new)
+        self.assertEqual(len(self.pips()), 1)
+        self.assertTrue(os.path.exists(self.flag))
+
+    def test_home_pull_restarts_the_bot_too(self):
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("home_pull_t", os.path.join(ENGINE_REAL, "bin", "home-pull"))
+        spec = importlib.util.spec_from_loader("home_pull_t", loader)
+        hp = importlib.util.module_from_spec(spec)
+        loader.exec_module(hp)
+        self.supervisor()
+        new = self.publish("dcbot/bot.py", "B = 4\n")
+        out = io.StringIO()
+        with mock.patch.object(hp, "REPO", self.engine), mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                redirect_stdout(out):
+            hp.main([])
+        self.assertEqual(self.head(), new)
+        self.assertTrue(os.path.exists(self.flag))
+        self.assertIn("機器人會自己重啟", out.getvalue())
+
+
 class ModeReading(unittest.TestCase):
-    """The four copies of update_mode() (update.py, sync.py, both launchers) give the same answer for every case."""
+    """The five copies of update_mode() (update.py, sync.py, both launchers, the supervisor) give the same answer for
+    every case."""
 
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="模式 ")
@@ -842,6 +1344,10 @@ class ModeReading(unittest.TestCase):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             self.copies.append((name, mod.update_mode))
+        spec = importlib.util.spec_from_file_location("m_supervisor", os.path.join(ENGINE_REAL, "dcbot", "supervisor.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.copies.append(("supervisor.py", mod.update_mode))
 
     def tearDown(self):
         self.env.stop()
@@ -860,7 +1366,10 @@ class ModeReading(unittest.TestCase):
         return inst
 
     def test_every_case(self):
-        self.assertEqual(self.answers(), ("notify", ""), "no instance, nothing read before")
+        m, problem = self.answers()
+        self.assertEqual(m, "notify", "no instance, nothing read before")
+        self.assertIn("看不到實例", problem, "and said (C-04)")
+        self.assertIn("照 notify，不自動更新", problem)
         branch_mode(self.home)
         self.assertEqual(self.answers(), ("branch", ""), "no instance seen: the mode last read")
         inst = self.settings('{"format": 1}')
@@ -889,7 +1398,11 @@ class ModeReading(unittest.TestCase):
         self.assertEqual(self.answers(), ("release", ""), "the pointer names the instance")
         branch_mode(self.home, "weird")
         os.remove(os.path.join(other, "plugins.json"))
-        self.assertEqual(self.answers(), ("notify", ""), "a mode last read that is not one: notify")
+        m, problem = self.answers()
+        self.assertEqual(m, "notify", "a mode last read that is not one: notify")
+        self.assertIn("實例裡沒有", problem)
+        with mock.patch.dict(os.environ, {"ALT_INSTANCE": "-"}):
+            self.assertIn("這台已經離開實例", self.answers()[1])
 
 
 class Launchers(unittest.TestCase):

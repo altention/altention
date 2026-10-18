@@ -28,14 +28,20 @@ PYEOF
 
 # 1. 紀錄 repo
 if [ ! -d "$LOGS/.git" ]; then
-  if [ -z "$REMOTE" ] || ! git clone -q "$REMOTE" "$LOGS" 2>/dev/null; then
-    mkdir -p "$LOGS"; git -C "$LOGS" init -q
-    if [ -n "$REMOTE" ]; then git -C "$LOGS" remote add origin "$REMOTE"; fi
+  # 設了遠端就先檢查再 clone（不是公開的、不是引擎的、不是別的資料：ops/remote.py clone）；沒過或 clone 不了就在這台建新的
+  if [ -z "$REMOTE" ] || ! "$PY" "$HERE/../ops/remote.py" clone logs "$REMOTE" "$LOGS" </dev/null; then
+    mkdir -p "$LOGS"; git -C "$LOGS" init -q  # its origin from step 1a, checked first
   fi
   git -C "$LOGS" checkout -q -B main 2>/dev/null || true
 fi
 chmod 700 "$LOGS" 2>/dev/null || true  # every conversation, word for word: no other account reads it
 echo "✓ 紀錄 repo：$LOGS"
+
+# 1a. 遠端：還沒有 origin 就照設定接上（先檢查：不是公開的、不是引擎的、不是別的資料），並放 pre-push hook
+#     （ops/remote.py attach，C-25）。已經有的 origin 跟設定不一樣時不改，只說出來
+if [ -n "$REMOTE" ] || git -C "$LOGS" remote get-url origin >/dev/null 2>&1; then
+  "$PY" "$HERE/../ops/remote.py" attach logs "$REMOTE" "$LOGS" </dev/null || true
+fi
 
 # 1b. 固定機器名稱（macOS 的 hostname 會隨網路改變，紀錄資料夾會跟著分裂）
 mkdir -p "$HOME/.config/altention"
@@ -45,7 +51,9 @@ echo "✓ 機器名稱：$(cat "$HOME/.config/altention/host")（改名請編輯
 # 2. 檢查
 git config user.name >/dev/null && git config user.email >/dev/null || echo "⚠ 這台機器沒有設定 git user.name / user.email，commit 會失敗"
 ORIGIN="$(git -C "$LOGS" remote get-url origin 2>/dev/null || true)"
-if [ -z "$ORIGIN" ]; then
+if [ -z "$ORIGIN" ] && [ -n "$REMOTE" ]; then  # set, but step 1a did not attach it (said there, and in the alerts)
+  echo "⚠ 紀錄的遠端（$REMOTE）沒有接上，紀錄先只留在這台機器（$LOGS）。原因見上面 ⚠ 那一行，或系統檢查的 alerts；改好設定再重跑安裝"
+elif [ -z "$ORIGIN" ]; then
   echo "ℹ 沒有設定要推到哪裡，紀錄只留在這台機器（$LOGS）。"
 elif ! /usr/bin/env -i HOME="$HOME" PATH=/usr/local/bin:/usr/bin:/bin GIT_TERMINAL_PROMPT=0 \
     GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" git -C "$LOGS" ls-remote origin </dev/null >/dev/null 2>&1; then  # </dev/null: run from a script fed on stdin (ops/apply.py)

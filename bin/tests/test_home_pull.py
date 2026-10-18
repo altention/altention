@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -100,6 +101,21 @@ class HomePull(Rig):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("from b", self.read(self.a, "notes.md"))
         self.assertIn("local commit", self.read(self.a, "other.md"))
+
+    def test_a_commit_made_here_is_never_pushed_even_with_an_instance(self):
+        """C-31: home-pull pulls and never pushes the engine (it pushed after handing folders to the instance)."""
+        self.upstream()
+        up = sh(self.origin, "git", "rev-parse", "main").stdout
+        self.write(self.a, "other.md", "local commit\n", "a")
+        sh(self.a, "git", "commit", "-qam", "a")
+        inst = os.path.join(self.tmp, "instance")
+        os.makedirs(os.path.join(inst, "knowledge"))
+        with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}):
+            r = self.pull()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("from b", self.read(self.a, "notes.md"), "pulled")
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout, up, "nothing pushed")
+        self.assertEqual(sh(self.a, "git", "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "1")
 
     def test_a_rebase_killed_halfway_is_cleared_and_its_edits_kept(self):
         self.write(self.a, "other.md", "saved edit\n", "a")
@@ -286,6 +302,32 @@ class Modes(Rig):
         r = self.run_("--quiet")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.head(self.a), self.head(self.b))
+
+    def test_a_skill_the_update_brings_gets_its_link(self):
+        """manager 2026-10-16: home-pull (and apply's) links a skill the update brought, as the sync's round does;
+        from another checkout than this machine's engine, nothing."""
+        self.mode("branch")
+        os.makedirs(os.path.join(self.b, "skills", "newone"))
+        self.write(self.b, "skills/newone/SKILL.md", "x\n")
+        sh(self.b, "git", "add", "-A")
+        sh(self.b, "git", "commit", "-qm", "a new skill")
+        sh(self.b, "git", "push", "-q")
+        link = os.path.join(self.home, ".claude", "skills", "newone")
+        os.makedirs(os.path.join(self.home, ".config", "altention"))
+        with open(os.path.join(self.home, ".config", "altention", "engine"), "w") as f:
+            f.write(self.b + "\n")  # this machine's engine is elsewhere
+        env = dict(os.environ, HOME=self.home, ALT_INSTANCE=self.inst)
+        env.pop("ALT_TEST_ANY_ENGINE", None)  # the pointer decides, as on a machine
+        r = subprocess.run(["python3", "bin/home-pull", "--quiet"], cwd=self.a, env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(self.a, "skills", "newone")), "pulled")
+        self.assertFalse(os.path.lexists(link), "not this machine's engine: no link to it")
+        with open(os.path.join(self.home, ".config", "altention", "engine"), "w") as f:
+            f.write(self.a + "\n")
+        r = self.run_("--quiet")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.readlink(link), os.path.join(self.a, "skills", "newone"))
 
 
 class Refused(Rig):

@@ -330,3 +330,92 @@ class Expand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Overrides(unittest.TestCase):
+    """C-37: plugins.<name>.schedules (core.schedules for the core's watch) overrides when, enabled, timezone; anything
+    that cannot be used makes its item unknown, never the plugin.json's time instead."""
+    D = {"name": "progress", "schedules": [
+        {"name": "run", "when": {"every": "10m"}, "do": {"run": "x"}},
+        {"name": "brief", "when": {"at": "08:00"}, "timezone": "machine", "do": {"message": "hi"}}]}
+    CORE = {"name": "core", "cron": [{"name": "watch", "when": {"every": "15m", "offset": "machine", "after": "13m"}, "run": "w"},
+                                     {"name": "sync", "when": {"every": "15m"}, "run": "s"},
+                                     {"name": "supervisor", "when": "*/5 * * * *", "run": "v"}]}
+
+    def eff(self, schedules, d=None, name="progress"):
+        settings = {"core": {"schedules": schedules}} if name == "core" else {"plugins": {name: {"schedules": schedules}}}
+        items, problems = plugin.effective_schedules(name, d or self.D, settings)
+        return dict((i["name"], i) for i in items), problems
+
+    def test_nothing_set_is_the_plugins_own(self):
+        items, problems = plugin.effective_schedules("progress", self.D, {})
+        self.assertEqual(([i["when"] for i in items], [i["source"] for i in items], problems),
+                         ([{"every": "10m"}, {"at": "08:00"}], ["plugin", "plugin"], []))
+        self.assertNotIn("source", self.D["schedules"][0], "the plugin.json is never changed")
+
+    def test_when_enabled_and_timezone(self):
+        items, problems = self.eff({"run": {"when": {"at": "03:00", "days": ["mon", "fri"]}},
+                                    "brief": {"enabled": False, "timezone": None}})
+        self.assertEqual(items["run"]["when"], {"at": "03:00", "days": ["mon", "fri"]})
+        self.assertEqual(items["run"]["do"], {"run": "x"}, "do is never the instance's")
+        self.assertEqual((items["run"]["source"], items["brief"]["source"], items["brief"]["enabled"]), ("instance", "instance", False))
+        self.assertNotIn("timezone", items["brief"], "null: the instance's core.timezone")
+        self.assertEqual(problems, [])
+
+    def test_what_cannot_be_used_is_unknown_and_said(self):
+        for o, said in (({"when": {"every": "7m"}}, "寫不成 cron"), ({"when": {"every": "90m"}}, "寫不成 cron"),
+                        ({"when": {"at": "25:00"}}, "HH:MM"), ({"when": {"once": "2026-10-20 09:00"}}, "不認得 once"),
+                        ({"when": {"at": "03:00", "days": ["monday"]}}, "days"), ({"when": {"every": "1h", "offset": "1h"}}, "offset"),
+                        ({"when": {"every": "1h", "at": "03:00"}}, "剛好一種"), ({"wehn": {"every": "1h"}}, "不認得 wehn"),
+                        ({"enabled": "false"}, "enabled"), ({"timezone": "Asia/Taipei"}, "timezone"), ("1h", "要是物件"),
+                        ({"when": {"every": "10m", "after": "3m"}}, "after")):
+            items, _ = self.eff({"run": o})
+            self.assertIn(said, items["run"].get("unknown", ""), o)
+            self.assertEqual(items["run"]["when"], {"every": "10m"}, "left as it was, and unknown")
+            self.assertNotIn("unknown", items["brief"], "the other items are as they were")
+
+    def test_a_name_that_matches_nothing_is_a_problem_and_changes_nothing(self):
+        items, problems = self.eff({"rn": {"when": {"every": "1h"}}})
+        self.assertEqual(problems, ["plugins.progress.schedules.rn：progress 沒有叫 rn 的排程（有：run、brief）"])
+        self.assertEqual(items["run"]["source"], "plugin")
+
+    def test_a_block_that_is_not_an_object_makes_every_item_unknown(self):
+        for settings in ({"plugins": {"progress": {"schedules": ["run"]}}}, {"plugins": {"progress": "on"}}):
+            items, _ = plugin.effective_schedules("progress", self.D, settings)
+            self.assertTrue(all(i.get("unknown") for i in items), settings)
+
+    def test_the_core_opens_its_watch_sync_and_engine_update(self):
+        """C-37 C: the sync and the engine update may change their time too (never be turned off: they are how fixes
+        arrive); the supervisor's lines may not."""
+        items, problems = self.eff({"watch": {"when": {"every": "30m", "offset": "machine", "after": "13m"}},
+                                    "sync": {"when": {"every": "1h"}}, "supervisor": {"enabled": False}}, self.CORE, "core")
+        self.assertEqual((items["watch"]["source"], items["sync"]["source"], items["supervisor"].get("enabled", True)),
+                         ("instance", "instance", True))
+        self.assertEqual(problems, ["core.schedules.supervisor：這一版還不能改（核心只開放 watch、sync、engine-update）"])
+        items, _ = self.eff({"sync": {"enabled": False}}, self.CORE, "core")
+        self.assertIn("不能關", items["sync"]["unknown"])
+        items, _ = self.eff({"watch": {"when": {"at": "03:00"}}}, self.CORE, "core")
+        self.assertIn("只能寫 every", items["watch"]["unknown"])
+        items, _ = self.eff({"watch": {"timezone": "machine"}}, self.CORE, "core")
+        self.assertIn("timezone", items["watch"]["unknown"])
+        items, _ = plugin.effective_schedules("core", self.CORE, {"core": {"schedules": 5}})
+        self.assertEqual([bool(i.get("unknown")) for i in items], [True, True, False], "only what is open is held")
+
+    def test_sync_interval_is_the_short_way_of_the_syncs_every(self):
+        """C-37 C (manager 2026-10-16): sync.interval, written by instance.py init and said by its README, now works."""
+        def sync(settings):
+            items, problems = plugin.effective_schedules("core", self.CORE, settings)
+            return dict((i["name"], i) for i in items)["sync"], problems
+        it, problems = sync({"sync": {"interval": "1h"}})
+        self.assertEqual((it["when"], it["source"], problems), ({"every": "1h"}, "instance", []))
+        it, _ = sync({"sync": {"interval": "15m"}})
+        self.assertEqual(it["source"], "plugin", "the core's own: no override (every new instance writes it)")
+        it, _ = sync({"sync": {"interval": "7m"}})
+        self.assertTrue(it["unknown"].startswith("sync.interval：every 7m 寫不成 cron"), it)
+        it, _ = sync({"sync": {"interval": "1h"}, "core": {"schedules": {"sync": {"when": {"every": "30m"}}}}})
+        self.assertEqual(it["when"], {"every": "30m"}, "core.schedules.sync comes first")
+        engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        real = plugin.load(os.path.join(engine, "altention", "core.plugin.json"), core=True)
+        own = next(c["when"] for c in real["cron"] if c["name"] == "sync")
+        it = dict((i["name"], i) for i in plugin.effective_schedules("core", real, {"sync": {"interval": "1h"}})[0])["sync"]
+        self.assertEqual(it["when"], dict(own, every="1h"), "its machine minute and its time after the update kept")

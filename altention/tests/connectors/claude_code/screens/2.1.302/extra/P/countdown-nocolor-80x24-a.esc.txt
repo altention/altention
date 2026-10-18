@@ -1,0 +1,24 @@
+
+❯ run it
+
+  Rig
+  ⎿  $ rm -rf ~
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ rig
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ rm -rf ~
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on critical path:
+ │ /tmp/claude-1000001/-mnt-nfs-work-someone123-altention-engine/138759c1-a567-
+ │ 4d16-a9d3-492e907cf770/scratchpad/pc/w/cap-nocolor-80x24-1972016/home
+ ⚠ Claude Code will automatically deny this request in 1:58, to avoid blocking
+ progress on an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

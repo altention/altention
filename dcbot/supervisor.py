@@ -21,11 +21,24 @@ A rollback takes the git lock every automated job shares (waiting up to LOCK_WAI
 broken bot must not wait on a stuck job). With the lock, the commit is put on top of the remote by
 altention.sync.update in a child process (with a timeout); if that child cannot run at all, a plain rebase marked
 as ours, aborted on conflict. Without the lock, only fetch, fast-forward and push. Every git call has a timeout,
-and the bot is started whatever the network does: an unpushed rollback commit is pushed by the next sync.
+and the bot is started whatever the network does. The sync never pushes the engine (C-31): an unpushed rollback
+commit stays on this machine, said in the notice and by doctor's sync.engine-ahead, until pushed by hand.
+All of that only when the instance's core.update is "branch" (update_mode, a copy of altention/update.py's): a
+machine on releases (release, notify) keeps its rollback commit here, fetches, rebases and pushes nothing (the
+remote's branch is not released, and its remote may not be ours to push to); the next release it updates to
+leaves the commit behind (C-07; altention/sync.py local_commits).
+
+Packages a new version needs and that are not installed yet (altention/update.py's deps-pending record: HEAD moved,
+dcbot/requirements.txt changed, pip not done) are no sign of a bad version (C-40): before starting the bot while
+that record is there, the supervisor runs pip itself (update.py's lock, the same command as dcbot/install.sh) and
+starts the new version once it worked (the record then goes). Only if that pip failed and the new version then dies
+in its trial is nothing rolled back (so nothing is committed, let alone pushed, in any core.update mode): the bot stays down, it is said
+(notice, and altention dc notify once per head), and pip is tried again every DEPS_RETRY.
 
 Changing this file is risky: the bot can't roll back its own supervisor. Keep it small. Rescue: SUPERVISOR-RESCUE.md.
 """
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -49,6 +62,9 @@ POLL = 2
 BACKOFF = 5
 BAD_MIN = 2
 FOLLOW_SECS = 30
+DEPS_PIP_TIMEOUT = 300  # pip for missing packages before a start; the bot is down meanwhile
+DEPS_LOCK_WAIT = 660  # update.py's own pip may hold its lock this long (its PIP_TIMEOUT and a minute)
+DEPS_RETRY = 600  # packages that would not install: tried again this often, the bot down meanwhile
 OURS = "agent-rebase"  # altention.sync's mark for a rebase that is ours to undo
 REFUSED = 10  # the sync child's exit status when update() said no (a conflict...): not a reason for the fallback
 SYNC_CHILD = """import os, sys
@@ -118,9 +134,9 @@ def git_dir():
 
 
 def git_lock():
-    """The shared git lock (<git dir>/agent-git.lock), waited for up to LOCK_WAIT seconds; None if not had."""
+    """The shared git lock (<git dir>/altention-git.lock), waited for up to LOCK_WAIT seconds; None if not had."""
     try:
-        f = open(os.path.join(git_dir(), "agent-git.lock"), "a")
+        f = open(os.path.join(git_dir(), "altention-git.lock"), "a")
     except OSError:
         return None
     until = time.time() + LOCK_WAIT
@@ -167,7 +183,8 @@ def run_child(top, lock, timeout):
 
 def put_on_remote(lock, until):
     """The rollback commit on top of the remote, then pushed; True if pushed. Never raises, and nothing runs
-    past `until`: a commit not pushed by then is pushed by the next sync."""
+    past `until`: a commit not pushed by then stays here until someone pushes it (the sync does not push the
+    engine; doctor's sync.engine-ahead lists it)."""
     def push():
         return left(until, NET_TIMEOUT) > 0 and git("push", "-q", timeout=left(until, NET_TIMEOUT))[0] == 0
     if lock is None:  # someone else may be moving the branch: nothing that rewrites it
@@ -200,6 +217,134 @@ def put_on_remote(lock, until):
         except OSError:
             pass
     return rc == 0 and push()
+
+
+UPDATE_MODES = ("notify", "release", "branch")  # update.py's: only "branch" puts a rollback on the remote
+
+
+def update_mode():
+    """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
+    reading is copied into cron_update.py, cron_sync.py, sync.py and dcbot/supervisor.py; the agreement test holds
+    them together).
+    plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
+    yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
+    UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
+    machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
+    "notify" when there is none, and then `problem` says that too (C-04)."""
+    def last(problem="", unseen=""):
+        """The mode last read, with `problem`; none (or not one of UPDATE_MODES): notify, and why, `unseen` being
+        what was not seen (C-04: a machine that never read its settings is told it does not update by itself)."""
+        try:
+            with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
+                m = json.load(f).get("mode")
+        except (OSError, ValueError, AttributeError):
+            m = None
+        if m in UPDATE_MODES:
+            return m, problem
+        return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
+    named = os.environ.get("ALT_INSTANCE")
+    pointer = os.path.expanduser("~/.config/altention/instance")
+    if not named and os.path.exists(pointer):
+        try:
+            with open(pointer) as f:
+                named = f.readline().strip()
+        except (OSError, UnicodeDecodeError) as e:
+            return last("讀不了 %s（%s）" % (pointer, e))
+    if named == "-":  # this machine has left its instance
+        return last(unseen="這台已經離開實例")
+    if named:
+        inst = os.path.expanduser(named)
+        if not os.path.isdir(inst):
+            return last("實例資料夾不存在：%s" % inst)
+    else:
+        inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
+        if not os.path.isdir(inst):
+            return last(unseen="看不到實例（%s）" % inst)
+    path = os.path.join(inst, "plugins.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+    except FileNotFoundError:
+        return last(unseen="實例裡沒有 %s" % path)
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return last("讀不出 %s（%s）" % (path, e))
+    core = got.get("core", {}) if isinstance(got, dict) else None
+    if not isinstance(core, dict):
+        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
+    mode = core.get("update", "notify")
+    if mode not in UPDATE_MODES:
+        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
+    return mode, ""
+
+
+def deps_path():
+    """altention/update.py's deps-pending record (its state folder, from HOME at call time)."""
+    return os.path.join(os.path.expanduser("~/.local/state/altention"), "deps-pending")
+
+
+def deps_pending():
+    """update.py's record ({head, why, at, next, tries}) while the bot's packages for a new HEAD are not installed,
+    or None."""
+    try:
+        with open(deps_path()) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def install_deps():
+    """pip install -r requirements.txt into the bot's venv, as dcbot/install.sh and update.py do, under update.py's
+    lock for it (waited for: update.py may be installing right now). "" when it worked or update.py did it meanwhile
+    (the record is then gone), else why not. When it worked the record goes whatever HEAD it names: pip installed what
+    the work tree asks for now (#code-review on e9622a9: a record of another HEAD left behind kept a broken version
+    from being rolled back)."""
+    try:
+        lock = open(deps_path() + ".lock", "a")
+    except OSError as e:
+        return "拿不到套件安裝的鎖（%s）" % e
+    try:
+        until = time.time() + DEPS_LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > until:
+                    return "update.py 正在裝套件，等了 %d 秒還沒結束" % DEPS_LOCK_WAIT
+                time.sleep(BACKOFF)
+        pending = deps_pending()
+        if pending is None:
+            return ""  # update.py installed them while we waited
+        try:
+            r = subprocess.run([PY, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace",
+                               timeout=DEPS_PIP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return "pip install %d 秒沒有結束" % DEPS_PIP_TIMEOUT
+        except OSError as e:
+            return "跑不了 pip（%s）" % e
+        if r.returncode != 0:
+            return "pip install 失敗（結束碼 %d）：%s" % (r.returncode, " ".join(r.stdout.split())[-300:])
+        try:
+            os.remove(deps_path())
+        except OSError:
+            pass
+        return ""
+    finally:
+        lock.close()
+
+
+def tell_once(key, text):
+    """altention dc notify, once per `key` (the bot that would show a notice is down); best effort, never raises."""
+    if read("told-deps") == key:
+        return
+    try:
+        write("told-deps", key)
+        subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", text], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=NET_TIMEOUT)
+    except Exception as e:
+        log("could not notify (%r)" % e)
 
 
 def failed_events_since(start):
@@ -320,15 +465,24 @@ def put_back(good, reason, lock, until):
     same = tree() == tree(good) if attempt == "whole" else version() == version(good)
     if not same:
         log("rollback: the tree after the rollback is not %s's" % good[:7])
-    pushed = put_on_remote(lock, until)
+    try:
+        mode = update_mode()[0]
+    except Exception as e:  # never a reason not to roll back: then nothing on the remote, the careful way
+        log("rollback: core.update not read (%r); nothing put on the remote" % e)
+        mode = "notify"
+    pushed = put_on_remote(lock, until) if mode == "branch" else None
     shown = lines[:15] + (["…還有 %d 個（git log 看）" % (len(lines) - 15)] if len(lines) > 15 else [])
     text = "⚠️ %s，已把%s退回 `%s`（壞掉的版本仍在 git 歷史裡）。被退掉的 commit：\n%s" % (
         reason, "整個引擎" if attempt == "whole" else " dcbot/ 和 altention/（部分退回）", good[:7], "\n".join(shown))
     if saved:
         text += ("\n別的頻道沒提交的修改（%s）另存在 `%s`：請自己把修改合併回去，不要整個複製回去"
                  "（另存的是整個檔，複製回去等於把退回撤掉）" % ("、".join(overlap[:10]), saved))
-    if not pushed:
-        text += "\n退回的 commit 還沒推出去（網路或衝突），之後的同步會推；這台已經是退回後的版本"
+    if pushed is None:
+        text += ("\n這台的 core.update 是 %s：退回的 commit 只留在這台，不推出去、也不拉上游的分支；"
+                 "之後更新到新的發佈版本時它會被丟掉（新版取代它），不用推" % mode)
+    elif not pushed:
+        text += ("\n退回的 commit 還沒推出去（網路或衝突），同步不會替你推：在這台的引擎跑 `bin/home-git push`，"
+                 "被拒的話先 `bin/home-pull` 再推（系統檢查會一直列著，直到推出去）；這台已經是退回後的版本")
     if not same:
         text += "\n（退回後的樹和 `%s` 不完全相同，請人看一下）" % good[:7]
     notice(text)
@@ -453,6 +607,11 @@ def main():
             os.remove(os.path.join(STATE, "ready"))
         except OSError:
             pass
+        deps_why = None
+        if deps_pending() is not None and os.path.exists(PY):  # C-40: the new version's packages first
+            log("packages for %s pending (update.py's deps-pending); installing before the start" % head[:7])
+            deps_why = install_deps()
+            log("packages: %s" % (deps_why or "installed"))
         log("starting bot %s%s" % (head[:7], " (trial)" if trial else ""))
         proc = subprocess.Popen([PY, "-m", "bot.main"], cwd=ROOT)
         write("bot.pid", str(proc.pid))
@@ -482,6 +641,15 @@ def main():
         log("bot exited with %s after %ds" % (code, up))
         if code == EXIT_RESTART:
             continue  # deploy or !restart: start whatever is checked out now
+        if trial and not marked and deps_why:
+            # pip failed before this start: its packages are not installed, no sign the version is bad, nothing rolled
+            # back (C-40). Only then: a pip that worked, or none tried, and a failure is the version's own
+            text = ("新版本 `%s` 啟動不了，它要的套件還沒裝上（%s）：這不算新版壞掉，沒有退回。每 %d 分鐘會再裝一次；"
+                    "要現在處理：在這台的引擎跑 dcbot/install.sh" % (head[:7], deps_why, DEPS_RETRY // 60))
+            notice(text)
+            tell_once(head, "⚠️ 機器人停著：" + text)
+            time.sleep(DEPS_RETRY)
+            continue
         if trial and not marked:
             if safe_rollback(good, "新版本 `%s` 啟動失敗（exit %s）" % (head[:7], code)):
                 continue

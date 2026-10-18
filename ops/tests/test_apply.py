@@ -96,7 +96,8 @@ class RemoteScript(Rig):
                     else:
                         f.write("print(%r)\n" % mark)
                 elif name == "install":
-                    body = ["echo \"install $*\" >> %s" % self.calls, "echo 'ok core.instance 實例：x'"]
+                    body = ["echo \"install $*\" >> %s" % self.calls, "echo \"${ALT_NO_PATH_CHECK-unset}\" > %s.path" % self.calls,
+                            "echo 'ok core.instance 實例：x'"]
                     if name == fail:
                         body += ["echo 'fail plugin.progress progress/install.sh 失敗'", "echo 'ok core.done 安裝跑完了'", "exit 1"]
                     else:
@@ -130,6 +131,11 @@ class RemoteScript(Rig):
         self.assertIn("ok core.instance", r.stdout)
         with open(os.path.join(self.home, ".config/altention/host")) as f:
             self.assertEqual(f.read(), "box\n")
+
+    def test_the_installer_is_told_not_to_check_the_path(self):  # it would run the user's rc files every apply
+        self.run_script(self.engine())
+        with open(self.calls + ".path") as f:
+            self.assertEqual(f.read(), "1\n")
 
     def test_allow_time_and_hold_are_passed_to_the_installer(self):
         self.allow = "--allow-time chatlog/sync --hold progress"
@@ -214,7 +220,8 @@ class Installers(Rig):
         b = self.fake_bin(["crontab", "claude"])
         os.makedirs(os.path.join(self.home, "logs", ".git"))
         env = dict(os.environ, HOME=self.home, CALLS=self.calls, PATH=b + os.pathsep + os.environ["PATH"],
-                   CHATLOG_REPO=os.path.join(self.home, "logs"), CHATLOG_REMOTE="none", ALT_INSTANCE="")
+                   CHATLOG_REPO=os.path.join(self.home, "logs"), CHATLOG_REMOTE="none", ALT_INSTANCE="",
+                   SHELL="")  # no shell of the user's started (core.path)
         env.update(extra_env or {})
         return subprocess.run([os.path.join(ENGINE, script)] + (["--links"] if script == "install.sh" else []),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -100,7 +100,7 @@ reports them.
 `altention/update.py` 在移動分支前做語法檢查和載入檢查。上游沒通過就**一直擋著**：同步不會在 45 分鐘後代為拉進來，兩支啟動檔的保底快轉也不拉那個 hash；doctor 顯示「上游被擋：<hash> <原因>，已經多久」（fail），`doctor.py --watch` 會通知。沒有「擋太久就放行」。
 
 - 出路一：在上游推修正（上游換了 hash 就重新檢查，通過就更新）。修正疊在被擋的 commit 上面時，home-pull 和部署也先不拉，由 update 那行檢查過才進來（最多晚一輪）；update 沒在檢查時，同步代班和保底照拉，但會寫 alert（DESIGN 7.1）。
-- 出路二：確定是**檢查本身有 bug 而誤擋**時，從控制端跑 `python3 ops/apply.py <機器>`：它跑 `home-pull --take-refused`，不經過 update.py 的檢查。一般的 `home-pull`（串流、usage、各頻道開場）不帶這個旗標，被擋的不會拉。
+- 出路二：確定是**檢查本身有 bug 而誤擋**時，從控制端跑 `python3 ops/apply.py <機器>`：它跑 `home-pull --take-refused`，不經過 update.py 的檢查。一般的 `home-pull`（串流、各頻道開場）不帶這個旗標，被擋的不會拉。
 - 已知而且必要的取捨：update.py 自己壞掉（載不進來、跑到一半丟例外）時沒有人在檢查，啟動檔照舊用單純的快轉把修正拉進來。
 
 ## 驗證「各台會自己用 update 那行更新」時（3a.10 起）
@@ -109,7 +109,7 @@ reports them.
 
 - 要觀察 update 那行真的拉進新 commit：挑**不重啟機器人**的 commit（只動文件、`chatlog/`、`ops/` 之類），部署後不要手動 home-pull 或 apply，等各台自己的 update 分鐘。
 - 對時間：那台 `git reflog` 快轉到新 commit 的時間，要等於 `cron-update.log` 那一輪的時間；`last_ok-update` 的 head 前進。2026-10-07 第一次以為看到了，其實 reflog 顯示三台都在機器人重啟那一秒被串流拉過去。
-- 串流、usage 收集和各頻道開場呼叫的 `home-pull` 也不拉被擋的 hash（2026-10-07 起；之前會，最多一小時就被 usage 帶到四台）。
+- 串流和各頻道開場呼叫的 `home-pull` 也不拉被擋的 hash（2026-10-07 起；之前會，最多一小時就被 usage 帶到四台）。usage 收集從 C-10 起在別台只跑 `usage/remote.py`，不再 pull。
 
 ## 實例的設定被推壞了（machines.json、plugins.json…）
 

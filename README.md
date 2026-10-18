@@ -38,12 +38,20 @@ Optional plugins (all bundled, each can be turned off):
 - **planner**: timed reminders that wake a channel's conversation with a message.
 - **council**: a multi-perspective "council" skill for decisions.
 
+How often or at what time each plugin runs can be changed in the instance's settings (`plugins.<plugin>.schedules`),
+and a single schedule can be turned off; just tell Claude.
+
+The engine's skills are linked into `~/.claude/skills`, and the sync makes a missing link again within 15 minutes. To
+go without a plugin's skill, turn that plugin off (`disabled_on`); a deleted link comes back.
+
 The usage and status boards are posted to the channel whose ID is in `usage.channel` and `status.channel` in the
 instance's `plugins.json`; the install guide makes `#dashboard` and writes its ID there. To move them, put another
-channel's ID in those settings. Without one, the board is not posted and doctor says so.
+channel's ID in those settings. Without one, the board is not posted and the system check says so.
 
-The install guide asks whether you want planner's daily briefs: a morning brief at 08:00, an evening review at 22:00
-and a weekly review on Sundays at 21:00. Each wakes the Claude in `#secretary` (the channel ID in `planner.channel`), whose folder holds its instructions and the short-term plan, and
+The install guide asks at the start whether you want planner's daily briefs, and when: a morning brief (08:00 unless
+you pick another time), an evening review (22:00) and a weekly review (Sundays at 21:00). They are items in the
+secretary's own schedule file (`reminders.json`), so later you just tell the secretary to change a time or turn one
+off. Each wakes the Claude in `#secretary` (the channel ID in `planner.channel`), whose folder holds its instructions and the short-term plan, and
 uses your subscription. If you do not want them, turn planner off (`disabled_on`); that also stops the reminders in
 other channels' schedules.
 
@@ -61,7 +69,8 @@ other channels' schedules.
 - Claude Code 2.1.296 or later, logged in
 - A Discord server of your own and a Discord application you create (the bot token)
 
-One machine is enough. No SSH and no remote repository are needed for a single-machine setup.
+One machine is enough. No SSH and no remote repository are needed for a single-machine setup; a private remote
+repository is recommended as its backup (see [Backup and restore](#backup-and-restore)).
 
 ## Install
 
@@ -93,43 +102,44 @@ One machine is enough. No SSH and no remote repository are needed for a single-m
    walks you through
    creating the Discord application and inviting the bot, and runs the installer and the checks with you.
 
-   **The bot token never goes through the conversation.** When the guide asks for it, run this in your own terminal:
+   **The bot token never goes through the conversation.** When the guide gets to Discord, run this in your own
+   terminal:
 
    ```bash
-   ~/altention/engine/install.sh --token
+   ~/altention/engine/install.sh discord
    ```
 
-   It asks for the token, your Discord user ID (`OWNER_ID`) and server ID (`GUILD_ID`) without echoing, and writes
-   them to `~/.config/dcbot/env` (mode 600). You can also write that file yourself.
+   It asks for the token without echoing it, finds the rest itself (see below), and then installs everything.
 
-Without the guide, first create the Discord application (the guide walks you through the same steps):
+Without the guide:
 
 1. <https://discord.com/developers/applications> → **New Application**, any name.
-2. **Bot** page: turn **Public Bot** off (it is on by default: anyone who has the application's client ID could add
-   your bot to their own server). If Discord refuses with "Private application cannot have a default authorization
-   link", set **Installation → Install Link** to **None**, save, and come back. You can still add the bot yourself
-   with the URL from step 3. **Reset Token** and keep the token for `install.sh --token`. Under **Privileged
-   Gateway Intents**, turn on **Message Content Intent**, and save.
-3. **OAuth2 → URL Generator**: scopes `bot` and `applications.commands`; bot permissions View Channels, Manage
-   Channels, View Audit Log, Send Messages, Send Messages in Threads, Create Public Threads, Manage Threads, Manage
-   Messages, Pin Messages, Embed Links, Attach Files, Read Message History, Add Reactions, Use Application Commands.
-   Open the generated URL and add the bot to your own server (a new, empty one is best). A missing permission is not
-   fatal: doctor and the bot say what is missing.
-4. In Discord, **User Settings → Advanced → Developer Mode** on; right-click your name → Copy User ID, right-click the
-   server → Copy Server ID. `install.sh --token` asks for both.
+2. **Bot** page: under **Privileged Gateway Intents**, turn on **Message Content Intent**; turn **Public Bot** off
+   (it is on by default: anyone who has the application's ID could add your bot to their own server); **Save
+   Changes**. If Discord refuses with "Private application cannot have a default authorization link", set
+   **Installation → Install Link** to **None**, save, and come back.
+3. In your own terminal, run `~/altention/engine/install.sh discord`. When it asks, press **Reset Token** on the
+   **Bot** page and paste the new token straight in. With the token it reads the application's ID and its owner
+   (you; if a team owns it, you pick yourself from the team), says what is still to change on the Bot page, and
+   prints a link that adds the bot with the scopes and the 14 permissions it needs. Open the link and pick your
+   server (a new, empty one is best). It waits until the bot is in (it asks which server if there are several) and
+   writes the token, your user ID and the server's ID to `~/.config/dcbot/env` (mode 600). Then it goes straight on
+   to install everything this machine needs (the same as `./install.sh`); wait until its last line says it is done.
 
 Then:
 
 ```bash
 cd ~/altention/engine
-./install.sh --token     # the bot's settings, in your own terminal
-./install.sh             # everything this machine needs
-python3 ops/doctor.py --fix   # check; --fix prints how to fix each problem (it changes nothing)
+./install.sh             # everything this machine needs (install.sh discord already ran it; safe to run again)
+python3 ops/doctor.py --fix   # the system check; --fix prints how to fix each problem (it changes nothing)
 python3 dcbot/tools/dcctl guide   # once the bot is online: post the user guide to #guide
 ```
 
 `install.sh` exits 0 when done, 1 when something failed, 2 when it needs you to do something (the `todo` lines say
 what; run it again afterwards). It is safe to run again at any time.
+
+The system check is `ops/doctor.py` (also `altention doctor`). It is not Claude Code's own `/doctor`, which checks
+Claude Code itself. In Discord, ask Claude in any channel to run the system check.
 
 **The first time the bot comes online**, it creates `#audit` and `#chat`. `#audit` gets its online message, and later
 deploy results and roll-back notices. `#chat` is a ready conversation whose working folder is the instance: type
@@ -142,6 +152,10 @@ runs. The three channels' names can be changed in the instance's `plugins.json`:
 The bot's user guide is [dcbot/GUIDE.md](dcbot/GUIDE.md). The install guide posts it to `#guide` once the bot is
 online; without the guide, run `python3 dcbot/tools/dcctl guide` yourself. Run it again after an update to bring the
 channel in line.
+
+**A guided tour.** At the end, the install guide opens `#tutorial`, where Claude walks you through the main features
+one at a time: buttons, 📋, a new channel, channels talking to each other, the boards and a reminder. It asks first
+and you can put it off. `/tour` in any channel starts it again. It uses a little of your subscription.
 
 ## Words used here
 
@@ -162,6 +176,59 @@ Everything lives under one root by default (`ALT_ROOT` moves it):
   data/        plugin data (conversation logs, the progress summaries, …)
 ```
 
+## Backup and restore
+
+Your memory, knowledge, settings, conversation records, progress and the secretary's plan are kept on your machine.
+Each of the four can be backed up to a **private** git repository of its own, pushed about every 15 minutes:
+
+- `instance`: memory, knowledge, settings and the machine list (`altention-instance`)
+- `logs`: the conversation records, every conversation word for word with secrets masked: your most private data
+  (`altention-logs`)
+- `progress`: where each project stands (`altention-progress`)
+- `planner`: the secretary's short-term plan, reminders and schedule (`altention-planner`)
+
+The install asks about it after making the instance (you can say "later"). To set it up any time, ask Claude in any
+channel to set up the backup, or create the empty private repositories yourself and run, in the engine:
+
+```bash
+python3 ops/remote.py set instance git@github.com:you/altention-instance.git   # and logs, progress, planner
+python3 ops/remote.py status                                                   # each one, its last push
+```
+
+`set` refuses a repository that anyone can read without logging in, the engine's own repository, and one that holds
+something other than this kind of data. Every push goes through a pre-push hook that checks the first of these
+again; the system check (`altention doctor`) shows each backup, fails on a public one, and says "沒辦法確認" when it
+could not tell (offline, or a host reached only over SSH: those are pushed anyway).
+
+Not backed up: the bot's token (`~/.config/dcbot/env`; on a new machine `install.sh discord` asks for a new one), the
+bot's channel state (which channel holds which conversation: not yet), the usage board's history
+(`~/.local/share/usage`: it starts again from zero) and Claude Code's own conversation files (the conversation
+records are their readable copy).
+
+**On a new machine**, clone the engine as in [Install](#install), start Claude Code in it and choose 「從備份還原」
+(restore from the backups) when `/install` asks: it does the steps below with you and asks none of the setup
+questions again (they would write over the settings that came back). By hand, in the engine:
+
+```bash
+python3 ops/instance.py join git@github.com:you/altention-instance.git   # the instance back, with the other three's addresses
+python3 ops/instance.py names                                              # the machine names it knows
+python3 ops/instance.py take-name old-laptop                               # only if the old machine will not be used again
+./install.sh discord                                                       # a new token; then the install clones the records, progress and the secretary's folder back
+python3 ops/doctor.py
+```
+
+The machine needs read access to your private repositories first (`gh auth setup-git`, or an SSH key). Some settings
+are kept by machine name: which plugins are turned off on a machine, where plugins run, each machine's folder of
+conversation records. `take-name` gives this machine the old one's name so that they apply here; it refuses while the
+old machine still answers over SSH, and once this machine has a name. Use it only when the old machine is gone for
+good (a laptop that is merely switched off does not answer either): two machines with one name write into one
+folder. With several machines, change that machine's SSH aliases in `machines.json` to the new machine's (and
+commit the instance), or doctor and apply keep trying the old address. If `install.sh` says `todo core.git-user`, set
+`git config --global user.name` and `user.email`.
+
+Known limit: a repository made public after its last check is still pushed to for up to an hour (the hook keeps a
+"private" answer that long).
+
 ## Several machines (advanced)
 
 > Multi-machine setups are what the authors use every day, but installing them from scratch has not been
@@ -171,7 +238,7 @@ List each machine with its SSH aliases and roles in the instance's `machines.jso
 
 ```bash
 python3 ops/apply.py host-b    # make host-b match the list: install what is missing, remove what is not listed
-python3 ops/doctor.py          # check every machine
+python3 ops/doctor.py          # the system check, every machine
 ```
 
 - The bot runs on one machine at a time. Conversations in tmux on the other machines can be attached with
@@ -211,16 +278,19 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
 - The token stays in `~/.config/dcbot/env` (mode 600). A guard hook stops every Claude Code on your machines from
   reading, searching or naming it and your private SSH keys; it is best effort, and SECURITY.md says what it does not
   cover. Keys and tokens in what the bot posts are masked first.
-- The engine does not update itself by default (`core.update: "notify"`: doctor and the status board tell you of a
-  new release). `"release"` follows release tags on its own; SECURITY.md says what that trusts.
+- The engine does not update itself by default (`core.update: "notify"`: a notice in Discord, once per release, and
+  the system check and the status board tell you of a new release). `"release"` follows release tags on its own; SECURITY.md says what that trusts.
 - Plugins are not sandboxed. Install only plugins you trust.
 
 ## Known limitations
 
 
 - **Claude Code only.** Other agents are planned (see the roadmap). The conversation log records Claude Code only.
+- **A backup repository made public is still pushed to for up to an hour** after its last check (see
+  [Backup and restore](#backup-and-restore)).
 - **Tested with Claude Code 2.1.288 and 2.1.296.** 2.1.299: its screens are checked and it is in daily use (its hook
-  events and conversation files are not yet in the test samples). Other versions may work but have not been checked;
+  events and conversation files are not yet in the test samples). 2.1.302: its screens are checked, including the permission
+  question that counts down to an automatic denial in auto mode. Other versions may work but have not been checked;
   newer ones may change the screen (see the next item).
 - **It reads Claude Code's screen for part of its work** (whether the input box is ready, menus, the startup dialogs).
   A Claude Code update that changes the screen can stop messages from being typed until Altention is fixed. The rule
@@ -242,17 +312,17 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
   folder, a relative look-alike (a grep pattern, an `echo`) is refused too. Put such text in a file first. The refusal
   says why and tells Claude to ask you.
   Commands that use a key (`ssh -i`, `ssh-add`, `ssh-keygen -y`) are allowed. See SECURITY.md.
-- **The usage board's subscription limits are off by default.** That part of the board appears only with
-  `"usage": {"subscription_limits": true}` in the instance's `plugins.json`; the rest of the usage board is updated
-  either way.
-  - When on, once an hour it runs `claude -p` with your subscription and sends the cheapest possible request (haiku):
+- **The usage board reads your subscription limits, and that uses your subscription.** It is on by default
+  (`"usage": {"subscription_limits": false}` in the instance's `plugins.json` turns it off); the rest of the usage
+  board is updated either way.
+  - Once an hour it runs `claude -p` with your subscription and sends the smallest possible request (haiku):
     about 24 a day, each about US$0.001 of API-equivalent usage, counted against the 5-hour limit.
   - That request loads none of your settings, hooks, MCP servers or tools, runs in an empty temporary folder and
     leaves no conversation file.
-  - When you turn it on, also set the plan, for example `"usage": {"subscription_limits": true, "plan": ["Pro", 1]}`
-    (or `["Max 5x", 5]`, `["Max 20x", 20]`; Team and Enterprise: as many Pro allowances as your limit is worth). Left
-    out, it assumes Max 20x.
-  - To stop it: set it to `false`, remove the line, or do not install the usage plugin.
+  - The install guide asks your plan and writes it, for example `"usage": {"plan": ["Pro", 1]}` (or
+    `["Max 5x", 5]`, `["Max 20x", 20]`; Team and Enterprise: as many Pro allowances as your limit is worth). Left
+    out, the board says the plan is not set and shows the percentages without the Pro multiples.
+  - To stop it: set it to `false`, or turn the usage plugin off. Removing the line does not: not set means on.
   - The fields it reads are not documented by Anthropic; they follow what Claude Code 2.1.299 returns. If the format
     changes the board says it could not read them (it never guesses a number), and they may be unreadable while the
     limit is used up.
@@ -268,8 +338,8 @@ The first public version (October 20) runs Claude Code inside tmux and talks to 
    - never typing while a permission dialog is open, known from a hook rather than from the screen;
    - handing an unrecognized startup screen to you (`!screen`, `!key`) instead of closing the window after 90 seconds;
    - not closing an idle conversation whose Claude Code still has child processes running;
-   - `doctor` counting "screen not recognized" refusals, so a breakage is noticed within minutes;
-   - a repair guide (`REPAIR.md`) for fixing the connector after an update, and a `doctor` warning when the installed Claude Code version has not been verified.
+   - the system check counting "screen not recognized" refusals, so a breakage is noticed within minutes;
+   - a repair guide (`REPAIR.md`) for fixing the connector after an update, and a system check warning when the installed Claude Code version has not been verified.
    - Why it waits: each of these touches the typing path every conversation goes through, so each needs a rehearsal on real Claude Code before it ships. Until then, if something stops working right after a Claude Code update, please open an issue with your Claude Code version.
 2. **Multi-machine setups, verified from a clean install.** Running conversations on other machines over SSH works and is used daily, but it has not yet been installed from scratch by following this README. It is marked "advanced" until that is done.
 3. **Driving Claude Code without reading the screen** (headless / stream-json mode, or the Agent SDK).

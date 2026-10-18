@@ -1,17 +1,5 @@
 [
  {
-  "file": "altention/cron_sync.py",
-  "text": "the lock's name as the sync and deploy.sh have it; renamed with them after stage 4",
-  "status": "after-release",
-  "why": "The lock every git job of the engine shares (sync, update, home-pull, deploy.sh): renaming it means every holder at once; a new install only ever sees this one name, so it works as it is."
- },
- {
-  "file": "altention/cron_update.py",
-  "text": "the lock's name as the sync and deploy.sh have it; renamed with them after stage 4",
-  "status": "after-release",
-  "why": "The lock every git job of the engine shares (sync, update, home-pull, deploy.sh): renaming it means every holder at once; a new install only ever sees this one name, so it works as it is."
- },
- {
   "file": "altention/scheduler.py",
   "text": "還用舊格式（at、days、text）的排程檔；各插件的排程檔都改成 when 和 do 之後（階段 4）",
   "status": "after-release",
@@ -22,12 +10,6 @@
   "text": "知識等資料夾還在引擎裡的機器（2.3b 的搬移）、和還寫 ~/agent-home/knowledge 的說明；每台的引擎裡都沒有這些資料夾的實體、說明不再用 ~/agent-home/<資料夾> 之後",
   "status": "after-release",
   "why": "adopt(): on a new install only its branch that links the engine's knowledge/memory folders to the instance runs; the merging of real folders is for machines from before stage 2.3b."
- },
- {
-  "file": "altention/update.py",
-  "text": "the name the sync and deploy.sh use today; renamed with them after stage 4",
-  "status": "after-release",
-  "why": "The lock every git job of the engine shares (sync, update, home-pull, deploy.sh): renaming it means every holder at once; a new install only ever sees this one name, so it works as it is."
  },
  {
   "file": "dcbot/tools/dchook",

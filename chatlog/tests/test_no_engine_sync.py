@@ -22,7 +22,7 @@ class NoEngineSync(unittest.TestCase):
         with open(PATH) as f:
             text = f.read()
         self.assertNotIn("altention import sync", text)
-        self.assertNotIn("agent-git.lock", text, "the engine's lock is not chatlog's business any more")
+        self.assertNotIn("-git.lock", text, "the engine's lock is not chatlog's business any more")
 
 
 if __name__ == "__main__":

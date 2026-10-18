@@ -208,24 +208,50 @@ def elsewhere(rows, machine, settings, bot, known):
 
 
 def wanted(rows, machine, settings, bot):
-    """Every cron line and hook the plugins that are on here ask for, and the plugins not compared (unknown)."""
+    """Every cron line and hook the plugins that are on here ask for, and the plugins not compared (unknown).
+    Schedules as the instance overrides them (plugin.effective_schedules, C-37): an item whose override cannot be used
+    is unknown, and a {"kind": "held"} entry keeps its installed line out of every change; an item the instance
+    turned off ("enabled": false) asks for no line, and a {"kind": "off"} entry lets compare take its marked line
+    away. A cron item whose time the instance set carries "override": its time differs is changed without
+    --allow-time (applycore.new_crontab)."""
     want, unknown = [], []
+
+    def special(kind, name, item):
+        want.append({"plugin": name, "name": item.get("name"), "kind": kind, "key": None, "text": ""})
     for name, folder, d, where, reason in rows:
         if where == "unknown":
             unknown.append((name, reason))
             continue
         if where != "on" or d is None:
             continue
-        for s in d.get("schedules", []):
+        items, problems = plugin.effective_schedules(name, d, settings)
+        for p in problems:
+            unknown.append((p.split("：", 1)[0], "這一筆不用：" + p.split("：", 1)[-1]))
+        for s in (items if name != "core" else []):
+            if s.get("unknown"):
+                unknown.append(("%s/%s" % (name, s.get("name")), "實例的設定不能用：%s；這一項現在的行不動" % s["unknown"]))
+                special("held", name, s)
+                continue
+            if s.get("enabled") is False:
+                special("off", name, s)
+                continue
             try:
                 time, command = render_schedule(name, folder, d, s, settings, machine)
             except (plugin.PluginError, ValueError, KeyError) as e:  # cannot be written out: not compared, never touched
                 unknown.append(("%s/%s" % (name, s.get("name")), "寫不出這一項：%s" % e))
                 continue
             want.append({"plugin": name, "name": s["name"], "kind": "cron", "key": cron_key(time, command),
-                         "text": "%s %s" % (time, command), "scheduler": s.get("scheduler", True)})
-        for c in d.get("cron", []):
+                         "text": "%s %s" % (time, command), "scheduler": s.get("scheduler", True),
+                         "override": s.get("source") == "instance"})
+        for c in (items if name == "core" else d.get("cron", [])):
             if plugin.step_here(c, machine, True, bot):
+                if c.get("unknown"):
+                    unknown.append(("%s/%s" % (name, c.get("name")), "實例的設定不能用：%s；這一項現在的行不動" % c["unknown"]))
+                    special("held", name, c)
+                    continue
+                if c.get("enabled") is False:
+                    special("off", name, c)
+                    continue
                 try:
                     command = plugin.expand(c["run"], folder, settings)
                 except plugin.PluginError as e:
@@ -233,7 +259,8 @@ def wanted(rows, machine, settings, bot):
                     continue
                 when = cron_time(c["when"], machine)  # a string as it is, or every/offset/after for this machine
                 want.append({"plugin": name, "name": c["name"], "kind": "cron", "key": cron_key(when, command),
-                             "text": "%s %s" % (when, command), "scheduler": False, "on": c.get("on", "all")})
+                             "text": "%s %s" % (when, command), "scheduler": False, "on": c.get("on", "all"),
+                             "override": c.get("source") == "instance"})
         for h in d.get("hooks", []):
             try:
                 command = plugin.expand(h["command"], folder, settings)
@@ -254,6 +281,97 @@ def engine_forms(engine):
         rest = engine[len(home) + 1:]
         forms += ["~/" + rest, "$HOME/" + rest, "${HOME}/" + rest]
     return forms
+
+
+def engine_folder_at(path, engine, moved_from=()):
+    """Is `path`, a folder one of our lines or hooks names where this engine's folder would be, an engine's folder
+    under another name? Plain facts only (C-17): a link to this very engine (the old name left behind when the engine
+    was moved), or another checkout of the engine (it has altention/config.py). A folder no longer there only when a
+    person named it (`apply --moved-from`, manager 2026-10-16): gone alone says nothing about whose it was. Anything
+    else is someone else's folder."""
+    try:
+        if os.path.realpath(path) == os.path.realpath(engine):
+            return True
+        if os.path.isfile(os.path.join(path, "altention", "config.py")):
+            return True
+        return not os.path.lexists(path) and path.rstrip("/") in named_folders(moved_from)
+    except (OSError, ValueError):
+        return False
+
+
+def named_folders(moved_from):
+    return {os.path.expanduser(m).rstrip("/") for m in moved_from or () if m}
+
+
+def word_paths(w):
+    """The paths a command word may name, each starting with "/": the whole word with a leading VAR=, redirection and
+    quote taken off and ~, $HOME or ${HOME} at its start spelled out (#code-review on cba4b4b: "${HOME}/…" was never
+    seen as this engine's), and, as before, what follows its first "/" (a word like --log=/x)."""
+    home = os.path.expanduser("~")
+    p = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=", "", w).lstrip("<>").lstrip("\"'")
+    for start in ("${HOME}", "$HOME", "~"):
+        if p == start or p.startswith(start + "/"):
+            p = home + p[len(start):]
+            break
+    out = [p] if p.startswith("/") else []
+    i = w.find("/")
+    if i >= 0 and w[i:] not in out:
+        out.append(w[i:])
+    return [x.rstrip(";\"'") for x in out]
+
+
+def in_engine(ws, engine, moved_from=()):
+    """Whether a line's words name a path in this engine (engine_forms) or in an engine folder it moved from
+    (old_folder_in): only such a line of an item the instance turned off is taken away, or held, by its marker
+    (#code-review on c45394d: another engine's line with the same marker went too)."""
+    forms = [f.rstrip("/") for f in engine_forms(engine) if f.startswith("/")]  # ~ and $HOME are spelled out in word_paths
+    if any(p.startswith(f + "/") for w in ws for p in word_paths(w) for f in forms):
+        return True
+    return old_folder_in(ws, engine, moved_from) is not None
+
+
+def old_folder_in(ws, engine, moved_from=()):
+    """The first engine folder elsewhere (engine_folder_at) that a word of `ws` names a path under, or None. A word
+    naming a path in this engine names no other, even when a folder above this engine is an engine too (C-38: the
+    engine inside another checkout had its own lines taken for moved)."""
+    forms = [f.rstrip("/") for f in engine_forms(engine) if f.startswith("/")]  # ~ and $HOME: spelled out in word_paths
+    for w in ws:
+        paths = word_paths(w)
+        if any(path == f or path.startswith(f + "/") for path in paths for f in forms):
+            continue
+        for path in paths:
+            parts = path.split("/")
+            for n in range(2, len(parts)):  # /a, /a/b, ...: a folder the word goes inside
+                prefix = "/".join(parts[:n])
+                if engine_folder_at(prefix, engine, moved_from):
+                    return prefix
+    return None
+
+
+def relocated_from(old, new, engine):
+    """The folder `old` (a line's or hook's words) names where `new` (an item's words) names this engine's folder,
+    every other word alike, or None. One folder for all the words that differ; never this engine itself."""
+    if len(old) != len(new):
+        return None
+    froms = set()
+    for o, n in zip(old, new):
+        if o == n:
+            continue
+        hit = None
+        for e in engine_forms(engine):
+            i = n.find(e + "/")
+            if i < 0:
+                continue
+            pre, post = n[:i], n[i + len(e):]
+            if o.startswith(pre) and o.endswith(post) and len(o) > len(pre) + len(post):
+                folder = o[len(pre):len(o) - len(post)]
+                if folder.startswith("/") and folder.rstrip("/") not in engine_forms(engine):
+                    hit = folder.rstrip("/")
+                    break
+        if hit is None:
+            return None
+        froms.add(hit)
+    return froms.pop() if len(froms) == 1 else None
 
 
 def marked(line):
@@ -314,7 +432,24 @@ def installed_hooks(settings_json, engine):
     return out
 
 
-def compare(want, cron_have, hook_have, paused=(), away=()):
+def other_hooks(settings_json, engine):
+    """[(key, command)] of the hooks that do not name this engine's folder, keyed as installed_hooks keys them: the
+    ones an engine moved elsewhere may have left (compare() takes such a hook for an item only by relocated_from)."""
+    out = []
+    for event, groups in ((settings_json or {}).get("hooks") or {}).items():
+        for g in groups or []:
+            for h in g.get("hooks") or []:
+                command = h.get("command") or ""
+                try:
+                    ws = words(command)
+                except ValueError:
+                    continue
+                if engine not in " ".join(ws):
+                    out.append(((event, g.get("matcher") or "", tuple(ws), h.get("timeout")), command))
+    return out
+
+
+def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hooks=(), moved_from=()):
     """[(status, item or None, installed text, marker)]:
     same       an installed line or hook with the item's content (an old-format line so matched is claimed);
     time differs  the command installed at another time (changed only when named by hand);
@@ -326,13 +461,30 @@ def compare(want, cron_have, hook_have, paused=(), away=()):
     duplicate  a second (third…) installed line for an item already matched: the same command words, old marker or
                new (an old install script run again after the markers changed adds its lines twice);
     replaced   an item not installed as it is now, whose earlier line is still there: a line with our marker of the
-               same plugin and the same item name (# altention:<plugin>/<name>), or, for a line marked with the
+               same plugin and the same item name (# altention:<plugin>/<name>) whose command is in this engine or
+               in an engine folder it moved from (in_engine; C-42: another engine's line, in a folder that is
+               neither, is not ours to rewrite: the item is missing and that line is left as it is), or, for a line marked with the
                plugin alone (written before names went into the marker), the only such line at the same time with
                the same program, matched by no other item. The setting behind it changed (planner.channel moved to
-               #secretary, owner 2026-10-15): the new line takes the old one's place; never two lines for one item;
+               #secretary, owner 2026-10-15): the new line takes the old one's place; never two lines for one item.
+               Also (C-14, given `engine`): a line with our marker of the same plugin, at the same time, whose words
+               are the item's but for an engine folder elsewhere (relocated_from, engine_folder_at: a link to this
+               engine, another checkout of it, or a folder gone that `moved_from` names); the first such line in the
+               table. A hook of `old_hooks` so alike, for an item not installed, is replaced in place the same way;
+    moved      a line with our marker, of a plugin that has items here, naming a path inside such an engine folder
+               (the old planner lines with no counterpart, a second old copy of an item): removed; also a hook
+               twin of an item at such a folder beside the one replaced or the item's own: taken out (it would run
+               twice);
+    gone       a line or hook that would have been replaced but its old folder is gone and nobody named it
+               (`apply --moved-from <folder>`): kept, and said, a folder gone alone saying nothing of whose it was;
+    turned off a line with our marker naming an item the instance turned off ("enabled": false, C-37), its command
+               in this engine or a folder it moved from (in_engine): removed; another engine's line as before;
+    held       such a line of an item whose instance override cannot be used: kept byte for byte;
     unclaimed  looks like an old one of ours (an old marker, or a file in the engine) but matches nothing exactly:
                someone else's as far as apply goes, kept as it is; also any hook nothing asks for (hooks carry
                no marker, so none is ever removed)."""
+    special = dict(((w["plugin"], w["name"]), w) for w in want if w["kind"] in ("held", "off"))
+    want = [w for w in want if w["kind"] not in ("held", "off")]
     result, used_c, used_h, used_p = [], set(), set(), set()
     for w in want:
         pool, used = (cron_have, used_c) if w["kind"] == "cron" else (hook_have, used_h)
@@ -352,16 +504,30 @@ def compare(want, cron_have, hook_have, paused=(), away=()):
             result.append(("paused", w, paused[off][1], ""))
             continue
         result.append(("missing", w, "", ""))
-    replaced(result, cron_have, used_c)
+    gone_c = replaced(result, cron_have, used_c, engine, moved_from)
+    gone_dirs = {f for _w, f in gone_c.values()}
+    if engine:
+        gone_dirs |= replaced_hooks(result, old_hooks, engine, moved_from)
+    plugins_here = {w["plugin"] for w in want if w["kind"] == "cron"}
     matched = [w for w in want if w["kind"] == "cron"]
     for i, h in enumerate(cron_have):
         if i in used_c:
+            continue
+        held = special.get((h[3], marked_name(h[1]))) if h[3] and engine and in_engine(h[0][1], engine, moved_from) else None
+        if held is not None:  # C-37: an item the instance turned off (its line goes), or whose override is unusable (kept)
+            result.append(("turned off" if held["kind"] == "off" else "held", held, h[1], h[2]))
             continue
         twin = next((w for w in matched if h[0][1] == w["key"][1]), None)
         gone = next((w for w in away if h[3] and h[0] == w["key"] and marked(h[1]) == w["plugin"]), None) or \
             next((w for w in away if h[3] and h[0][1] == w["key"][1] and marked(h[1]) == w["plugin"]), None)
         if twin is not None and any(r[0] in ("same", "time differs") and r[1] is twin for r in result):
             result.append(("duplicate", twin, h[1], h[2]))
+        elif engine and h[3] and h[3] in plugins_here and old_folder_in(h[0][1], engine, moved_from):
+            result.append(("moved", None, h[1], h[2]))
+        elif i in gone_c:
+            result.append(("gone", gone_c[i][0], h[1], h[2]))
+        elif h[3] and h[3] in plugins_here and any(f + "/" in x for f in gone_dirs for x in h[0][1]):
+            result.append(("gone", None, h[1], h[2]))  # the same gone folder, no item of its own (the old planner lines)
         elif gone is not None:
             result.append(("elsewhere", gone, h[1], h[2]))
         else:
@@ -375,15 +541,17 @@ def compare(want, cron_have, hook_have, paused=(), away=()):
     return result
 
 
-def replaced(result, cron_have, used_c):
+def replaced(result, cron_have, used_c, engine=None, moved_from=()):
     """compare(): each missing cron item that an earlier line of its own takes the place of (see "replaced"),
-    changed in `result` in place; the line counted as used."""
+    changed in `result` in place; the line counted as used. Returns {line index: item} of the lines that would have
+    been taken but for their old folder being gone and not named (--moved-from): compare calls them "gone"; each
+    with that folder ({line index: (item, folder)})."""
     def program(key):
         return key[0], key[1][:2]  # when it runs, and what runs (the tool or interpreter and its script)
     missing = [(i, r[1]) for i, r in enumerate(result) if r[0] == "missing" and r[1]["kind"] == "cron"]
-    for i, w in missing:  # by name first: certain
+    for i, w in missing:  # by name first: certain, for a line of this engine or a folder it moved from (C-42)
         hit = next((j for j, h in enumerate(cron_have) if j not in used_c and h[3] == w["plugin"]
-                    and marked_name(h[1]) == w["name"]), None)
+                    and marked_name(h[1]) == w["name"] and (not engine or in_engine(h[0][1], engine, moved_from))), None)
         if hit is not None:
             used_c.add(hit)
             result[i] = ("replaced", w, cron_have[hit][1], cron_have[hit][2])
@@ -397,6 +565,53 @@ def replaced(result, cron_have, used_c):
         if len(lines) == 1 and not others:
             used_c.add(lines[0])
             result[i] = ("replaced", w, cron_have[lines[0]][1], cron_have[lines[0]][2])
+    gone = {}
+    if not engine:
+        return gone
+    for i, w in missing:  # the engine moved (C-14): the same line but for an old engine folder
+        if result[i][0] != "missing":
+            continue
+        found = [(j, relocated_from(h[0][1], w["key"][1], engine)) for j, h in enumerate(cron_have)
+                 if j not in used_c and h[3] == w["plugin"] and h[0][0] == w["key"][0]]
+        found = [(j, f) for j, f in found if f]
+        ok = [(j, f) for j, f in found if engine_folder_at(f, engine, moved_from)]
+        if ok:  # the first in the table takes the item; any other of an engine folder is "moved" (compare)
+            used_c.add(ok[0][0])
+            result[i] = ("replaced", w, cron_have[ok[0][0]][1], cron_have[ok[0][0]][2])
+        else:
+            for j, f in found:
+                if not os.path.lexists(f):
+                    gone.setdefault(j, (w, f))
+    return gone
+
+
+def replaced_hooks(result, old_hooks, engine, moved_from=()):
+    """compare(), C-17: for each hook item, its twins at old engine folders (the same event and matcher, the words
+    alike but for the folder; engine_folder_at): one of them, for an item not installed, "replaced" (the item's
+    command in its place, its timeout set to the item's); every other "moved" (taken out: it would run twice). A twin
+    in a folder no longer there that nobody named (--moved-from) is "gone": kept, and said. Returns those folders."""
+    used, gone = set(), set()
+    for i, r in enumerate(list(result)):
+        if r[0] not in ("missing", "same") or r[1]["kind"] != "hook":
+            continue
+        w = r[1]
+        event, matcher, ws, _timeout = w["key"]
+        found = [(j, relocated_from(list(h[0][2]), list(ws), engine)) for j, h in enumerate(old_hooks)
+                 if j not in used and h[0][0] == event and h[0][1] == matcher]
+        found = [(j, f) for j, f in found if f]
+        ok = [(j, f) for j, f in found if engine_folder_at(f, engine, moved_from)]
+        used.update(j for j, _ in ok)
+        if ok and r[0] == "missing":
+            result[i] = ("replaced", w, old_hooks[ok[0][0]][1], "")
+            ok = ok[1:]
+        for j, _ in ok:
+            result.append(("moved", w, old_hooks[j][1], ""))
+        for j, f in found:
+            if j not in used and not os.path.lexists(f):
+                used.add(j)
+                gone.add(f)
+                result.append(("gone", w, old_hooks[j][1], ""))
+    return gone
 
 
 def read_crontab_raw(run=subprocess.run):

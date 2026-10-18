@@ -1,10 +1,12 @@
 """Keeping repos in step across machines (DESIGN.md 7, stage 2.2): the engine, the instance, and this machine's
 links to the instance. Standard library only, Python 3.8: altention/cron_sync.py (cron) and bin/home-pull run it.
 
-Two separate jobs, each under its repo's own lock (`<git dir>/agent-git.lock`, flock, shared with deploy.sh and
+Two separate jobs, each under its repo's own lock (`<git dir>/altention-git.lock`, flock, shared with deploy.sh and
 bin/home-pull), each one never failing the other:
-- engine: pull only. While this machine still keeps knowledge/ and memory/ in the engine (no instance yet), those
-  two folders are committed first and pushed after, as chatlog always did.
+- engine: pull only, never pushed (C-31: a public engine's fork is public, and a commit made here can hold private
+  values; who changes the engine pushes it by hand, bin/home-git push). While this machine still keeps knowledge/
+  and memory/ in the engine (no instance yet), those two folders are committed here and stay here until the
+  instance takes them; how many commits are not pushed is written down for doctor.
 - instance: commit knowledge/ and memory/, pull, push.
 Rules for both:
 - commit before pulling, never autostash (git can fail to put edits back yet exit 0, leaving conflict markers);
@@ -32,7 +34,18 @@ import time
 
 from . import config
 
-LOCK_NAME = "agent-git.lock"
+LOCK_NAME = "altention-git.lock"
+# The lock files git itself makes, the only ones recover() removes when stale (a killed git leaves them) and the only
+# ones whose being fresh means git is still at work here (as measured with strace on git 2.43, #code-review-2
+# 2026-10-16): the index, config, packed-refs, shallow, gc.pid; the top-level upper-case files (HEAD, ORIG_HEAD,
+# FETCH_HEAD, REBASE_HEAD, AUTO_MERGE, MERGE_RR, MERGE_MSG, ...); the index's temporary ones (next-index-<pid>,
+# index.stash.<pid>); anything under refs/, logs/ and rebase-merge/ or rebase-apply/; the same in a worktree's own
+# folder (worktrees/<name>/, with config.worktree). Every other *.lock is someone's flock (ours: LOCK_NAME,
+# altention-deploy.lock; an older engine's own name) and is never touched: removing one while it is held lets a
+# second holder in beside the first.
+GIT_OWN_LOCKS = ("index.lock", "config.lock", "packed-refs.lock", "shallow.lock", "gc.pid.lock", "config.worktree.lock")
+GIT_OWN_LOCK = re.compile(r"^(?:[A-Z_]+|next-index-\d+|index\.stash\.\d+)\.lock$")
+GIT_OWN_DIRS = ("refs", "logs", "rebase-merge", "rebase-apply")
 OURS = "agent-rebase"  # written in the git dir while one of our jobs rebases: only such a rebase is ours to undo
 FOREIGN_AGE = 1800     # a leftover rebase without our mark but with an autostash, this old, is a killed old job's
 WAIT = 120
@@ -40,9 +53,11 @@ GIT_TIMEOUT = 300
 STALE_INDEX_LOCK = 600
 SHARED = ["knowledge", "memory"]
 COUNCIL = os.path.join("skills", "council", "data")  # council's profile, lessons, changelog and runs (stage 2.4d)
+BACKUP = "backup"  # the bot's channel state, copied in by `dcctl backup` (data-safety.md section 4)
 INSTANCE_SHARED = SHARED + [os.path.join("docs", "refactor"), COUNCIL, "CLAUDE.global.md", "CLAUDE.md",
-                                                                       "global-notes-edited"]  # the
-# instance's sync commits these; the two CLAUDE files are this install's halves of the global and console notes
+                            "global-notes-edited", "plugins.json", "machines.json", BACKUP]  # the
+# instance's sync commits these; the two CLAUDE files are this install's halves of the global and console notes;
+# the two settings files only when they read well (instance_paths), and never their removal (protected)
 MARKER = re.compile(r"^(<<<<<<<|>>>>>>>) ", re.M)
 
 
@@ -99,8 +114,8 @@ class Busy(Exception):
 class locked(object):
     """`with locked(repo):` the repo's shared git lock (waits up to WAIT seconds, else Busy)."""
 
-    def __init__(self, repo, wait=WAIT):
-        self.repo, self.wait, self.f = repo, wait, None
+    def __init__(self, repo, wait=None):
+        self.repo, self.wait, self.f = repo, WAIT if wait is None else wait, None
 
     def __enter__(self):
         gd = self.repo.git_dir()
@@ -126,6 +141,18 @@ class locked(object):
         return False
 
 
+def git_own_lock(rel):
+    """Is `rel` (a path inside the git dir) a lock file git itself makes (GIT_OWN_LOCKS)?"""
+    parts = rel.replace(os.sep, "/").split("/")
+    if parts[0] == "worktrees" and len(parts) >= 3:
+        parts = parts[2:]
+    if not parts[-1].endswith(".lock"):
+        return False
+    if len(parts) == 1:
+        return parts[0] in GIT_OWN_LOCKS or bool(GIT_OWN_LOCK.match(parts[0]))
+    return parts[0] in GIT_OWN_DIRS
+
+
 def recover(repo, say):
     """Undo what an earlier, killed job left in the repo. Call with the lock. Returns None when the repo can be
     used, else why not (left alone for now: a person resolving a rebase, or a lock still fresh)."""
@@ -135,7 +162,7 @@ def recover(repo, say):
         dirs[:] = [d for d in dirs if d not in ("objects", ASIDE, SAVED) and ".broken-" not in d]  # not saved copies
         for name in names:
             path = os.path.join(top, name)
-            if not name.endswith(".lock") or name == LOCK_NAME:
+            if not git_own_lock(os.path.relpath(path, gd)):
                 continue
             if time.time() - os.path.getmtime(path) > STALE_INDEX_LOCK:
                 os.remove(path)
@@ -363,18 +390,82 @@ def update(repo, to=None):
     up = to or "@{u}"
     counts = repo.git("rev-list", "--left-right", "--count", "HEAD...%s" % up, timeout=20).stdout.split()
     ahead, behind = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
+    said = None
     if behind:
         if ahead == 0:
             r = repo.git("merge", "-q", "--ff-only", up)
             if r.returncode != 0:
                 return 1, "沒有更新：沒提交的修改跟遠端改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
-        else:
+        elif to is not None:  # a release (C-07): a rollback the supervisor made here is never put on top of a new one
+            backs, others = local_commits(repo, to)
+            if backs is None:
+                return 1, "沒有更新：讀不出這台在發佈版本之上有哪些 commit（%s），不猜" % others
+            if backs and not others:
+                r = repo.git("reset", "-q", "--keep", to, timeout=120)
+                if r.returncode != 0:
+                    return 1, "沒有更新：沒提交的修改跟要合進來的變更改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
+                said = "這台的退回 commit（%s）沒有帶到新版上：它只是避開舊版的問題，新版取代它" % "、".join(h[:7] for h in backs)
+            elif backs or any(looks for _, looks in others):
+                return 1, ("沒有更新：這台在發佈版本之上有退回 commit，也有別的 commit（%s），不猜哪些要留；"
+                           "請人看 git log 之後處理（只留自己的 commit，退回的不要帶到新版上）"
+                           % "、".join(h[:7] + ("（退回）" if looks else "") for h, looks in
+                                      ([(h, True) for h in backs] + others)[:8]))
+        if said is None and ahead:
             code, note = rebase_aside(repo, to)
             if code:
                 return code, note
     if repo.git("ls-files", "-u", timeout=20).stdout.strip():
         return 1, "有沒解決的衝突，請人工處理"
-    return 0, None
+    return 0, said
+
+
+# the subject dcbot/supervisor.py put_back() gives a rollback commit
+ROLLBACK_SUBJECT = re.compile(r"^dcbot: roll back( \(partial\))? to ([0-9a-f]{7}) \(.*\)$")
+
+
+def local_commits(repo, up):
+    """(rollbacks, others): the commits HEAD has and `up` has not. rollbacks: those the supervisor made here, only
+    when all of it says so (manager 2026-10-17): the subject put_back gives it, one parent, this repo's own author
+    (git var GIT_AUTHOR_IDENT), on no remote branch, and what it does is only that: every file it changes is, in it,
+    as in the good commit its subject names (gone there: not in good either; #code-review of 239abcc: the author
+    is this repo's for the owner's commits too, and an amended rollback or a commit of the owner's with that subject
+    carried a file of theirs away). others: [(hash, looks like a rollback)] for the rest, a commit with that subject
+    that fails another of these marked (the caller stops rather than put it on a release). (None, why) when git
+    cannot list them."""
+    ident = repo.git("var", "GIT_AUTHOR_IDENT", timeout=20)
+    here = repo.git("rev-list", "HEAD", "--not", up, "--remotes", timeout=20)  # on no remote branch
+    log = repo.git("log", "--format=%H%x00%P%x00%ae%x00%s", "%s..HEAD" % up, timeout=20)
+    for r in (ident, here, log):
+        if r.returncode != 0:
+            return None, (r.stderr.strip() or r.stdout.strip())[:200]
+    me = ident.stdout[ident.stdout.find("<") + 1:ident.stdout.find(">")]
+    here = set(here.stdout.split())
+    backs, others = [], []
+    for line in log.stdout.splitlines():
+        h, parents, author, subject = (line.split("\0") + ["", "", ""])[:4]
+        m = ROLLBACK_SUBJECT.match(subject)
+        if m and me and author == me and h in here and len(parents.split()) == 1 and restores(repo, h, m.group(2)):
+            backs.append(h)
+        else:
+            others.append((h, bool(m)))
+    return backs, others
+
+
+def restores(repo, h, good):
+    """Does commit `h` only put files back as they are in `good` (a short hash)? Every path it changes (against its
+    parent) is in `h` what it is in `good`, a path it removes is not in `good`. False when `good` is not one commit
+    git knows, or git cannot tell."""
+    full = repo.git("rev-parse", "-q", "--verify", "%s^{commit}" % good, timeout=20)
+    changed = repo.git("diff-tree", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames", "%s^" % h, h, timeout=60)
+    if full.returncode != 0 or changed.returncode != 0:
+        return False
+    paths = [p for p in changed.stdout.split("\0") if p]
+    for i in range(0, len(paths), 200):  # identical there: git diff --quiet says 0
+        r = repo.git("--literal-pathspecs", "diff", "--quiet", "--no-renames", full.stdout.strip(), h, "--",
+                     *paths[i:i + 200], timeout=60)
+        if r.returncode != 0:
+            return False
+    return bool(paths)
 
 
 ASIDE = "altention-rebase"  # temporary worktrees for rebasing, under the git dir
@@ -413,8 +504,15 @@ def rebase_aside(repo, to=None):
         shutil.rmtree(aside, ignore_errors=True)
 
 
-def push(repo):
+def push(repo, track=False):
+    """track: a data repo given its origin but no upstream yet (ops/remote.py attach, or an empty backup repo):
+    its branch is pushed there and tracked."""
     if repo.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=20).returncode != 0:
+        if track and repo.git("remote", "get-url", "origin", timeout=20).returncode == 0:
+            branch = repo.git("symbolic-ref", "-q", "--short", "HEAD", timeout=20).stdout.strip()
+            if branch and repo.git("rev-parse", "-q", "--verify", "HEAD", timeout=20).returncode == 0:
+                r = repo.git("push", "-q", "-u", "origin", branch)
+                return (r.returncode == 0), (None if r.returncode == 0 else "push 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:300])
         return True, None
     if repo.git("rev-list", "--count", "@{u}..HEAD", timeout=20).stdout.strip() in ("", "0"):
         return True, None
@@ -422,13 +520,46 @@ def push(repo):
     return (r.returncode == 0), (None if r.returncode == 0 else "push 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:300])
 
 
-def sync_repo(path, shared, message, say, before=None, after=None, protected=(), pull=True, refuse="", instance=False):
+def has_upstream(repo):
+    return repo.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=20).returncode == 0
+
+
+def track_upstream(repo):
+    """A data repo with an origin but no upstream: its branch made to track origin's branch of the same name when
+    the remote has one (fetched first); an empty remote is left for push(track=True). None, or what went wrong."""
+    if repo.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=20).returncode == 0:
+        return None
+    branch = repo.git("symbolic-ref", "-q", "--short", "HEAD", timeout=20).stdout.strip()
+    if not branch:
+        return "HEAD 不在任何分支上（detached），沒有同步；請 checkout 回 main"
+    r = repo.git("fetch", "-q", "origin")
+    if r.returncode != 0:
+        return "fetch 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:300]
+    if repo.git("rev-parse", "-q", "--verify", "refs/remotes/origin/%s" % branch, timeout=20).returncode == 0:
+        r = repo.git("branch", "-q", "-u", "origin/%s" % branch, timeout=20)
+        if r.returncode != 0:
+            return "設不了追蹤的遠端分支：%s" % (r.stderr.strip() or r.stdout.strip())[:300]
+    return None
+
+
+def commits_ahead(repo):
+    """How many commits HEAD has that its upstream does not; 0 without an upstream or when git cannot tell."""
+    r = repo.git("rev-list", "--count", "@{u}..HEAD", timeout=20)
+    n = r.stdout.strip()
+    return int(n) if r.returncode == 0 and n.isdigit() else 0
+
+
+def sync_repo(path, shared, message, say, before=None, after=None, protected=(), pull=True, refuse="", instance=False,
+              push_out=True, track=False, guard=None):
     """One repo, under its lock: recover, commit `shared`, update, push. {"ok", "error", "at"}. before(repo), if
     given, runs first under the lock and returns the list to commit instead of `shared`; after(repo) runs after the
     update, before the push. pull=False (the engine while altention/update.py is alive, 3a.10): no update here, and
-    no push while behind (update.py rebases the local commits first; the next round pushes them). instance=True:
+    no push while behind (update.py rebases the local commits first; the next round pushes them). push_out=False
+    (the engine, C-31): never pushed; "ahead" says how many commits here are not on the upstream. instance=True:
     updated by update_instance (its settings checked first); an upstream held back is not an error of the sync:
-    "held" says why, this machine's commits stay here unpushed, and a line in the alerts file says how many."""
+    "held" says why, this machine's commits stay here unpushed, and a line in the alerts file says how many.
+    track=True (a plugin's data repo, C-26): an origin without an upstream is tracked or pushed to (track_upstream,
+    push). guard(repo), if given, runs before the push: what it returns (why not) stops the push, said."""
     repo = Repo(path)
     result = {"at": time.time(), "ok": False, "error": None}
     try:
@@ -464,15 +595,25 @@ def sync_repo(path, shared, message, say, before=None, after=None, protected=(),
                 if held:  # not rebased onto it, so not pushable: kept here until the upstream is fixed or taken
                     behind, result["held"] = True, held
             elif pull:
-                code, note = update(repo)
+                untracked = track_upstream(repo) if track else None
+                if untracked:
+                    code, note = 1, untracked
+                elif track and not has_upstream(repo):  # an empty remote: nothing to take, pushed to below
+                    code, note = 0, None
+                else:
+                    code, note = update(repo)
                 if code != 0:
                     notes.append(note)
+                behind = bool(untracked)  # the remote not read this round: nothing pushed either
             else:
                 behind = repo.git("rev-list", "--count", "HEAD..@{u}", timeout=20).stdout.strip() not in ("", "0")
             if after:
                 after(repo)
-            if not behind:
-                ok, note = push(repo)
+            if not push_out:
+                result["ahead"] = commits_ahead(repo)
+            elif not behind:
+                stop = guard(repo) if guard else None
+                ok, note = (False, stop) if stop else push(repo, track)
                 if note and not pull and any(w in note for w in ("rejected", "non-fast-forward", "fetch first")):
                     result["waiting"] = "push 被拒（遠端剛又動了），等 update.py 下一輪 rebase 之後再推"
                 elif note:
@@ -936,6 +1077,26 @@ def repair_links(instance, say, ssh=True):
     return out
 
 
+def new_skills(say):
+    """The engine's skills that have no link in ~/.claude/skills yet made now (plugin.link_skills, add_only): the
+    engine is updated by update.py, this sync or home-pull, none of which runs install.sh, and a release that brings
+    a new skill must not leave doctor saying 「缺少 skill」 until someone does (manager 2026-10-16, skills/tour).
+    Only missing links (a broken one is apply's to make again), and only from this machine's engine (a worktree's
+    home-pull links nothing to itself). With settings that cannot be read, a plugin's skill waits and a skill no
+    plugin owns (tour) is still linked. Never raises. {"made": [...]}, {"skipped": why} or {"error": ...}."""
+    try:
+        why = not_this_engine()
+        if why:
+            return {"skipped": why}
+        from . import plugin
+        got = plugin.link_skills(config.ENGINE, add_only=True)
+    except Exception as e:
+        return {"error": "%s: %s" % (type(e).__name__, e)}
+    if got["made"]:
+        say("補上 skill 連結：%s" % "、".join(got["made"]))
+    return {"made": got["made"]}
+
+
 STUCK_TELL = 2 * 3600
 
 
@@ -1012,15 +1173,19 @@ def run(say=lambda text: None):
     if instance and not os.path.isdir(os.path.join(instance, ".git")):
         status["instance"] = {"at": time.time(), "ok": False, "error": "實例 %s 不是 git repo，寫進去的記憶不會同步到別台" % instance}
     elif instance:
-        try:
-            held = SHARED + owns_list(instance)  # folders in use there: never removed by a sync
+        try:  # folders in use there and the settings: never removed by a sync
+            held = SHARED + list(SETTINGS) + [BACKUP] + owns_list(instance)
         except Exception:
             held = list(INSTANCE_SHARED)
         status["instance"] = sync_repo(instance, INSTANCE_SHARED, "sync: memory/knowledge @ %s" % (status["machine"] or "?"), say,
-                                       protected=held, instance=True)
+                                       before=lambda repo: instance_paths(instance), protected=held, instance=True)
     paths = {"states": {}, "twice": []}
 
+    head = []  # the engine's HEAD before this round (C-09: a move here restarts the bot as update.py's does)
+
     def before(repo):  # under the engine's lock: what the instance holds leaves the engine before anything is committed
+        if repo is not None:
+            head[:] = [repo.git("rev-parse", "HEAD", timeout=20).stdout.strip()]
         if instance:
             try:  # a step that fails only stops itself: the engine's own sync goes on
                 paths["states"], paths["twice"] = adopt_all(instance, say)
@@ -1036,9 +1201,10 @@ def run(say=lambda text: None):
                 paths["twice"] += twice
             except Exception as e:
                 _alert_plain("sync", "adopt", "更新之後交給實例這一步出錯（%s: %s），引擎照樣同步" % (type(e).__name__, e))
+        engine_moved(repo, head[0] if head else "")
 
     # who moves the engine (3a.10, manager 2026-10-06): altention/update.py, behind its syntax check, while it is
-    # alive; when it has run before but not worked for STALE, this sync moves the engine itself (no check: the way a
+    # alive; when it has run before but not worked for three of its rounds (update.stale_of), this sync moves the engine itself (no check: the way a
     # fix still arrives while update.py is what broke) and says so. Never run yet (no cron line): as before, quietly.
     # Only when the instance's core.update is "branch": notify and release never take the branch (manager 2026-10-14).
     mode, seen = update_mode()[0], None  # update.py tells when the mode cannot be read; here only what it allows
@@ -1046,7 +1212,7 @@ def run(say=lambda text: None):
         from altention import update as altupdate
         alive = altupdate.last_alive()
         seen = alive["at"] if alive else altupdate.last_ok("update")  # alive: every round that came to its end
-        pull = seen is None or time.time() - seen > altupdate.STALE
+        pull = seen is None or time.time() - seen > altupdate.stale_of("engine-update")
         if seen is not None and pull and mode == "branch":
             altupdate.alert("sync", "update-stale", "引擎更新（update.py）已經 %d 分鐘沒有跑完一輪，由同步代為更新引擎（沒有語法檢查）"
                             % ((time.time() - seen) // 60))
@@ -1064,13 +1230,29 @@ def run(say=lambda text: None):
     status["engine_pulled_by"] = "sync" if pull else "update"
     if is_checkout():
         status["engine"] = sync_repo(config.ENGINE, [], "sync: memory/knowledge @ %s" % (status["machine"] or "?"), say,
-                                     before=before, after=after, protected=SHARED, pull=pull, refuse=refused)
+                                     before=before, after=after, protected=SHARED, pull=pull, refuse=refused, push_out=False)
+        install_pending()  # the lock let go: pip for a move this round (or an earlier one) marked
+        eng = status["engine"]
+        if mode != "branch" and type(eng.get("ahead")) is int and eng["ahead"] > 0:
+            try:  # C-07: rollbacks the supervisor keeps here on releases are not to push; doctor says which are which
+                backs, others = local_commits(Repo(config.ENGINE), "@{u}")
+                eng["rollbacks"] = len(backs) if backs is not None else None
+                # with a rollback's subject but not only a rollback (amended with a file of the owner's, say):
+                # not to push as it is either (#code-review-2 of 7daa3df)
+                eng["rollbacks_unsure"] = len([h for h, looks in others if looks]) if backs is not None else None
+            except Exception as e:
+                eng["rollbacks"] = eng["rollbacks_unsure"] = None
+                _alert_plain("sync", "rollbacks", "數不出引擎有幾個退回 commit（%s: %s）" % (type(e).__name__, e))
     else:  # unpacked from an archive: the instance's folders are still linked; nothing to commit, pull or push
         before(None)
         status["engine"] = {"at": time.time(), "ok": True, "error": None, "checkout": False,
                             "note": "引擎不是 git checkout（解開的壓縮檔）：引擎這一段不同步"}
     if (status.get("engine") or {}).get("refused"):
         status["engine_refused"] = status["engine"]["refused"]
+    try:  # the plugins' data folders marked sync: timer (C-26); one's trouble stops nothing else
+        status["data"] = sync_data(status["machine"] or "?", say, instance)
+    except Exception as e:
+        status["data"] = {"error": "%s: %s" % (type(e).__name__, e)}
     if instance:  # again now that both repos are pulled: an engine that came first never meets an old instance half
         try:
             g = compose_global(instance, say)
@@ -1079,6 +1261,7 @@ def run(say=lambda text: None):
         except Exception as e:  # run() never raises (a file that is not UTF-8, for one)
             if isinstance(status.get("links"), dict):
                 status["links"]["global_md"] = "error: %s" % e
+    status["skills"] = new_skills(say)  # after the engine's part: an update (this round's or update.py's) may bring one
     if isinstance(status.get("links"), dict) and "error" not in status["links"]:
         status["links"]["engine_paths"] = paths["states"]
         status["links"]["twice"] += paths["twice"]
@@ -1109,6 +1292,94 @@ def run(say=lambda text: None):
     return status
 
 
+def timer_data():
+    """[(name, path)]: the data of the plugins on here that plugin.json marks sync "timer" (the default)."""
+    from altention import plugin
+    rows, _problems = plugin.on_this_machine()
+    out = []
+    for name, folder, d, where, _why in rows:
+        if d is None or where != "on" or name == "core":
+            continue
+        for item in d.get("data") or []:
+            if item.get("sync", "timer") != "timer":
+                continue
+            try:
+                out.append(("%s/%s" % (name, item["name"]), plugin.expand(item["path"], folder)))
+            except Exception:  # a setting it names is not there: not this plugin's data on this machine
+                continue
+    return out
+
+
+def own_repo(path):
+    """True when path is the top of a git repo of its own (not a folder inside the instance, the engine or another)."""
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return False
+    r = Repo(path).git("rev-parse", "--show-toplevel", timeout=20)
+    return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(path)
+
+
+OUR_HOOK = "# altention pre-push (ops/remote.py)"  # ops/remote.py HOOK_MARK, the first line of the hook it puts in
+
+
+def has_our_hook(path):
+    """True when the pre-push hook git runs for this repo is ours (ops/remote.py put_hook: attached by us)."""
+    r = Repo(path).git("rev-parse", "--git-path", "hooks/pre-push", timeout=20)
+    hook = r.stdout.strip()
+    if r.returncode != 0 or not hook:
+        return False
+    try:
+        with open(hook if os.path.isabs(hook) else os.path.join(path, hook), encoding="utf-8", errors="replace") as f:
+            return OUR_HOOK in f.read()
+    except OSError:
+        return False
+
+
+def push_guard(repo):
+    """Why a data repo is not pushed this round, or None: ops/remote.py's pre-push check (never a public repo nor the
+    engine's), run here as well before the hook does. Exit 10: stopped; any other failure lets the push go (our hook
+    is in and checks again), as the hook itself does (manager 2026-10-16)."""
+    if has_upstream(repo) and not commits_ahead(repo):
+        return None  # nothing to push: not asked
+    url = repo.git("remote", "get-url", "origin", timeout=20).stdout.strip()
+    try:
+        r = subprocess.run(limited(["python3", os.path.join(config.ENGINE, "ops", "remote.py"), "pre-push", "origin", url], 120),
+                           cwd=repo.path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=130,
+                           stdin=subprocess.DEVNULL)
+        code, said = r.returncode, (r.stderr.strip() or r.stdout.strip())
+    except (OSError, subprocess.SubprocessError) as e:
+        code, said = 1, str(e)
+    if code == 0:
+        return None
+    if code == 10:
+        return said.replace("altention：", "", 1)[:300] or "沒有推：遠端沒通過檢查"
+    return None
+
+
+def sync_data(machine, say, instance=None):
+    """{name: result} for each timer data folder: a repo of its own with an origin and our pre-push hook (attached
+    by ops/remote.py: one we took on) is committed whole, updated and pushed, under its own lock, like the instance.
+    One with no origin, no repo, or no hook of ours (the owner's own repo a setting points at: manager 2026-10-16)
+    is left, said in sync.json."""
+    out = {}
+    skip = set(os.path.realpath(p) for p in (config.ENGINE, instance) if p)
+    for name, path in timer_data():
+        if os.path.realpath(path) in skip or not os.path.isdir(path):
+            continue
+        if not own_repo(path):
+            out[name] = {"at": time.time(), "ok": True, "error": None, "path": path, "note": "不是自己的 git repo，沒有同步"}
+            continue
+        if Repo(path).git("remote", "get-url", "origin", timeout=20).returncode != 0:
+            out[name] = {"at": time.time(), "ok": True, "error": None, "path": path, "note": "沒有設定遠端，只留在這台"}
+            continue
+        if not has_our_hook(path):
+            out[name] = {"at": time.time(), "ok": True, "error": None, "path": path,
+                         "note": "沒接上（沒有我們的 pre-push hook），不同步：要同步就用 ops/remote.py 接上"}
+            continue
+        out[name] = sync_repo(path, ["."], "sync: %s @ %s" % (name, machine), say, track=True, guard=push_guard)
+        out[name]["path"] = path
+    return out
+
+
 def refused_hash(note=None):
     """The upstream hash altention/update.py is refusing, read straight from ~/.local/state/altention/
     last_alive-update (plain JSON), or "". No file: no record. A file that cannot be read or parsed: no record
@@ -1136,19 +1407,24 @@ RELEASE_TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 
 def update_mode():
     """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
-    reading is copied into cron_update.py, cron_sync.py and sync.py; the agreement test holds them together).
+    reading is copied into cron_update.py, cron_sync.py, sync.py and dcbot/supervisor.py; the agreement test holds
+    them together).
     plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
     yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
     UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
     machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
-    "notify" when there is none."""
-    def last():
+    "notify" when there is none, and then `problem` says that too (C-04)."""
+    def last(problem="", unseen=""):
+        """The mode last read, with `problem`; none (or not one of UPDATE_MODES): notify, and why, `unseen` being
+        what was not seen (C-04: a machine that never read its settings is told it does not update by itself)."""
         try:
             with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
                 m = json.load(f).get("mode")
         except (OSError, ValueError, AttributeError):
             m = None
-        return m if m in UPDATE_MODES else "notify"
+        if m in UPDATE_MODES:
+            return m, problem
+        return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
     named = os.environ.get("ALT_INSTANCE")
     pointer = os.path.expanduser("~/.config/altention/instance")
     if not named and os.path.exists(pointer):
@@ -1156,31 +1432,31 @@ def update_mode():
             with open(pointer) as f:
                 named = f.readline().strip()
         except (OSError, UnicodeDecodeError) as e:
-            return last(), "讀不了 %s（%s）" % (pointer, e)
+            return last("讀不了 %s（%s）" % (pointer, e))
     if named == "-":  # this machine has left its instance
-        return last(), ""
+        return last(unseen="這台已經離開實例")
     if named:
         inst = os.path.expanduser(named)
         if not os.path.isdir(inst):
-            return last(), "實例資料夾不存在：%s" % inst
+            return last("實例資料夾不存在：%s" % inst)
     else:
         inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
         if not os.path.isdir(inst):
-            return last(), ""
+            return last(unseen="看不到實例（%s）" % inst)
     path = os.path.join(inst, "plugins.json")
     try:
         with open(path, encoding="utf-8") as f:
             got = json.load(f)
     except FileNotFoundError:
-        return last(), ""
+        return last(unseen="實例裡沒有 %s" % path)
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return last(), "讀不出 %s（%s）" % (path, e)
+        return last("讀不出 %s（%s）" % (path, e))
     core = got.get("core", {}) if isinstance(got, dict) else None
     if not isinstance(core, dict):
-        return last(), "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容")
+        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
     mode = core.get("update", "notify")
     if mode not in UPDATE_MODES:
-        return last(), "%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40])
+        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
     return mode, ""
 
 
@@ -1275,19 +1551,47 @@ def settings_problem(repo, rev):
             raise Unread("讀不到 %s 的 %s（%s）" % (rev[:12], name, str(e)[:120]))
         except ValueError as e:  # UnicodeDecodeError is one
             return "%s 讀不出來（%s）" % (name, str(e)[:120])
-        if not isinstance(data, dict):
-            return "%s 不是 JSON 物件" % name
-        fmt = data.get("format", 1)
-        if type(fmt) is not int or fmt < 1:
-            return "%s 的格式 %s 不是 1 以上的整數" % (name, json.dumps(fmt)[:20])
-        for key, value in data.items():
-            if key != "format" and not key.startswith("_") and not isinstance(value, dict):
-                return "%s 的 %s 不是物件" % (name, key)
-        for key in ENTRIES[name]:
-            for entry, value in (data.get(key) or {}).items():
-                if not entry.startswith("_") and not isinstance(value, dict):
-                    return "%s 的 %s.%s 不是物件" % (name, key, entry)
+        why = settings_data_problem(name, data)
+        if why:
+            return why
     return ""
+
+
+def settings_data_problem(name, data):
+    """Why one of SETTINGS, read as `data`, is not to be taken, or "" (settings_problem's checks of its shape)."""
+    if not isinstance(data, dict):
+        return "%s 不是 JSON 物件" % name
+    fmt = data.get("format", 1)
+    if type(fmt) is not int or fmt < 1:
+        return "%s 的格式 %s 不是 1 以上的整數" % (name, json.dumps(fmt)[:20])
+    for key, value in data.items():
+        if key != "format" and not key.startswith("_") and not isinstance(value, dict):
+            return "%s 的 %s 不是物件" % (name, key)
+    for key in ENTRIES[name]:
+        for entry, value in (data.get(key) or {}).items():
+            if not entry.startswith("_") and not isinstance(value, dict):
+                return "%s 的 %s.%s 不是物件" % (name, key, entry)
+    return ""
+
+
+def instance_paths(instance):
+    """INSTANCE_SHARED but a settings file that does not read well here: committed, every other machine would hold
+    the instance back (settings_problem); left out until it is fixed, said in the alerts. Known limit (manager
+    2026-10-16): the file is read here and added a few seconds later; one half saved in between is committed, and
+    the other machines hold that version back (said in their alerts) until the next round commits it whole."""
+    out = []
+    for p in INSTANCE_SHARED:
+        if p in SETTINGS and os.path.isfile(os.path.join(instance, p)):
+            try:
+                with open(os.path.join(instance, p), "rb") as f:
+                    why = settings_data_problem(p, json.loads(f.read().decode("utf-8")))
+            except (OSError, ValueError) as e:
+                why = "%s 讀不出來（%s）" % (p, str(e)[:120])
+            if why:
+                _alert_plain("sync", "settings-broken", "%s：這一輪沒有提交（別台會因此擋下實例的更新），修好之後下一輪就會提交" % why)
+                continue
+        out.append(p)
+    return out
 
 
 def held_path():
@@ -1403,6 +1707,34 @@ def write_alert(source, kind, text):
             f.writelines(rows)
     except OSError:
         pass
+
+
+def engine_moved(repo, before):
+    """C-09: after this lock's work moved the engine's HEAD from `before` (the sync standing in for update.py,
+    home-pull): altention/update.py's after_move, so the bot restarts into it, or its packages are marked to come
+    first (install_pending, once the lock is let go). Never raises; update.py not loading is said. True when the
+    bot's restart flag was written."""
+    now = repo.git("rev-parse", "HEAD", timeout=20).stdout.strip()
+    if not before or not now or before == now:
+        return False
+    try:
+        from altention import update as altupdate
+        return altupdate.after_move(repo, before, now)
+    except Exception as e:
+        _alert_plain("sync", "after-move", "引擎動到 %s，但沒能裝機器人的套件、寫重啟旗標（%s: %s）：機器人可能還在跑舊版；"
+                     "在這台的引擎跑 dcbot/install.sh，再 !restart" % (now[:12], type(e).__name__, e))
+        return False
+
+
+def install_pending():
+    """altention/update.py's install_pending (the bot's packages a move needs), outside the git lock; never raises.
+    "" or what it did."""
+    try:
+        from altention import update as altupdate
+        return altupdate.install_pending(_alert_plain)
+    except Exception as e:
+        _alert_plain("sync", "deps", "裝機器人的套件這一步出錯（%s: %s）" % (type(e).__name__, e))
+        return ""
 
 
 def _alert_plain(source, kind, text):

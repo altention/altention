@@ -240,14 +240,16 @@ def install(remove=False, only_if_present=False):
     except OSError:
         s = {}
     before = json.dumps(s, sort_keys=True)
-    me = os.path.abspath(__file__)
-    mine = lambda g: any("dcbot/tools/dchook" in h.get("command", "") for h in g.get("hooks", []))  # noqa: E731
+    me = os.path.realpath(__file__)  # the engine's real folder, as apply writes it: not an old name left as a link (C-17)
+    mine = lambda h: "dcbot/tools/dchook" in h.get("command", "")  # noqa: E731
     hooks = s.setdefault("hooks", {})
-    present = any(mine(g) for gs in hooks.values() for g in gs)
+    present = any(mine(h) for gs in hooks.values() for g in gs for h in g.get("hooks", []))
     if only_if_present and not present:
         return
-    for ev in list(hooks):
-        hooks[ev] = [g for g in hooks[ev] if not mine(g)]
+    for ev in list(hooks):  # only dchook's own hooks go; any other hook in the same group stays where it is
+        for g in hooks[ev]:  # (apply's chatlog hook, one the owner added with /hooks: the whole group used to go)
+            g["hooks"] = [h for h in g.get("hooks", []) if not mine(h)]
+        hooks[ev] = [g for g in hooks[ev] if g.get("hooks")]
         if not hooks[ev]:
             del hooks[ev]
     if not remove:

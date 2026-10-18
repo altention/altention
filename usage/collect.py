@@ -7,7 +7,7 @@
 Two kinds of numbers:
 - the subscription's limits (this 5-hour window, this week): the whole Claude account, read from the answer to one
   request on the cheapest model each round (read_limits: `claude -p`, its rate_limit_event; no screen is read);
-  only when the instance's usage.subscription_limits is true (off by default);
+  unless the instance's usage.subscription_limits is false (on when not set: owner 2026-10-16);
 - this Linux user's usage on each machine in plugins.usage.sources of the instance's plugins.json (usage/remote.py:
   ccusage, Claude Code and Codex, priced like the API). Not what the subscription costs, but proportional. Not set
   (what an install leaves): this machine alone, the one collecting, where usage/install.sh put ccusage; other
@@ -38,22 +38,23 @@ SWITCH = "usage.subscription_limits"  # true: the subscription's limits are read
 
 def load_settings():
     """(channel, plan, limits) from the instance's usage.channel, usage.plan and SWITCH; plan is [name, how many Pro
-    allowances]; limits is True only when SWITCH is true (off by default: reading costs one request an hour, made with
-    the owner's subscription). Unreadable settings or a malformed plan: (None, why), and the round is skipped (never a
+    allowances], or None when not set (the boards then say so and show no Pro multiples: never a guessed plan);
+    limits is True when SWITCH is true or not set (on by default, owner 2026-10-16: reading costs one request an
+    hour, made with the owner's subscription; false turns it off, any other value is said and taken as off). Unreadable settings or a malformed plan: (None, why), and the round is skipped (never a
     guessed channel)."""
     try:
         sys.path.insert(0, HOME_REPO)
         from altention import config
-        channel, plan = config.setting("usage.channel"), config.setting("usage.plan", ["Max 20x", 20])
-        limits = config.setting(SWITCH, False)
+        channel, plan = config.setting("usage.channel"), config.setting("usage.plan")
+        limits = config.setting(SWITCH, True)
     except Exception as e:
         return None, "實例設定讀不出來（%s）" % e
     if not channel:
         return None, "實例設定沒有 usage.channel（看板頻道的 ID）"
-    if not (isinstance(plan, (list, tuple)) and len(plan) == 2 and isinstance(plan[0], str)
+    if plan is not None and not (isinstance(plan, (list, tuple)) and len(plan) == 2 and isinstance(plan[0], str)
             and isinstance(plan[1], (int, float)) and not isinstance(plan[1], bool)):
         return None, "usage.plan 要是 [方案名稱, 相當於幾個 Pro]，現在是 %r" % (plan,)
-    return (str(channel), (plan[0], plan[1]), limits), None
+    return (str(channel), None if plan is None else (plan[0], plan[1]), limits), None
 
 
 def state_path():
@@ -95,12 +96,13 @@ def default_sources(config):
 def switched_off(value):
     """Why the limits are not read, for the board, when SWITCH is not true."""
     if value is False:
-        return ("沒有打開。在實例的 plugins.json 設 \"usage\": {\"subscription_limits\": true} 就會讀：每小時用你的訂閱帳號"
-                "跑一次 claude -p，送一句最便宜的請求（haiku），會算進 5 小時的額度")
+        return ("關掉了（實例 plugins.json 的 usage.subscription_limits 是 false）。要看就跟 Claude 說「打開訂閱額度看板」，"
+                "或把它改成 true：每小時用 haiku 送一個最小的請求去讀，會算進 5 小時的額度")
     return "%s 要是 true 或 false，現在是 %s，當成沒打開" % (SWITCH, json.dumps(value, ensure_ascii=False))
 
 
-CHANNEL, PLAN = None, ("?", 1)  # set by main() from load_settings()
+CHANNEL, PLAN = None, None  # set by main() from load_settings(); PLAN None: usage.plan not set
+PLAN_UNSET = '方案沒設定（在實例的 plugins.json 設 usage.plan，例如 ["Pro", 1]）'
 WEEK = "一二三四五六日"
 CLAUDE = os.path.expanduser("~/.local/bin/claude")
 
@@ -112,14 +114,14 @@ def inventory():
 
 
 def machine_usage(name, m, days=31):
-    """usage/remote.py on one machine (here, or over SSH with its aliases). Here: the remote.py of this very engine,
-    run as it is: never a pull (in release mode that would take a tag unchecked every hour, with no restart flag for
-    the bot), never the engine the list's entry names (it may be another checkout)."""
+    """usage/remote.py on one machine (here, or over SSH with its aliases), run as it is: never a pull, here or there
+    (every hour that would take a release unchecked, past update.py's load check; the engine's own update round
+    moves it: C-10). Here: this very engine's, never the engine the list's entry names (it may be another
+    checkout); there: that machine's engine (config.engine_on)."""
     here = os.uname().nodename.split(".")[0].lower() == name.lower() or "local" in m.get("ssh", [])
     sys.path.insert(0, HOME_REPO)
     from altention import config  # that machine's engine: its entry's "engine", else the default place
-    cmd = ("cd %s && { if [ -x bin/home-pull ]; then bin/home-pull --quiet; else git pull -q --rebase --autostash; fi; } "
-           ">/dev/null 2>&1; python3 usage/remote.py %d" % (config.engine_on(m), days))
+    cmd = "cd %s && python3 usage/remote.py %d" % (config.engine_on(m), days)
     whys = []  # what each try ran into, for the board: not one word for every way it fails
     for alias in (["local"] if here else [a for a in m.get("ssh", []) if a != "local"]):
         argv = [sys.executable, os.path.join(HERE, "remote.py"), str(days)] if alias == "local" else \
@@ -250,12 +252,12 @@ def limits_board(limits, why=None, off=False):
     if not limits:
         return "（這次讀不到用量額度：%s）" % (why or "不知道為什麼")
     names = {"Current session": "這 5 小時", "Current week (all models)": "這週（所有模型）"}
-    rows = ["整個 Claude 帳號（包含其他 Linux 帳號和其他裝置），目前方案 %s" % PLAN[0]]
+    rows = ["整個 Claude 帳號（包含其他 Linux 帳號和其他裝置），%s" % ("目前方案 %s" % PLAN[0] if PLAN else PLAN_UNSET)]
     for title, pct, reset in limits:
         label = names.get(title) or ("這週（%s）" % title.split("(", 1)[-1].rstrip(")") if "(" in title else title)
         rows.append("- %s：**%d%%**%s" % (label, pct, "　（%s 重置）" % reset if reset else ""))
     week = next((p for t, p, _ in limits if t == "Current week (all models)"), None)
-    if week is not None:
+    if week is not None and PLAN:
         rows.append("- 這週用量換算：約 Pro 一週額度的 **%.1f 倍**、Max 5x 的 %.1f 倍（照 Max 20x = 20 倍 Pro、Max 5x = 5 倍）"
                     % (week * PLAN[1] / 100.0, week * PLAN[1] / 500.0))
     return "\n".join(rows)
@@ -313,9 +315,10 @@ def weeks_board(samples):
             w["cost"] = max(w["cost"], s.get("cost7", 0.0))
     if not weeks:
         return "（還沒有資料，每小時記一次）"
-    rows = ["每週最高的週用量（%s）和當時近 7 天的 API 等值" % PLAN[0]]
+    rows = ["每週最高的週用量（%s）和當時近 7 天的 API 等值" % (PLAN[0] if PLAN else "方案沒設定")]  # how: the limits board
     for reset, w in list(weeks.items())[-6:]:
-        rows.append("- 到 %s 重置的那週：**%d%%**（≈ Pro 的 %.1f 倍），%s" % (reset, w["pct"], w["pct"] * PLAN[1] / 100.0, money(w["cost"])))
+        times = "（≈ Pro 的 %.1f 倍）" % (w["pct"] * PLAN[1] / 100.0) if PLAN else ""
+        rows.append("- 到 %s 重置的那週：**%d%%**%s，%s" % (reset, w["pct"], times, money(w["cost"])))
     return "\n".join(rows)
 
 
@@ -335,7 +338,7 @@ def chart(today, results, samples, offset=None):
         return None
     data = os.path.join(os.path.dirname(CHART), "chart-data.json")
     with open(data, "w") as f:
-        json.dump({"today": today, "results": results, "samples": samples, "plan_pro": PLAN[1], "plan_name": PLAN[0], "utc_offset": offset}, f,
+        json.dump({"today": today, "results": results, "samples": samples, "plan_pro": PLAN and PLAN[1], "plan_name": PLAN and PLAN[0], "utc_offset": offset}, f,
                   ensure_ascii=False)
     r = subprocess.run([VENV, os.path.join(HERE, "chart.py"), data, CHART], stderr=subprocess.PIPE,
                        universal_newlines=True, timeout=300)

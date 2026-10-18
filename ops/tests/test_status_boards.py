@@ -155,7 +155,7 @@ class Machines(World):
 
     def test_no_records_broken_records(self):
         self.bot()
-        none = "-# 還沒有機器的檢查結果（doctor --watch 還沒寫下，或檔案讀不懂）"
+        none = "-# 系統檢查還沒跑完第一輪（每 15 分鐘一次），或結果檔讀不懂"
         self.assertEqual(self.texts()["機器和機器人"], "機器人：16:28 起來\n" + none)
         for raw in ('{"at": 1, "rec', "[]", '{"at": "now", "records": []}', '{"at": 1e999, "records": []}',
                     '{"at": 5, "records": {"a": 1}}'):
@@ -231,7 +231,7 @@ class Attention(World):
         self.assertEqual(self.texts()["需要注意的事"], "- 另有 1 則超過 3 天的舊提醒（最近一則 10-10）")
 
     def test_old_or_missing_records_are_not_called_nothing(self):
-        self.assertEqual(self.texts()["需要注意的事"], "-# 還沒有機器的檢查結果（doctor --watch 還沒寫下，或檔案讀不懂）")
+        self.assertEqual(self.texts()["需要注意的事"], "-# 系統檢查還沒跑完第一輪（每 15 分鐘一次），或結果檔讀不懂")
         self.records([rec("sync.engine", "host-a", "warn", "慢")], when=at(15, 8))
         self.assertEqual(self.texts()["需要注意的事"], "- host-a：慢\n-# 機器的資料是 15:08 的，之後沒有新的檢查結果")
 

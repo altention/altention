@@ -72,7 +72,7 @@
 
 ## 同步
 
-- 核心的兩行 cron 每 15 分鐘各跑一次（3a.10）：`altention/cron_update.py` 更新引擎；`altention/cron_sync.py` 把這台對知識和記憶的修改 commit 並 push，再 pull 引擎和實例，拿到別台推上來的程式和知識。兩支壞掉時都會退回單純的快轉。chatlog 的 cron 只匯出對話並推到對話紀錄 repo。
+- 核心的兩行 cron 每 15 分鐘各跑一次（3a.10）：`altention/cron_update.py` 更新引擎；`altention/cron_sync.py` 把這台對知識和記憶的修改 commit 並 push 到實例，再 pull 引擎和實例，拿到別台推上來的程式和知識。引擎只 pull、不 push：fork 出來的引擎是公開的，這台的 commit 可能有私人的值；改引擎的人自己用 `bin/home-git push` 推，doctor 會列出還沒推的個數。兩支壞掉時都會退回單純的快轉。chatlog 的 cron 只匯出對話並推到對話紀錄 repo。
 - 所以改了程式只要 push，其他機器會在一個週期內自己拉到。需要重新安裝的改動（新的 cron、hook）仍然要跑 `ops/apply.py`。
 - 所有自動化的 git 操作共用一把鎖（`bin/home-pull`、`dcbot/deploy.sh`、核心的同步和更新）。多個程序同時 pull 同一個工作樹會互相寫壞而全部失敗。在引擎資料夾裡要更新時用 `bin/home-pull`，不要直接 `git pull`。
 
@@ -111,13 +111,19 @@
 
 ## 狀態放在哪
 
-| 位置 | 內容 |
-|---|---|
-| git repo | 引擎、實例、對話紀錄、進度的資料、各助理的資料夾 |
-| `dcbot/state/`（機器人那台，不進 git） | 頻道對應哪個對話、路由表、看板的訊息 ID、還沒回答的提問 |
-| `~/.cache/` | chatlog 和進度插件的狀態與鎖、提醒發過沒、各排程的輸出 |
-| `~/.local/share/usage/` | 用量樣本、畫圖用的 Python 環境 |
-| `~/.config/` | 秘密和每台機器的設定：`dcbot/env`（token）、`altention/instance`（實例在哪）、`altention/host`（機器名） |
+| 位置 | 內容 | 備份 |
+|---|---|---|
+| 引擎（git repo） | 程式 | 公開的上游；同步只拉不推 |
+| 實例（git repo，700） | 記憶、知識、設定、機器清單 | `ops/remote.py set instance`，同步每 15 分鐘提交、推送 |
+| `{data}/logs`（git repo，700） | 對話紀錄（逐字，秘密遮掉） | `set logs`（`sync.dirs.chatlog.remote`），chatlog 自己推 |
+| `{data}/progress`（git repo，700） | 進度 | `set progress`（`sync.dirs.progress.remote`），進度自己推 |
+| `{data}/planner`（git repo，700） | 秘書的計畫、提醒 | `set planner`（`sync.dirs.planner.remote`），秘書和同步推 |
+| `dcbot/state/`（機器人那台，不進 git） | 頻道對應哪個對話、路由表、看板的訊息 ID、還沒回答的提問 | 還沒有（C-28） |
+| `~/.cache/` | chatlog 和進度插件的狀態與鎖、提醒發過沒、各排程的輸出 | 不用：可以重建 |
+| `~/.local/share/usage/`（700） | 用量樣本、畫圖用的 Python 環境 | 不備份 |
+| `~/.config/` | 秘密和每台機器的設定：`dcbot/env`（token）、`altention/instance`（實例在哪）、`altention/host`（機器名） | 不進 git；換機器重新取得 |
+
+四個資料 repo 都只推到 private 的遠端：`ops/remote.py` 設定時檢查，pre-push hook 每次推送前再查一次（結果記一小時），系統檢查列出每一樣的狀態。新機器上 `instance.py join` 拿回實例，`./install.sh` 照實例裡的網址把另外三樣 clone 回來。
 
 機器人那台是單點：`dcbot/state/` 沒有備份。程式可以重裝，但頻道和對話的對應要重建。
 

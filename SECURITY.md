@@ -41,11 +41,11 @@ What follows from that:
 | SSH keys | your usual `~/.ssh` | Altention only adds an `Include` line to `~/.ssh/config` (backed up first) |
 | Claude Code login | Claude Code's own files | not read or copied by Altention |
 
-- Enter the token with `./install.sh --token` in your own terminal (it does not echo and does not pass through a
-  Claude conversation), or write the file yourself and `chmod 600` it.
+- Enter the token with `./install.sh discord` in your own terminal (it does not echo, does not pass through a Claude
+  conversation, and is sent only to Discord's API), or write the file yourself and `chmod 600` it.
 - **Never paste the token into a Discord message or a Claude conversation.** Conversations are kept on disk and may be
   synced (see "Conversation logs" below).
-- If the token leaks: reset it in the Discord developer portal, write the new one with `./install.sh --token`, and
+- If the token leaks: reset it in the Discord developer portal, write the new one with `./install.sh discord`, and
   restart the bot.
 
 ## Keeping Claude away from secrets

@@ -112,19 +112,24 @@ UPDATE_MODES = ("notify", "release", "branch")  # update.py's: the plain fast-fo
 
 def update_mode():
     """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
-    reading is copied into cron_update.py, cron_sync.py and sync.py; the agreement test holds them together).
+    reading is copied into cron_update.py, cron_sync.py, sync.py and dcbot/supervisor.py; the agreement test holds
+    them together).
     plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
     yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
     UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
     machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
-    "notify" when there is none."""
-    def last():
+    "notify" when there is none, and then `problem` says that too (C-04)."""
+    def last(problem="", unseen=""):
+        """The mode last read, with `problem`; none (or not one of UPDATE_MODES): notify, and why, `unseen` being
+        what was not seen (C-04: a machine that never read its settings is told it does not update by itself)."""
         try:
             with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
                 m = json.load(f).get("mode")
         except (OSError, ValueError, AttributeError):
             m = None
-        return m if m in UPDATE_MODES else "notify"
+        if m in UPDATE_MODES:
+            return m, problem
+        return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
     named = os.environ.get("ALT_INSTANCE")
     pointer = os.path.expanduser("~/.config/altention/instance")
     if not named and os.path.exists(pointer):
@@ -132,31 +137,31 @@ def update_mode():
             with open(pointer) as f:
                 named = f.readline().strip()
         except (OSError, UnicodeDecodeError) as e:
-            return last(), "讀不了 %s（%s）" % (pointer, e)
+            return last("讀不了 %s（%s）" % (pointer, e))
     if named == "-":  # this machine has left its instance
-        return last(), ""
+        return last(unseen="這台已經離開實例")
     if named:
         inst = os.path.expanduser(named)
         if not os.path.isdir(inst):
-            return last(), "實例資料夾不存在：%s" % inst
+            return last("實例資料夾不存在：%s" % inst)
     else:
         inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
         if not os.path.isdir(inst):
-            return last(), ""
+            return last(unseen="看不到實例（%s）" % inst)
     path = os.path.join(inst, "plugins.json")
     try:
         with open(path, encoding="utf-8") as f:
             got = json.load(f)
     except FileNotFoundError:
-        return last(), ""
+        return last(unseen="實例裡沒有 %s" % path)
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return last(), "讀不出 %s（%s）" % (path, e)
+        return last("讀不出 %s（%s）" % (path, e))
     core = got.get("core", {}) if isinstance(got, dict) else None
     if not isinstance(core, dict):
-        return last(), "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容")
+        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
     mode = core.get("update", "notify")
     if mode not in UPDATE_MODES:
-        return last(), "%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40])
+        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
     return mode, ""
 
 
@@ -170,7 +175,7 @@ def plain_ff():
     if not os.path.isdir(gd) or any(os.path.exists(os.path.join(gd, n)) for n in ("rebase-merge", "rebase-apply", "index.lock")):
         return "沒做（不是 git checkout，或 rebase 進行中）"
     try:
-        lock = open(os.path.join(gd, "agent-git.lock"), "a")  # COMPAT: the lock's name as the sync and deploy.sh have it; renamed with them after stage 4
+        lock = open(os.path.join(gd, "altention-git.lock"), "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return "沒做（鎖被拿著）"

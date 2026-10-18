@@ -104,11 +104,53 @@ def parse_panel(view, has_box):
 OPTION = re.compile(r"^\s*(?:❯\s*)?(\d{1,2})\.\s+(\S.*)$")
 MENU_RULE = re.compile(r"^[\s─━═╌▔▁-]*$")  # a row of a menu that is only a rule (the excerpt leaves them out)
 
+# Claude Code 2.1.302, auto (or bypass) mode: a call its safety check holds (a dangerous rm) is asked about with a
+# deadline, a warning row that counts down every second: "⚠ Claude Code will automatically deny this request in 1:59,
+# to avoid blocking progress on an unattended session" (its screen-reader mode: "in about 2 minutes"); 80 columns wrap
+# it onto two rows. At 0 the dialog goes and the call is denied. Only rows inside a dialog count, below its full-width
+# top rule and below the command's own dashed rules (a reply above or the command may quote the words; #code-review of
+# ac72a14), and only the whole sentence with a time in it.
+AUTO_DENY = re.compile(r"⚠ Claude Code will automatically deny this request in (?:(\d+):([0-5]\d)|about (\d+) (minute|second)s?), "
+                       r"to avoid blocking progress on an unattended session")
+AUTO_DENY_START = re.compile(r"^\s*⚠ Claude Code will automatically deny this request in ")
+DASHED = re.compile(r"^\s*╌{8,}\s*$")  # the rule above and below a permission's command
+DIALOG_RULE = re.compile(r"^\s*(─{20,}|▔{20,})")  # the full-width rule a dialog is drawn under (bot/menus.py's DIALOG_TOP)
+
+
+def auto_deny_rows(rows):
+    """(first row, last row, seconds left) of the countdown on these screen rows, or None (none inside a dialog)."""
+    below = max([i for i, r in enumerate(rows) if DASHED.match(r) or DIALOG_RULE.match(r)], default=-1) + 1
+    if not below:
+        return None
+    for i in range(len(rows) - 1, below - 1, -1):
+        if not AUTO_DENY_START.match(rows[i]):
+            continue
+        for j in range(i, min(i + 3, len(rows))):
+            m = AUTO_DENY.fullmatch(" ".join(r.strip() for r in rows[i:j + 1]))
+            if m:
+                mins, secs, n, unit = m.groups()
+                return i, j, int(mins) * 60 + int(secs) if mins is not None else int(n) * (60 if unit == "minute" else 1)
+        return None
+    return None
+
+
+def auto_deny(view):
+    """Seconds until Claude Code denies the dialog on this screen by itself, or None (no such deadline shown)."""
+    found = auto_deny_rows(view.split("\n"))
+    return found[2] if found else None
+
+
+def without_auto_deny(rows):
+    """These screen rows without that countdown (it changes every second: not part of what a dialog asks)."""
+    found = auto_deny_rows(rows)
+    return rows[:found[0]] + rows[found[1] + 1:] if found else rows
+
 
 def parse_menu(view):
     """(excerpt of the dialog, [(number, label)]) from a raw screen. The options are the last run of lines
-    numbered 1, 2, 3… near the bottom; the excerpt is the dialog text above and around them."""
-    rows = view.split("\n")
+    numbered 1, 2, 3… near the bottom; the excerpt is the dialog text above and around them, without an auto-deny
+    countdown (auto_deny() reads it: shown as it was when read, it would be wrong a second later)."""
+    rows = without_auto_deny(view.split("\n"))
     while rows and not rows[-1].strip():
         rows.pop()
     found, want = [], None

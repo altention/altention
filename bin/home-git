@@ -3,10 +3,12 @@
 
   home-git commit -m "…" -- docs/x.md      e.g. a commit by hand or by a session
   home-git push
+  home-git -C FOLDER commit -qm "…"        the same in another repo the sync commits (the secretary's folder)
 
-Automated jobs (the sync, home-pull, deploy.sh) take `<git dir>/agent-git.lock` before touching the repo; a
+Automated jobs (the sync, home-pull, deploy.sh) take `<git dir>/altention-git.lock` before touching the repo; a
 commit made without it can land while one of them is moving the branch. This takes the same lock (waits up to
-2 minutes), runs `git -C <this engine> <arguments>` with the lock held, and exits with git's status. Standard
+2 minutes), runs `git -C <this engine> <arguments>` with the lock held, and exits with git's status. `-C FOLDER`
+first: that repo and its own lock instead (a plugin's data repo, which the sync commits too, C-26). Standard
 library, Python 3.8.
 """
 import os
@@ -18,14 +20,42 @@ sys.path.insert(0, REPO)
 from altention import sync  # noqa: E402
 
 
+def not_a_top(folder):
+    """Why `-C folder` is refused, or "": it has to be the top of a repo of its own. A folder inside another repo
+    (the instance, the engine) would have `add -A` take the whole of that repo (review of d85142e)."""
+    r = subprocess.run(["git", "-C", folder, "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    top = r.stdout.strip()
+    if r.returncode != 0 or not top:
+        return "%s 不是 git repo，沒有提交" % folder
+    if os.path.realpath(top) != os.path.realpath(folder):
+        return "%s 不是自己的 repo，是 %s 裡面的資料夾：不在這裡提交，免得把整個 %s 一起提交" % (folder, top, top)
+    try:
+        from altention import config
+        instance = config.instance_dir()
+    except Exception:
+        instance = None
+    for name, path in (("引擎", REPO), ("實例", instance)):  # their own commits go their own way (manager 2026-10-16)
+        if path and os.path.realpath(path) == os.path.realpath(folder):
+            return "%s 是%s：-C 只給插件的資料 repo（秘書的資料夾）用；%s" % (
+                folder, name, "引擎的提交不用 -C" if name == "引擎" else "實例的設定改完照說明在實例裡提交")
+    return ""
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
-    repo = sync.Repo(REPO)
+    where = REPO
+    if argv[0] == "-C" and len(argv) >= 3:
+        where, argv = os.path.abspath(argv[1]), argv[2:]
+        why = not_a_top(where)
+        if why:
+            sys.exit("home-git：%s" % why)
+    repo = sync.Repo(where)
     try:
         with sync.locked(repo):
-            return subprocess.run(["git", "-C", REPO] + argv).returncode
+            return subprocess.run(["git", "-C", where] + argv).returncode
     except sync.Busy as e:
         sys.exit("home-git：%s（別的同步或部署還在跑），稍後再試" % e)
 

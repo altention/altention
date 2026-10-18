@@ -85,7 +85,7 @@ verify() {  # 在目前的資料夾（某棵樹的 dcbot/）跑所有檢查；�
 if [ -n "$REVIEWED" ]; then
   KEPT="$(cd .. && git rev-parse --git-common-dir)"; case "$KEPT" in /*) ;; *) KEPT="$LIVE/../$KEPT";; esac
   KEPT="$KEPT/altention-deploy/tests"
-  exec 9>>"$(git rev-parse --git-common-dir)/agent-git.lock"
+  exec 9>>"$(git rev-parse --git-common-dir)/altention-git.lock"
   # 一次只有一個 --commit：候選的資料夾只有一份，第二個會清掉第一個正在驗的候選
   DLOCK="$(git rev-parse --git-common-dir)/altention-deploy.lock"
   exec 8>>"$DLOCK"
@@ -136,7 +136,7 @@ fi
 # 一個工作的 rebase --abort 也可能中止另一個工作進行到一半的 rebase。pull/push 讓 git 繼承鎖並套 timeout：
 # deploy.sh 被中斷時，還在跑的 git 最多再拿著鎖 300 秒，不會變成沒有鎖的孤兒
 if [ -z "$REVIEWED" ]; then
-  exec 9>>"$(git rev-parse --git-common-dir)/agent-git.lock"
+  exec 9>>"$(git rev-parse --git-common-dir)/altention-git.lock"
   flock -w 120 9 || { echo "✗ 120 秒內等不到 git 鎖（別的同步或部署還在跑），稍後再部署"; exit 1; }
   echo "== commit（dcbot/${EXTRA:+ 加上 ${EXTRA[*]}}）"
   git add -A -- . 9>&-

@@ -19,6 +19,7 @@ about versions agreeing or about SSH is checked.
 """
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -270,6 +271,10 @@ _uo = rj("~/.local/state/altention/last_ok-update")  # update.py on an engine un
 o["engine_unpacked"] = isinstance(_uo, dict) and _uo.get("checkout") is False
 _av = rj("~/.local/state/altention/update-available")  # a newer release notify mode saw (altention/update.py)
 o["update_available"] = _av if isinstance(_av, dict) and isinstance(_av.get("tag"), str) else None
+_iv = rj("~/.local/state/altention/intervals.json")  # C-37 C: what update.py and the sync count three rounds by
+o["intervals"] = _iv if isinstance(_iv, dict) else None
+_dp = rj("~/.local/state/altention/deps-pending")  # C-08: HEAD moved, the bot's packages not installed (update.py)
+o["deps_pending"] = _dp if isinstance(_dp, dict) else None
 _skip = rj("~/.local/state/altention/last_skip-update")
 o["update_skipped"] = _skip if isinstance(_skip, dict) else None
 _alive = rj("~/.local/state/altention/last_alive-update")
@@ -291,7 +296,14 @@ try:  # what this machine wrote down to tell (dcnotify may have failed exactly t
     with open(H("~/.local/state/altention/alerts"), encoding="utf-8", errors="replace") as _f:
         _all = [l.rstrip("\n").split("\t") for l in _f.readlines()]
     _rows = [r for r in _all if len(r) >= 4]
-    o["alerts"] = _rows[-50:][-5:]
+
+    def _recent(r):  # the last day's only (manager 2026-10-16): the file stays the record; a time not read counts as recent
+        try:
+            import datetime as _d
+            return __import__("time").time() - _d.datetime.strptime(r[0], "%Y-%m-%dT%H:%M:%S%z").timestamp() <= 86400
+        except (ValueError, OverflowError):
+            return True
+    o["alerts"] = [r for r in _rows[-50:] if _recent(r)][-5:]
     # something pulled in on top of a refused hash while update.py was not checking, and update.py not back since
     # (its first round back writes took-refused): told by --watch (manager 2026-10-07, DESIGN 7.1)
     _took = [i for i, r in enumerate(_rows) if r[2] == "stacked-on-refused"]
@@ -325,6 +337,26 @@ try:  # /tmp: Claude Code, the bot and the tests all need it; full inodes stop e
     o["tmp_space"] = 100 - int(100 * v.f_bavail / v.f_blocks) if v.f_blocks else 0
 except OSError:
     pass
+try:  # C-25: each backup (ops/remote.py status: folder, remote, hook, commits not pushed, last push, last check)
+    sys.path.insert(0, os.path.join(ch, "ops"))
+    import remote as _remote
+    o["backup"] = _remote.status()
+    _own = _remote.config.setting("planner.folder")
+    for _row in o["backup"]:
+        if _row.get("name") == "planner" and isinstance(_own, str) and _own.strip():
+            _row["own"] = True  # the owner's own folder (planner.folder): the sync never takes it on (manager 2026-10-16)
+        _f = _row.get("folder")
+        if isinstance(_f, str) and os.path.isdir(_f):
+            _row["mode"] = os.stat(_f).st_mode & 0o777
+        if _row.get("origin"):  # the commits on no remote branch, and since when the oldest waits (no upstream too:
+            # an attached repo before its first push; a fresh clone has no push on record to go by)
+            _t = [int(x) for x in sh("git -C %s log --format=%%ct HEAD --not --remotes" % shlex.quote(_f)).split() if x.isdigit()]
+            _row["unpushed"] = len(_t)
+            _row["waiting_since"] = min(_t) if _t else None
+    _u = H("~/.local/share/usage")  # usage's samples: the fifth private folder
+    o["usage_mode"] = os.stat(_u).st_mode & 0o777 if os.path.isdir(_u) else None
+except Exception as e:  # an engine without ops/remote.py, or its settings unreadable
+    o["backup_error"] = "%s: %s" % (type(e).__name__, e)
 o["engine_paths"] = {}
 for name in ("knowledge", "memory", "docs/refactor"):  # stage 2.3b: links to the instance once git no longer has them
     if name == "docs/refactor" and not os.path.isdir(os.path.join(o.get("instance") or "", name)):
@@ -332,6 +364,79 @@ for name in ("knowledge", "memory", "docs/refactor"):  # stage 2.3b: links to th
     path = os.path.join(ch, name)
     tracked = bool(sh("git -C %s ls-files -- %s | head -1" % (shlex.quote(ch), shlex.quote(name))))
     o["engine_paths"][name] = "link" if os.path.islink(path) else ("tracked" if tracked else ("folder" if os.path.isdir(path) else "missing"))
+def cron_program(line):
+    """The file a cron line really runs, or None: the first .py after an interpreter (python…), else the command's own
+    first word; VAR=value words before it are not it (a PROGRESS_CLAUDE= path is no program of the line), a value
+    named later as "$VAR" is; a relative path is taken from the folder a leading `cd` went to."""
+    try:
+        ws = shlex.split(line.split(None, 5)[-1] if not line.lstrip().startswith("@") else line.split(None, 1)[-1], comments=True)
+    except ValueError:
+        return None
+    cmds, cur = [], []
+    for w in ws:
+        if w in ("&&", "||", ";", "|"):
+            cmds.append(cur)
+            cur = []
+        elif w.endswith(";") and len(w) > 1:
+            cur.append(w[:-1])
+            cmds.append(cur)
+            cur = []
+        else:
+            cur.append(w)
+    cmds.append(cur)
+    var, folder = {}, None
+    for c in cmds:
+        while c and "=" in c[0] and _re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", c[0]):
+            k, v = c.pop(0).split("=", 1)
+            var[k] = v
+        if not c:
+            continue
+        if c[0] == "cd" and len(c) > 1:
+            folder = c[1]
+            continue
+        if c[0] in ("[", "test", "true", "false", "exec", "flock"):
+            continue
+        prog = c[0]
+        if os.path.basename(prog).startswith("python"):
+            prog = next((w for w in c[1:] if w.endswith(".py") or w.startswith("$")), None)
+        if not prog:
+            return None
+        m = _re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$", prog)
+        if m:
+            prog = var.get(m.group(1))
+            if not prog:
+                return None
+        if folder and not prog.startswith(("/", "~")) and ("/" in prog or prog.endswith(".py")):
+            prog = os.path.join(folder, prog)  # a bare command name is found on PATH, not in that folder
+        return prog
+    return None
+_re_mark = _re.compile(r"#\s*altention:[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)?\s*$")
+o["cron_dead"] = []  # our lines whose program is not there (an engine moved away): they cannot run, nor run twice
+for _l in cron:
+    if _l.lstrip().startswith("#") or not _re_mark.search(_l):
+        continue
+    _prog = cron_program(_l)
+    if _prog and (_prog.startswith("/") or _prog.startswith("~/")) and not os.path.exists(H(_prog)):
+        o["cron_dead"].append(_l.strip()[:300])
+o["entry_links"] = {}  # ~/.local/bin/altention and alt: the command every instruction uses (C-17 S4)
+_want = os.path.realpath(os.path.join(ch, "bin", "altention"))
+for _n in ("altention", "alt"):
+    _p = H("~/.local/bin/" + _n)
+    if not os.path.lexists(_p):
+        _s = "missing"
+    elif not os.path.islink(_p):
+        _s = "file"
+    elif not os.path.exists(_p):
+        _s = "broken"
+    elif os.readlink(_p) == _want:
+        _s = "ok"
+    elif os.path.realpath(_p) == _want:
+        _s = "old-name"  # this engine, through a name that is a link now: broken once that name goes
+    elif os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(_p))), "altention", "config.py")):
+        _s = "elsewhere"  # another engine's bin/altention (its folder has altention/config.py), not a program called so
+    else:
+        _s = "other"
+    o["entry_links"][_n] = _s
 try:  # copies kept twice (name.<machine>.ext) in the instance: the sync's status forgets them after one run
     import re as _re
     _inst = altconfig.instance_dir()
@@ -368,7 +473,8 @@ try:  # the bot: the secretary's channel (planner.channel) works in the secretar
         if isinstance(_pc, (str, int)) and not isinstance(_pc, bool) and str(_pc).strip():
             _st = rj(os.path.join(H(ENGINE), "dcbot/state/channels.json")).get(str(_pc).strip()) or {}
             _cwd = _st.get("cwd") if isinstance(_st, dict) and isinstance(_st.get("cwd"), str) else None
-            _folder = os.path.realpath(H(_plugin.expand("{data}/planner")))
+            _named = altconfig.setting("planner.folder")  # an owner's own folder for the secretary, when set
+            _folder = os.path.realpath(H(_named.strip() if isinstance(_named, str) and _named.strip() else _plugin.expand("{data}/planner")))
             o["planner_secretary"] = {"cwd": os.path.realpath(H(_cwd)) if _cwd else None, "folder": _folder}
 except Exception:  # an engine without it, settings that cannot be read: nothing said
     pass  # the bot: panes whose conversation was moved to the background
@@ -385,7 +491,12 @@ except Exception as _e:
 PRIVATE = [os.path.join(_data, "logs"), os.path.join(_data, "progress"), os.path.join(_data, "logs-mirror"), os.path.join(ENGINE, "dcbot/state"), "~/.cache",
            "~/.local/share/usage"]  # usage's samples (plugin.json private)
 o["open_dirs"] = [d for d in PRIVATE if os.path.isdir(H(d)) and os.stat(H(d)).st_mode & 0o077]
-o["skills"] = sorted(n for n in ("council", "report") if os.path.exists(H("~/.claude/skills/" + n)))
+try:  # the skills this machine's engine has (install.sh links every folder under skills/), and which are linked
+    _skd = os.path.join(H(ENGINE), "skills")
+    o["skills_expected"] = sorted(d for d in os.listdir(_skd) if os.path.isdir(os.path.join(_skd, d)))
+except OSError:
+    o["skills_expected"] = None
+o["skills"] = sorted(n for n in (o["skills_expected"] or ()) if os.path.exists(H("~/.claude/skills/" + n)))
 print(json.dumps(o))
 '''
 
@@ -551,18 +662,34 @@ def tidy(o):
     num = lambda v: _num(v) is not None  # noqa: E731
     note = lambda v: isinstance(v, list) and len(v) >= 5 and isinstance(v[3], str) and (v[4] is None or num(v[4]))  # noqa: E731
     for key in ("code", "chatlog_last_sync", "chatlog_error", "chatlog_host", "config_error", "instance",
-                "instance_remote", "this_machine", "global_md_state", "usage_last_run", "usage_log_tail"):
+                "instance_remote", "this_machine", "global_md_state", "usage_last_run", "usage_log_tail", "backup_error"):
         fix(o, key, text)
     for key in ("uptime", "slept", "progress_log_mtime", "progress_code_mtime", "usage_log_mtime", "usage_code_mtime"):
         fix(o, key, num)
+    fix(o, "usage_mode", num)
+    fix(o, "backup", lambda v: isinstance(v, list) and all(isinstance(i, dict) and text(i.get("name")) for i in v), list)
+    for row in o.get("backup") or []:
+        for key in ("folder", "setting", "origin", "error", "branch"):
+            fix(row, key, text, where="backup.")
+        fix(row, "remote_branches", texts, list, "backup.")
+        for key in ("ahead", "last_push", "mode", "waiting_since", "unpushed"):
+            fix(row, key, num, where="backup.")
+        fix(row, "check", obj, where="backup.")
+        for key in ("repo", "hook", "own"):
+            fix(row, key, lambda v: isinstance(v, bool), where="backup.")
+    fix(o.get("sync") or {}, "data", obj, dict, "sync.")
     for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_failed", "bot_heartbeat_age", "update_alive_at",
                 "bot_started_age"):
         fix(o, key, num)
-    for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "adopted", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice"):
+    for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "adopted", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice",
+                "cron_dead"):
         fix(o, key, texts, list)
+    fix(o, "skills_expected", texts)
     for key in ("sync", "last_ok", "cron_logs", "update_skipped", "update_blocked", "timezone", "schedule_record", "instance_held",
-                "fallbacks", "engine_paths", "typed_as_paste", "enter_differs", "ownerless", "cron_added", "usage_failed", "planner_secretary"):
+                "fallbacks", "engine_paths", "typed_as_paste", "enter_differs", "ownerless", "cron_added", "usage_failed", "planner_secretary",
+                "entry_links"):
         fix(o, key, obj, dict)
+    fix(o, "intervals", obj)
     fix(o, "chatlog_big", lambda v: isinstance(v, list) and all(isinstance(i, (list, tuple)) and len(i) == 2 and text(i[0]) and num(i[1])
                                                                for i in v), list)
     fix(o, "alerts", lambda v: isinstance(v, list) and all(isinstance(i, (list, tuple)) and len(i) >= 4 and text(i[3]) for i in v), list)
@@ -572,10 +699,10 @@ def tidy(o):
     fix(o, "crontab_missing", lambda v: isinstance(v, bool), False)
     fix(o, "bot_last_exit", lambda v: v in ("login", "intents", "other"))
     fix(o, "cron_running", lambda v: isinstance(v, bool))
-    for key, inside in (("last_ok", num), ("cron_logs", text), ("engine_paths", text), ("fallbacks", note)):
+    for key, inside in (("last_ok", num), ("cron_logs", text), ("engine_paths", text), ("fallbacks", note), ("entry_links", text)):
         for k in list(o.get(key) or {}):
             fix(o[key], k, inside, where=key + ".")
-            if o[key][k] is None and key in ("cron_logs", "engine_paths"):
+            if o[key][k] is None and key in ("cron_logs", "engine_paths", "entry_links"):
                 del o[key][k]  # read by walking the items: one not there, not one that is None
     for key in ("update_skipped", "update_blocked", "instance_held"):
         fix(o.get(key) or {}, "since", num, where=key + ".")
@@ -593,6 +720,7 @@ def tidy(o):
         fix(sy, part, obj, dict, "sync.")
         fix(sy.get(part) or {}, "error", text, where="sync.%s." % part)
         fix(sy.get(part) or {}, "rescued", texts, list, "sync.%s." % part)
+        fix(sy.get(part) or {}, "ahead", num, where="sync.%s." % part)
     return o, odd
 
 
@@ -621,9 +749,117 @@ def unmet_needs(name):
             for x in d.get("requires", []) if isinstance(x, dict) and where.get(x.get("plugin")) == "disabled"]
 
 
+WITHIN_DEFAULT = 300  # seconds a run may take before its record is written, when its plugin.json says no "within"
+FIRST_SLACK = 300     # seconds past a new line's first turn (and its within) before "never ran" is a problem
+
+
+def schedule_of(plugin_name, item_name, machine):
+    """{"item", "zone", "within", "off"} for one schedule as it runs on `machine`: plugin.json with the instance's
+    override (altplugin.effective_schedules, C-37), its machine offset worked out for that machine's name as apply
+    writes the line. "off": the instance turned it off. None when anything cannot be worked out: the caller keeps its
+    old fixed numbers then."""
+    try:
+        from altention import config as altconfig, scheduler
+        plugins, _ = altplugin.discover()
+        d = next(d for n, _f, d in plugins if n == plugin_name)
+        items, _ = altplugin.effective_schedules(plugin_name, d, altconfig.settings())
+        raw = next(i for i in items if i.get("name") == item_name)
+        if raw.get("unknown") or not isinstance(raw.get("when"), dict):
+            return None
+        if raw.get("enabled") is False:
+            return {"off": True, "source": raw.get("source")}
+        when = dict(raw["when"])
+        after = when.pop("after", None)
+        item = scheduler.parse({"items": [{"name": item_name, "when": when, "do": {"run": "x"},
+                                           "timezone": raw.get("timezone")}]}, host=machine)["items"][0]
+        if after and item["kind"] == "every":  # the core's lines: a fixed time after the machine's minute
+            item["offset"] = (item["offset"] + scheduler.duration(after)) % item["every"]
+        zone = scheduler.zone_for(item, scheduler.timezone()[0])
+        if zone is None:
+            return None
+        trace = (raw.get("do") or {}).get("trace")
+        within = WITHIN_DEFAULT
+        if isinstance(trace, dict) and trace.get("within") is not None:
+            w = trace["within"]
+            within = scheduler.duration(w, "smh") if isinstance(w, str) else int(w)
+        return {"item": item, "zone": zone, "within": within, "off": False, "source": raw.get("source")}
+    except Exception:
+        return None
+
+
+def override_records(name, roles):
+    """<plugin>.schedules for each plugin on `name` (and the core) whose schedules the instance overrides (C-37): ok
+    with what runs now. An override that cannot be used, or a name that matches nothing, is said by
+    plugins.would-apply from the machine's own report (every machine, the only one included); here it only keeps
+    its item from being shown as in effect. Nothing when there is no override or the settings cannot be read."""
+    try:
+        from altention import config as altconfig
+        settings = altconfig.settings()
+        plugins, _ = altplugin.discover()
+    except Exception:
+        return []
+    out = []
+    for n, _f, d in plugins:
+        if n != "core" and n not in roles:
+            continue
+        items, problems = altplugin.effective_schedules(n, d, settings)
+        mine = [i for i in items if i.get("source") == "instance" and not i.get("unknown")]
+        if mine:
+            out.append(record("%s.schedules" % n, name, "ok", "", value="；".join(
+                "%s 關掉了" % i["name"] if i.get("enabled") is False else "%s %s" % (i["name"], json.dumps(i["when"], ensure_ascii=False))
+                for i in mine) + "（實例設定）"))
+    return out
+
+
+def core_stale(item, intervals):
+    """Seconds without a good round of the sync or the engine update before it is said: three rounds of its line as
+    that machine's apply read it from its crontab (intervals.json, from the probe), exactly as update.py and the sync
+    there count them (update.stale_of); 45 minutes without it."""
+    v = (intervals or {}).get(item) if isinstance(intervals, dict) else None
+    return 3 * v if type(v) is int and 60 <= v <= 86400 else 45 * 60
+
+
+def missed_two(sched, last, now):
+    """C-37 (manager 2026-10-16): late only when two scheduled turns in a row went by with no record. The slots are
+    those that should have finished by now (each given its within); `last` (seconds) older than the second newest of
+    them, or no record at all, is late. None when it cannot be told."""
+    from altention import scheduler
+    slots = scheduler.recent_slots(sched["item"], now - sched["within"], sched["zone"], 2)
+    if len(slots) < 2:
+        return None
+    return last is None or last < slots[1]
+
+
+def first_wait(sched, added):
+    """Minutes from a line added at `added` until its first turn should have finished (next slot, its within, some
+    slack): what first_turn() waits before a line that never ran is a problem. None when it cannot be told."""
+    from altention import scheduler
+    slot = scheduler.next_slot(sched["item"], added, sched["zone"])
+    return None if slot is None else int(-(-(slot + sched["within"] + FIRST_SLACK - added) // 60))
+
+
+def iso_seconds(ts):
+    """A record's ISO time as seconds, or None."""
+    try:
+        return datetime.fromisoformat(ts).timestamp() if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def engine_skills():
+    """The skill folders under this engine's skills/ (install.sh links each one): what a probe that does not list its
+    own engine's is checked against."""
+    folder = os.path.join(ENGINE_DIR, "skills")
+    try:
+        return sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d)))
+    except OSError:
+        return []
+
+
 def skills_off(name):
-    """The engine's skills whose plugin is turned off on machine `name` (disabled_on): not missing there."""
-    return altplugin.skills_off(name)
+    """The engine's skills whose plugin is turned off on machine `name` (disabled_on), or whose place there cannot be
+    read (install.py does not make those: C-11; core.config says why): not missing there."""
+    return altplugin.skills_off(name) | altplugin.skills_unsure(name)
 
 
 SLEPT_MIN = 5 * 60  # seconds suspended since boot beyond which a machine counts as having slept
@@ -654,6 +890,99 @@ def unset_channels(name):
         return []
 
 
+BACKED = {"instance": None, "logs": "chatlog", "progress": "progress", "planner": "planner"}  # remote.py name -> plugin
+STALE_PUSH = 24 * 3600  # a commit waiting to be pushed for longer than a day: said (the rounds push every 15 minutes)
+
+
+def backup_records(name, o, on):
+    """C-25 (data-safety 2.5, 3): each backup on machine `name`, from ops/remote.py status run there: none (warn: the
+    computer broken, it is lost), set but not attached (warn, with what to run), readable by anyone (fail: the
+    pre-push hook stops every push), whether it is public could not be told (warn: pushed anyway, decision 6a), no
+    hook, commits not pushed for a day, the last push; and the five private folders that are not 700. A part not
+    on that machine is not said; one never made there yet with no remote set neither (nothing to lose yet)."""
+    import remote
+    out = []
+    if o.get("backup_error"):
+        return [record("backup.status", name, "unknown", "讀不出備份的狀態（%s）" % o["backup_error"],
+                       "在 %s 上跑 python3 ops/remote.py status 看它說什麼" % name)]
+    now = o.get("now") or time.time()
+    loose = []
+    for row in o.get("backup") or []:
+        n = row.get("name")
+        if n not in BACKED or (BACKED[n] is not None and BACKED[n] not in on):
+            continue
+        rid, label, folder, setting = "backup.%s" % n, remote.LABELS[n], row.get("folder") or "?", row.get("setting") or ""
+        set_it = "在 %s 上跑 python3 ops/remote.py set %s %s（先檢查，沒過會說哪一項）" % (name, n, setting or "<private repo 網址>")
+        if isinstance(row.get("mode"), int) and row["mode"] & 0o077:
+            loose.append(folder)
+
+        def put(status, msg, fix=""):
+            out.append(record(rid, name, status, "%s：%s" % (label, msg), fix))
+        if row.get("error"):
+            put("unknown", "讀不出來（%s）" % row["error"], "在 %s 上跑 python3 ops/remote.py status" % name)
+            continue
+        if not row.get("repo"):
+            if setting:
+                put("warn", "設了遠端 %s，但 %s 還不是 git repo：還沒接上" % (setting, folder),
+                    "在 %s 上跑 ./install.sh（會照設定從遠端 clone 回來）" % name)
+            elif n == "instance":
+                put("warn", "沒有備份：%s 不是 git repo" % folder, set_it)
+            continue
+        origin = row.get("origin") or ""
+        if not origin:
+            if setting:
+                put("warn", "設了遠端 %s，但 %s 沒有接上（沒有 origin）：原因見 alerts 的 attach-refused 或 clone-refused" % (setting, folder), set_it)
+            elif row.get("own"):
+                put("warn", "用你自己指定的資料夾 %s（planner.folder），它沒有遠端：只在這台" % folder,
+                    "在那個資料夾自己加一個 private 的遠端；或拿掉 planner.folder，改用預設的資料夾讓同步備份")
+            else:
+                put("warn", "沒有備份：只在這台，電腦壞了就救不回來", set_it + "；怎麼建 private repo 見 README 的「備份與還原」")
+            continue
+        if row.get("own"):  # planner.folder: theirs to back up; our hook would have the sync commit and push all of it
+            if (row.get("check") or {}).get("verdict") == "public":
+                put("fail", "%s 的 origin %s 沒有帳號也讀得到（公開的 repo）" % (folder, origin),
+                    "到 repo 的主機把它改成 private（GitHub：Settings → General → Change visibility）")
+            else:
+                put("ok", "用你自己指定的資料夾 %s（planner.folder），推到 %s 由你自己管；同步不碰它" % (folder, origin))
+            continue
+        if setting and not remote.same_repo(origin, setting):
+            put("warn", "%s 的 origin 是 %s，跟設定的 %s 不一樣：推到的是 origin" % (folder, origin, setting),
+                "要用設定的那個：在 %s 上跑 python3 ops/remote.py set %s %s --replace" % (name, n, setting))
+            continue
+        verdict = (row.get("check") or {}).get("verdict")
+        if verdict == "public":
+            put("fail", "%s 沒有帳號也讀得到（公開的 repo）：推送都被擋下，沒有備份" % origin,
+                "到 repo 的主機把它改成 private（GitHub：Settings → General → Change visibility），下一次推送會再檢查")
+            continue
+        if not row.get("hook"):
+            put("warn", "%s 沒有我們的 pre-push hook：推送前不會檢查 repo 是不是變成公開的" % folder,
+                "在 %s 上跑 python3 ops/remote.py hook %s" % (name, n))
+            continue
+        data = ((o.get("sync") or {}).get("data") or {}).get("planner/reminders") if n == "planner" else None
+        if isinstance(data, dict) and data.get("ok") is False and data.get("error"):
+            put("warn", "這一輪的同步沒成功：%s" % data["error"], "照它說的修；紀錄在 ~/.local/state/altention/cron-sync.log")
+            continue
+        last = row.get("last_push")
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "沒有紀錄"
+        waiting = row.get("ahead") if row.get("ahead") is not None else row.get("unpushed")
+        if waiting and now - (row.get("waiting_since") or now) > STALE_PUSH:
+            put("warn", "%d 個 commit 一天以上沒推上去（上次推送：%s%s）" % (
+                waiting, when, "" if row.get("ahead") is not None else "；還沒有上游分支"),
+                "看 alerts 和 ~/.local/state/altention/cron-sync.log 裡推送失敗的原因")
+            continue
+        unsure = "；沒辦法確認是不是公開的（連不上，或是只能用 ssh 連的主機），照樣推送" if verdict == "unknown" else ""
+        others = remote.other_branches(row)
+        moved = "；遠端原本的分支是 %s，之後推到 main" % "、".join(others) if others else ""
+        put("warn" if unsure else "ok", "備份到 %s；上次推送：%s%s%s" % (origin, when, moved, unsure),
+            "確認那個 repo 是 private" if unsure else "")
+    if isinstance(o.get("usage_mode"), int) and o["usage_mode"] & 0o077 and "usage" in on:
+        loose.append("~/.local/share/usage")
+    out.append(record("backup.private", name, "warn" if loose else "ok",
+                      "別的帳號讀得到：%s（應該是 700）" % "、".join(loose) if loose else "",
+                      "在 %s 上跑 chmod 700 %s" % (name, " ".join(shlex.quote(f) if f[:1] != "~" else f for f in loose))))
+    return out
+
+
 def check(name, m, head, instance_repo=None):
     """The records of one machine. A problem's sentence is what doctor has always said; its fix is new."""
     out = []
@@ -672,7 +1001,7 @@ def check(name, m, head, instance_repo=None):
     on, unplaced = placed if placed is not None else (set(), {"chatlog", "planner", "progress", "usage"})
     roles, single = on | (set(m.get("roles", [])) & {"dcbot", "dcattach"}), bool(m.get("_single"))
     if rc != 0:
-        say("core.reachable", "連不上（%s）" % (err or rc)[:80], "確認 %s 開著，而且 ssh %s 連得上"
+        say("core.reachable", "連不上（%s）" % str(err or rc)[:80], "確認 %s 開著，而且 ssh %s 連得上"
             % (name, " 或 ".join(a for a in m.get("ssh", []) if a != "local") or name))
         return out
     o, odd = tidy(json.loads(stdout.strip().splitlines()[-1]))
@@ -680,15 +1009,27 @@ def check(name, m, head, instance_repo=None):
         roles.add("dcbot")
     say("core.reachable", "", value=alias)
 
-    def first_turn(plugin, minutes):
+    def first_turn(plugin, minutes, sched=None):
         """A plugin with no run on record yet, whose cron line apply added here: (minutes since, minutes left of
-        `minutes`, its first turn plus some slack; 0 once past it), or None when apply's note does not say when."""
+        `minutes`, its first turn plus some slack; 0 once past it), or None when apply's note does not say when.
+        `sched` (schedule_of): the wait worked out from the line's time as it runs here (C-37), `minutes` else."""
         added = (o.get("cron_added") or {}).get(name)
         at, now = _num(added.get(plugin)) if isinstance(added, dict) else None, _num(o.get("now"))
         if at is None or now is None or now < at:
             return None
+        if sched and not sched.get("off"):
+            minutes = first_wait(sched, at) or minutes
         since = int((now - at) // 60)
         return since, max(0, minutes - since)
+
+    def turn_late(sched, ts, fixed):
+        """Whether a run last recorded at `ts` (ISO) is late: two turns in a row missed by the schedule as it runs
+        here (missed_two, C-37); the old fixed `fixed` (a timedelta) when the schedule cannot be worked out."""
+        told = missed_two(sched, iso_seconds(ts), time.time()) if sched and not sched.get("off") else None
+        if told is not None:
+            return told
+        a = age(ts)
+        return a is None or a > fixed
 
     def just(since):
         return "剛" if since < 1 else " %d 分鐘前" % since
@@ -768,14 +1109,24 @@ def check(name, m, head, instance_repo=None):
     if o["code"] and not archive and head and not single:  # an archive has no commit; nor may this engine
         say("core.engine-version", "程式碼 %s，不是最新的 %s" % (o["code"], head) if o["code"] != head else "",
             "等下一次同步（15 分鐘內）；或%s" % sync_it)
+    # an item the instance turned off (plugins.<name>.schedules.<item>.enabled false, C-37): no line, no run, on purpose
+    sched_off = set(p for p, i in (("chatlog", "sync"), ("progress", "run"), ("usage", "collect"))
+                    if p in roles and (schedule_of(p, i, name) or {}).get("off"))
+    for p, i in sorted((p, i) for p, i in (("chatlog", "sync"), ("progress", "run"), ("usage", "collect")) if p in sched_off):
+        out.append(record("%s.cron" % p, name, "ok", "", value="關掉了（實例設定 plugins.%s.schedules.%s）" % (p, i)))
+    out.extend(override_records(name, roles))
     if "chatlog" in roles:
-        say("chatlog.cron", "" if o["cron_chatlog"] else "chatlog：沒有 cron", apply_it)
+        if "chatlog" not in sched_off:
+            say("chatlog.cron", "" if o["cron_chatlog"] else "chatlog：沒有 cron", apply_it)
         say("chatlog.hooks", "" if o["hooks"] else "chatlog：沒有 hooks", apply_it)
         days = o["cleanup_days"] or 30
         say("chatlog.retention", "Claude Code 會刪除 %s 天前的對話" % days if days < 36500 else "", apply_it, days)
         a = age(o["chatlog_last_sync"])
-        turn = first_turn("chatlog", 20) if not o["chatlog_last_sync"] else None  # its line runs every 15 minutes
-        if turn and turn[1]:  # never yet, the line added a moment ago: a note, not a problem
+        sched = schedule_of("chatlog", "sync", name)
+        turn = first_turn("chatlog", 20, sched) if not o["chatlog_last_sync"] else None  # 20: its line every 15 minutes
+        if "chatlog" in sched_off:
+            pass  # no sync on a timer: hooks still save each conversation
+        elif turn and turn[1]:  # never yet, the line added a moment ago: a note, not a problem
             out.append(record("chatlog.last-sync", name, "warn", "chatlog 還沒輪到第一次同步（排程%s裝上，%d 分鐘內會跑）"
                               % (just(turn[0]), turn[1]), chatlog_it, ""))
         elif turn:
@@ -783,8 +1134,8 @@ def check(name, m, head, instance_repo=None):
         elif not o["chatlog_last_sync"]:  # when the line came is not known (added before apply noted it): shown only
             out.append(record("chatlog.last-sync", name, "warn", "chatlog 還沒有同步過", chatlog_it, ""))
         else:
-            late = a is None or a > timedelta(minutes=40)
-            say("chatlog.last-sync", "chatlog 上次同步：%s" % fmt_age(a) if late and m.get("always_on", True) else "", chatlog_it,
+            is_late = turn_late(sched, o["chatlog_last_sync"], timedelta(minutes=40))
+            say("chatlog.last-sync", "chatlog 上次同步：%s" % fmt_age(a) if is_late and m.get("always_on", True) else "", chatlog_it,
                 o["chatlog_last_sync"])
         say("chatlog.error", "chatlog 錯誤：%s" % ("…" + o["chatlog_error"][-80:] if len(o["chatlog_error"]) > 80 else o["chatlog_error"])
             if o["chatlog_error"] else "", chatlog_it)
@@ -800,8 +1151,6 @@ def check(name, m, head, instance_repo=None):
                           "對話紀錄裡有檔案超過 50 MB（GitHub 超過 100 MB 就推不上去）：%s" % "、".join(
                               "%s（%.1f MB）" % (f, n / 1048576) for f, n in big[:3]) if big else "",
                           "在 %s 上跑 python3 %s/chatlog/chatlog.py split（原始紀錄分段＋壓縮）" % (name, eng) if big else ""))
-        missing = {"council", "report"} - set(o["skills"]) - skills_off(name)  # a plugin turned off: its skill too
-        say("chatlog.skills", "缺少 skill：%s" % ", ".join(sorted(missing)) if missing else "", apply_it)
     elif (o["cron_chatlog"] or o["hooks"]) and not single and "chatlog" not in unplaced:
         say("chatlog.not-listed", "plugins.json 沒有讓 chatlog 在這台跑，但這台還在跑",
             "%s 會移除；要留著就看實例 plugins.json 的 plugins.chatlog（disabled_on）" % apply_it)
@@ -810,6 +1159,11 @@ def check(name, m, head, instance_repo=None):
             if o["cron_dupes"] else "", "在 %s 上跑 python3 ops/plugins.py plan 看哪幾行重複，手動刪掉多的那行（crontab -e）" % name)
     say("core.config", "設定讀不出來：%s" % o["config_error"][:150] if o.get("config_error") else "",
         "檢查 %s 上實例的 machines.json、plugins.json 是不是合法的 JSON" % name)
+    if "skills" in o:  # every machine links the engine's skills (install.py), not only those that run chatlog
+        # the folders under that machine's engine's skills/ (its probe), this engine's when the probe does not say
+        missing = set(o.get("skills_expected") or engine_skills()) - set(o["skills"]) - skills_off(name)  # a plugin turned off: its skill too
+        say("core.skills", "缺少 skill：%s" % ", ".join(sorted(missing)) if missing else "",
+            "跑 altention apply %s（同步只補不在的連結；壞掉的、指到舊位置的連結要靠 apply 重建）" % name)
     if instance_repo:
         say("instance.joined", "" if o.get("instance") else "還沒接上實例", apply_it)
     sy = o.get("sync") or {}
@@ -817,7 +1171,9 @@ def check(name, m, head, instance_repo=None):
     if o.get("instance") and sy:  # before the first sync there is nothing to say: it is what makes the links
         say("instance.memory-link", "已經有實例，但記憶資料夾還沒改指過去（等下一次同步，或手動跑 altention/cron_sync.py）"
             if links.get("memory") != "instance" else "", sync_it)
-    if o.get("instance") and o.get("instance_remote") == "":
+    if "backup" in o or "backup_error" in o:
+        out += backup_records(name, o, on)
+    elif o.get("instance") and o.get("instance_remote") == "":  # an engine from before ops/remote.py
         out.append(record("instance.remote", name, "warn", "實例沒有設定同步目的地：只在這台（不是故障）",
                           "要在多台共用時：git -C %s remote add origin <實例的 repo 網址>，再 git -C %s push -u origin main"
                           % (o["instance"], o["instance"])))
@@ -825,16 +1181,16 @@ def check(name, m, head, instance_repo=None):
         say("core.machine-name", "這台認為自己叫 %s，機器清單上叫 %s：認不出自己的名字時，插件在哪台跑都當成不知道，排程不增不刪"
             % (o["this_machine"], name) if o["this_machine"] != name else "",
             "在 %s 上把清單上的名字寫進 ~/.config/altention/host（或改清單的 hostname 欄位）" % name, o["this_machine"])
-    if "last_ok" in o:  # 3a.10: forty-five minutes is three rounds of either
-        stale = 45 * 60
+    if "last_ok" in o:  # 3a.10: three rounds of either, as update.py and the sync count them (C-37 C: at the interval set)
         for part, label in (("sync", "引擎和實例的同步"), ("update", "引擎更新（update.py）")):
+            stale = core_stale("sync" if part == "sync" else "engine-update", o.get("intervals"))
             at = o["last_ok"].get(part)
             if at is None:
                 if part == "update":
                     out.append(record("core.last-update-ok", name, "off", "引擎更新還沒啟用（3a.10 的 cron 行白天才加）",
                                       "等 3a.10 白天那步：apply 加上 update.py 那一行"))
                 else:
-                    turn = first_turn("core", 20)  # the sync's line runs every 15 minutes
+                    turn = first_turn("core", 20, schedule_of("core", "sync", name))  # 20: its line every 15 minutes
                     if turn and not turn[1]:
                         never_ran("core.last-sync-ok", "%s排程裝上 %d 分鐘了，還沒有成功的紀錄" % (label, turn[0]), sync_it, turn[0])
                     else:
@@ -859,8 +1215,14 @@ def check(name, m, head, instance_repo=None):
     if o.get("update_available"):  # notify mode (the instance's core.update): shown, never told (manager 2026-10-14)
         tag = o["update_available"]["tag"][:40]
         out.append(record("core.update-available", name, "warn", "有新的發佈版本 %s（core.update 是 notify：不會自動更新）" % tag,
-                          "要更新到它：在 %s 上跑引擎的 bin/home-pull --take-refused；要以後自動跟發佈版本：實例的 core.update 設成 release"
-                          % name, tag))
+                          "要更新到它：跟 Claude 說「更新引擎」，或在 %s 的引擎跑 python3 altention/update.py --release、./install.sh、"
+                          "python3 ops/doctor.py；要以後自動跟發佈版本：實例的 core.update 設成 release" % name, tag))
+    if "deps_pending" in o:  # C-08: the engine moved on, the bot's packages did not come: the bot runs the old code
+        dp = o["deps_pending"] or {}
+        say("core.deps-pending", "引擎已經更新到 %s，但機器人要的套件沒裝上（%s）：機器人還在跑舊版" % (
+            str(dp.get("head") or "")[:12] or "新版", " ".join(str(dp.get("why") or "原因沒有記下").split())[:160]) if dp else "",
+            "在 %s 的引擎跑 dcbot/install.sh，再在 Discord 打 !restart（或等它自動再試：失敗後一小時一次）；"
+            "機器在那之前重開的話，機器人會直接用新版啟動、少了套件就失敗，supervisor 會退回" % name)
     if "update_skipped" in o:  # rounds in a row that never compared with the upstream: the sync takes over, a person needs the why
         sk = o["update_skipped"] or {}
         mins = int(((o.get("now") or 0) - (sk.get("since") or o.get("now") or 0)) // 60) if sk else 0
@@ -895,13 +1257,41 @@ def check(name, m, head, instance_repo=None):
                                                 ahead)) if late else "", "看那台的 ~/.local/state/altention/cron-schedule.log 和 scheduler/would-run.*.jsonl",
                           mins))
     twice = ["%s（兩行以上）" % k for k in o.get("cron_named_twice") or []]
+    later = []  # an old line whose plugin's new lines are not written yet: alone for now (C-16)
+    dead = []  # an old line whose program is gone (C-17 S4)
     rep_ = o.get("apply_report") if isinstance(o.get("apply_report"), dict) else {}
-    for it in rep_.get("remove") or []:  # a line of ours that a plugin on here no longer asks for: runs beside the new one
-        if isinstance(it, dict) and it.get("status") == "extra" and it.get("plugin") in on:
-            twice.append("%s 的舊行：%s" % (it["plugin"], str(it.get("installed") or "")[:100]))
-    say("plugins.cron-twice", "crontab 裡同一個排程有兩行，或開著的插件留著一行它沒要的舊行（會跟新的一起跑，例如早報收兩次）：%s"
-        % "；".join(twice[:4]) if twice else "",
-        "在 %s 上先備份（crontab -l > ~/crontab.bak），再在引擎跑 ./install.sh：同一項的舊行會換成新的；還在的話用 crontab -e 刪掉舊的那行" % name)
+    pending = {it.get("plugin") for it in rep_.get("add") or [] if isinstance(it, dict) and it.get("kind") == "cron"}
+    gone_items = [it for key in ("gone", "remove", "core") for it in rep_.get(key) or []
+                  if isinstance(it, dict) and it.get("status") == "gone"]
+    gone_old = ["%s 的%s：%s" % (it.get("plugin") or "?", "hook" if it.get("kind") == "hook" else "排程",
+                                 str(it.get("installed") or "")[:90]) for it in gone_items]
+    for it in (rep_.get("remove") or []) + (rep_.get("kept") or []):  # a line of ours a plugin on here no longer asks for
+        if not isinstance(it, dict) or it.get("plugin") not in on or it.get("kind") == "hook" or it.get("status") == "gone":
+            continue
+        line = "%s 的舊行：%s" % (it["plugin"], str(it.get("installed") or "")[:100])
+        if it.get("status") == "moved":  # the engine's old folder: apply takes it away as it writes the new lines
+            later.append(line + "（搬家前的舊路徑，apply 會換掉）")
+        elif it.get("status") == "extra" and any(str(it.get("installed") or "").strip()[:300] == d for d in o.get("cron_dead") or []):
+            dead.append(line)  # its program is not there: it cannot run, so it cannot run twice either
+        elif it.get("status") == "extra":
+            (later if it["plugin"] in pending else twice).append(line)
+    fix_twice = "在 %s 上先備份（crontab -l > ~/crontab.bak），再在引擎跑 ./install.sh：同一項的舊行會換成新的；還在的話用 crontab -e 刪掉舊的那行" % name
+    if not twice and dead:
+        out.append(record("plugins.cron-twice", name, "warn", "開著的插件留著舊行，但它們要跑的檔已經不在，跑不起來，不會重複：%s"
+                          % "；".join((dead + later)[:4]), fix_twice))
+    elif twice or not later:
+        say("plugins.cron-twice", "crontab 裡同一個排程有兩行，或開著的插件留著一行它沒要的舊行（會跟新的一起跑，例如早報收兩次）：%s"
+            % "；".join(twice[:4]) if twice else "", fix_twice)
+    else:  # C-16: nothing runs twice yet; it would once the new lines are written beside a line apply keeps
+        out.append(record("plugins.cron-twice", name, "warn", "開著的插件留著舊行，新行還沒寫上（現在還不會跑兩次）：%s"
+                          % "；".join(later[:4]), fix_twice))
+    gone_cron = sum(1 for it in gone_items if it.get("kind") != "hook")
+    out.append(record("plugins.old-engine", name, "warn" if gone_old else "ok",
+                      "%d 行排程、%d 個 hook 像是引擎搬家前留下的，但那個舊資料夾已經不在，apply 不會換也不會拿掉"
+                      "（hook 指到不存在的檔，每個事件會出一行 hook error；排程跑不起來，不會重複）：%s"
+                      % (gone_cron, len(gone_items) - gone_cron, "；".join(gone_old)) if gone_old else "",
+                      "那是這個引擎搬家前的資料夾的話，從控制端跑 python3 ops/apply.py %s --moved-from <舊資料夾>，"
+                      "一次全部換掉；不是的話那是別人的，留著" % name))
     if "apply_report" in o:  # 3a.12, report only
         try:
             out.append(would_apply_record(name, o.get("apply_report"), o.get("now") or 0, m.get("always_on", True),
@@ -933,9 +1323,10 @@ def check(name, m, head, instance_repo=None):
             "看 %s 的 ~/.local/state/altention/alerts 和 cron-%s.log；下一輪正常跑完就會消失" % (name, part))
     if o.get("alerts"):
         last = o["alerts"][-1]
-        out.append(record("core.alerts", name, "warn", "這台記下 %d 則要通知的事，最新一則（%s，%s）：%s"
+        out.append(record("core.alerts", name, "warn", "這台最近 24 小時記下 %d 則要通知的事，最新一則（%s，%s）：%s"
                           % (len(o["alerts"]), last[0], last[1], last[3][:160]),
-                          "在 %s 上看 ~/.local/state/altention/alerts" % name, len(o["alerts"])))
+                          "在 %s 上看 ~/.local/state/altention/alerts（更早的也留在裡面；超過 24 小時就不再列在這裡）" % name,
+                          len(o["alerts"])))
     if "stray_bot" in o:
         say("dcbot.stray-settings", "這台有機器人的設定（~/.config/dcbot/env），但機器清單說機器人在別台。如果機器人其實就在這台，表示它認不出自己"
             "在清單上的名字（它現在認為自己叫 %s；檢查 ~/.config/altention/host 或清單的 hostname 欄位）" % o.get("this_machine")
@@ -944,6 +1335,28 @@ def check(name, m, head, instance_repo=None):
         if part in sy:
             err = (sy.get(part) or {}).get("error")
             say("sync.%s" % part, "%s失敗：%s" % (label, err[:150]) if err and err != "沒有設定遠端，不用更新" else "", sync_it)
+    ahead = (sy.get("engine") or {}).get("ahead")
+    backs = (sy.get("engine") or {}).get("rollbacks")  # on releases (core.update not branch): the supervisor's, kept here
+    backs = backs if type(backs) is int and 0 <= backs else 0
+    unsure = (sy.get("engine") or {}).get("rollbacks_unsure")  # a rollback's subject, more than a rollback in it
+    unsure = unsure if type(unsure) is int and 0 <= unsure else 0
+    if type(ahead) is int and ahead > 0 and backs >= ahead:  # C-07: what the rollback notice says, not "push it"
+        out.append(record("sync.engine-ahead", name, "ok", "", "", "這台的退回 commit（%d 個）留在本機：core.update 不是 branch，"
+                          "下一個發佈版本會取代它，不用推" % ahead))
+    elif type(ahead) is int and ahead > 0 and (backs or unsure):  # rollbacks among them: never "push it" as it is
+        out.append(record("sync.engine-ahead", name, "warn", "引擎有 %d 個這台的 commit 不在上游：同步不推引擎（不是故障）" % ahead,
+                          "不要直接推：先請人看 git log（在 %s 上 git -C %s log @{u}..）是哪些。" % (name, eng)
+                          + ("其中 %d 個是 supervisor 的退回 commit（dcbot: roll back…），不要推它們，留給下一個發佈版本取代；"
+                             % backs if backs else "")
+                          + ("其中 %d 個標題是退回（dcbot: roll back…）、內容卻不只是退回（可能被 amend 加了別的檔），"
+                             "照原樣推出去等於把退回推上上游；" % unsure if unsure else "")
+                          + "只有自己的、確定沒有私人值的 commit 才推（%s/bin/home-git push），退回壓在它們下面時要先處理掉" % eng,
+                          ahead))
+    elif type(ahead) is int and ahead > 0:  # C-31: the sync never pushes the engine; shown, not a problem (an int only:
+        # 1e300 or NaN from a hand-edited file are numbers to JSON)
+        out.append(record("sync.engine-ahead", name, "warn", "引擎有 %d 個這台的 commit 不在上游：同步不推引擎（不是故障）" % ahead,
+                          "要推的話先在 %s 上 git -C %s log @{u}.. 看是哪些、確定裡面沒有私人的值，再跑 %s/bin/home-git push"
+                          % (name, eng, eng), ahead))
     for part in ("engine", "instance"):
         for line in (sy.get(part) or {}).get("rescued") or []:
             say("sync.rescued", "被中斷的 rebase 救回來的修改還沒合併回去（git stash 或 .git/altention-saved/）：%s（%s）" % (line[:80], part),
@@ -967,6 +1380,17 @@ def check(name, m, head, instance_repo=None):
         if key in o:
             say("core.%s" % key.replace("_", "-"), "/tmp 的%s用了 %d%%（滿了之後 Claude、機器人和測試都會出錯）" % (label, o[key])
                 if (o[key] or 0) >= 80 else "", "清掉 %s 上 /tmp 裡不用的檔案（先用 du 或 find 看是誰佔的）" % name, o[key])
+    if "entry_links" in o:  # C-17 S4: the command every instruction uses
+        el = o["entry_links"]
+        said_ = {"missing": "沒有", "file": "是一般檔案，不是連結", "broken": "指到不存在的檔", "old-name": "經過一個現在是連結的舊名字指到這個引擎，舊名字拿掉就斷",
+                 "elsewhere": "指到另一個引擎的 altention", "other": "指到別的程式"}
+        a_ = el.get("altention", "ok")
+        bad = ["~/.local/bin/altention %s" % said_[a_]] if a_ in said_ else []
+        if el.get("alt") in ("broken", "old-name", "elsewhere"):
+            bad.append("~/.local/bin/alt %s" % said_[el["alt"]])
+        status_ = "fail" if a_ in ("missing", "broken", "elsewhere") else ("warn" if bad else "ok")
+        out.append(record("core.entry", name, status_, "；".join(bad) if bad else "",
+                          "在 %s 的引擎資料夾跑 python3 bin/altention --link（一般檔案或別的程式的連結要先自己移開）" % name))
     if o.get("instance") and sy:  # as instance.memory-link: the first sync makes these links
         for path_name, state in (o.get("engine_paths") or {}).items():  # git no longer has it (after 2.3b) and no link stands there
             say("instance.engine-link.%s" % path_name.replace("/", "-"), "%s/%s 不是指向實例的連結（%s）；寫進去的東西不會同步"
@@ -1056,7 +1480,7 @@ def check(name, m, head, instance_repo=None):
     if "dcbot" in roles:  # each step only means something once the one before it holds
         beat = o["bot_heartbeat_age"]
         steps = (("dcbot.settings", o["bot_env"], "機器人：還沒有 ~/.config/dcbot/env（token），不會啟動",
-                  "在 %s 上把 DISCORD_TOKEN、OWNER_ID、GUILD_ID 寫進 ~/.config/dcbot/env（chmod 600），再跑 %s" % (name, apply_it)),
+                  "在 %s 上，在自己的終端機跑 %s/install.sh discord（只問 token，其他的自己查；寫好就接著安裝那台）" % (name, eng)),
                  ("dcbot.cron", o["bot_cron"], "機器人：沒有排程", apply_it),
                  ("dcbot.supervisor", o["bot_supervisor"], "機器人：supervisor 沒在跑",
                   "等 cron 帶起來（5 分鐘內）；還是沒有就看 %s 上的 dcbot/state/supervisor.out" % name),
@@ -1077,7 +1501,7 @@ def check(name, m, head, instance_repo=None):
                 break
     elif o.get("bot_cron") and not single:
         say("dcbot.not-listed", "清單上不負責 dcbot，卻有機器人排程", "%s 會移除；機器人要搬來這台就先改機器清單" % apply_it)
-    if "progress" in roles:
+    if "progress" in roles and "progress" not in sched_off:
         problem = ""
         if o["cron_progress_paused"] and not o["cron_progress"]:
             problem = "進度：排程暫停中%s" % ("（正在跑）" if o["progress_running"] else "")
@@ -1085,8 +1509,9 @@ def check(name, m, head, instance_repo=None):
             problem = "進度：沒有排程"
         say("progress.cron", problem, "%s（暫停中的話：把 %s 的 crontab 裡 progress/progress.py 那一行開頭的 # 拿掉）" % (apply_it, name))
         a = age(o["progress_last_run"])
-        stale = not o["progress_running"] and (a is None or a > timedelta(minutes=30)) and o["cron_progress"]
-        turn = first_turn("progress", 15) if stale and not o["progress_last_run"] else None  # its line runs every 10 minutes
+        sched = schedule_of("progress", "run", name)
+        stale = not o["progress_running"] and turn_late(sched, o["progress_last_run"], timedelta(minutes=30)) and o["cron_progress"]
+        turn = first_turn("progress", 15, sched) if stale and not o["progress_last_run"] else None  # 15: every 10 minutes
         failed = o.get("progress_failed") or {}
         f_at, f_why = failed.get("at"), failed.get("why")
         if f_at and (not o["progress_last_run"] or (age(f_at) is not None and age(o["progress_last_run"]) is not None
@@ -1108,9 +1533,9 @@ def check(name, m, head, instance_repo=None):
                 "看 %s 上的 ~/.cache/progress/cron.out 和 ~/.cache/progress/progress.log" % name,
                 "running" if o["progress_running"] else (o["progress_last_run"] or ""))
         say("progress.errors", "進度上次有 %s 個錯誤" % o["progress_errors"] if o["progress_errors"] else "", "看 %s 上的 ~/.cache/progress/progress.log" % name)
-    elif o["cron_progress"] and not single and "progress" not in unplaced:
+    elif o["cron_progress"] and not single and "progress" not in unplaced and "progress" not in roles:
         say("progress.not-listed", "plugins.json 的 plugins.progress.on 不是這台，卻有進度排程（會兩台同時寫進度的資料）", "%s 會移除" % apply_it)
-    if "usage" in roles and not any(p == "usage" for p, _k, _w in unset_channels(name)):  # no channel: said above
+    if "usage" in roles and "usage" not in sched_off and not any(p == "usage" for p, _k, _w in unset_channels(name)):  # no channel: said above
         look = "完整的輸出看 %s 上的 ~/.cache/usage.out" % name
         a = age(o.get("usage_last_run"))
         failed = o.get("usage_failed") or {}
@@ -1118,8 +1543,10 @@ def check(name, m, head, instance_repo=None):
         # every hour, 7 minutes past: counted from the line added or the code changed, whichever is later (an update
         # long after the install starts the wait again: owner's update 2026-10-15)
         changed, now, turn = since_change("usage"), _num(o.get("now")), None
+        sched = schedule_of("usage", "collect", name)
         if not o.get("usage_last_run") and changed is not None and now is not None and now >= changed:
-            turn = (int((now - changed) // 60), max(0, 70 - int((now - changed) // 60)))
+            wait = (first_wait(sched, changed) if sched and not sched.get("off") else None) or 70  # 70: hourly at :07
+            turn = (int((now - changed) // 60), max(0, wait - int((now - changed) // 60)))
         if f_at and (not o.get("usage_last_run") or (age(f_at) is not None and a is not None and age(f_at) < a)):
             say("usage.last-run", "用量統計最近一次收集失敗（%s）：%s" % (fmt_age(age(f_at)), f_why or "沒有說原因"),
                 "照上面那句修；" + look, o.get("usage_last_run") or "")
@@ -1133,7 +1560,7 @@ def check(name, m, head, instance_repo=None):
         elif not o.get("usage_last_run"):
             out.append(record("usage.last-run", name, "warn", "用量統計還沒有收集成功過（每小時一次）", look, ""))
         else:
-            say("usage.last-run", "用量統計上次收集：%s" % fmt_age(a) if a is not None and a > timedelta(hours=3) else "",
+            say("usage.last-run", "用量統計上次收集：%s" % fmt_age(a) if a is not None and turn_late(sched, o["usage_last_run"], timedelta(hours=3)) else "",
                 look, o["usage_last_run"])
         if o.get("usage_errors"):
             out.append(record("usage.errors", name, "warn", "用量統計上次有 %d 台讀不到：%s" % (len(o["usage_errors"]), "；".join(o["usage_errors"][:3])),
@@ -1210,10 +1637,10 @@ def collect(names):
 BOT_CONNECTING = 180  # seconds: a bot run just begun that has no heartbeat yet is still logging in (the supervisor's trial)
 WRONG_LOGIN = {  # how the bot's last run ended, as discord.py names it in supervisor.out: (problem, fix % (machine, engine))
     "login": ("機器人登入不了 Discord：token 不對（最近一次啟動是 LoginFailure，supervisor 會一直重試）",
-              "token 不對：在 %s 上用 %s/install.sh --token 重新輸入（Developer Portal → Bot → Reset Token 拿新的）；"
+              "token 不對：在 %s 上用 %s/install.sh discord 重新輸入（Developer Portal → 機器人（Bot）→ 重設權杖（Reset Token）拿新的）；"
               "機器人下一次重試就會用新的"),
     "intents": ("機器人連不上 Discord：Message Content Intent 沒開（最近一次啟動是 PrivilegedIntentsRequired）",
-                "Developer Portal → 這個 application → Bot → Privileged Gateway Intents 打開 Message Content Intent 並存檔；"
+                "Developer Portal → 這個應用程式 → 機器人（Bot）→ Privileged Gateway Intents 打開 Message Content Intent 並存檔；"
                 "%s 上的機器人下一次重試就會連上（引擎 %s）"),
 }
 ENTER_DIFFERS = 3  # times in a week the bot's own box differed from what it typed before doctor warns
@@ -1229,6 +1656,9 @@ def report_odd(rep):
         return "format 是 %r，這台的 doctor 只懂 1" % (rep.get("format"),)
     for key in ("add", "remove", "retime", "core"):
         if not isinstance(rep.get(key), list) or not all(isinstance(i, dict) for i in rep[key]):
+            return "%s 不是項目的清單" % key
+    for key in ("gone", "kept"):  # newer reports: kept apart from the lists above
+        if key in rep and (not isinstance(rep[key], list) or not all(isinstance(i, dict) for i in rep[key])):
             return "%s 不是項目的清單" % key
     for key, inside in (("unknown", (list, tuple)), ("problems", str), ("disabled", str)):
         if not isinstance(rep.get(key), list) or not all(isinstance(i, inside) and i for i in rep[key]):
@@ -1271,13 +1701,23 @@ def would_apply_record(name, rep, now, always_on=True, alone=False):
         return "、".join("%s/%s" % (i.get("plugin") or "?", i.get("name") or (i.get("installed") or "?")[:40]) for i in items[:6]) + (
             "…（共 %d 項）" % len(items) if len(items) > 6 else "")
     said = []
-    for key, word in (("add", "會補"), ("remove", "會拿掉"), ("retime", "時間不同")):
+    for key, word in (("add", "會補"), ("remove", "會拿掉"), ("retime", "時間不同"), ("kept", "留著（帶我們的標記但沒有插件要，apply 不動）")):
         if rep.get(key):
             said.append("%s %d 項：%s" % (word, len(rep[key]), names(rep[key])))
-    if rep.get("unknown") and not alone:
-        said.append("不知道 %d 項：%s" % (len(rep["unknown"]), "、".join(str(u[0]) for u in rep["unknown"][:6])))
+    # the instance's schedule overrides that cannot be used (C-37): said on every machine, the only one included
+    # (#code-review on c45394d: a typo there otherwise went unsaid on a one-machine install)
+    bad = [u for u in rep.get("unknown") or [] if str(u[1]).startswith(("實例的設定不能用", "這一筆不用"))]
+    if bad:
+        said.append("實例的排程設定有 %d 筆不能用（apply 不動那幾行）：%s" % (len(bad), "；".join(
+            str(u[1]).split("：", 1)[-1].split("；這一項現在的行不動")[0] if str(u[1]).startswith("實例的設定不能用")
+            else "%s：%s" % (u[0], str(u[1]).split("：", 1)[-1]) for u in bad[:3])))
+    other = [u for u in rep.get("unknown") or [] if u not in bad]
+    if other and not alone:
+        said.append("不知道 %d 項：%s" % (len(other), "、".join(str(u[0]) for u in other[:6])))
     if rep.get("problems"):
         said.append("問題：%s" % "；".join(str(p)[:120] for p in rep["problems"][:3]))
+    if rep.get("gone"):  # kept by apply: nothing removed or added for them; plugins.old-engine says what to do
+        said.append("%d 項像是引擎搬家前的舊行或 hook，但舊資料夾已經不在，apply 不動它們（見 plugins.old-engine）" % len(rep["gone"]))
     off = "刻意停用：%s" % "、".join(rep["disabled"]) if rep.get("disabled") else ""
     if rep.get("refuse") or rep.get("core"):
         bad = ([str(rep["refuse"])] if rep.get("refuse") else []) + (

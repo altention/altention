@@ -4,7 +4,9 @@
   ./install.sh                         # everything this machine needs, from the instance's settings
   ./install.sh --links                 # only the light part: skills, the altention command, global notes, memory
   ./install.sh --hold progress --allow-time chatlog/sync   # passed on by ops/apply.py (see plugins.py apply)
-  ./install.sh --token                 # the bot's token and IDs, typed on this machine's keyboard (never via Claude)
+  ./install.sh --moved-from ~/old-engine   # the engine moved and its old folder is gone: its lines and hooks go too
+  ./install.sh discord                 # Discord: the bot's token typed on this keyboard (never via Claude), the rest asked
+                                       # of Discord; once written, the whole install as ./install.sh
 
 Never asks anything: every answer comes from the instance's settings. Every step can be run again and comes to the
 same place, an install cut short included. One line per step on stdout, `<status> <id> <text>`:
@@ -16,17 +18,22 @@ same place, an install cut short included. One line per step on stdout, `<status
   unknown   could not be read or told
 Exit status: 1 when anything failed or was unknown, else 2 when anything is left to the user, else 0. The last line
 is `ok core.done …` whenever it ran to the end (ops/apply.py checks for it). What the
-scripts behind the steps printed goes to ~/.local/state/altention/install/last.log (600), never the environment.
+scripts behind the steps printed goes to ~/.local/state/altention/install/last.log (600), never the environment;
+the step lines go there too.
 
 ALT_NO_START=1: nothing that keeps running is started (the supervisor). ops/apply.py does not set it.
+ALT_NO_PATH_CHECK=1: core.path does not start the user's shell (ops/apply.py sets it: every apply would run their rc
+files again).
 """
 import fcntl
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,8 +64,10 @@ class Run:
         assert status in STATUSES
         self.seen.append(status)
         self.said.append((status, ident))
-        print("%s %s %s" % (status, ident, " ".join(str(text).split())))
+        said = "%s %s %s" % (status, ident, " ".join(str(text).split()))
+        print(said)
         sys.stdout.flush()
+        self.note(said)  # the lines too: after install.sh discord, Claude reads them here, not on the user's screen
 
     def note(self, text):
         self.log.write(text.rstrip("\n") + "\n")
@@ -118,38 +127,20 @@ def find_instance(r, light):
 def skills(r):
     """~/.claude/skills/<name> linked to each skill of the engine, except those whose plugin is turned off here
     (disabled_on): their link is taken away, only when it is a link to this engine's own folder; anything else under
-    that name (a folder, a link elsewhere) is left alone and said."""
-    home_skills = os.path.expanduser("~/.claude/skills")
-    folder = os.path.join(ENGINE, "skills")
-    names = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))) if os.path.isdir(folder) else []
-    off = plugin.skills_off(engine=ENGINE)
-    made, taken, removed, kept = [], [], [], []
-    for name in names:
-        src, link = os.path.join(folder, name), os.path.join(home_skills, name)
-        if name in off:
-            if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(src):
-                os.remove(link)
-                removed.append(name)
-            elif os.path.lexists(link):
-                kept.append(link)
-            continue
-        if os.path.islink(link):
-            if os.readlink(link) != src:
-                os.remove(link)
-                os.symlink(src, link)
-                made.append(name)
-        elif os.path.lexists(link):
-            taken.append(link)
-        else:
-            os.makedirs(home_skills, exist_ok=True)
-            os.symlink(src, link)
-            made.append(name)
-    for link in taken:
+    that name (a folder, a link elsewhere) is left alone and said (plugin.link_skills; the sync makes the missing ones
+    after an update). A plugin's skill whose place here cannot be read is neither made nor taken away, and said
+    (C-11)."""
+    got = plugin.link_skills(ENGINE)
+    names, off, made, removed = got["names"], got["off"], got["made"], got["removed"]
+    for link in got["taken"]:
         r.say("todo", "core.skills", "%s 是一般檔案或資料夾，不是連結：搬走它（mv %s %s.mine）再重跑" % (link, link, link))
-    for link in kept:
+    for link in got["kept"]:
         r.say("skip", "core.skills-off", "%s 的插件在這台關掉了，但它不是連到這份引擎的連結，沒有動：不要的話自己移走" % link)
-    if not taken:
-        on = [n for n in names if n not in off]
+    if got["waiting"]:  # C-11: its plugin may be turned off here; not made, and nothing taken away
+        r.say("skip", "core.skills-unknown", "不知道這幾個 skill 的插件在這台開不開，先沒建：%s；弄清楚之後再重跑 install.sh" % "；".join(
+            "%s（%s）" % (n, got["why"].get(n, "原因不明")) for n in got["waiting"]))
+    if not got["taken"]:
+        on = [n for n in names if n not in off and n not in got["waiting"]]
         r.say("changed" if made or removed else "ok", "core.skills", "skill 連結：%s%s" % (
             "、".join(on) or "（沒有）", "；關掉的：%s%s" % ("、".join(sorted(off & set(names))), "（拿掉了 %s）" % "、".join(removed)
                                                          if removed else "") if off & set(names) else ""))
@@ -171,6 +162,69 @@ def entry(r):
         r.say("skip", "core.entry", "沒有建 altention 指令（%s）；其他照常" % (out.strip().splitlines() or [""])[-1][:120])
     else:
         r.say("changed" if look() != before else "ok", "core.entry", "~/.local/bin/altention")
+
+
+PATH_MARK = "__altention_path__"
+
+
+def path_check(r, timeout=10):
+    """Whether ~/.local/bin (the altention command, and Claude Code's own) is on the PATH of the user's shell as a
+    new terminal starts it (C-13: a zsh with no .zshrc did not have it, and `claude`, `altention` were not found).
+    Only said, never written: the rc file is the user's own (manager 2026-10-17). The shell is $SHELL, run as a login,
+    interactive one (its rc files read), stdin from /dev/null, for at most `timeout` seconds; what it prints before
+    the mark is ignored, and env gives the PATH the same way whatever the shell (fish too). What appears in HOME
+    meanwhile (zsh's ~/.zcompdump) is named in the line."""
+    if os.environ.get("ALT_NO_PATH_CHECK") == "1":  # apply's run: no rc file of the user's run every time
+        r.say("skip", "core.path", "apply 跑的安裝不檢查 PATH（會跑你的 shell 的 rc 檔）；要檢查就在那台的終端機跑 ./install.sh")
+        return
+    bindir = os.path.expanduser("~/.local/bin")
+    shell = os.environ.get("SHELL") or ""
+    name = os.path.basename(shell)
+    if name == "fish":
+        rc, line = "~/.config/fish/config.fish", "fish_add_path $HOME/.local/bin"
+    else:
+        rc = {"zsh": "~/.zshrc", "bash": "~/.bash_profile" if sys.platform == "darwin" else "~/.bashrc"}.get(name, "~/.profile")
+        line = 'export PATH="$HOME/.local/bin:$PATH"'
+    fix = "在 %s 加一行 %s，再開一個新的終端機" % (rc, line)
+    why = None
+    home = os.path.expanduser("~")
+
+    def names():
+        try:
+            return set(os.listdir(home))
+        except OSError:
+            return None
+    before = names()
+    if not shell:
+        why = "沒有 SHELL"
+    else:
+        try:  # into a file, not a pipe: what an rc file starts in the background keeps a pipe open after the shell ends
+            with tempfile.TemporaryFile() as out:
+                p = subprocess.run([shell, "-l", "-i", "-c", "echo %s; env" % PATH_MARK], stdin=subprocess.DEVNULL,
+                                   stdout=out, stderr=subprocess.DEVNULL, timeout=timeout)
+                out.seek(0)
+                text = out.read().decode("utf-8", "replace")
+            after = text.split(PATH_MARK + "\n", 1)
+            found = [x[5:] for x in after[1].splitlines() if x.startswith("PATH=")] if len(after) == 2 else []
+            if not found:
+                why = "%s 沒有印出 PATH（結束碼 %d）" % (shell, p.returncode)
+        except subprocess.TimeoutExpired:
+            why = "%s 超過 %d 秒沒結束" % (shell, timeout)
+        except OSError as e:
+            why = "%s 跑不起來（%s）" % (shell, e)
+    after = names()
+    # what the shell's own rc files made in HOME (zsh's compinit: ~/.zcompdump) is said, never left without a word
+    # (manager 2026-10-17); a new terminal makes it too, so it stays
+    made = sorted(after - before) if before is not None and after is not None else []
+    also = "；檢查 PATH 時 %s 建了 %s" % (name, "、".join("~/" + x for x in made)) if made else ""
+    if why:
+        r.say("skip", "core.path", "讀不出你的 shell 的 PATH（%s）：在新的終端機打 altention 找不到的話，%s%s" % (why, fix, also))
+        return
+    dirs = [os.path.normpath(os.path.expanduser(d)) for d in found[-1].split(":") if d]
+    if os.path.normpath(bindir) in dirs:
+        r.say("ok", "core.path", "%s 在 %s 的 PATH 裡%s" % (bindir, name, also))
+    else:
+        r.say("todo", "core.path", "%s 不在 %s 的 PATH 裡，終端機打 altention、claude 會找不到：%s%s" % (bindir, name, fix, also))
 
 
 def links(r, inst):
@@ -339,8 +393,68 @@ def plugins_here(r, holds):
     if bot_here and "bot" not in holds:
         found.append(("dcbot", "dcbot"))
     plugins_here.held = holds  # what plugins.py apply is told to leave alone too
+    plugins_here.on = [n for n, _, _, w, _ in rows if w == "on" and n not in holds]  # core.backup's
     found.sort(key=lambda x: (FIRST.index(x[0]) if x[0] in FIRST else len(FIRST), x[0]))
     return found, bot_here
+
+
+BACK = (("progress", "progress"), ("planner", "planner"))  # (ops/remote.py's name, its plugin): cloned here
+# chatlog's install.sh clones the records itself (it runs in core.install, before this)
+
+
+def backups(r, on):
+    """C-25: on a new machine, the progress repo and the secretary's folder back from the remotes the instance names
+    (sync.dirs.<plugin>.remote), so a machine set up again has them at once, not at the first round. Only a folder
+    not there at all is made: 700, then cloned into through ops/remote.py clone (checked first: never a public repo,
+    the engine's or another kind of data), and given the pre-push hook. A folder already there, even empty, is never touched (manager
+    2026-10-17): its plugin attaches it. A clone refused or failed leaves nothing: the folder it made is removed."""
+    sys.path.insert(0, HERE)
+    import remote
+    for name, plug in BACK:
+        if plug not in on:
+            continue
+        url = config.setting("sync.dirs.%s.remote" % plug)
+        url = url.strip() if isinstance(url, str) else ""
+        if not url:
+            continue
+        label = remote.LABELS[name]
+        if name == "planner" and isinstance(config.setting("planner.folder"), str) and config.setting("planner.folder").strip():
+            r.say("ok", "core.backup", "%s用 planner.folder 指定的資料夾，不從備份 clone" % label)
+            continue
+        folder = remote.folder_of(name)
+        if os.path.lexists(folder):
+            r.say("ok", "core.backup", "%s：%s 已經有了，不從備份 clone" % (label, folder))
+            continue
+        os.makedirs(os.path.dirname(folder), mode=0o700, exist_ok=True)
+        os.mkdir(folder, 0o700)
+        os.chmod(folder, 0o700)  # before anything is cloned into it (the umask may take bits off, never adds them)
+        ok, text = remote.clone(name, url, folder)
+        if not ok:
+            shutil.rmtree(folder, ignore_errors=True)  # made just now, by this step: whatever a failed clone left
+            r.say("todo", "core.backup", "%s：%s。改好實例的 sync.dirs.%s.remote（python3 ops/remote.py set %s <private repo 網址> "
+                  "--replace）再重跑；不改的話%s會在這台重新開始" % (label, text, plug, name, label))
+            continue
+        branch, have = remote.checkout_backup(folder)  # clone() checked it out already: what it found, for the line
+        if name == "planner":  # as remind --secretary makes one it cloned: the .gitignore, main, what is not tracked
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("remind_install", os.path.join(ENGINE, "planner", "remind.py"))
+            remind = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(remind)
+            remind.make_repo(folder, cloned=True)
+        elif branch != "main":  # on main, as progress makes the repo it clones (`checkout -B main`) and pushes there
+            subprocess.run(["git", "-C", folder, "checkout", "-q", "-B", "main"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        hooked, hook = remote.put_hook(folder)  # before anything pushes from it (the sync takes on only a repo with it)
+        if branch and branch != "main" and name in remote.ON_MAIN:
+            said = "從備份 clone 回來：%s → %s（700；遠端原本的分支是 %s，之後推到 main）" % (url, folder, branch)
+        elif branch:
+            said = "從備份 clone 回來：%s → %s（700）" % (url, folder)
+        elif have:
+            said = "從 %s clone 了，但認不出哪個分支是備份（有 %s，沒有 main）：%s（700）先從空的 main 開始，遠端的分支沒動" % (
+                url, "、".join(have), folder)
+        else:
+            said = "從 %s clone 了，但裡面沒有內容（空的 repo）：%s（700），從這台開始" % (url, folder)
+        r.say("changed" if hooked else "todo", "core.backup", "%s%s%s" % (
+            label, said, "" if hooked else "；%s：在這台跑 python3 ops/remote.py hook %s" % (hook, name)))
 
 
 def install_plugins(r, found):
@@ -364,7 +478,7 @@ def install_plugins(r, found):
     return True
 
 
-def write_schedules(r, holds, allow):
+def write_schedules(r, holds, allow, moved=()):
     if shutil.which("crontab") is None:  # minimal systems and containers: said as the user's to do, not a log to read
         from common import INSTALL_CRON
         r.say("todo", "core.apply", "沒有 crontab 指令，排程寫不進去：%s，再重跑 install.sh" % INSTALL_CRON)
@@ -374,6 +488,8 @@ def write_schedules(r, holds, allow):
         argv += ["--hold", h]
     for a in allow:
         argv += ["--allow-time", a]
+    for m in moved:
+        argv += ["--moved-from", m]
     rc, out = r.script("plugins.py apply --write", argv)
     lines = out.splitlines()
     if rc != 0:
@@ -401,7 +517,7 @@ def token(r, bot_here):
         except Exception:
             anywhere = "?"  # the list cannot be read: core.plugins has said so
         if anywhere is None:  # no bot on any machine yet: the install is not done until the user gives it one
-            r.say("todo", "dcbot.token", "還沒有機器人的設定：在你自己的終端機跑 %s --token 輸入 token 和兩個 ID，再重跑 install.sh"
+            r.say("todo", "dcbot.token", "還沒接 Discord：在你自己的終端機跑 %s discord（會問機器人的 token，其他的自己查），再重跑 install.sh"
                   % os.path.join(ENGINE, "install.sh"))
         return
     try:  # whether it is there and not empty: never opened, never read
@@ -411,7 +527,8 @@ def token(r, bot_here):
     if there:
         r.say("ok", "dcbot.token", "機器人的設定檔在")
     else:
-        r.say("todo", "dcbot.token", "缺機器人的 token：把 DISCORD_TOKEN、OWNER_ID、GUILD_ID 寫進 %s（chmod 600），再重跑" % path)
+        r.say("todo", "dcbot.token", "缺機器人的 token（%s 不在或是空的）：在你自己的終端機跑 %s discord，再重跑 install.sh"
+              % (path, os.path.join(ENGINE, "install.sh")))
 
 
 TOKEN_FILE = "~/.config/dcbot/env"  # the bot's settings (dcbot/bot/envfile.py), as config.bot_here() looks for them
@@ -426,17 +543,26 @@ def token_key(line):
     return key[len("export"):].strip() if key.startswith("export") and key[len("export"):][:1].isspace() else key
 
 
-def ask_token(secret=None, line=None, interactive=None):
-    """install.sh --token: the bot's token and the two IDs, typed on this machine's keyboard and written to the
-    bot's settings file (600), never shown and never passed through Claude: from anything but a terminal it
-    refuses (Claude's Bash has none). The file's other lines are kept. 0 written or left as it was, 1 refused."""
+TOKEN_PROMPT = "token（貼上後按 Enter，不會顯示）："  # getpass prints it only after it has turned the echo off
+
+
+def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.sleep, clock=time.monotonic):
+    """install.sh discord: the bot's token typed on this machine's keyboard (never shown, never passed through
+    Claude: from anything but a terminal it refuses, and Claude's Bash has none); the rest asked of Discord with
+    it: the application, its owner, the server the bot was added to by the link printed here. Written to the bot's
+    settings file (600) only once all three are known; the file's other lines are kept. 0 written or left as it
+    was, 1 refused or stopped. `base` is for the tests (a fake Discord on this machine); there is no other way to
+    point it elsewhere, so the token cannot be sent anywhere but Discord."""
     import getpass
+    import discordapp as dapp
     secret = secret or (lambda prompt: getpass.getpass(prompt))
     line = line or input
     interactive = sys.stdin.isatty() if interactive is None else interactive
+    base = base or dapp.API
     path = os.path.expanduser(TOKEN_FILE)
+    again = "重跑 %s discord" % os.path.join(ENGINE, "install.sh")
     if not interactive:
-        print("fail dcbot.token 要在你自己的終端機跑 install.sh --token（token 只從鍵盤讀，不經過 Claude 或管線）；什麼都沒寫")
+        print("fail dcbot.token 要在你自己的終端機跑 install.sh discord（token 只從鍵盤讀，不經過 Claude 或管線）；什麼都沒寫")
         return 1
     try:
         with open(path, encoding="utf-8") as f:
@@ -447,39 +573,138 @@ def ask_token(secret=None, line=None, interactive=None):
     except (OSError, UnicodeDecodeError) as e:
         print("fail dcbot.token %s 讀不出來（%s）：修好或移走它再重跑；什麼都沒寫" % (path, getattr(e, "strerror", None) or e))
         return 1
+
+    def ask_app(tok):
+        app = dapp.get(tok, "/oauth2/applications/@me", base, sleep)
+        while dapp.problems(app):
+            print("應用程式的設定還要改（https://discord.com/developers/applications/%s）：" % app.get("id", ""))
+            for x in dapp.problems(app):
+                print("  - %s" % x)
+            if line("改好後按 Enter 再查一次（輸入 q 結束，什麼都不寫）：").strip().lower() == "q":
+                return None
+            app = dapp.get(tok, "/oauth2/applications/@me", base, sleep)
+        return app
+
     try:
         if there and line("%s 已經有了，要換掉 token 和 ID 嗎？[y/N] " % path).strip().lower() not in ("y", "yes"):
             print("ok dcbot.token 沒有改 %s" % path)
             return 0
-        print("Discord Developer Portal → 你的應用程式 → Bot → Reset Token，複製後貼上（不會顯示）。")
-        tok = secret("DISCORD_TOKEN: ").strip()
-        if not tok:
-            print("fail dcbot.token 沒有讀到任何字（貼上可能沒成功）；什麼都沒寫，重跑 install.sh --token")
+        print("接 Discord：接下來會問你機器人的 token（打字時看不到），其他的這個指令會自己查。")
+        print("先到 https://discord.com/developers/applications → 你的應用程式（還沒有就按 新建應用程式（New Application））→ 機器人（Bot）頁：")
+        print("  1. Privileged Gateway Intents 底下打開 Message Content Intent，按 儲存變更（Save Changes）")
+        print("  2. 公開機器人（Public Bot）關掉，按 儲存變更（Save Changes）（Discord 不讓關的話：先到 安裝（Installation）頁"
+              "把 安裝連結（Install Link）改成 無（None）、存檔，再回來關）")
+        print("  3. 最後按 重設權杖（Reset Token），複製新的 token，馬上貼到下面")
+        for tries in range(3):
+            tok = secret(TOKEN_PROMPT).strip()
+            if not tok:
+                print("沒有讀到任何字（貼上可能沒成功）")
+                continue
+            if any(c.isspace() for c in tok) or tok.count(".") != 2:
+                # The input is not shown, so say what was read without showing it: its length, dots and spaces only.
+                spaces = "、中間有空白" if any(c.isspace() for c in tok) else ""
+                print("這不像機器人的 token：讀到 %d 個字、%d 個點%s（應該是兩個點隔開的三段，中間沒有空白）"
+                      % (len(tok), tok.count("."), spaces))
+                continue
+            try:
+                app = ask_app(tok)
+            except dapp.BadToken:
+                print("Discord 說這個 token 不對（可能只複製到一部分，或之後又按了一次 重設權杖（Reset Token））：再按一次 重設權杖（Reset Token），貼新的")
+                continue
+            break
+        else:
+            print("fail dcbot.token 三次都沒拿到能用的 token；什麼都沒寫，%s" % again)
             return 1
-        if any(c.isspace() for c in tok) or tok.count(".") != 2:
-            # The input is not shown, so say what was read without showing it: its length, dots and spaces only.
-            spaces = "、中間有空白" if any(c.isspace() for c in tok) else ""
-            print("fail dcbot.token 這不像機器人的 token：讀到 %d 個字、%d 個點%s（應該是兩個點隔開的三段，中間沒有空白）；"
-                  "什麼都沒寫，重跑 install.sh --token" % (len(tok), tok.count("."), spaces))
+        if app is None:
+            print("todo dcbot.token 停了，什麼都沒寫；改好設定後%s" % again)
             return 1
-        print("Discord 設定 → 進階 → 開啟開發者模式；右鍵你自己的名字 → 複製使用者 ID，右鍵伺服器 → 複製伺服器 ID。")
-        ids = []
-        for key, what in (("OWNER_ID", "你的使用者 ID"), ("GUILD_ID", "伺服器 ID")):
-            v = line("%s（%s）: " % (key, what)).strip()
-            if not DISCORD_ID.match(v):
-                print("fail dcbot.token %s 應該是 17 到 20 位數字；什麼都沒寫，重跑 install.sh --token" % key)
-                return 1
-            ids.append((key, v))
+        print("應用程式：%s（ID %s）" % (app.get("name", ""), app.get("id", "")))
+        people = [p for p in dapp.owner_choices(app) if DISCORD_ID.match(p[0])]
+        if not people:
+            print("fail dcbot.token Discord 沒有說這個應用程式屬於誰；什麼都沒寫，把這段輸出給維護的人看")
+            return 1
+        owner = people[0]
+        if app.get("team") and len(people) > 1:  # the app's owner is then the team itself: ask who is the user
+            print("這個應用程式屬於一個團隊，機器人只聽一個人的。哪一個是你？")
+            for i, (uid, name, top) in enumerate(people, 1):
+                print("  %d. %s%s" % (i, name or uid, "（團隊擁有者）" if top else ""))
+            while True:
+                pick = line("輸入號碼（直接按 Enter 是 1）：").strip() or "1"
+                if pick.isdigit() and 1 <= int(pick) <= len(people):
+                    owner = people[int(pick) - 1]
+                    break
+                print("要 1 到 %d 的號碼" % len(people))
+        print("機器人只聽：%s" % (owner[1] or owner[0]))
+        last = [""]  # the temporary trouble said last, so a long one is said once, not every 3 seconds
+
+        def look():
+            """The bot's servers; while waiting, a network error, a 5xx or a timeout is said and waited out (only
+            401, 403, a redirect and q end it: manager 2026-10-16)."""
+            try:
+                got = dapp.guilds(tok, base, sleep)
+            except dapp.Unreachable as e:
+                if str(e) != last[0]:
+                    print("暫時連不上 Discord（%s），繼續等" % e)
+                    last[0] = str(e)
+                return []
+            if last[0]:
+                print("又連上 Discord 了")
+                last[0] = ""
+            return got
+        found = look()
+        if not found:
+            print("用瀏覽器打開下面的連結，選你的伺服器（最好是新的、空的；你要有那個伺服器的「管理伺服器」權限），"
+                  "按 繼續（Continue）、授權（Authorize）：")
+            print(dapp.invite_url(app["id"]))
+            while not found:
+                print("等機器人進伺服器（最多 %d 分鐘；Ctrl-C 停止）…" % (dapp.WAIT // 60))
+                end = clock() + dapp.WAIT
+                while clock() < end:
+                    sleep(dapp.POLL)
+                    found = look()
+                    if found:
+                        break
+                if not found and line("%d 分鐘了，機器人還沒進任何伺服器。連結打開了嗎？按 Enter 再等，輸入 q 結束"
+                                      "（什麼都不寫）：" % (dapp.WAIT // 60)).strip().lower() == "q":
+                    print("todo dcbot.token 停了，什麼都沒寫；%s" % again)
+                    return 1
+        guild = found[0]
+        if len(found) > 1:
+            print("機器人在這幾個伺服器裡，要用哪一個？")
+            for i, (gid, name) in enumerate(found, 1):
+                print("  %d. %s" % (i, name or gid))
+            while True:
+                pick = line("輸入號碼：").strip()
+                if pick.isdigit() and 1 <= int(pick) <= len(found):
+                    guild = found[int(pick) - 1]
+                    break
+                print("要 1 到 %d 的號碼" % len(found))
+        if not DISCORD_ID.match(guild[0]):
+            print("fail dcbot.token Discord 給的伺服器 ID 看不懂；什麼都沒寫，把這段輸出給維護的人看")
+            return 1
+        print("伺服器：%s" % (guild[1] or guild[0]))
+    except dapp.BadToken:
+        print("\nfail dcbot.token Discord 中途說 token 不對了（又按了 重設權杖（Reset Token）？）；什麼都沒寫，%s" % again)
+        return 1
+    except dapp.Unreachable as e:
+        print("\nfail dcbot.token 連不上 Discord（%s）；什麼都沒寫，網路好了再%s" % (e, again))
+        return 1
+    except dapp.Refused as e:
+        print("\nfail dcbot.token %s；什麼都沒寫，%s" % (e, again))
+        return 1
     except (EOFError, KeyboardInterrupt):
         print("\nfail dcbot.token 中途停了；什麼都沒寫")
         return 1
     folder = os.path.dirname(path)
     os.makedirs(folder, mode=0o700, exist_ok=True)
+    mode = stat.S_IMODE(os.stat(folder).st_mode)
+    if mode & 0o077:  # a folder made before (755): tightened to the owner's bits only, never loosened
+        os.chmod(folder, mode & 0o700)
     tmp = "%s.tmp-%d" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(["DISCORD_TOKEN=%s" % tok] + ["%s=%s" % kv for kv in ids] + kept) + "\n")
+            f.write("\n".join(["DISCORD_TOKEN=%s" % tok, "OWNER_ID=%s" % owner[0], "GUILD_ID=%s" % guild[0]] + kept) + "\n")
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
@@ -487,8 +712,11 @@ def ask_token(secret=None, line=None, interactive=None):
     finally:
         if os.path.lexists(tmp):
             os.remove(tmp)
-    print("changed dcbot.token 寫好了 %s（600）；接著跑 %s" % (path, os.path.join(ENGINE, "install.sh")))
+    print("changed dcbot.token 寫好了 %s（600）" % path)
     return 0
+
+
+LOG_SHOWN = "~/.local/state/altention/install/last.log"  # as the user is told it (Run makes it from HOME at call time)
 
 
 def git_user(r):
@@ -537,9 +765,24 @@ class Steps:
 
 
 def main(argv):
-    if list(argv) == ["--token"]:  # nothing else: the bot's settings typed in, before or after the install
-        return ask_token()
-    light, holds, allow = False, [], []
+    if list(argv) == ["discord"]:  # nothing else: the bot's token typed in, the rest asked of Discord
+        rc = ask_discord()
+        if rc:  # stopped or refused: said why, nothing written, no install
+            return rc
+        # then the whole install at once (owner 2026-10-16: one command, Claude waits for it to finish)
+        print("接著安裝這台需要的全部，跑完最後一行是「安裝跑完了」或「安裝沒跑完」")
+        sys.stdout.flush()
+        return install([], after_discord=True)
+    return install(argv)
+
+
+def install(argv, after_discord=False):
+    def stopped(line):  # before the log is made: after install.sh discord, a last line as done() would say it too
+        print(line)
+        if after_discord:  # the user waits for 安裝跑完了/安裝沒跑完 (#code-review of 93e8008)
+            print("fail core.done 安裝沒跑完：%s 沒成功（見上一行；%s 不是這次的）" % (line.split()[1], LOG_SHOWN))
+        return 1
+    light, holds, allow, moved = False, [], [], []
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -549,27 +792,26 @@ def main(argv):
             holds.append(args.pop(0))
         elif a == "--allow-time" and args and not args[0].startswith("-"):
             allow.append(args.pop(0))
+        elif a == "--moved-from" and args and not args[0].startswith("-"):
+            moved.append(args.pop(0))  # an old engine folder that is gone (C-17): passed on to plugins.py apply
         else:
-            print("fail core.args 不認得 %s（只有 --links、--token、--hold 插件、--allow-time 插件/項目），什麼都沒做" % a)
+            print("fail core.args 不認得 %s（只有 discord、--links、--hold 插件、--allow-time 插件/項目、--moved-from 舊引擎資料夾），什麼都沒做" % a)
             return 1
     try:  # a named instance that is not there is said as such, before the engine check talks of machine lists
         config.instance_dir()
     except config.ConfigError as e:
-        print("fail core.instance %s；改正 ALT_INSTANCE 或 %s 再重跑" % (e, os.path.join(config.config_dir(), "instance")))
-        return 1
+        return stopped("fail core.instance %s；改正 ALT_INSTANCE 或 %s 再重跑" % (e, os.path.join(config.config_dir(), "instance")))
     from altention import engine_id
     why = engine_id.refusal(ENGINE, "安裝")
     if why:  # before anything is made, the log included (code-review 2026-10-06: a worktree or a second clone)
-        print("fail core.engine %s" % why)
-        return 1
+        return stopped("fail core.engine %s" % why)
     folder = os.path.join(os.path.expanduser("~/.local/state/altention"), "install")
     os.makedirs(folder, mode=0o700, exist_ok=True)
     lock = open(os.path.join(folder, "lock"), "w")
     try:  # the lock before the log: a second run must not empty the log of the one running
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("fail core.lock 另一個安裝正在跑；等它結束再跑")
-        return 1
+        return stopped("fail core.lock 另一個安裝正在跑；等它結束再跑")
     r = Run()
     st = Steps(r)
     st.run("core.pointer", lambda: engine_id.write_pointer(ENGINE))  # where this machine's engine is, for the supervisor
@@ -578,6 +820,7 @@ def main(argv):
         st.failed.append("core.instance")  # a todo or a skip: nothing that needs the instance can run
     st.run("core.skills", skills, r)
     st.run("core.entry", entry, r)
+    st.run("core.path", path_check, r)
     st.run("core.links", links, r, inst, needs=["core.instance"])
     if light:
         done(r, st, "輕的部分")
@@ -588,7 +831,8 @@ def main(argv):
     ok = st.run("core.install", install_plugins, r, found, needs=["core.instance", "core.plugins"])
     if ok is False:
         st.failed.append("core.install")
-    st.run("core.apply", write_schedules, r, getattr(plugins_here, "held", holds), allow,
+    st.run("core.backup", backups, r, getattr(plugins_here, "on", ()), needs=["core.instance", "core.plugins", "core.install"])
+    st.run("core.apply", write_schedules, r, getattr(plugins_here, "held", holds), allow, moved,
            needs=["core.instance", "core.plugins", "core.install"])
     st.run("dcbot.token", token, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.git-user", git_user, r)

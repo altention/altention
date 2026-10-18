@@ -2,8 +2,8 @@
   "format": 1,
   "name": "planner",
   "title": "秘書提醒",
-  "description": "定時傳一句話叫醒秘書頻道的 Claude（早報、晚間回顧、每週回顧），並照其他頻道自己能改的排程檔發提醒。",
-  "pitch": "每天固定時間叫秘書頻道 #secretary 的 Claude 寫早報、晚間回顧、每週回顧，也讓各頻道的 Claude 幫你設提醒。每次叫醒都會用訂閱額度；早報這些要不要開，裝完還會再問一次。",
+  "description": "每 5 分鐘照排程檔發提醒：秘書頻道的早報、晚間回顧、每週回顧（在秘書的排程檔裡，秘書自己能改），和其他頻道自己寫的提醒。",
+  "pitch": "每天固定時間叫秘書頻道 #secretary 的 Claude 寫早報、晚間回顧、每週回顧，也讓各頻道的 Claude 幫你設提醒。每次叫醒都會用訂閱額度；時間可以自己選，之後跟秘書說就能改時間或關掉。",
   "keep": "早報、晚間回顧、每週回顧和提醒",
   "lose": "沒有早報、回顧，也不能請 Claude 設提醒",
   "order": 30,
@@ -16,50 +16,6 @@
     }
   ],
   "schedules": [
-    {
-      "name": "morning",
-      "when": {
-        "at": "08:00",
-        "days": "daily"
-      },
-      "timezone": "machine",
-      "do": {
-        "message": "⏰ 每日早報：照 CLAUDE.md 寫今天的早報。",
-        "channel": "secretary",
-        "log": "~/.cache/planner.out",
-        "trace": "~/.cache/planner.out"
-      }
-    },
-    {
-      "name": "evening",
-      "when": {
-        "at": "22:00",
-        "days": "daily"
-      },
-      "timezone": "machine",
-      "do": {
-        "message": "🌙 晚間回顧：照 CLAUDE.md 問我今天做完了什麼，更新短期計畫。",
-        "channel": "secretary",
-        "log": "~/.cache/planner.out",
-        "trace": "~/.cache/planner.out"
-      }
-    },
-    {
-      "name": "weekly",
-      "when": {
-        "at": "21:00",
-        "days": [
-          "sun"
-        ]
-      },
-      "timezone": "machine",
-      "do": {
-        "message": "📅 每週回顧：照 CLAUDE.md 整理這週、規劃下週。",
-        "channel": "secretary",
-        "log": "~/.cache/planner.out",
-        "trace": "~/.cache/planner.out"
-      }
-    },
     {
       "name": "remind",
       "when": {
@@ -84,7 +40,7 @@
     {
       "name": "reminders",
       "path": "{data}/planner",
-      "sync": "none",
+      "sync": "timer",
       "private": true
     }
   ]

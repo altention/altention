@@ -730,6 +730,24 @@ class HomeGuard(unittest.TestCase):
         finally:
             shutil.rmtree(home)
 
+    def test_what_the_real_rounds_write_in_the_state_folder_is_not_taken_for_the_tests(self):
+        """2026-10-17: once the pre-push hooks were on our machines, a real push wrote remote-checks.json while the
+        suites ran, and every suite said the tests had touched the real home. The files that come and go (deps-pending,
+        update-available, instance-held) stay compared: the tests write them a lot (#code-review of 42a1663)."""
+        from altention import testing
+        home = tempfile.mkdtemp(prefix="家 ")
+        try:
+            d = os.path.join(home, ".local", "state", "altention")
+            for name in ("remote-checks.json", "update-mode", "deps-pending.lock", "deps-pending", "update-available",
+                         "instance-held", "other.json"):
+                write(os.path.join(d, name), "x")
+            seen = testing._snapshot(home)
+            for name in ("remote-checks.json", "update-mode", "deps-pending.lock"):
+                self.assertIsNone(seen[os.path.join(d, name)], "%s: its time is not compared" % name)
+            for name in ("deps-pending", "update-available", "instance-held", "other.json"):
+                self.assertIsNotNone(seen[os.path.join(d, name)], "%s: still compared" % name)
+        finally:
+            shutil.rmtree(home)
 
 class Judge(unittest.TestCase):
     H = 3600

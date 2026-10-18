@@ -113,6 +113,9 @@ class OneMachineNoRemote(Base):
         bare = os.path.join(self.home, "progress.git")
         subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
         seed = chatlog_repo(os.path.join(self.home, "seed"))
+        write(os.path.join(seed, "STATUS.md"), "# 進度\n")  # what a progress repo holds (ops/remote.py checks it)
+        subprocess.run(["git", "-C", seed, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", seed, "commit", "-q", "-m", "status"], check=True, env=dict(os.environ, **GIT_ID))
         subprocess.run(["git", "-C", seed, "push", "-q", bare, "main"], check=True)
         old = os.umask(0o022)
         try:
@@ -124,6 +127,56 @@ class OneMachineNoRemote(Base):
                         os.path.isdir(os.path.join(progress.PROGRESS, ".git")))
         self.assertEqual(progress.origin_of(progress.PROGRESS), bare)
         self.assertEqual(stat.S_IMODE(os.stat(progress.PROGRESS).st_mode), 0o700)
+
+    def test_a_remote_holding_other_data_is_not_cloned(self):
+        """Review of d1d71c8: a new machine cloned the setting unchecked (a hand-edited setting naming chatlog's own
+        repo made the progress repo a copy of every conversation, pushed back there)."""
+        chatlog_repo(self.logs)
+        bare = os.path.join(self.home, "logs.git")
+        subprocess.run(["git", "clone", "-q", "--bare", self.logs, bare], check=True)
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ops"))
+        import remote as altremote
+        with mock.patch.dict(os.environ, {"PROGRESS_REMOTE": bare}), mock.patch.object(altremote, "alert") as told:
+            self.assertEqual(progress.run_noted(), 0, "the round still runs, made here")
+        self.assertTrue(os.path.isdir(os.path.join(progress.PROGRESS, ".git")), "made here instead")
+        self.assertNotIn("first", progress.git(progress.PROGRESS, "log", "--format=%s").stdout.split("\n"),
+                         "not chatlog's history")
+        self.assertIsNone(progress.origin_of(progress.PROGRESS))
+        self.assertIn("沒有從設定的遠端", self.progress_log())
+        self.assertIn("clone-refused", [c.args[0] for c in told.call_args_list])
+
+    def progress_log(self):
+        return progress.read(os.path.join(self.state, "progress.log"))
+
+    def test_a_progress_repo_made_here_gets_a_remote_set_later_checked_first(self):
+        """C-25: a remote set after the repo was made is its origin from the next round on, checked first, with
+        the pre-push hook; one that does not pass the check is not taken (it used to be added as it was)."""
+        chatlog_repo(self.logs)
+        self.assertEqual(progress.run_noted(), 0)
+        self.assertIsNone(progress.origin_of(progress.PROGRESS))
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ops"))
+        import remote as altremote
+        bare = os.path.join(self.home, "progress.git")
+        subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+        with mock.patch.dict(os.environ, {"PROGRESS_REMOTE": bare}), \
+                mock.patch.object(altremote, "anonymous", return_value=("public", "anyone")), \
+                mock.patch.object(altremote, "alert"):
+            self.assertEqual(progress.run_noted(), 0, "the round still runs, kept here")
+        self.assertIsNone(progress.origin_of(progress.PROGRESS))
+        self.assertIn("remote: refused", self.progress_log())
+        with mock.patch.dict(os.environ, {"PROGRESS_REMOTE": bare}):
+            self.assertEqual(progress.run_noted(), 0)
+        self.assertEqual(progress.origin_of(progress.PROGRESS), bare)
+        self.assertTrue(altremote.has_hook(progress.PROGRESS))
+        self.assertIn("remote: set", self.progress_log())
+
+    def test_a_remote_that_cannot_be_cloned_is_not_made_the_origin_unchecked(self):
+        chatlog_repo(self.logs)
+        with mock.patch.dict(os.environ, {"PROGRESS_REMOTE": os.path.join(self.home, "no such.git")}):
+            self.assertEqual(progress.run_noted(), 0)
+        self.assertTrue(os.path.isdir(os.path.join(progress.PROGRESS, ".git")), "made here instead")
+        self.assertIsNone(progress.origin_of(progress.PROGRESS), "a URL nobody can read is not its origin")
+        self.assertIn("remote: refused", self.progress_log())
 
     def test_a_remote_set_later_is_where_the_mirror_fetches_from(self):
         chatlog_repo(self.logs)

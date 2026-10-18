@@ -221,6 +221,73 @@ class Questions(unittest.TestCase):
         self.assertIn("注意：要靠對話紀錄；保留進度，對話紀錄也會一起保留。", progress["question"])
 
 
+    PLANNER = ("planner", "/e/planner", {"title": "秘書提醒", "order": 30, "pitch": "叫醒秘書。", "keep": "早報和提醒",
+                                         "lose": "沒有早報"})
+
+    def test_the_secretary_is_asked_with_the_setup_and_not_among_the_parts(self):
+        """Owner 2026-10-16: the secretary was asked last, apart from the rest; now at the start, its channel opened
+        later without asking again."""
+        rows = self.ROWS + [self.PLANNER]
+        asked = plugins.setup_questions(rows, "UTC", False)
+        self.assertEqual([q["key"] for q in asked], ["core.timezone", "plugins", "core.update", "dcbot.default_permission",
+                                                     "dcbot.talk_limit", "plugins.planner"])
+        q = asked[-1]
+        self.assertEqual((q["header"], q["values"]), ("秘書", ["on", "off"]))
+        self.assertTrue(q["question"].startswith("秘書提醒：叫醒秘書。要開嗎？"))
+        self.assertTrue(q["question"].endswith("要開嗎？開的話接著問時間。"), "nothing on how the install used to go")
+        self.assertEqual([o["label"] for o in q["options"]], ["開（建議）", "不開"])
+        self.assertEqual(q["options"][1]["description"], "少了秘書提醒，沒有早報")
+        self.assertNotIn("planner", [x["plugin"] for x in plugins.questions(rows)])
+        self.assertNotIn("秘書提醒", plugins.first_question(rows)["question"])
+        self.assertEqual(len(plugins.setup_questions(self.ROWS, "UTC", False)), 5, "no planner: no such question")
+
+    def test_the_secretarys_times_default_to_what_remind_writes(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("remind_q", os.path.join(plugins.plugin.ENGINE, "planner", "remind.py"))
+        remind = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(remind)
+        asked = plugins.briefing_questions()
+        self.assertEqual([q["key"] for q in asked], ["planner.briefings.%s" % n for n, _, _ in remind.BRIEFINGS])
+        self.assertEqual([q["values"][0] for q in asked], [w for _, w, _ in remind.BRIEFINGS], "the first is the default")
+        for q in asked:
+            self.assertTrue(q["options"][0]["label"].endswith("（建議）"), q["key"])
+            self.assertLessEqual(len(q["header"]), 12)
+            self.assertIn("其他", q["question"])
+            self.assertEqual(len(q["values"]), len(q["options"]))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(plugins.main(["questions", "--times", "--json"]), 0)
+        self.assertEqual(json.loads(out.getvalue()), asked)
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            self.assertEqual(plugins.main(["questions", "--times", "--setup"]), 2)
+
+    def test_the_backup_questions(self):
+        """C-25 (decisions 1a, 2a, 4a): now or later; then which, the chat records offered and said to be verbatim."""
+        import remote
+        now, which = plugins.backup_questions()
+        self.assertEqual((now["key"], now["values"], now["multiSelect"]), ("backup", ["now", "later"], False))
+        self.assertEqual([o["label"] for o in now["options"]], ["現在設定（建議）", "之後再說"])
+        self.assertIn("private", now["question"])
+        self.assertIn("系統檢查會一直提醒", now["options"][1]["description"])
+        self.assertEqual((which["key"], which["multiSelect"]), ("backup.items", True))
+        self.assertEqual(which["values"], list(remote.NAMES), "ops/remote.py set's names, every one")
+        self.assertEqual([o["label"] for o in which["options"]], [remote.LABELS[n] for n in remote.NAMES])
+        self.assertIn("建議全部勾選", which["question"])
+        self.assertIn("逐字", which["options"][1]["description"])
+        for q in (now, which):
+            self.assertLessEqual(len(q["header"]), 12)
+            self.assertEqual(len(q["values"]), len(q["options"]))
+        _, which = plugins.backup_questions(off={"chatlog", "planner"})
+        self.assertEqual(which["values"], ["instance", "progress"], "a part turned off here is not offered")
+
+    def test_main_prints_the_backup_questions(self):
+        out = io.StringIO()
+        with mock.patch.object(plugins, "off_here", return_value={"progress"}), mock.patch("sys.stdout", out):
+            self.assertEqual(plugins.main(["questions", "--backup", "--json"]), 0)
+        self.assertEqual(json.loads(out.getvalue()), plugins.backup_questions({"progress"}))
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            self.assertEqual(plugins.main(["questions", "--backup", "--setup"]), 2)
+
 
 class RefreshReport(unittest.TestCase):
     """apply --write (install.sh) works this machine's report out again at once: doctor showed "會補 planner/…" from

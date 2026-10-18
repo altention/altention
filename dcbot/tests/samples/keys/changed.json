@@ -5,5 +5,6 @@
  "tests.test_menus.Pressed.test_the_same_question_with_new_output_above_gets_the_key": "F3: new test; the existing tests' keys are unchanged",
  "tests.test_menus.Pressed.test_what_a_dialog_asks": "F3: new test; the existing tests' keys are unchanged",
  "tests.test_menus.Pressed.test_its_machine_not_answering_the_read_keeps_the_buttons": "F3 follow-up (#code-review low item): new test",
- "tests.test_btw_guard.BtwGuard.test_a_key_in_the_answer_is_masked_before_posting": "B-12 /btw: new test; the existing tests' keys are unchanged"
+ "tests.test_btw_guard.BtwGuard.test_a_key_in_the_answer_is_masked_before_posting": "B-12 /btw: new test; the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_a_dialog_counting_down_to_its_own_denial_gets_the_key": "2.1.302 auto-deny countdown: new test (a click on a dialog counting down sends its key); the existing tests' keys are unchanged"
 }

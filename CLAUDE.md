@@ -10,7 +10,7 @@
 - 不確定各機器現況時：`python3 ops/doctor.py`。
 
 ## 做事時
-- 改機器或服務：改實例的 `machines.json` → `python3 ops/apply.py <機器>` → `python3 ops/doctor.py`。機器清單改完在實例 repo 裡 commit、push（同步只自動提交 knowledge、memory、docs/refactor、council 的資料和兩份 CLAUDE 說明，不會提交它）。新機器先 `python3 ops/instance.py join <實例的 repo>`。
+- 改機器或服務：改實例的 `machines.json` → `python3 ops/apply.py <機器>` → `python3 ops/doctor.py`。機器清單改完在實例 repo 裡 commit、push，別台的 apply 才馬上拿得到（不推的話，同步下一輪也會提交並推出去：它自動提交 knowledge、memory、docs/refactor、council 的資料、兩份 CLAUDE 說明、backup/，以及讀得懂的 machines.json、plugins.json；讀不出來的這一輪不提交，整個刪掉的永遠不提交）。新機器先 `python3 ops/instance.py join <實例的 repo>`。
 - 在引擎裡提交或推送用 `bin/home-git commit …`、`bin/home-git push`（拿同一把 git 鎖，免得跟同步、部署同時動分支）；不要直接 `git commit`。
 - 改程式碼後 commit（英文訊息）並 push；其他機器透過 `ops/apply.py` 或同步套用。
 - 學到長期有效的事：整理好的說明寫進 `knowledge/`，零散的事實寫進記憶（`memory/`）。兩者都在實例，同步每 15 分鐘自動提交並推出去。

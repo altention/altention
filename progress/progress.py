@@ -235,6 +235,38 @@ def private_dir(path):
     os.chmod(path, 0o700)
 
 
+def altremote():
+    sys.path.insert(0, os.path.join(HERE, "..", "ops"))
+    import remote
+    return remote
+
+
+def clone_progress(remote):
+    """True when the progress repo came back from its remote: cloned only when ops/remote.py checks it (never a
+    public repo, the engine's or some other data's); a refusal goes into the log and the alerts, and the repo is
+    made new here instead."""
+    try:
+        ok, text = altremote().clone("progress", remote, PROGRESS)
+    except Exception as e:
+        ok, text = False, "%s: %s" % (type(e).__name__, e)
+    if not ok:
+        log("remote: %s" % text)
+    return ok
+
+
+def attach_progress(remote):
+    """The progress repo given its remote when it has none (checked first: never a public repo, the engine's or
+    some other data's) and the pre-push hook (ops/remote.py attach, C-25); what it did goes into the log. A
+    problem there stops nothing here: the repo is kept locally until it is fixed."""
+    try:
+        what, text = altremote().attach("progress", remote, PROGRESS)
+    except Exception as e:
+        what, text = "error", "%s: %s" % (type(e).__name__, e)
+    _origins.pop(PROGRESS, None)
+    if what != "same" and what != "none":
+        log("remote: %s %s" % (what, text))
+
+
 def ensure_repos():
     os.makedirs(WORK, exist_ok=True)
     source = logs_source()
@@ -250,15 +282,12 @@ def ensure_repos():
         git(LOGS, "reset", "-q", "--hard", "origin/main")
     if not os.path.isdir(os.path.join(PROGRESS, ".git")):
         remote = remote_of("progress")
-        r = remote and subprocess.run(["git", "clone", "-q", remote, PROGRESS], stderr=subprocess.PIPE,
-                                      universal_newlines=True)
-        if not r or r.returncode != 0:
+        if not (remote and clone_progress(remote)):
             private_dir(PROGRESS)
             git(PROGRESS, "init", "-q")
-            if remote:
-                git(PROGRESS, "remote", "add", "origin", remote)
         git(PROGRESS, "checkout", "-q", "-B", "main")
-    elif origin_of(PROGRESS):
+    attach_progress(remote_of("progress") or "")
+    if origin_of(PROGRESS) and git(PROGRESS, "rev-parse", "-q", "--verify", "@{u}").returncode == 0:
         git(PROGRESS, "pull", "-q", "--rebase", "--autostash")
     web = logs_web()
     seeds = [("README.md", PROGRESS_README % (" [對話紀錄](%s)" % web.split("/tree/")[0].rstrip("/") if web else "對話紀錄")), ("prompts/summarize.md", SUMMARIZE_PROMPT),

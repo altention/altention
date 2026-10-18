@@ -107,24 +107,83 @@ def stacked(h):
     return under(h, "@{u}") and not under(h, "HEAD")
 
 
+def rev(spec):
+    return subprocess.run(["git", "-C", ENGINE, "rev-parse", "-q", "--verify", spec], stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, universal_newlines=True, timeout=60).stdout.strip()
+
+
+def after_ff(before):
+    """C-09: the plain fast-forward moved HEAD from `before`. update.py's after_move, short and without pip (this
+    runs when update.py is what broke): dcbot/requirements.txt changed and the bot's venv here → no restart,
+    deps-pending written (doctor says it; update.py, once back, installs and restarts), and so too when packages of an
+    earlier move are still pending (its record kept, now for this HEAD; #code-review of 5c3ee2f); else, the bot's version
+    (dcbot/ and altention/) changed and its supervisor runs here → deploy.sh's restart flag. "" or what it did."""
+    after = rev("HEAD")
+    if not before or before == after:
+        return ""
+    folder = os.path.expanduser("~/.local/state/altention")
+    try:  # packages an earlier move still waits for (update.py's deps-pending): no restart into this one either
+        with open(os.path.join(folder, "deps-pending")) as f:
+            pending = json.load(f)
+        pending = pending if isinstance(pending, dict) else None
+    except (OSError, ValueError):
+        pending = None
+    if os.path.exists(os.path.join(ENGINE, "dcbot", ".venv", "bin", "python")) and (
+            pending or rev("%s:dcbot/requirements.txt" % before) != rev("%s:dcbot/requirements.txt" % after)):
+        why = str((pending or {}).get("why") or "保底快轉沒有裝套件（update.py 沒在跑）")
+        record = dict(pending or {}, head=after, why=why, at=time.time())  # as update.py's after_move: kept, for HEAD
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "deps-pending.tmp"), "w") as f:
+                json.dump(record, f)
+            os.replace(os.path.join(folder, "deps-pending.tmp"), os.path.join(folder, "deps-pending"))
+        except OSError:
+            pass
+        note("引擎快轉到 %s，但機器人要的套件沒裝上（%s）：沒有重啟，機器人繼續跑舊版；在這台的引擎跑 dcbot/install.sh，"
+             "再在 Discord 打 !restart" % (after[:12], why), "deps")
+        return "套件沒裝，沒有重啟機器人"
+    if all(rev("%s:%s" % (before, p)) == rev("%s:%s" % (after, p)) for p in ("dcbot", "altention")):
+        return ""
+    try:  # this engine's supervisor runs here (update.py bot_running)
+        with open(os.path.join(ENGINE, "dcbot", "state", "supervisor.pid")) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        if os.path.isdir("/proc"):
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                if b"supervisor" not in f.read():
+                    return ""
+        flag = os.path.join(ENGINE, "dcbot", "state", "restart-requested")
+        with open(flag + ".tmp", "w") as f:
+            f.write('{"channel": ""}\n')  # as deploy.sh writes it: #audit only
+        os.replace(flag + ".tmp", flag)
+        return "機器人會自己重啟"
+    except (OSError, ValueError):
+        return ""
+
+
 UPDATE_MODES = ("notify", "release", "branch")  # update.py's: the plain fast-forward runs only for "branch"
 
 
 def update_mode():
     """(mode, problem): the instance's core.update, read the way altention/config.py finds the instance (the same
-    reading is copied into cron_update.py, cron_sync.py and sync.py; the agreement test holds them together).
+    reading is copied into cron_update.py, cron_sync.py, sync.py and dcbot/supervisor.py; the agreement test holds
+    them together).
     plugins.json read and the key not set: "notify". No instance or no plugins.json to be seen (a share not mounted
     yet, a machine that left its instance): the mode last read. The settings cannot be read, or the value is none of
     UPDATE_MODES: the mode last read too, and `problem` says why: a comma too many in plugins.json must not stop a
     machine that follows its branch from getting fixes. The mode last read is update-mode (written by update.py),
-    "notify" when there is none."""
-    def last():
+    "notify" when there is none, and then `problem` says that too (C-04)."""
+    def last(problem="", unseen=""):
+        """The mode last read, with `problem`; none (or not one of UPDATE_MODES): notify, and why, `unseen` being
+        what was not seen (C-04: a machine that never read its settings is told it does not update by itself)."""
         try:
             with open(os.path.expanduser("~/.local/state/altention/update-mode")) as f:
                 m = json.load(f).get("mode")
         except (OSError, ValueError, AttributeError):
             m = None
-        return m if m in UPDATE_MODES else "notify"
+        if m in UPDATE_MODES:
+            return m, problem
+        return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
     named = os.environ.get("ALT_INSTANCE")
     pointer = os.path.expanduser("~/.config/altention/instance")
     if not named and os.path.exists(pointer):
@@ -132,31 +191,31 @@ def update_mode():
             with open(pointer) as f:
                 named = f.readline().strip()
         except (OSError, UnicodeDecodeError) as e:
-            return last(), "讀不了 %s（%s）" % (pointer, e)
+            return last("讀不了 %s（%s）" % (pointer, e))
     if named == "-":  # this machine has left its instance
-        return last(), ""
+        return last(unseen="這台已經離開實例")
     if named:
         inst = os.path.expanduser(named)
         if not os.path.isdir(inst):
-            return last(), "實例資料夾不存在：%s" % inst
+            return last("實例資料夾不存在：%s" % inst)
     else:
         inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
         if not os.path.isdir(inst):
-            return last(), ""
+            return last(unseen="看不到實例（%s）" % inst)
     path = os.path.join(inst, "plugins.json")
     try:
         with open(path, encoding="utf-8") as f:
             got = json.load(f)
     except FileNotFoundError:
-        return last(), ""
+        return last(unseen="實例裡沒有 %s" % path)
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return last(), "讀不出 %s（%s）" % (path, e)
+        return last("讀不出 %s（%s）" % (path, e))
     core = got.get("core", {}) if isinstance(got, dict) else None
     if not isinstance(core, dict):
-        return last(), "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容")
+        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
     mode = core.get("update", "notify")
     if mode not in UPDATE_MODES:
-        return last(), "%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40])
+        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
     return mode, ""
 
 
@@ -170,11 +229,12 @@ def plain_ff():
     if not os.path.isdir(gd) or any(os.path.exists(os.path.join(gd, n)) for n in ("rebase-merge", "rebase-apply", "index.lock")):
         return "沒做（不是 git checkout，或 rebase 進行中）"
     try:
-        lock = open(os.path.join(gd, "agent-git.lock"), "a")  # COMPAT: the lock's name as the sync and deploy.sh have it; renamed with them after stage 4
+        lock = open(os.path.join(gd, "altention-git.lock"), "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return "沒做（鎖被拿著）"
     with lock:
+        before = rev("HEAD")
         for args in (["fetch", "-q"], ["merge", "--ff-only", "-q", "@{u}"]):
             if args[0] == "merge" and refused() and refused() == subprocess.run(
                     ["git", "-C", ENGINE, "rev-parse", "@{u}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -191,7 +251,8 @@ def plain_ff():
                 return "git %s 出錯（%s）" % (args[0], e)
             if r.returncode != 0:
                 return "git %s 失敗：%s" % (args[0], r.stdout.strip()[:200])
-    return "快轉好了"
+        done = after_ff(before)
+    return "快轉好了" + ("（%s）" % done if done else "")
 
 
 LOG_KEPT = 500  # the cron line appends this file's output to ~/.local/state/altention/cron-update.log

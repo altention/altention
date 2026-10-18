@@ -287,6 +287,56 @@ class GlobalHook(unittest.TestCase):
         run("--update")
         self.assertEqual(read(), mine, "--update refreshes an installation, it does not create one")
 
+    def test_install_takes_only_its_own_hooks_out_of_a_shared_group(self):
+        """#code-review-2 / #code-review 2026-10-16: apply put chatlog's hook in the same group, and Claude Code's /hooks
+        adds the owner's there too; --install and --update used to drop the whole group with dchook's hook in it."""
+        conf = os.path.join(self.tmp.name, "claude")
+        os.makedirs(conf)
+        me = "'%s' --global" % os.path.realpath(os.path.join(ROOT, "tools", "dchook"))
+        shared = {"hooks": [{"type": "command", "command": me, "timeout": 20},
+                            {"type": "command", "command": "/usr/bin/python3 /e/chatlog/chatlog.py hook"},
+                            {"type": "command", "command": "my-own-tool --stop"}]}
+        with open(os.path.join(conf, "settings.json"), "w") as f:
+            json.dump({"hooks": {"Stop": [shared], "SessionEnd": [{"hooks": [{"type": "command", "command": me}]}]}}, f)
+        run = lambda flag: subprocess.run([sys.executable, os.path.join(ROOT, "tools", "dchook"), flag], check=True,  # noqa: E731
+                                          env=dict(os.environ, CLAUDE_CONFIG_DIR=conf), stdout=subprocess.DEVNULL)
+
+        def read():
+            with open(os.path.join(conf, "settings.json")) as f:
+                return json.load(f)
+
+        def others(s):
+            return sorted(h["command"] for gs in s.get("hooks", {}).values() for g in gs for h in g["hooks"] if "dchook" not in h["command"])
+        for flag in ("--update", "--install"):
+            run(flag)
+            got = read()
+            self.assertEqual(others(got), ["/usr/bin/python3 /e/chatlog/chatlog.py hook", "my-own-tool --stop"], flag)
+            self.assertEqual(sum("dchook" in h["command"] for g in got["hooks"]["Stop"] for h in g["hooks"]), 1, flag)
+        once = read()
+        run("--update")
+        self.assertEqual(read(), once, "then nothing changes")
+        run("--uninstall")
+        self.assertEqual(others(read()), ["/usr/bin/python3 /e/chatlog/chatlog.py hook", "my-own-tool --stop"])
+        self.assertFalse(any("dchook" in h["command"] for gs in read()["hooks"].values() for g in gs for h in g["hooks"]))
+
+    def test_install_through_an_old_name_writes_the_real_path(self):
+        """C-17: the engine moved and its old folder is a link; a stream started there runs `dchook --update` by the
+        old name. The hooks it writes name the real folder (as apply writes them), or the two would undo each other."""
+        conf = os.path.join(self.tmp.name, "claude")
+        os.makedirs(conf)
+        link = os.path.join(self.tmp.name, "old name")
+        os.symlink(os.path.dirname(os.path.realpath(ROOT)), link)
+        old = "'%s' --global" % os.path.join(link, "dcbot", "tools", "dchook")
+        with open(os.path.join(conf, "settings.json"), "w") as f:
+            json.dump({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": old}]}]}}, f)
+        subprocess.run([sys.executable, os.path.join(link, "dcbot", "tools", "dchook"), "--update"], check=True,
+                       env=dict(os.environ, CLAUDE_CONFIG_DIR=conf), stdout=subprocess.DEVNULL)
+        with open(os.path.join(conf, "settings.json")) as f:
+            commands = [h["command"] for gs in json.load(f)["hooks"].values() for g in gs for h in g["hooks"]]
+        self.assertTrue(commands)
+        self.assertFalse([c for c in commands if link in c], "no hook through the old name")
+        self.assertTrue(all(os.path.realpath(os.path.join(ROOT, "tools", "dchook")) in c for c in commands))
+
 
 @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
 class Discovery(unittest.TestCase):

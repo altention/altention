@@ -148,7 +148,9 @@ class Home(object):
         is a worktree or a second checkout on this machine, which the installer refuses without it."""
         tools = [os.path.dirname(shutil.which(t) or "/usr/bin/x") for t in ("python3", "git", "bash")]
         env = {"HOME": self.home, "USER": ACCOUNT, "LOGNAME": ACCOUNT, "LANG": "C.UTF-8", "SHELL": "/bin/sh",
-               "PATH": os.pathsep.join([self.bin] + sorted(set(tools) | {"/usr/local/bin", "/usr/bin", "/bin"})),
+               # ~/.local/bin last, as a login has it: core.path asks the shell (/bin/sh) for its PATH
+               "PATH": os.pathsep.join([self.bin] + sorted(set(tools) | {"/usr/local/bin", "/usr/bin", "/bin"})
+                                       + [self.path(".local", "bin")]),
                "TMPDIR": self.path("tmp"), "STUB_LOG": self.log, "STUB_CRONTAB": self.crontab,
                "XDG_STATE_HOME": self.path(".local", "state"), "XDG_CACHE_HOME": self.path(".cache"),
                "XDG_CONFIG_HOME": self.path(".config"), "XDG_DATA_HOME": self.path(".local", "share"),
@@ -787,7 +789,7 @@ def s20(r, top):
     r.check("s20.not-refused", not any(REFUSED_LINE.match(x) for x in run["lines"]), "全新的家目錄、解開的壓縮檔：身分檢查放行",
             tail(run))
     said = [x for x in run["lines"] if x.startswith("skip dcbot.token ")]
-    r.check("s20.no-bot-said", bool(said) and "install.sh --token" in said[0], "沒有 token：有一行 skip dcbot.token 說怎麼輸入",
+    r.check("s20.no-bot-said", bool(said) and "install.sh discord" in said[0], "沒有 token：有一行 skip dcbot.token 說怎麼輸入",
             tail(run, 4))
     r.check("s20.instance", os.path.isdir(os.path.join(h.path(INSTANCE), ".git")), "照常建了本機實例")
     pointer = read(h.path(".config", "altention", "engine")) or ""

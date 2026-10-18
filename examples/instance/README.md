@@ -52,7 +52,9 @@ not write it as one key with a dot in its name (`"usage.plan": …`): such a key
   can choose its own. The install guide offers `auto` (recommended: risky actions are blocked rather than asked
   about), `manual` (every action needing permission is asked as buttons) and `bypassPermissions` (never asks, never
   blocks: read `SECURITY.md` first). The README's security summary says more.
-- `sync.interval`: how often the instance and plugin data are committed and pushed.
+- `sync.interval`: how often the instance and plugin data are committed and pushed (`15m`, `30m`, `1h`…: it must
+  divide an hour or a day). It is the short way of `core.schedules.sync`; `./install.sh` (apply) writes it into the
+  sync's cron line. Other schedules: `plugins.<plugin>.schedules` and `core.schedules` (watch, sync, engine-update).
 - `sync.owns`: engine folders that live in the instance instead; the engine's copy becomes a link to it. `memory` is
   always included; a new instance lists `knowledge`.
 - `sync.dirs.<name>.remote`: where a plugin's data repository is pushed (`chatlog`: conversation logs; `progress`:
@@ -61,11 +63,15 @@ not write it as one key with a dot in its name (`"usage.plan": …`): such a key
 - `usage.channel`, `status.channel`, `planner.channel`: the channel ID each plugin posts to.
 - `planner.schedule_files`: the schedule file(s) planner sends reminders from (a path or a list). Leave it out to use
   `<data>/planner/reminders.json`, made on first use; `python3 planner/remind.py --where` prints the one in use.
+- `planner.folder`: a folder of your own the secretary works in, if it already had one before (its CLAUDE.md and
+  plan there). Left as it is: nothing is made or written in it. Leave it out for `<data>/planner`, made on first use.
 - `usage.plan`: your subscription as `[name, how many Pro allowances]`, e.g. `["Pro", 1]`, `["Max 5x", 5]`,
   `["Max 20x", 20]` (Team and Enterprise: as many Pro allowances as your limit is worth). Only the subscription
-  limits part uses it; left out, it assumes Max 20x.
-- `usage.subscription_limits`: `true` to show your subscription limits on the usage board (one cheap request an
-  hour, counted against your limits; see the README's known limitations). Off by default.
+  limits part uses it; left out, the board says the plan is not set and shows the percentages without the Pro
+  multiples.
+- `usage.subscription_limits`: whether the usage board shows your subscription limits (one smallest request an
+  hour on haiku, counted against your 5-hour limit; see the README's known limitations). On by default; `false`
+  turns it off.
 - `plugins.<name>.on`: the machine a single-machine plugin runs on. `plugins.usage.sources`: machines whose usage
   is collected; leave it out to collect only the machine usage runs on (each other machine you list needs
   `usage/install-node.sh` run there once). `plugins.<name>.disabled_on`: machines where an every-machine plugin is turned off.
@@ -74,4 +80,6 @@ not write it as one key with a dot in its name (`"usage.plan": …`): such a key
 
 An instance is a git repository. To use it on several machines, give it a **private** remote, then on each other
 machine run `python3 ops/instance.py join <remote>` followed by `./install.sh`. The sync job commits and pushes
-`knowledge/` and `memory/` every `sync.interval`; `machines.json` and `plugins.json` you commit and push yourself.
+`knowledge/`, `memory/`, `backup/`, `machines.json` and `plugins.json` every `sync.interval`. A settings file that
+does not read as a valid one is left out of that commit (the system check's alerts say so), and a settings file
+removed is never committed. To have another machine apply a change at once, commit and push it yourself.

@@ -390,7 +390,7 @@ class Upstream(Repo):
     def test_the_fetch_before_the_candidate_waits_for_the_git_lock(self):
         import fcntl
         h = self.reviewed({"altention/cron.py": "print('new')\n"})
-        with open(os.path.join(self.live, ".git", "agent-git.lock"), "a") as held:
+        with open(os.path.join(self.live, ".git", "altention-git.lock"), "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             p = subprocess.Popen([sys.executable, os.path.join(self.live, "dcbot", "deploy_candidate.py"), "prepare", "m", h],
                                  cwd=os.path.join(self.live, "dcbot"), env=ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

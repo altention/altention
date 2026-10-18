@@ -9,11 +9,15 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 from altention import config, sync
+
+ENGINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def sh(cwd, *args):
@@ -209,6 +213,69 @@ class Repos(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         copy = os.path.join(self.a, ".git", sync.SAVED, saved[0], "memory", "written later.md")
         self.assertEqual(read(copy), "keep me\n", "nothing wiped: a copy is kept for a person to merge")
+
+    def test_only_gits_own_stale_locks_are_removed(self):
+        """recover() removes the lock files git itself makes and leaves every other *.lock: those are flocks (ours,
+        deploy.sh's, an older engine's), and removing one that is held lets a second holder in beside the first."""
+        gd = os.path.join(self.a, ".git")
+        os.makedirs(os.path.join(gd, "worktrees", "w"), exist_ok=True)
+        gone = ["index.lock", "HEAD.lock", "ORIG_HEAD.lock", "REBASE_HEAD.lock", "packed-refs.lock", "config.lock",
+                "refs/heads/main.lock", "refs/remotes/origin/main.lock", "worktrees/w/index.lock", "worktrees/w/HEAD.lock",
+                "logs/HEAD.lock", "logs/refs/heads/main.lock", "logs/refs/remotes/origin/main.lock", "logs/refs/stash.lock",
+                "worktrees/w/logs/HEAD.lock", "MERGE_MSG.lock", "AUTO_MERGE.lock", "MERGE_RR.lock", "gc.pid.lock",
+                "next-index-4242.lock", "index.stash.4242.lock", "worktrees/w/config.worktree.lock"]
+        kept = ["altention-deploy.lock", "agent-git.lock", "my tool.lock", "worktrees/w/someones.lock", "Mine.lock",
+                sync.LOCK_NAME]
+        old = time.time() - sync.STALE_INDEX_LOCK - 60
+        for rel in gone + kept:
+            write(os.path.join(gd, rel), "")
+            os.utime(os.path.join(gd, rel), (old, old))
+        said = []
+        repo = sync.Repo(self.a)
+        self.assertIsNone(sync.recover(repo, said.append))
+        self.assertEqual([r for r in gone if os.path.exists(os.path.join(gd, r))], [], "git's own: removed")
+        self.assertEqual([r for r in kept if not os.path.exists(os.path.join(gd, r))], [], "every other name: left")
+        self.assertEqual(len(said), len(gone))
+        self.assertFalse(any("deploy" in t or "agent-git" in t for t in said))
+
+    def test_a_fresh_lock_of_a_rebase_is_git_at_work(self):
+        """A lock inside rebase-merge/ that is fresh: git is in the middle of that rebase; it is left as it is."""
+        self.upstream("from b\n")
+        write(os.path.join(self.a, "knowledge", "gotchas.md"), "from a\n", "a")
+        sh(self.a, "git", "commit", "-qam", "a")
+        sh(self.a, "git", "fetch", "-q")
+        sh(self.a, "git", "rebase", "-m", "origin/main")
+        write(os.path.join(self.a, ".git", "agent-rebase"), "")
+        write(os.path.join(self.a, ".git", "rebase-merge", "git-rebase-todo.lock"), "")
+        repo = sync.Repo(self.a)
+        with sync.locked(repo):
+            self.assertIn("還新", sync.recover(repo, lambda t: None) or "")
+        self.assertTrue(os.path.isdir(os.path.join(self.a, ".git", "rebase-merge")))
+
+    def test_a_fresh_flock_is_no_git_at_work(self):
+        """A rebase of ours left halfway is undone even while deploy.sh holds its fresh altention-deploy.lock: only
+        git's own fresh locks mean git is still busy here."""
+        self.upstream("from b\n")
+        write(os.path.join(self.a, "knowledge", "gotchas.md"), "from a\n", "a")
+        sh(self.a, "git", "commit", "-qam", "a")
+        sh(self.a, "git", "fetch", "-q")
+        sh(self.a, "git", "rebase", "-m", "origin/main")
+        write(os.path.join(self.a, ".git", "agent-rebase"), "")
+        write(os.path.join(self.a, ".git", "altention-deploy.lock"), "")  # fresh: a --commit deploy holds it
+        repo = sync.Repo(self.a)
+        with sync.locked(repo):
+            self.assertIsNone(sync.recover(repo, lambda t: None))
+        self.assertFalse(os.path.isdir(os.path.join(self.a, ".git", "rebase-merge")))
+        self.assertTrue(os.path.exists(os.path.join(self.a, ".git", "altention-deploy.lock")))
+
+    def test_git_own_lock_names(self):
+        for rel in ("index.lock", "FETCH_HEAD.lock", "shallow.lock", "refs/tags/v1.lock", "worktrees/x/ORIG_HEAD.lock",
+                    "rebase-merge/git-rebase-todo.lock", "rebase-merge/author-script.lock", "logs/refs/stash.lock",
+                    "worktrees/x/logs/HEAD.lock", "HEADS.lock"):
+            self.assertTrue(sync.git_own_lock(rel), rel)
+        for rel in ("altention-deploy.lock", "agent-git.lock", "head.lock", "worktrees/x/y/z.lock", "objects/a.lock",
+                    "worktrees/index.lock", "Merge.lock", "next-index-x.lock", "refs/heads/main"):
+            self.assertFalse(sync.git_own_lock(rel), rel)
 
     def test_no_remote(self):
         sh(self.a, "git", "remote", "remove", "origin")
@@ -632,3 +699,299 @@ class HandBackLock(AdoptList):
         self.assertEqual(state, "engine")
         self.assertTrue(os.path.isfile(os.path.join(self.instance, "knowledge", "README.md")), "left where it is")
 
+
+
+class EngineNotPushed(unittest.TestCase):
+    """C-31: the sync pulls the engine and never pushes it (a public engine's fork is public); the instance is
+    pushed as before."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="家 ")
+        os.environ.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+                           "GIT_COMMITTER_EMAIL": "t@example.com"})
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        self.repos = {}
+        for name in ("engine", "instance"):
+            bare = os.path.join(self.tmp, name + ".git")
+            sh(self.tmp, "git", "init", "-q", "--bare", bare)
+            sh(bare, "git", "symbolic-ref", "HEAD", "refs/heads/main")
+            work = os.path.join(self.tmp, name)
+            sh(self.tmp, "git", "clone", "-q", bare, work)
+            sh(work, "git", "checkout", "-q", "-b", "main")
+            write(os.path.join(work, "README.md"), name + "\n")
+            sh(work, "git", "add", "-A")
+            sh(work, "git", "commit", "-qm", "init")
+            sh(work, "git", "push", "-q", "-u", "origin", "main")
+            self.repos[name] = (bare, work)
+        self.engine, self.instance = self.repos["engine"][1], self.repos["instance"][1]
+        write(os.path.join(self.instance, "plugins.json"), json.dumps({"format": 1, "core": {"update": "branch"}}))
+        sh(self.instance, "git", "add", "-A")
+        sh(self.instance, "git", "commit", "-qm", "settings")
+        sh(self.instance, "git", "push", "-q")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def head(self, name):
+        return sh(self.repos[name][0], "git", "rev-parse", "main").stdout.strip()
+
+    def run_sync(self, instance=True):
+        where = mock.patch.object(config, "instance_dir", return_value=self.instance) if instance else \
+            mock.patch.object(config, "instance_dir", return_value=None)
+        with mock.patch.dict(os.environ, {"HOME": self.home}), mock.patch.object(config, "ENGINE", self.engine), where, \
+                mock.patch.object(config, "this_machine", return_value="host-a"), \
+                mock.patch.object(sync, "not_this_engine", return_value=""), \
+                mock.patch.object(sync, "update_mode", return_value=("branch", None)), \
+                mock.patch.object(sync, "compose_global", return_value="composed"):
+            return sync.run()
+
+    def test_a_skill_the_update_brings_gets_its_link(self):
+        """manager 2026-10-16: an update brought skills/tour and every machine said 「缺少 skill：tour」, since no
+        path that moves the engine runs install.sh. The sync's round makes the missing link, whether this round pulled
+        it (standing in) or update.py did before (nothing new to pull)."""
+        other = os.path.join(self.tmp, "other")
+        sh(self.tmp, "git", "clone", "-q", "-b", "main", self.repos["engine"][0], other)
+        write(os.path.join(other, "skills", "newone", "SKILL.md"), "---\nname: newone\n---\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "a new skill")
+        sh(other, "git", "push", "-q")
+        link = os.path.join(self.home, ".claude", "skills", "newone")
+        st = self.run_sync()
+        self.assertEqual(os.readlink(link), os.path.join(self.engine, "skills", "newone"))
+        self.assertEqual(st["skills"], {"made": ["newone"]})
+        os.remove(link)  # update.py moved the engine: this round pulls nothing and still links it
+        st = self.run_sync()
+        self.assertEqual((os.readlink(link), st["skills"]), (os.path.join(self.engine, "skills", "newone"), {"made": ["newone"]}))
+        self.assertEqual(self.run_sync()["skills"], {"made": []})
+
+    def test_a_worktrees_round_links_nothing(self):
+        write(os.path.join(self.engine, "skills", "newone", "SKILL.md"), "x\n")
+        with mock.patch.object(sync, "not_this_engine", return_value="a worktree"), \
+                mock.patch.dict(os.environ, {"HOME": self.home}), mock.patch.object(config, "ENGINE", self.engine):
+            self.assertEqual(sync.new_skills(lambda t: None), {"skipped": "a worktree"})
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", "newone")))
+
+    def test_a_commit_made_here_is_not_pushed_the_instance_is(self):
+        other = os.path.join(self.tmp, "other")  # someone else moved the engine's upstream
+        sh(self.tmp, "git", "clone", "-q", "-b", "main", self.repos["engine"][0], other)
+        write(os.path.join(other, "up.txt"), "up\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "upstream")
+        sh(other, "git", "push", "-q")
+        upstream = self.head("engine")
+        write(os.path.join(self.engine, "local.py"), "x = 1\n")  # a commit here that may hold private values
+        sh(self.engine, "git", "add", "-A")
+        sh(self.engine, "git", "commit", "-qm", "local")
+        write(os.path.join(self.instance, "knowledge", "note.md"), "note\n")
+        st = self.run_sync()
+        self.assertEqual(self.head("engine"), upstream, "the engine's upstream got nothing from here")
+        self.assertTrue(os.path.exists(os.path.join(self.engine, "up.txt")), "the engine was still pulled")
+        self.assertEqual((st["engine"]["ok"], st["engine"]["ahead"]), (True, 1))
+        self.assertIn("knowledge/note.md", sh(self.repos["instance"][0], "git", "ls-tree", "-r", "--name-only", "main").stdout,
+                      "the instance is pushed as before")
+        self.assertEqual(st["instance"].get("ahead"), None)
+        with open(os.path.join(self.home, ".local", "state", "altention", "sync.json")) as f:
+            self.assertEqual(json.load(f)["engine"]["ahead"], 1, "written down for doctor")
+
+    def test_no_instance_yet_the_engines_knowledge_is_committed_and_stays_here(self):
+        write(os.path.join(self.engine, "knowledge", "note.md"), "note\n")
+        before = self.head("engine")
+        st = self.run_sync(instance=False)
+        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "", "committed here")
+        self.assertEqual(self.head("engine"), before, "not pushed")
+        self.assertEqual((st["engine"]["ok"], st["engine"]["ahead"]), (True, 1))
+
+    def test_level_with_the_upstream_says_none_ahead(self):
+        st = self.run_sync()
+        self.assertEqual((st["engine"]["ok"], st["engine"]["ahead"]), (True, 0))
+
+
+class DataRepos(unittest.TestCase):
+    """C-26: a plugin's data folder marked sync "timer" (the secretary's) is committed, updated and pushed by the
+    sync like the instance, under its own lock; one with no origin is left alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="家 ")
+        os.environ.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+                           "GIT_COMMITTER_EMAIL": "t@example.com"})
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        self.env = mock.patch.dict(os.environ, {"HOME": self.home})
+        self.env.start()
+        self.bare = os.path.join(self.tmp, "planner.git")
+        sh(self.tmp, "git", "init", "-q", "--bare", self.bare)
+        sh(self.bare, "git", "symbolic-ref", "HEAD", "refs/heads/main")
+        self.folder = os.path.join(self.tmp, "data", "planner")
+        os.makedirs(self.folder)
+        sh(self.folder, "git", "init", "-q")
+        sh(self.folder, "git", "checkout", "-q", "-b", "main")
+        write(os.path.join(self.folder, "plan.md"), "# 計畫\n")
+        sh(self.folder, "git", "add", "-A")
+        sh(self.folder, "git", "commit", "-qm", "first")
+        self.data = mock.patch.object(sync, "timer_data", return_value=[("planner/reminders", self.folder)])
+        self.data.start()
+
+    def tearDown(self):
+        self.data.stop()
+        self.env.stop()
+        shutil.rmtree(self.tmp)
+
+    def on_remote(self):
+        return sh(self.bare, "git", "ls-tree", "-r", "--name-only", "main").stdout.split()
+
+    def attach(self):
+        """What ops/remote.py attach leaves: origin and our pre-push hook."""
+        sh(self.folder, "git", "remote", "add", "origin", self.bare)
+        sys.path.insert(0, os.path.join(ENGINE, "ops"))
+        import remote
+        self.assertTrue(remote.put_hook(self.folder)[0])
+
+    def test_our_hook_mark_is_remote_pys(self):
+        sys.path.insert(0, os.path.join(ENGINE, "ops"))
+        import remote
+        self.assertEqual(sync.OUR_HOOK, remote.HOOK_MARK)
+
+    def test_the_owners_own_repo_with_an_origin_and_no_hook_is_left(self):
+        """Manager 2026-10-16: only a repo we took on (our hook in) is synced; a setting pointing a plugin's data at
+        the owner's own repo must not have it committed and pushed every 15 minutes."""
+        sh(self.folder, "git", "remote", "add", "origin", self.bare)
+        write(os.path.join(self.folder, "plan.md"), "- 半寫的\n", "a")
+        r = sync.sync_data("host-a", lambda t: None)["planner/reminders"]
+        self.assertIn("沒接上", r["note"])
+        self.assertEqual(self.on_remote(), [], "nothing pushed")
+        self.assertIn("plan.md", sh(self.folder, "git", "status", "--porcelain").stdout, "nothing committed")
+        self.assertEqual(sh(self.folder, "git", "rev-list", "--count", "HEAD").stdout.strip(), "1")
+
+    def test_no_origin_is_left_alone(self):
+        write(os.path.join(self.folder, "plan.md"), "- 新的一項\n", "a")
+        out = sync.sync_data("host-a", lambda t: None)
+        self.assertEqual(out["planner/reminders"]["note"], "沒有設定遠端，只留在這台")
+        self.assertIn("plan.md", sh(self.folder, "git", "status", "--porcelain").stdout, "not committed by the sync")
+
+    def test_an_origin_without_upstream_is_pushed_and_tracked_then_kept_up(self):
+        self.attach()
+        write(os.path.join(self.folder, "reminders.json"), "{\"items\": []}\n")  # written by another channel's Claude
+        r = sync.sync_data("host-a", lambda t: None)["planner/reminders"]
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(sorted(self.on_remote()), ["plan.md", "reminders.json"])
+        self.assertEqual(sh(self.folder, "git", "rev-parse", "--abbrev-ref", "@{u}").stdout.strip(), "origin/main")
+        self.assertIn("sync: planner/reminders @ host-a", sh(self.folder, "git", "log", "-1", "--format=%s").stdout)
+        other = os.path.join(self.tmp, "other")  # the same folder on another machine
+        sh(self.tmp, "git", "clone", "-q", self.bare, other)
+        write(os.path.join(other, "plan.md"), "- 別台加的\n", "a")
+        sh(other, "git", "commit", "-qam", "there")
+        sh(other, "git", "push", "-q")
+        write(os.path.join(self.folder, "reminders.json"), "{\"items\": [1]}\n")
+        r = sync.sync_data("host-a", lambda t: None)["planner/reminders"]
+        self.assertTrue(r["ok"], r)
+        self.assertIn("別台加的", read(os.path.join(self.folder, "plan.md")), "pulled")
+        sh(other, "git", "pull", "-q")
+        self.assertEqual(read(os.path.join(other, "reminders.json")), "{\"items\": [1]}\n", "diverged, met, pushed")
+
+    def test_a_remote_with_the_branch_already_is_tracked_and_taken(self):
+        self.attach()
+        sh(self.folder, "git", "push", "-q", "origin", "main")  # pushed once without -u
+        other = os.path.join(self.tmp, "other")
+        sh(self.tmp, "git", "clone", "-q", self.bare, other)
+        write(os.path.join(other, "notes.md"), "n\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "there")
+        sh(other, "git", "push", "-q")
+        r = sync.sync_data("host-a", lambda t: None)["planner/reminders"]
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(os.path.exists(os.path.join(self.folder, "notes.md")))
+
+    def test_a_held_lock_stops_this_repo_only(self):
+        self.attach()
+        write(os.path.join(self.folder, "plan.md"), "- 秘書正在寫\n", "a")
+        repo = sync.Repo(self.folder)
+        with mock.patch.object(sync, "WAIT", 1), sync.locked(repo):  # the secretary's home-git commit
+            r = sync.sync_data("host-a", lambda t: None)["planner/reminders"]
+        self.assertFalse(r["ok"])
+        self.assertIn("git 鎖", r["error"])
+        self.assertEqual(self.on_remote(), [], "nothing pushed")
+        self.assertIn("plan.md", sh(self.folder, "git", "status", "--porcelain").stdout, "nothing committed")
+
+    def test_a_guard_that_says_no_stops_the_push(self):
+        sh(self.folder, "git", "remote", "add", "origin", self.bare)
+        r = sync.sync_repo(self.folder, ["."], "sync", lambda t: None, track=True, guard=lambda repo: "沒有推：公開的 repo")
+        self.assertFalse(r["ok"])
+        self.assertIn("公開的 repo", r["error"])
+        self.assertEqual(self.on_remote(), [])
+
+    def test_the_guard_runs_remote_py_in_the_repo(self):
+        sh(self.folder, "git", "remote", "add", "origin", self.bare)
+        repo = sync.Repo(self.folder)
+        self.assertIsNone(sync.push_guard(repo), "a folder on this machine: private")
+        fake = os.path.join(self.tmp, "eng")
+        for code, want in ((10, "公開"), (1, None)):
+            write(os.path.join(fake, "ops", "remote.py"),
+                  "import sys\nprint('altention：沒有推：公開的 repo', file=sys.stderr)\nsys.exit(%d)\n" % code)
+            with mock.patch.object(config, "ENGINE", fake):
+                got = sync.push_guard(repo)
+            if want is None:
+                self.assertIsNone(got, "remote.py failing: our hook checks again, and lets it go as well")
+            else:
+                self.assertIn(want, got)
+
+    def test_only_its_own_repo_is_synced(self):
+        inner = os.path.join(self.folder, "sub")
+        os.makedirs(inner)
+        self.assertFalse(sync.own_repo(inner), "a folder inside another repo")
+        self.assertTrue(sync.own_repo(self.folder))
+
+    def test_timer_data_reads_the_plugins_on_here(self):
+        sync_none = {"name": "x", "data": [{"name": "cache", "path": "~/c", "sync": "none"},
+                                           {"name": "kept", "path": "{data}/kept"}]}  # no sync: "timer"
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "planner",
+                               "plugin.json")) as f:
+            planner = json.load(f)
+        rows = [("planner", "/p", planner, "on", ""), ("x", "/x", sync_none, "on", ""),
+                ("off", "/o", {"data": [{"name": "d", "path": "/o/d"}]}, "disabled", ""), ("bad", "/b", None, "unknown", "")]
+        self.data.stop()
+        try:
+            with mock.patch("altention.plugin.on_this_machine", return_value=(rows, [])), \
+                    mock.patch.dict(os.environ, {"ALT_DATA": os.path.join(self.tmp, "data")}):
+                got = sync.timer_data()
+        finally:
+            self.data.start()
+        self.assertEqual(got, [("planner/reminders", self.folder), ("x/kept", os.path.join(self.tmp, "data", "kept"))])
+
+
+class InstanceSettings(EngineNotPushed):
+    """C-26: the instance's settings (plugins.json, machines.json) and backup/ are committed by the sync; a settings
+    file that does not read is left out (every other machine would hold the instance back), and never removed."""
+
+    def remote_tree(self):
+        return sh(self.repos["instance"][0], "git", "ls-tree", "-r", "--name-only", "main").stdout.split()
+
+    def remote_file(self, name):
+        return sh(self.repos["instance"][0], "git", "show", "main:" + name).stdout
+
+    def test_the_settings_and_backup_are_committed(self):
+        write(os.path.join(self.instance, "plugins.json"), json.dumps({"format": 1, "core": {"update": "branch"},
+                                                                       "plugins": {"planner": {"disabled_on": ["lap"]}}}))
+        write(os.path.join(self.instance, "machines.json"), json.dumps({"format": 1, "machines": {"lap": {}}}))
+        write(os.path.join(self.instance, "backup", "dcbot", "channels.json"), "{}\n")
+        st = self.run_sync()
+        self.assertTrue(st["instance"]["ok"], st["instance"])
+        self.assertIn("machines.json", self.remote_tree())
+        self.assertIn("backup/dcbot/channels.json", self.remote_tree())
+        self.assertIn("disabled_on", self.remote_file("plugins.json"))
+
+    def test_a_broken_settings_file_is_not_committed_and_said(self):
+        write(os.path.join(self.instance, "plugins.json"), "{\"format\": 1, \"plugins\": ")  # half saved
+        write(os.path.join(self.instance, "knowledge", "note.md"), "note\n")
+        self.run_sync()
+        self.assertEqual(json.loads(self.remote_file("plugins.json")), {"format": 1, "core": {"update": "branch"}})
+        self.assertIn("knowledge/note.md", self.remote_tree(), "the rest still goes out")
+        alerts = read(os.path.join(self.home, ".local", "state", "altention", "alerts"))
+        self.assertIn("settings-broken", alerts)
+
+    def test_a_settings_file_removed_here_is_not_removed_everywhere(self):
+        os.remove(os.path.join(self.instance, "plugins.json"))
+        st = self.run_sync()
+        self.assertIn("plugins.json", self.remote_tree())
+        self.assertFalse(st["instance"]["ok"])
+        self.assertIn("plugins.json", st["instance"]["error"])

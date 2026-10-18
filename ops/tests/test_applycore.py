@@ -703,13 +703,13 @@ class Report(Rig):
         extra = ('5 5 * * * /usr/bin/python3 "%s/progress/old.py"  # altention:progress' % self.engine).encode("utf-8")
         self.put(self.get() + [extra])
         rep = self.report()
-        self.assertEqual(len(rep["remove"]), 1)
+        self.assertEqual((len(rep["remove"]), len(rep["kept"])), (0, 1), "progress is on: apply keeps it, said so")
         self.assertIsNone(rep["refuse"])
         self.put(self.get() + [extra.replace(b"old.py", b"older.py")])
         before = self.snapshot()
         rep = self.report()
-        self.assertEqual(len(rep["remove"]), 2)
-        self.assertIn("mass-removal", rep["refuse"])
+        self.assertEqual(len(rep["kept"]), 2)
+        self.assertIn("mass-removal", rep["refuse"], "the guard still counts them")
         self.assertEqual(self.snapshot(), before)
 
     def test_over_a_third_of_the_marked_lines_is_refused_even_when_it_is_one(self):
@@ -719,7 +719,7 @@ class Report(Rig):
             f.write("{}")
         os.makedirs(os.path.dirname(os.path.expanduser("~/.claude/settings.json")), exist_ok=True)
         rep = self.report()
-        self.assertEqual(len(rep["remove"]), 1)
+        self.assertEqual(len(rep["remove"]) + len(rep["kept"]), 1)
         self.assertIn("mass-removal", rep["refuse"])
 
     def test_not_knowing_what_this_machine_is_is_refused(self):
@@ -886,3 +886,348 @@ class Command(Rig):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Overrides(Report):
+    """C-37: the instance's plugins.<name>.schedules overrides a plugin's when or turns one item off (and core.schedules
+    the core's watch). apply --write changes only the lines of the items overridden, their time only, without
+    --allow-time; an override that cannot be used leaves its line byte for byte; taking an override away puts the
+    plugin's time back; the report does not take such changes for a mass removal (manager 2026-10-17)."""
+    BASE = {"plugins": {"progress": {"on": "host-a"}, "usage": {"on": "host-a"}}}
+
+    def apply_with(self, settings, write=True):
+        out = io.StringIO()
+        engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        cfg = plugins.config
+        with mock.patch.object(cfg, "instance_dir", return_value=os.path.join(self.tmp, "instance")), \
+                mock.patch.object(cfg, "settings", return_value=settings), \
+                mock.patch.object(cfg, "setting", return_value=None), \
+                mock.patch.object(cfg, "inventory", return_value={"machines": {"host-a": {"roles": ["chatlog", "progress", "usage", "planner"]}, "host-b": {}}}), \
+                mock.patch.object(cfg, "this_machine", return_value="host-a"), \
+                mock.patch.object(cfg, "bot_machine", return_value=("host-a", {}, False)), \
+                mock.patch.object(plugins.plugin, "ENGINE", engine):
+            code = plugins.apply(write, (), out)
+        return code, out.getvalue()
+
+    def settings(self, **schedules):
+        s = json.loads(json.dumps(self.BASE))
+        for name, o in schedules.items():
+            if name == "core":
+                s["core"] = {"schedules": o}
+            else:
+                s["plugins"].setdefault(name, {})["schedules"] = o
+        return s
+
+    def line(self, marker):
+        found = [l for l in self.get() if l.endswith(("# altention:%s" % marker).encode("utf-8"))]
+        self.assertEqual(len(found), 1, (marker, self.get()))
+        return found[0]
+
+    def test_three_plugins_retimed_at_once_only_their_lines_and_only_the_time(self):
+        self.all_as_asked()
+        before = self.get()
+        s = self.settings(progress={"run": {"when": {"at": "03:00", "days": "daily"}}},
+                          usage={"collect": {"when": {"every": "3h"}}},
+                          chatlog={"sync": {"when": {"every": "1h", "offset": "machine"}}})
+        rep = self.report(settings=s)
+        self.assertIsNone(rep["refuse"], rep)
+        self.assertEqual(sorted((r["plugin"], r["name"], r.get("auto")) for r in rep["retime"]),
+                         [("chatlog", "sync", True), ("progress", "run", True), ("usage", "collect", True)])
+        self.assertEqual(rep["remove"] + rep["add"], [])
+        code, text = self.apply_with(s)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(text.count("改時間（實例設定改的）"), 3, text)
+        after = self.get()
+        changed = [(b, a) for b, a in zip(before, after) if b != a]
+        self.assertEqual(len(before), len(after))
+        self.assertEqual(len(changed), 3, changed)
+        for b, a in changed:
+            self.assertEqual(b.split()[5:], a.split()[5:], "the command and the marker stay")
+        self.assertTrue(self.line("progress/run").startswith(b"0 3 * * * "))
+        self.assertTrue(self.line("usage/collect").startswith(b"0 */3 * * * "))
+        self.assertEqual(self.line("chatlog/sync").split()[1:5], [b"*", b"*", b"*", b"*"])
+        code, text = self.apply_with(s)
+        self.assertIn("沒有要改的", text, "the next run finds nothing")
+
+    def test_an_override_that_cannot_be_used_leaves_its_line_byte_for_byte(self):
+        self.all_as_asked()
+        before = self.get()
+        for bad in ({"run": {"when": {"every": "7m"}}}, {"run": {"wehn": {"every": "1h"}}}, {"run": {"when": {"at": "3:00"}}},
+                    {"run": {"enabled": "no"}}, {"run": "daily"}):
+            s = self.settings(progress=bad)
+            code, text = self.apply_with(s)
+            self.assertEqual(self.get(), before, (bad, text))
+            self.assertIn("不動 progress/run：不知道（實例的設定不能用：plugins.progress.schedules.run：", text)
+            rep = self.report(settings=s)
+            self.assertEqual((rep["retime"], rep["remove"], rep["add"], rep["kept"]), ([], [], [], []), rep)
+            self.assertIn("progress/run", [u[0] for u in rep["unknown"]])
+        s = self.BASE.copy()
+        s = dict(s, plugins=dict(s["plugins"], progress={"on": "host-a", "schedules": ["run"]}))
+        self.apply_with(s)
+        self.assertEqual(self.get(), before, "a schedules block that is not an object: every item held")
+
+    def test_an_item_turned_off_loses_its_line_and_comes_back_when_turned_on(self):
+        self.all_as_asked()
+        before = self.get()
+        s = self.settings(usage={"collect": {"enabled": False}})
+        rep = self.report(settings=s)
+        self.assertIsNone(rep["refuse"], "the instance's own word is no mass removal")
+        self.assertEqual([(r["status"], r["name"]) for r in rep["remove"]], [("turned off", "collect")])
+        code, text = self.apply_with(s)
+        self.assertIn("拿掉（實例設定關掉了 usage/collect）", text)
+        self.assertEqual([l for l in before if b"altention:usage/collect" not in l], self.get())
+        self.apply_with(self.settings())
+        self.assertEqual(sorted(self.get()), sorted(before), "turned on again: the line is back")
+
+    def test_an_override_taken_away_puts_the_plugins_time_back_a_hand_edit_is_left(self):
+        self.all_as_asked()
+        before = self.line("progress/run")
+        self.apply_with(self.settings(progress={"run": {"when": {"every": "1h"}}}))
+        self.assertTrue(self.line("progress/run").startswith(b"0 * * * * "))
+        code, text = self.apply_with(self.settings())
+        self.assertIn("改時間（實例的設定拿掉了，回到插件的時間）：progress/run", text)
+        self.assertEqual(self.line("progress/run"), before)
+        hand = before.replace(b"*/10 * * * *", b"*/20 * * * *", 1)  # changed by hand in the crontab: not ours to undo
+        self.assertNotEqual(hand, before)
+        self.put([hand if l == before else l for l in self.get()])
+        code, text = self.apply_with(self.settings())
+        self.assertIn("沒改（時間不同，要改請加 --allow-time progress/run）", text)
+        self.assertEqual(self.line("progress/run"), hand)
+
+    def test_the_report_says_auto_as_apply_does_it_when_an_override_is_taken_away(self):
+        """#code-review-2 on c45394d: the report did not set apply's machine, read no overrides.json and said auto
+        false for a line apply then put back by itself."""
+        self.all_as_asked()
+        self.apply_with(self.settings(progress={"run": {"when": {"every": "1h"}}}))
+        applycore.MACHINE[0] = "this-machine"  # as a fresh `plugins.py report` process starts
+        rep = self.report(settings=self.settings())
+        self.assertEqual([(r["name"], r.get("auto")) for r in rep["retime"]], [("run", True)])
+        applycore.MACHINE[0] = "this-machine"
+        code, text = self.apply_with(self.settings())
+        self.assertIn("改時間（實例的設定拿掉了，回到插件的時間）：progress/run", text)
+        hand = [l for l in self.get() if l.endswith(b"# altention:chatlog/sync")][0]
+        self.put([hand.replace(hand.split(b" ", 1)[0], b"59", 1) if l == hand else l for l in self.get()])
+        applycore.MACHINE[0] = "this-machine"
+        rep = self.report(settings=self.settings())
+        self.assertEqual([(r["name"], r.get("auto")) for r in rep["retime"]], [("sync", None)], "a hand edit: not automatic")
+        code, text = self.apply_with(self.settings())
+        self.assertIn("沒改（時間不同，要改請加 --allow-time chatlog/sync）", text)
+
+    def test_another_engines_line_with_the_same_marker_is_left(self):
+        """#code-review on c45394d: turning remind off took another engine's line with the marker planner/remind too.
+        Only a line naming this engine (or a folder it moved from) is turned off or held by its marker."""
+        self.all_as_asked()
+        other = b'*/5 * * * * /usr/bin/python3 "/srv/other/engine/planner/remind.py" >>"/srv/other/planner.out" 2>&1  # altention:planner/remind'
+        self.put(self.get() + [other])
+        self.apply_with(self.settings())
+        before = self.get()
+        self.assertIn(other, before, "as before: not ours to take")
+        code, text = self.apply_with(self.settings(planner={"remind": {"enabled": False}}))
+        self.assertEqual(text.count("拿掉（實例設定關掉了 planner/remind）"), 1, text)
+        self.assertEqual(self.get(), [l for l in before if not (l.endswith(b"# altention:planner/remind") and l != other)])
+        rep = self.report(settings=self.settings(planner={"remind": {"enabled": False}}))
+        self.assertEqual([r["status"] for r in rep["remove"]], [], "this engine's line is gone already; the other is no item's")
+        self.apply_with(self.settings(planner={"remind": {"when": {"every": "7m"}}}))
+        self.assertIn(other, self.get(), "held: its line, and only this engine's, is left as it is")
+
+    def test_the_cores_watch_and_sync_may_be_overridden_and_their_intervals_written(self):
+        """C-37 C: the sync's interval (sync.interval) and the watch's change their lines; the supervisor's may not;
+        apply writes the intervals update.py and the sync count three rounds by."""
+        self.all_as_asked()
+        before = self.get()
+        s = self.settings(core={"watch": {"when": {"every": "30m", "offset": "machine", "after": "13m"}},
+                                "supervisor": {"when": {"every": "10m"}}})
+        s["sync"] = {"interval": "1h"}
+        code, text = self.apply_with(s, write=False)
+        self.assertIn("不動 core.schedules.supervisor：不知道（這一筆不用：這一版還不能改（核心只開放 watch、sync、engine-update））", text)
+        rep = self.report(settings=s)
+        self.assertEqual(sorted((r["plugin"], r["name"]) for r in rep["core"]), [("core", "sync"), ("core", "watch")],
+                         "the core's: shown, never automatic")
+        self.apply_with(s)
+        changed = [(b, a) for b, a in zip(before, self.get()) if b != a]
+        self.assertEqual(sorted(a.split(b"# ")[-1] for b, a in changed), [b"altention:core/sync", b"altention:core/watch"])
+        sync = [a for b, a in changed if a.endswith(b"core/sync")][0]
+        self.assertEqual(sync.split()[1:5], [b"*", b"*", b"*", b"*"], "once an hour")
+        with open(applycore.intervals_path()) as f:
+            self.assertEqual(json.load(f), {"engine-update": 900, "sync": 3600, "watch": 1800})
+        s = self.settings(core={"engine-update": {"enabled": False}})
+        code, text = self.apply_with(s)
+        self.assertIn("不能關", text)
+        with open(applycore.intervals_path()) as f:
+            self.assertEqual(json.load(f)["engine-update"], 900, "its line is left: what runs is what is written")
+
+    def test_the_intervals_are_read_from_the_crontab_lines_themselves(self):
+        """#code-review on bcc099a: engine-update set to every hour, then an override that cannot be used (held) while
+        the watch changes the same round: intervals.json lost engine-update (worked out from the settings), so the sync
+        took update.py for stopped after 45 minutes. Read from the lines, it stays 3600; a time changed by hand is
+        what is written too; a line with no even interval keeps the value there."""
+        def intervals():
+            with open(applycore.intervals_path()) as f:
+                return json.load(f)
+        self.all_as_asked()
+        self.apply_with(self.settings(core={"engine-update": {"when": {"every": "1h", "offset": "machine", "after": "3m"}}}))
+        self.assertEqual(intervals()["engine-update"], 3600)
+        self.apply_with(self.settings(core={"engine-update": {"when": {"every": "7m"}},
+                                            "watch": {"when": {"every": "30m", "offset": "machine", "after": "13m"}}}))
+        self.assertEqual(intervals(), {"engine-update": 3600, "sync": 900, "watch": 1800})
+        sync = [l for l in self.get() if l.endswith(b"# altention:core/sync")][0]
+        hand = b"0 */2 * * * " + b" ".join(sync.split()[5:])  # changed by hand: apply leaves it (no --allow-time)
+        self.put([hand if l == sync else l for l in self.get()])
+        self.apply_with(self.settings())
+        self.assertEqual(intervals()["sync"], 7200, "what runs")
+        odd = b"5,6,40 * * * * " + b" ".join(sync.split()[5:])
+        self.put([odd if l == hand else l for l in self.get()])
+        self.apply_with(self.settings())
+        self.assertEqual(intervals()["sync"], 7200, "no even interval: the value there is kept")
+
+    def test_nothing_to_change_still_writes_the_intervals(self):
+        """#code-review and #code-review-2 on 24d43da: apply returned at 「沒有要改的」 before noting them, so an
+        intervals.json gone or stale (a time changed by hand, with nothing else to write) was never put right."""
+        def intervals():
+            with open(applycore.intervals_path()) as f:
+                return json.load(f)
+        self.all_as_asked()
+        os.remove(applycore.intervals_path())
+        code, text = self.apply_with(self.settings())
+        self.assertIn("沒有要改的", text)
+        self.assertEqual(intervals(), {"engine-update": 900, "sync": 900, "watch": 900}, "written back")
+        sync = [l for l in self.get() if l.endswith(b"# altention:core/sync")][0]
+        self.put([b"0 */2 * * * " + b" ".join(sync.split()[5:]) if l == sync else l for l in self.get()])
+        code, text = self.apply_with(self.settings())
+        self.assertIn("沒改（時間不同，要改請加 --allow-time core/sync）", text)
+        self.assertIn("沒有要改的", text)
+        self.assertEqual(intervals()["sync"], 7200, "the hand-changed line, alone in the run")
+        other = b'*/5 * * * * /usr/bin/python3 "/srv/other/engine/altention/cron_sync.py"  # altention:core/sync'
+        self.put(self.get() + [other])
+        self.apply_with(self.settings())
+        self.assertEqual(intervals()["sync"], 7200, "another engine's line with the marker says nothing of this one's")
+        code, text = self.apply_with(self.settings(), write=False)
+        os.remove(applycore.intervals_path())
+        self.apply_with(self.settings(), write=False)
+        self.assertFalse(os.path.exists(applycore.intervals_path()), "a dry run writes nothing")
+
+    def test_list_says_where_a_time_comes_from(self):
+        """#code-review-2 on bcc099a: sync.interval in effect was said to come from plugins.<名>.schedules."""
+        from altention import plugin
+        core = plugin.load(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                        "altention", "core.plugin.json"), core=True)
+        for settings, said in (({"sync": {"interval": "1h"}}, "每 1h（各機器錯開）（實例設定 sync.interval）"),
+                               ({"core": {"schedules": {"sync": {"when": {"every": "2h"}}}}}, "每 2h（實例設定 core.schedules）"),
+                               ({}, "每 15m（各機器錯開）（plugin.json）")):
+            it = next(i for i in plugin.effective_schedules("core", core, settings)[0] if i["name"] == "sync")
+            self.assertEqual(plugins.schedule_words(dict(it, core=True)), said, settings)
+        self.assertEqual(plugins.schedule_words({"when": {"every": "1h"}, "source": "instance"}), "每 1h（實例設定 plugins.<名>.schedules）")
+
+    def test_cron_interval(self):
+        for fields, secs in (("*/10 * * * *", 600), ("3,18,33,48 * * * *", 900), ("33 * * * *", 3600), ("7 */3 * * *", 10800),
+                             ("7 2-23/6 * * *", 21600), ("0 3 * * *", 86400), ("8,38 * * * *", 1800), ("0 3 * * 1", None),
+                             ("1,2,30 * * * *", None), ("*/7 * * * *", None), ("@reboot", None), ("61 * * * *", None)):
+            self.assertEqual(applycore.cron_interval(fields.split()), secs, fields)
+
+
+class OtherEngine(Rig):
+    """C-42 (#code-review-2 on e4ce65f, manager 2026-10-17): this engine's line of an item gone, another engine's line
+    with the same marker there: apply adds this engine's line and leaves the other as it is, unless that line's
+    folder is one this engine moved from (old_folder_in: a link to this engine, another checkout of it (C-14), or a
+    folder gone that --moved-from names): then, as before, it is rewritten in place."""
+    BASE = Overrides.BASE
+    all_as_asked, settings = Report.all_as_asked, Overrides.settings
+    line = Overrides.line
+
+    def apply_with(self, settings, moved_from=()):
+        out = io.StringIO()
+        engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        cfg = plugins.config
+        with mock.patch.object(cfg, "instance_dir", return_value=os.path.join(self.tmp, "instance")), \
+                mock.patch.object(cfg, "settings", return_value=settings), \
+                mock.patch.object(cfg, "setting", return_value=None), \
+                mock.patch.object(cfg, "inventory", return_value={"machines": {"host-a": {"roles": ["chatlog", "progress", "usage", "planner"]}, "host-b": {}}}), \
+                mock.patch.object(cfg, "this_machine", return_value="host-a"), \
+                mock.patch.object(cfg, "bot_machine", return_value=("host-a", {}, False)), \
+                mock.patch.object(plugins.plugin, "ENGINE", engine):
+            code = plugins.apply(True, (), out, moved_from=list(moved_from))
+        return code, out.getvalue()
+
+    def other_instead(self, folder):
+        """The crontab as apply made it, this engine's remind line swapped for the same line of `folder`."""
+        self.all_as_asked()
+        mine = self.line("planner/remind")
+        other = mine.replace(self.engine.encode("utf-8"), folder.encode("utf-8"))
+        self.assertNotEqual(other, mine)
+        self.put([other if l == mine else l for l in self.get()])
+        return mine, other
+
+    def test_another_engines_line_is_left_and_this_engines_added(self):
+        for folder in ("/srv/other/engine", os.path.join(self.tmp, "not an engine")):  # gone, or there but not an engine
+            os.makedirs(os.path.join(self.tmp, "not an engine"), exist_ok=True)
+            mine, other = self.other_instead(folder)
+            before = self.get()
+            code, text = self.apply_with(self.settings())
+            self.assertIn("加上：planner/remind", text, folder)
+            after = self.get()
+            self.assertEqual(after[:len(before)], before, "every line there stays, the other engine's included")
+            self.assertEqual(after[len(before):], [mine], "this engine's line added at the end")
+            code, text = self.apply_with(self.settings())
+            self.assertEqual(self.get(), after, "and the next run changes nothing")
+            os.remove(self.file)
+
+    def test_a_folder_this_engine_moved_from_is_rewritten_as_before(self):
+        checkout = os.path.join(self.tmp, "another checkout")
+        os.makedirs(os.path.join(checkout, "altention"))
+        with open(os.path.join(checkout, "altention", "config.py"), "w") as f:
+            f.write("")
+        for folder, moved in ((checkout, ()), ("/srv/old/engine", ("/srv/old/engine",))):  # C-14; named gone (C-17)
+            mine, other = self.other_instead(folder)
+            before = self.get()
+            code, text = self.apply_with(self.settings(), moved)
+            self.assertEqual(self.get(), [mine if l == other else l for l in before], folder)
+            os.remove(self.file)
+
+
+class EngineUnderHome(Rig):
+    """#code-review on cba4b4b: this engine's own line written through ${HOME} was not seen as this engine's, and
+    apply added a second line for the item (it ran twice). Each way of naming home leaves one line."""
+
+    def setUp(self):
+        super().setUp()
+        src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.engine = os.path.join(os.path.expanduser("~"), "c42-engine")  # under the throwaway home
+        for rel in ["altention/core.plugin.json"] + [os.path.join(d, "plugin.json") for d in os.listdir(src)
+                                                     if os.path.isfile(os.path.join(src, d, "plugin.json"))]:
+            os.makedirs(os.path.dirname(os.path.join(self.engine, rel)), exist_ok=True)
+            shutil.copy(os.path.join(src, rel), os.path.join(self.engine, rel))
+        self.addCleanup(shutil.rmtree, self.engine, True)
+
+    def apply(self):
+        out = io.StringIO()
+        cfg = plugins.config
+        with mock.patch.object(cfg, "instance_dir", return_value=os.path.join(self.tmp, "instance")), \
+                mock.patch.object(cfg, "settings", return_value=Overrides.BASE), \
+                mock.patch.object(cfg, "setting", return_value=None), \
+                mock.patch.object(cfg, "inventory", return_value={"machines": {"host-a": {"roles": ["chatlog", "progress", "usage", "planner"]}, "host-b": {}}}), \
+                mock.patch.object(cfg, "this_machine", return_value="host-a"), \
+                mock.patch.object(cfg, "bot_machine", return_value=("host-a", {}, False)), \
+                mock.patch.object(plugins.plugin, "ENGINE", self.engine):
+            os.makedirs(os.path.join(self.tmp, "instance"), exist_ok=True)
+            code = plugins.apply(True, (), out)
+        return code, out.getvalue()
+
+    def test_each_way_of_naming_home_leaves_one_line(self):
+        rest = os.path.relpath(self.engine, os.path.expanduser("~"))
+        for form in ("${HOME}/" + rest, '"$HOME/%s' % rest, "~/" + rest, "$HOME/" + rest):
+            self.put([b"SHELL=/bin/bash"])
+            self.apply()
+            mine = [l for l in self.get() if l.endswith(b"# altention:planner/remind")]
+            self.assertEqual(len(mine), 1)
+            text = mine[0].decode("utf-8")
+            quoted = form.startswith('"')
+            path = '"%s/planner/remind.py"' % self.engine
+            self.assertIn(path, text)
+            changed = text.replace(path, form + '/planner/remind.py' + ('"' if quoted else ""))
+            changed = changed.replace(">>", "> ")  # its output not as asked either: not "same", so apply looks for it by name
+            self.put([l if l != mine[0] else changed.encode("utf-8") for l in self.get()])
+            code, text = self.apply()
+            got = [l for l in self.get() if l.endswith(b"# altention:planner/remind")]
+            self.assertEqual(len(got), 1, (form, text))
+            self.assertEqual(got[0], mine[0], (form, "rewritten in place as asked"))
+            os.remove(self.file)

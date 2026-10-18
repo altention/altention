@@ -6,6 +6,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.
 from altention import testing as _testing  # noqa: E402
 _testing.guard_home()  # tests never touch the real home (altention/testing.py)
 import builtins
+import fcntl
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -26,10 +28,21 @@ ENGINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 LINE = re.compile(r"^(ok|changed|skip|fail|todo|unknown) [a-z0-9][a-z0-9.-]* .+$")
 
 
+def shell(folder, body):
+    """A stand-in for the user's shell (core.path runs $SHELL -l -i -c …): `body` is what it does."""
+    path = os.path.join(folder, "殼 sh")
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\n" + body)
+    os.chmod(path, stat.S_IRWXU)
+    return path
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="家 install ")
-        self.env = mock.patch.dict(os.environ, {"HOME": self.home, "ALT_INSTANCE": "", "XDG_STATE_HOME": ""})
+        # never the real user's shell: its rc files would be read; this one has ~/.local/bin on its PATH
+        sh = shell(self.home, 'echo noise; echo %s; echo "PATH=$HOME/.local/bin:/usr/bin"\n' % install.PATH_MARK)
+        self.env = mock.patch.dict(os.environ, {"HOME": self.home, "ALT_INSTANCE": "", "XDG_STATE_HOME": "", "SHELL": sh})
         self.env.start()
 
     def tearDown(self):
@@ -63,6 +76,56 @@ class Lines(Base):
         self.assertIn("hello", text)
         self.assertNotIn("do-not-log-me", text)
         self.assertEqual(stat.S_IMODE(os.stat(r.log_path).st_mode), 0o600)
+
+    def test_the_step_lines_go_into_the_log_too(self):
+        r, _ = self.run_()
+        with redirect_stdout(io.StringIO()) as o:
+            r.say("todo", "a.c", "do  this")
+        with open(r.log_path) as f:
+            self.assertIn("todo a.c do this\n", f.read())
+        self.assertEqual(o.getvalue(), "todo a.c do this\n")
+
+    def test_discord_written_goes_on_to_the_whole_install(self):
+        for rc in (0, 2):  # the install's exit status is the one passed on
+            with mock.patch.object(install, "ask_discord", return_value=0), \
+                    mock.patch.object(install, "install", return_value=rc) as m, redirect_stdout(io.StringIO()) as o:
+                self.assertEqual(install.main(["discord"]), rc)
+            m.assert_called_once_with([], after_discord=True)
+            self.assertIn("接著安裝", o.getvalue())
+
+    def test_discord_not_written_stops_before_the_install(self):
+        with mock.patch.object(install, "ask_discord", return_value=1), \
+                mock.patch.object(install, "install", return_value=0) as m, redirect_stdout(io.StringIO()) as o:
+            self.assertEqual(install.main(["discord"]), 1)
+        m.assert_not_called()
+        self.assertNotIn("接著安裝", o.getvalue())
+
+    def test_after_discord_an_install_stopped_before_its_log_says_the_last_line(self):
+        """#code-review of 93e8008: stopped at the lock (or the engine, the instance), no core.done was said and
+        last.log was another run's; the user waits for 安裝跑完了 or 安裝沒跑完."""
+        folder = os.path.join(self.home, ".local", "state", "altention", "install")
+        os.makedirs(folder)
+        held = open(os.path.join(folder, "lock"), "w")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with mock.patch("altention.engine_id.refusal", return_value=None), \
+                mock.patch.object(install.config, "instance_dir", return_value=self.home), \
+                redirect_stdout(io.StringIO()) as o:
+            self.assertEqual(install.install([], after_discord=True), 1)
+        lines = o.getvalue().splitlines()
+        self.assertTrue(lines[-2].startswith("fail core.lock "), lines)
+        self.assertTrue(lines[-1].startswith("fail core.done 安裝沒跑完：core.lock 沒成功"), lines)
+        self.assertIn("last.log 不是這次的", lines[-1])
+        with mock.patch("altention.engine_id.refusal", return_value="這是 worktree"), \
+                mock.patch.object(install.config, "instance_dir", return_value=self.home), \
+                redirect_stdout(io.StringIO()) as o:
+            self.assertEqual(install.install([], after_discord=True), 1)
+        self.assertEqual(o.getvalue().splitlines()[-1].split("：")[0], "fail core.done 安裝沒跑完")
+        with mock.patch("altention.engine_id.refusal", return_value=None), \
+                mock.patch.object(install.config, "instance_dir", return_value=self.home), \
+                redirect_stdout(io.StringIO()) as o:  # ./install.sh itself: as before, the one line
+            self.assertEqual(install.main([]), 1)
+        self.assertEqual(len(o.getvalue().splitlines()), 1)
 
     def test_an_unknown_argument_does_nothing(self):
         out = io.StringIO()
@@ -222,9 +285,14 @@ class SkillsOff(Base):
         self.env2.stop()
         super().tearDown()
 
-    def off(self, *names):
+    def off(self, *names, placed=("progress",)):
+        """`names` turned off here; the plugins in `placed` (one machine's) run here, so their place is known with no
+        machine list and no bot: report is progress's, council runs everywhere."""
+        plugins = dict((n, {"on": ["box"]}) for n in placed)
+        for n in names:
+            plugins.setdefault(n, {})["disabled_on"] = ["box"]
         with open(os.path.join(self.inst, "plugins.json"), "w") as f:
-            json.dump({"format": 1, "plugins": dict((n, {"disabled_on": ["box"]}) for n in names)}, f)
+            json.dump({"format": 1, "plugins": plugins}, f)
 
     def link(self, name):
         p = os.path.join(self.skills, name)
@@ -244,8 +312,8 @@ class SkillsOff(Base):
         self.off("council")
         out = self.install()
         self.assertEqual((self.link("council"), self.link("report")), (None, os.path.join(ENGINE, "skills", "report")))
-        self.assertIn("changed core.skills skill 連結：report；關掉的：council（拿掉了 council）", out)
-        self.assertIn("ok core.skills skill 連結：report；關掉的：council\n", self.install(), "said again, nothing to take")
+        self.assertIn("changed core.skills skill 連結：report、tour；關掉的：council（拿掉了 council）", out)
+        self.assertIn("ok core.skills skill 連結：report、tour；關掉的：council\n", self.install(), "said again, nothing to take")
         self.off("progress")
         self.install()
         self.assertEqual((self.link("council"), self.link("report")), (os.path.join(ENGINE, "skills", "council"), None),
@@ -253,6 +321,7 @@ class SkillsOff(Base):
         self.off()
         self.install()
         self.assertEqual(self.link("report"), os.path.join(ENGINE, "skills", "report"))
+        self.assertEqual(self.link("tour"), os.path.join(ENGINE, "skills", "tour"), "the tour belongs to no plugin: always linked")
 
     def test_what_is_not_this_engines_link_is_left_and_said(self):
         self.off("council", "progress")
@@ -264,11 +333,78 @@ class SkillsOff(Base):
         self.assertIn("不是連到這份引擎的連結，沒有動", out)
         self.assertTrue(all(LINE.match(x) for x in out.splitlines() if x.strip()), out)
 
-    def test_settings_that_cannot_be_read_turn_nothing_off(self):
+    def test_settings_that_cannot_be_read_make_and_take_away_nothing(self):
+        """C-11: settings that cannot be read do not say council is on: a turned-off plugin's skill does not come
+        back by a comma too many, and a link already there is not taken away; a skill no plugin owns is linked."""
+        self.off("council")
+        self.install()
+        self.assertEqual(self.link("council"), None)
         with open(os.path.join(self.inst, "plugins.json"), "w") as f:
             f.write("{ not json")
+        out = self.install()
+        self.assertEqual((self.link("council"), self.link("report"), self.link("tour")),
+                         (None, os.path.join(ENGINE, "skills", "report"), os.path.join(ENGINE, "skills", "tour")))
+        self.assertIn("skip core.skills-unknown 不知道這幾個 skill 的插件在這台開不開，先沒建：council（實例設定讀不出來）", out)
+        self.assertIn("ok core.skills skill 連結：report、tour\n", out, "report's link was there: kept, not said as made")
+        self.assertTrue(all(LINE.match(x) for x in out.splitlines() if x.strip()), out)
+        os.remove(os.path.join(self.skills, "report"))
         self.install()
-        self.assertEqual(self.link("council"), os.path.join(ENGINE, "skills", "council"))
+        self.assertEqual(self.link("report"), None, "a missing one is not made either")
+        self.off()
+        out = self.install()
+        self.assertEqual((self.link("council"), self.link("report")),
+                         (os.path.join(ENGINE, "skills", "council"), os.path.join(ENGINE, "skills", "report")))
+        self.assertNotIn("core.skills-unknown", out, "settings fixed: linked, nothing said")
+
+    def test_a_plugin_whose_machine_is_not_known_waits_with_its_reason(self):
+        self.off(placed=())  # progress runs on one machine, and no list or bot says which
+        out = self.install()
+        self.assertEqual((self.link("council"), self.link("report")), (os.path.join(ENGINE, "skills", "council"), None))
+        self.assertIn("先沒建：report（不知道機器人在哪台", out)
+
+    def test_plugins_that_cannot_be_told_at_all_make_nothing(self):
+        from altention import plugin
+        with mock.patch.object(plugin, "on_this_machine", mock.Mock(side_effect=RuntimeError("boom"))):
+            got = plugin.link_skills(ENGINE)
+        self.assertEqual((got["made"], got["waiting"]), ([], ["council", "report", "tour"]))
+        self.assertEqual(got["why"]["tour"], "插件讀不出來（RuntimeError: boom）")
+        self.assertFalse(os.path.lexists(self.skills) and os.listdir(self.skills))
+
+    def test_the_syncs_round_only_adds_what_is_missing(self):
+        """plugin.link_skills(add_only), as the sync runs it after an update brought a skill (skills/tour, manager
+        2026-10-16): a missing link is made; nothing is taken away or pointed elsewhere, a turned-off plugin's skill
+        is not linked, a file under the name is left."""
+        from altention import plugin
+        self.off("council")
+        os.makedirs(self.skills)
+        os.symlink("/elsewhere/report", os.path.join(self.skills, "report"))
+        with open(os.path.join(self.skills, "tour"), "w") as f:
+            f.write("mine\n")
+        got = plugin.link_skills(ENGINE, add_only=True)
+        self.assertEqual(got["made"], [])
+        self.assertEqual((self.link("council"), self.link("report")), (None, "/elsewhere/report"))
+        os.remove(os.path.join(self.skills, "tour"))
+        os.symlink(os.path.join(ENGINE, "skills", "council"), os.path.join(self.skills, "council"))
+        got = plugin.link_skills(ENGINE, add_only=True)
+        self.assertEqual(got["made"], ["tour"])
+        self.assertEqual(self.link("tour"), os.path.join(ENGINE, "skills", "tour"))
+        self.assertEqual(self.link("council"), os.path.join(ENGINE, "skills", "council"), "taking away is install.sh's")
+        self.assertEqual(plugin.link_skills(ENGINE, add_only=True)["made"], [], "the next round finds nothing to do")
+        os.remove(os.path.join(self.skills, "council"))
+        self.off()
+        self.assertEqual(plugin.link_skills(ENGINE, add_only=True)["made"], ["council"], "turned on again: linked")
+        os.remove(os.path.join(self.skills, "report"))
+        self.off(placed=())
+        self.assertEqual(plugin.link_skills(ENGINE, add_only=True)["made"], [],
+                         "report is progress's, whose place is not known here (no machine list, no bot): install.sh's")
+
+    def test_the_syncs_round_with_settings_it_cannot_read_links_only_what_no_plugin_owns(self):
+        from altention import plugin
+        with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+            f.write("{ not json")
+        got = plugin.link_skills(ENGINE, add_only=True)
+        self.assertEqual(got["made"], ["tour"], "council and report wait: their plugin may be turned off here")
+        self.assertEqual((self.link("council"), self.link("report")), (None, None))
 
     def test_who_owns_which_skill(self):
         from altention import plugin
@@ -292,6 +428,99 @@ class Entry(Base):
                 self.assertIn("mv %s %s.mine" % (path, path), out.getvalue())
                 with open(path) as f:
                     self.assertEqual(f.read(), "#!/bin/sh\necho mine\n")
+
+
+class PathCheck(Base):
+    """C-13: ~/.local/bin on the PATH of the user's shell, as a new terminal starts it; only said, never written
+    (the rc file is the user's: manager 2026-10-17)."""
+
+    def check(self, body=None, name="zsh", writes=False, **kw):
+        if body is not None:
+            folder = os.path.join(self.home, "bin-" + name)
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, name)
+            os.rename(shell(folder, body), path)
+            os.environ["SHELL"] = path
+        r, out = self.run_()  # (its log under ~/.local/state)
+        rcs = sorted(os.listdir(self.home))
+        with redirect_stdout(out):
+            install.path_check(r, **kw)
+        if not writes:
+            self.assertEqual(sorted(os.listdir(self.home)), rcs, "no rc file written")
+        lines = [x for x in out.getvalue().splitlines() if " core.path " in x]
+        self.assertEqual(len(lines), 1, out.getvalue())
+        self.assertTrue(LINE.match(lines[0]), lines[0])
+        return lines[0]
+
+    def test_on_the_path(self):
+        self.assertTrue(self.check().startswith("ok core.path %s/.local/bin 在" % self.home))
+        line = self.check('echo %s; echo "PATH=/usr/bin:~/.local/bin/"\n' % install.PATH_MARK)
+        self.assertTrue(line.startswith("ok "), line)
+
+    def test_not_on_it_says_which_file_and_line(self):
+        line = self.check('echo %s; echo PATH=/usr/bin:/bin; echo PATH_X=%s/.local/bin\n' % (install.PATH_MARK, self.home))
+        self.assertEqual(line, "todo core.path %s/.local/bin 不在 zsh 的 PATH 裡，終端機打 altention、claude 會找不到："
+                               "在 ~/.zshrc 加一行 export PATH=\"$HOME/.local/bin:$PATH\"，再開一個新的終端機" % self.home)
+        line = self.check('echo %s; echo PATH=/usr/bin\n' % install.PATH_MARK, name="fish")
+        self.assertIn("在 ~/.config/fish/config.fish 加一行 fish_add_path $HOME/.local/bin", line)
+        line = self.check('echo %s; echo PATH=/usr/bin\n' % install.PATH_MARK, name="ksh")
+        self.assertIn("在 ~/.profile 加一行", line)
+
+    def test_what_the_shell_made_in_home_is_said(self):  # zsh's compinit writes ~/.zcompdump (manager 2026-10-17)
+        body = 'touch "$HOME/.zcompdump"; echo %s; echo PATH=$HOME/.local/bin\n' % install.PATH_MARK
+        line = self.check(body, writes=True)
+        self.assertTrue(line.startswith("ok core.path "), line)
+        self.assertTrue(line.endswith("在 zsh 的 PATH 裡；檢查 PATH 時 zsh 建了 ~/.zcompdump"), line)
+        self.assertTrue(os.path.isfile(os.path.join(self.home, ".zcompdump")), "left: a new terminal makes it too")
+        self.assertNotIn("建了", self.check(body), "already there: nothing to say")
+        line = self.check('touch "$HOME/.zcompdump-x"; echo %s; echo PATH=/usr/bin\n' % install.PATH_MARK, writes=True)
+        self.assertTrue(line.startswith("todo ") and line.endswith("；檢查 PATH 時 zsh 建了 ~/.zcompdump-x"), line)
+        line = self.check('touch "$HOME/.zcompdump-y"; exit 3\n', writes=True)
+        self.assertTrue(line.startswith("skip ") and line.endswith("；檢查 PATH 時 zsh 建了 ~/.zcompdump-y"), line)
+
+    def test_something_the_rc_file_leaves_running_does_not_hold_it(self):  # #code-review on 5601ddb
+        bg = os.path.join(self.home, "bin-zsh", "bg")
+        t = time.time()
+        line = self.check('sleep 20 & echo $! > "%s"; echo %s; echo PATH=$HOME/.local/bin\n'
+                          % (bg, install.PATH_MARK), timeout=10)
+        took = time.time() - t
+        with open(bg) as f:  # what the stand-in left running goes with the test
+            pid = int(f.read())
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", str(pid)], stderr=subprocess.DEVNULL))
+        self.assertLess(took, 5)
+        self.assertTrue(line.startswith("ok core.path "), line)
+
+    def test_a_path_printed_before_the_mark_does_not_count(self):  # an rc file that prints something of its own
+        line = self.check('echo PATH=%s/.local/bin; echo %s; echo PATH=/usr/bin\n' % (self.home, install.PATH_MARK))
+        self.assertTrue(line.startswith("todo "), line)
+
+    def test_a_shell_it_cannot_read_is_said_never_a_failure(self):
+        for body, why in (("exit 3\n", "沒有印出 PATH（結束碼 3）"), ("sleep 30\n", "超過 1 秒沒結束")):
+            line = self.check(body, timeout=1)
+            self.assertTrue(line.startswith("skip core.path 讀不出你的 shell 的 PATH（"), line)
+            self.assertIn(why, line)
+            self.assertIn("加一行 export PATH=", line)
+        os.environ["SHELL"] = os.path.join(self.home, "沒有這個殼")
+        self.assertIn("跑不起來", self.check())
+        os.environ["SHELL"] = ""
+        self.assertIn("（沒有 SHELL）", self.check())
+
+    def test_apply_s_run_starts_no_shell(self):
+        seen = os.path.join(self.home, "bin-zsh", "started")
+        with mock.patch.dict(os.environ, {"ALT_NO_PATH_CHECK": "1"}):
+            line = self.check('touch "%s"; echo %s; echo PATH=/usr/bin\n' % (seen, install.PATH_MARK))
+        self.assertTrue(line.startswith("skip core.path apply 跑的安裝不檢查 PATH"), line)
+        self.assertFalse(os.path.exists(seen))
+        with mock.patch.dict(os.environ, {"ALT_NO_PATH_CHECK": "0"}):
+            self.assertTrue(self.check().startswith("ok core.path "), "only 1 counts: Base's shell asked")
+
+    def test_the_shell_is_started_as_a_new_terminal_would(self):
+        line = self.check('echo %s; echo "PATH=$*" | tr " " ":"; read x && echo PATH=$HOME/.local/bin\n' % install.PATH_MARK)
+        self.assertTrue(line.startswith("todo "), "stdin is /dev/null: %s" % line)
+        seen = os.path.join(self.home, "bin-zsh", "args")
+        self.check('echo "$@" > "%s"; echo %s; echo PATH=/usr/bin\n' % (seen, install.PATH_MARK))
+        with open(seen) as f:
+            self.assertEqual(f.read(), "-l -i -c echo %s; env\n" % install.PATH_MARK)
 
 
 class PluginsHere(Base):
@@ -359,76 +588,335 @@ class Token(Base):
         self.assertIn(path, out.getvalue(), "the todo names the file")
 
 
-class AskToken(Base):
-    """install.sh --token: typed on the keyboard, written 600, never shown; nothing written unless all of it is right."""
+class FakeDiscord:
+    """The two Discord endpoints the installer reads, on 127.0.0.1: one token is good, the app and the bot's servers
+    are what the test sets; every request is kept (path and headers) to look at afterwards."""
     TOK = "FAKEFAKEFAKE.not-a.real-token"
+
+    def __init__(self):
+        import http.server
+        import threading
+        fake = self
+        self.app = {"id": "100000000000000010", "name": "testbot", "bot_public": False, "bot_require_code_grant": False,
+                    "flags": 1 << 19, "owner": {"id": "100000000000000001", "username": "alice"}, "team": None,
+                    "integration_types_config": {"0": {}, "1": {}}}
+        self.servers = []          # what /users/@me/guilds answers now
+        self.later = []            # answers from its second call on, one per call (the last one stays)
+        self.limited = 0           # how many 429s to give first
+        self.redirect = None       # a URL to send every call on to (302)
+        self.retry_after = 0.01    # what a 429 asks to wait
+        self.guild_codes = []      # statuses to answer the next calls for the servers with, one each
+        self.seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                fake.seen.append((self.path, dict(self.headers)))
+                if fake.redirect:
+                    self.send_response(302)
+                    self.send_header("Location", fake.redirect + self.path)
+                    self.send_header("Content-Length", "0")
+                    return self.end_headers()
+                if fake.limited:
+                    fake.limited -= 1
+                    return self.answer(429, {"retry_after": fake.retry_after})
+                if self.headers.get("Authorization") != "Bot " + fake.TOK:
+                    return self.answer(401, {"message": "401: Unauthorized"})
+                if self.path == "/api/v10/oauth2/applications/@me":
+                    return self.answer(200, fake.app)
+                if self.path.startswith("/api/v10/users/@me/guilds"):
+                    if fake.guild_codes:
+                        return self.answer(fake.guild_codes.pop(0), {"message": "no"})
+                    if fake.later and sum(p.startswith("/api/v10/users/@me/guilds") for p, _ in fake.seen) > 1:
+                        fake.servers = fake.later.pop(0) if len(fake.later) > 1 else fake.later[0]
+                    return self.answer(200, [{"id": i, "name": n} for i, n in fake.servers])
+                self.answer(404, {})
+
+            def answer(self, code, body):
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.base = "http://127.0.0.1:%d/api/v10" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class AskDiscord(Base):
+    """install.sh discord: the token typed on the keyboard, the rest asked of a fake Discord; written 600, never
+    shown; nothing written unless all of it is known."""
+    TOK = FakeDiscord.TOK
     OWNER, GUILD = "100000000000000001", "100000000000000002"
 
     def setUp(self):
         super().setUp()
+        # the fake Discord is on this machine: a proxy set in the developer's environment must not get the calls.
+        # Taken out under Base's patch of os.environ, which puts them back (a patch of its own, undone after
+        # Base's, left the throwaway HOME behind for the tests that come later).
+        for k in [k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")]:
+            del os.environ[k]
         self.path = os.path.join(self.home, ".config", "dcbot", "env")
+        self.fake = FakeDiscord()
+        self.addCleanup(self.fake.close)
+        self.fake.servers = [(self.GUILD, "my server")]
+        self.slept = []
 
-    def ask(self, answers, secret=None, interactive=True):
-        answers = list(answers)
+    def ask(self, answers, secrets=None, interactive=True, base=None):
+        answers, secrets = list(answers), list(secrets if secrets is not None else [self.TOK])
+        self.asked = []
+        t = [0.0]
+
+        def line(prompt):
+            self.asked.append(prompt)
+            return answers.pop(0)
+
+        def sleep(s):
+            self.slept.append(s)
+            t[0] += s
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = install.ask_token(secret=lambda prompt: secret if secret is not None else self.TOK,
-                                   line=lambda prompt: answers.pop(0), interactive=interactive)
+            rc = install.ask_discord(secret=lambda prompt: secrets.pop(0), line=line, interactive=interactive,
+                                     base=base or self.fake.base, sleep=sleep, clock=lambda: t[0])
+        return rc, out.getvalue()
+
+    def ask_with(self, line):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = install.ask_discord(secret=lambda p: self.TOK, line=line, interactive=True, base=self.fake.base,
+                                     sleep=lambda s: None, clock=lambda: 0.0)
         return rc, out.getvalue()
 
     def lines(self):
         with open(self.path) as f:
             return f.read().splitlines()
 
-    def test_written_600_in_a_700_folder_and_never_shown(self):
-        rc, out = self.ask([self.OWNER, self.GUILD])
+    def test_one_server_written_600_in_a_700_folder_and_never_shown(self):
+        rc, out = self.ask([])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD])
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(self.path)).st_mode), 0o700)
         self.assertNotIn(self.TOK, out)
         self.assertIn("changed dcbot.token", out)
+        self.assertIn("接下來會問你機器人的 token（打字時看不到）", out.splitlines()[0])
+        self.assertNotIn("oauth2/authorize", out, "already in one server: no link to click")
+        self.assertIn("my server", out)
         self.assertEqual(os.listdir(os.path.dirname(self.path)), ["env"], "no temporary file left")
+        self.assertTrue(self.fake.seen)
+        for path, headers in self.fake.seen:
+            self.assertEqual(headers.get("Authorization"), "Bot " + self.TOK)
+            self.assertTrue(headers.get("User-Agent", "").startswith("DiscordBot ("), headers)
+
+    def test_no_server_yet_prints_the_link_and_waits_for_the_bot(self):
+        self.fake.servers, self.fake.later = [], [[], [], [(self.GUILD, "new")]]
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+        link = [x for x in out.splitlines() if x.startswith("https://discord.com/oauth2/authorize?")]
+        self.assertEqual(len(link), 1, out)
+        from urllib.parse import parse_qs, urlsplit
+        q = parse_qs(urlsplit(link[0]).query)
+        self.assertEqual(q["client_id"], ["100000000000000010"])
+        self.assertEqual(q["scope"], ["bot applications.commands"])
+        self.assertEqual(q["permissions"], ["2252128378809552"], "the 14 permissions of the install guide")
+        self.assertEqual(q["integration_type"], ["0"])
+        self.assertEqual(self.slept, [3, 3, 3], "a look every 3 seconds until the bot is in")
+
+    def test_the_14_permissions(self):
+        import discordapp
+        bits = dict(discordapp.PERMISSIONS)
+        self.assertEqual(len(bits), 14)
+        self.assertEqual(discordapp.PERMISSION_BITS, sum(1 << b for b in bits.values()))
+        self.assertEqual((bits["PIN_MESSAGES"], bits["MANAGE_THREADS"], bits["VIEW_CHANNEL"]), (51, 34, 10))
+
+    def test_waiting_too_long_asks_and_q_writes_nothing(self):
+        self.fake.servers = []
+        rc, out = self.ask(["q"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("todo dcbot.token 停了，什麼都沒寫", out)
+        self.assertIn("10 分鐘了", self.asked[-1])
+        self.assertAlmostEqual(sum(self.slept), 600, delta=3)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_waiting_too_long_enter_waits_again(self):
+        self.fake.servers, self.fake.later = [], [[]] * 205 + [[(self.GUILD, "late")]]
+        rc, out = self.ask([""])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("等機器人進伺服器"), 2)
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+
+    def test_several_servers_asks_which(self):
+        self.fake.servers = [("100000000000000003", "old"), (self.GUILD, "new")]
+        rc, out = self.ask(["9", "x", "2"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+        self.assertIn("1. old", out)
+        self.assertEqual(out.count("要 1 到 2 的號碼"), 2)
+
+    def test_a_team_app_asks_who_the_owner_is(self):
+        """The app's owner field is then the team, not a person: the accepted members, team owner first."""
+        self.fake.app["owner"] = {"id": "100000000000000099", "username": "team100000000000000098", "flags": 1024}
+        self.fake.app["team"] = {"id": "100000000000000098", "owner_user_id": "100000000000000005", "members": [
+            {"membership_state": 2, "role": "admin", "user": {"id": "100000000000000004", "username": "bob"}},
+            {"membership_state": 1, "role": "developer", "user": {"id": "100000000000000006", "username": "mallory"}},
+            {"membership_state": 2, "role": "", "user": {"id": "100000000000000005", "username": "carol"}}]}
+        rc, out = self.ask(["2"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1. carol（團隊擁有者）", out)
+        self.assertIn("2. bob", out)
+        self.assertNotIn("mallory", out, "only members who accepted")
+        self.assertEqual(self.lines()[1], "OWNER_ID=100000000000000004")
+        rc, out = self.ask(["y", ""])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.lines()[1], "OWNER_ID=100000000000000005", "Enter is the team owner")
+
+    def test_a_team_of_one_asks_nothing(self):
+        self.fake.app["team"] = {"owner_user_id": "100000000000000005", "members": [
+            {"membership_state": 2, "user": {"id": "100000000000000005", "username": "carol"}}]}
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.lines()[1], "OWNER_ID=100000000000000005")
+
+    def test_settings_still_to_change_are_said_and_checked_again(self):
+        self.fake.app.update(flags=0, bot_public=True, bot_require_code_grant=True, integration_types_config={"1": {}})
+        asked = []
+
+        def fixed(prompt):
+            asked.append(prompt)
+            self.fake.app.update(flags=1 << 19, bot_public=False, bot_require_code_grant=False,
+                                 integration_types_config={"0": {}})
+            return ""
+        rc, out = self.ask_with(fixed)
+        self.assertEqual(rc, 0, out)
+        for word in ("Message Content Intent", "Public Bot", "Requires OAuth2 Code Grant", "Guild Install"):
+            self.assertIn(word, out.split("應用程式：")[0].split("還要改")[1])
+        self.assertEqual(len(asked), 1, "checked again once, then nothing left")
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+        self.fake.app["bot_public"] = True
+        rc, out = self.ask(["y", "q"])
+        self.assertEqual(rc, 1)
+        self.assertIn("todo dcbot.token 停了", out)
+        self.assertEqual(self.lines()[0], "DISCORD_TOKEN=" + self.TOK, "q leaves the file as it was")
+
+    def test_a_wrong_token_is_asked_again_and_three_write_nothing(self):
+        rc, out = self.ask([], secrets=["WRONG.WRONG.WRONG", self.TOK])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Discord 說這個 token 不對", out)
+        self.assertNotIn("WRONG", out)
+        os.remove(self.path)
+        self.fake.seen = []
+        rc, out = self.ask([], secrets=["", "abcdef", "SECRETPART.x.y.z"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("沒有讀到任何字", out)
+        self.assertIn("讀到 6 個字、0 個點（", out)
+        self.assertIn("讀到 16 個字、3 個點（", out)
+        self.assertIn("fail dcbot.token 三次都沒拿到", out)
+        self.assertNotIn("SECRETPART", out)
+        self.assertNotIn("abcdef", out)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(self.fake.seen, [], "a token of the wrong shape is never sent")
+
+    def test_too_many_requests_is_waited_out(self):
+        self.fake.limited = 2
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.slept), 2)
+
+    def test_a_redirect_is_not_followed(self):
+        """urllib would follow it with the Authorization header, to another host too (#code-review-2 2026-10-16)."""
+        other = FakeDiscord()
+        self.addCleanup(other.close)
+        self.fake.redirect = other.base.replace("127.0.0.1", "localhost").rsplit("/api/v10", 1)[0]
+        rc, out = self.ask([])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fail dcbot.token Discord 回了轉址（HTTP 302），沒有跟過去；什麼都沒寫", out)
+        self.assertEqual(other.seen, [], "nothing sent on")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_a_folder_made_before_is_tightened_to_700(self):
+        folder = os.path.dirname(self.path)
+        os.makedirs(folder)
+        os.chmod(folder, 0o755)
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+        os.chmod(folder, 0o311)
+        rc, out = self.ask(["y"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o300, "only tightened: no bit the owner lacked is added")
+        os.chmod(folder, 0o700)
+
+    def test_trouble_while_waiting_is_said_once_and_waited_out(self):
+        """A 5xx or no network while the bot is awaited does not end the command (manager 2026-10-16)."""
+        self.fake.servers, self.fake.later = [], [[], [(self.GUILD, "s")]]
+        self.fake.guild_codes = [500, 500, 502]
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("暫時連不上 Discord（Discord 回了 HTTP 500），繼續等"), 1, "said once, not every 3 s")
+        self.assertEqual(out.count("暫時連不上 Discord（Discord 回了 HTTP 502），繼續等"), 1, out)
+        self.assertIn("又連上 Discord 了", out)
+        self.assertIn("oauth2/authorize", out, "the first look failed: the link is printed all the same")
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+
+    def test_only_401_and_403_end_the_waiting(self):
+        for code, said in ((401, "Discord 中途說 token 不對了"), (403, "Discord 回了 HTTP 403（不准）；什麼都沒寫")):
+            self.fake.servers, self.fake.guild_codes = [], [500, code]
+            rc, out = self.ask([])
+            self.assertEqual(rc, 1, out)
+            self.assertIn("fail dcbot.token " + said, out)
+            self.assertFalse(os.path.exists(self.path))
+
+    def test_429_waits_as_long_as_asked_up_to_ten_minutes(self):
+        self.fake.limited, self.fake.retry_after = 1, 45
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.slept, [45], "no 30 seconds cap")
+        self.fake.limited, self.fake.retry_after = 1, 700
+        rc, out = self.ask(["y"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fail dcbot.token Discord 說請求太多，要等 12 分鐘才能再查（429）", out)
+
+    def test_discord_unreachable_writes_nothing(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        rc, out = self.ask([], base="http://127.0.0.1:%d/api/v10" % port)
+        self.assertEqual(rc, 1)
+        self.assertIn("fail dcbot.token 連不上 Discord", out)
+        self.assertNotIn(self.TOK, out)
+        self.assertFalse(os.path.exists(self.path))
 
     def test_from_anything_but_a_terminal_it_refuses(self):
         rc, out = self.ask([], interactive=False)
         self.assertEqual(rc, 1)
         self.assertIn("fail dcbot.token", out)
         self.assertFalse(os.path.exists(os.path.dirname(self.path)))
+        self.assertEqual(self.fake.seen, [])
         with mock.patch.object(sys.stdin, "isatty", return_value=False), redirect_stdout(io.StringIO()) as o:
-            self.assertEqual(install.main(["--token"]), 1)
+            self.assertEqual(install.main(["discord"]), 1)
         self.assertIn("fail dcbot.token", o.getvalue())
-
-    def test_anything_wrong_writes_nothing(self):
-        for name, answers, secret in (("empty token", [self.OWNER, self.GUILD], ""),
-                                      ("token with a space", [self.OWNER, self.GUILD], "a.b c.d"),
-                                      ("not three parts", [self.OWNER, self.GUILD], "abcdef"),
-                                      ("owner not digits", ["alice", self.GUILD], None),
-                                      ("guild too short", [self.OWNER, "12345"], None)):
-            rc, out = self.ask(answers, secret=secret)
-            self.assertEqual(rc, 1, name)
-            self.assertFalse(os.path.exists(self.path), name)
-            self.assertTrue(all(LINE.match(x) for x in out.splitlines() if x.startswith(("ok ", "fail ", "changed "))), name)
-
-    def test_a_wrong_token_says_what_was_read_but_not_the_token(self):
-        rc, out = self.ask([], secret="")
-        self.assertEqual(rc, 1)
-        self.assertIn("沒有讀到任何字", out)
-        for secret, said in (("abcdef", "讀到 6 個字、0 個點（"), ("a.b c.d", "讀到 7 個字、2 個點、中間有空白"),
-                             ("SECRETPART.x.y.z", "讀到 16 個字、3 個點（")):
-            rc, out = self.ask([], secret=secret)
-            self.assertEqual(rc, 1, secret)
-            self.assertIn(said, out)
-            self.assertNotIn(secret, out)
-            self.assertNotIn("SECRETPART", out)
+        with redirect_stdout(io.StringIO()) as o:
+            self.assertEqual(install.main(["--token"]), 1)
+        self.assertIn("fail core.args 不認得 --token", o.getvalue())
 
     def test_stopped_halfway_writes_nothing(self):
+        self.fake.servers = [("100000000000000003", "a"), (self.GUILD, "b")]
+
         def stop(prompt):
-            raise EOFError
-        with redirect_stdout(io.StringIO()) as out:
-            rc = install.ask_token(secret=lambda p: self.TOK, line=stop, interactive=True)
+            raise KeyboardInterrupt
+        rc, out = self.ask_with(stop)
         self.assertEqual(rc, 1)
-        self.assertIn("什麼都沒寫", out.getvalue())
+        self.assertIn("什麼都沒寫", out)
         self.assertFalse(os.path.exists(self.path))
 
     def test_an_existing_file_is_kept_unless_asked_and_its_other_lines_stay(self):
@@ -437,10 +925,11 @@ class AskToken(Base):
             f.write("# 我的設定\nDISCORD_TOKEN=OLD.OLD.OLD\nMODEL=opus\nOWNER_ID=100000000000000009\n")
         os.chmod(self.path, 0o600)
         before = self.lines()
-        rc, out = self.ask(["", self.OWNER, self.GUILD])
+        rc, out = self.ask([""])
         self.assertEqual((rc, self.lines()), (0, before), "Enter keeps it")
         self.assertIn("ok dcbot.token", out)
-        rc, out = self.ask(["y", self.OWNER, self.GUILD])
+        self.assertEqual(self.fake.seen, [])
+        rc, out = self.ask(["y"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD,
                                         "# 我的設定", "MODEL=opus"])
@@ -452,18 +941,69 @@ class AskToken(Base):
         with open(self.path, "w") as f:
             f.write("export DISCORD_TOKEN=OLD.OLD.OLD\nDISCORD_TOKEN = OLD2.OLD.OLD\nexport\tGUILD_ID=100000000000000008\n"
                     "exported_TOKEN=keep\nexport MODEL=opus\n")
-        rc, out = self.ask(["y", self.OWNER, self.GUILD])
+        rc, out = self.ask(["y"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD,
                                         "exported_TOKEN=keep", "export MODEL=opus"])
         with open(self.path) as f:
             self.assertNotIn("OLD", f.read())
 
+    @unittest.skipUnless(os.path.isdir("/proc/self"), "reads /proc")
+    def test_on_a_real_terminal_the_token_is_in_no_argument_environment_or_output(self):
+        """Run under a pseudo-terminal, as the user does: getpass reads it from the terminal; while the command
+        waits for the bot, its command line and environment hold no token, and nothing it printed does."""
+        import pty
+        import select
+        import time
+        self.fake.servers, self.fake.later = [], [[]] * 100000
+        code = ("import sys, time; sys.path.insert(0, %r); import install; "
+                "sys.exit(install.ask_discord(base=sys.argv[1], sleep=lambda s: time.sleep(0.05)))"
+                % os.path.join(ENGINE, "ops"))
+        pid, fd = pty.fork()
+        if pid == 0:  # the child: nothing but exec (an exception here must not run the rest of the tests)
+            try:
+                os.execv(sys.executable, [sys.executable, "-c", code, self.fake.base])
+            finally:
+                os._exit(127)
+        got = [b""]
+
+        def read_until(word, limit=20):
+            end = time.time() + limit
+            while word not in got[0].decode("utf-8", "replace") and time.time() < end:
+                if select.select([fd], [], [], 0.2)[0]:
+                    try:
+                        got[0] += os.read(fd, 4096)
+                    except OSError:
+                        break
+            return word in got[0].decode("utf-8", "replace")
+        try:
+            # The prompt itself, not just "token（" (the line before it says that too): getpass turns the echo off,
+            # flushing what was typed, before it prints the prompt, so a token written earlier is echoed and lost.
+            self.assertTrue(read_until(install.TOKEN_PROMPT), got[0])
+            os.write(fd, (self.TOK + "\n").encode())
+            self.assertTrue(read_until("等機器人進伺服器"), got[0])
+            for what in ("cmdline", "environ"):
+                with open("/proc/%d/%s" % (pid, what), "rb") as f:
+                    self.assertNotIn(self.TOK.encode(), f.read(), what)
+            self.fake.later = [[(self.GUILD, "s")]]
+            self.assertTrue(read_until("changed dcbot.token"), got[0])
+        finally:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            os.waitpid(pid, 0)
+            os.close(fd)
+        self.assertNotIn(self.TOK, got[0].decode("utf-8", "replace"), "not echoed, not printed")
+        self.assertEqual(self.lines()[0], "DISCORD_TOKEN=" + self.TOK)
+
+
+class NoBot(Base):
     def test_no_bot_anywhere_is_said_with_the_command(self):
         r, out = self.run_()
         with mock.patch.object(install.config, "bot_machine", return_value=(None, None, False)), redirect_stdout(out):
             install.token(r, False)
-        self.assertRegex(out.getvalue(), r"todo dcbot.token .*install.sh --token")
+        self.assertRegex(out.getvalue(), r"todo dcbot.token .*install.sh discord")
         self.assertEqual(r.code(), 2, "no bot anywhere yet: the install is the user's to finish (support-4 dry run #1)")
         r, out = self.run_()
         with mock.patch.object(install.config, "bot_machine", return_value=("host-b", {}, False)), redirect_stdout(out):
@@ -649,6 +1189,162 @@ class InstallNode(Base):
         rc, out, args, _ = self.node("FreeBSD", "x86_64")
         self.assertEqual((rc, args), (1, ""))
         self.assertIn("不支援的系統 FreeBSD", out)
+
+
+class Backups(Base):
+    """C-25 (data-safety 5): a machine set up again gets the progress repo and the secretary's folder back from the
+    remotes the instance names, before their first round; never into a folder already there (manager 2026-10-17)."""
+
+    def setUp(self):
+        super().setUp()
+        import test_remote
+        self.tr = test_remote
+        os.environ.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+                           "GIT_COMMITTER_EMAIL": "t@example.com", "ALT_DATA": os.path.join(self.home, "data")})
+        self.tmp = os.path.join(self.home, "remotes")
+        self.values = {}
+        import remote
+        self.patches = [mock.patch.object(install.config, "setting", side_effect=lambda k, *a: self.values.get(k)),
+                        mock.patch.object(remote, "engine_urls", return_value=["git@github.com:alice/altention.git"])]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        super().tearDown()
+
+    def backups(self, on=("progress", "planner")):
+        r, _ = self.run_()
+        with redirect_stdout(io.StringIO()) as o:
+            install.backups(r, list(on))
+        return o.getvalue().splitlines(), r
+
+    def folder(self, name):
+        return os.path.join(self.home, "data", name)
+
+    def git(self, folder, *args):
+        return subprocess.run(["git", "-C", folder] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+
+    def test_a_folder_not_there_is_cloned_into_700(self):
+        self.values = {"sync.dirs.progress.remote": self.tr.bare_with(self.tmp, "prog", ["STATUS.md"]),
+                       "sync.dirs.planner.remote": self.tr.bare_with(self.tmp, "plan", ["plan.md"])}
+        lines, r = self.backups()
+        self.assertEqual([l.split()[:2] for l in lines], [["changed", "core.backup"]] * 2, lines)
+        for name, f in (("progress", "STATUS.md"), ("planner", "plan.md")):
+            self.assertTrue(os.path.isfile(os.path.join(self.folder(name), f)), name)
+            self.assertEqual(stat.S_IMODE(os.stat(self.folder(name)).st_mode), 0o700, name)
+        self.assertTrue(os.path.isfile(os.path.join(self.folder("planner"), ".gitignore")), "made as remind makes one")
+        self.assertEqual(self.git(self.folder("planner"), "status", "--porcelain").stdout, "", "committed")
+        import remote
+        for name in ("progress", "planner"):
+            self.assertTrue(remote.has_hook(self.folder(name)), "the pre-push hook, before anything pushes from it")
+        self.assertEqual(r.code(), 0)
+        lines, _ = self.backups()
+        self.assertEqual([l.split()[0] for l in lines], ["ok", "ok"], "then left as it is")
+
+    def test_an_empty_backup_comes_back_on_main(self):
+        self.values = {"sync.dirs.progress.remote": self.tr.bare_with(self.tmp, "prog", []),
+                       "sync.dirs.planner.remote": self.tr.bare_with(self.tmp, "plan", [])}
+        self.backups()
+        for name in ("progress", "planner"):
+            self.assertEqual(self.git(self.folder(name), "symbolic-ref", "--short", "HEAD").stdout.strip(), "main", name)
+
+    def head_names(self, bare, ref):
+        subprocess.run(["git", "-C", bare, "symbolic-ref", "HEAD", ref], check=True)
+        return bare
+
+    def test_a_remote_whose_head_names_no_branch(self):
+        """#code-review of bc09467: `git init --bare` says master, the data is on main: the clone was an empty branch
+        said as "cloned back". Its main (or its only branch) is checked out tracking origin."""
+        prog = self.head_names(self.tr.bare_with(self.tmp, "prog", ["STATUS.md"]), "refs/heads/master")
+        plan = self.tr.bare_with(self.tmp, "plan", ["plan.md"])
+        work = os.path.join(self.tmp, "plan.work")
+        self.head_names(plan, "refs/heads/master")  # one branch, not main (the HEAD first: git keeps its branch)
+        subprocess.run(["git", "-C", work, "branch", "-m", "main", "mine"], check=True)
+        subprocess.run(["git", "-C", work, "push", "-q", "origin", "mine", ":main"], check=True)
+        self.values = {"sync.dirs.progress.remote": prog, "sync.dirs.planner.remote": plan}
+        lines, _ = self.backups()
+        self.assertTrue(all("從備份 clone 回來" in l for l in lines), lines)
+        for name, branch, f in (("progress", "main", "STATUS.md"), ("planner", "mine", "plan.md")):
+            self.assertTrue(os.path.isfile(os.path.join(self.folder(name), f)), name)
+            self.assertEqual(self.git(self.folder(name), "rev-parse", "--abbrev-ref", "@{u}").stdout.strip(), "origin/" + branch)
+        self.assertEqual(self.git(self.folder("planner"), "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "1",
+                         "the .gitignore on top of the backup, nothing else")
+
+    def test_progress_from_another_only_branch_goes_on_main(self):
+        """C-43: progress pushes main (`checkout -B main`, as it makes the repo it clones): the line says so."""
+        prog = self.head_names(self.tr.bare_with(self.tmp, "prog", ["STATUS.md"]), "refs/heads/master")
+        work = os.path.join(self.tmp, "prog.work")
+        subprocess.run(["git", "-C", work, "push", "-q", "origin", "main:master", ":main"], check=True)
+        self.values = {"sync.dirs.progress.remote": prog}
+        lines, _ = self.backups(on=("progress",))
+        self.assertIn("遠端原本的分支是 master，之後推到 main", lines[0])
+        self.assertEqual(self.git(self.folder("progress"), "symbolic-ref", "--short", "HEAD").stdout.strip(), "main")
+        self.assertTrue(os.path.isfile(os.path.join(self.folder("progress"), "STATUS.md")))
+
+    def test_several_branches_and_no_main_or_nothing_is_said_so(self):
+        prog = self.tr.bare_with(self.tmp, "prog", ["STATUS.md"])
+        work = os.path.join(self.tmp, "prog.work")
+        self.head_names(prog, "refs/heads/master")
+        subprocess.run(["git", "-C", work, "push", "-q", "origin", "main:a", "main:b", ":main"], check=True)
+        self.values = {"sync.dirs.progress.remote": prog,
+                       "sync.dirs.planner.remote": self.tr.bare_with(self.tmp, "plan", [])}
+        lines, _ = self.backups()
+        self.assertIn("認不出哪個分支是備份（有 a、b，沒有 main）", lines[0])
+        self.assertIn("裡面沒有內容（空的 repo）", lines[1])
+        self.assertFalse(any("從備份 clone 回來" in l for l in lines), lines)
+        self.assertEqual(self.git(self.folder("progress"), "symbolic-ref", "--short", "HEAD").stdout.strip(), "main")
+        self.assertEqual(subprocess.run(["git", "-C", prog, "for-each-ref", "--format=%(refname:short)"], stdout=subprocess.PIPE,
+                                        universal_newlines=True).stdout.split(), ["a", "b"], "the remote's branches untouched")
+
+    def test_a_folder_already_there_is_never_touched(self):
+        """Even empty, even 755: its plugin attaches it (remind --secretary, progress' first round)."""
+        self.values = {"sync.dirs.progress.remote": self.tr.bare_with(self.tmp, "prog", ["STATUS.md"]),
+                       "sync.dirs.planner.remote": self.tr.bare_with(self.tmp, "plan", ["plan.md"])}
+        os.makedirs(self.folder("progress"), mode=0o755)
+        os.chmod(self.folder("progress"), 0o755)
+        os.makedirs(self.folder("planner"))
+        with open(os.path.join(self.folder("planner"), "mine.md"), "w") as f:
+            f.write("mine\n")
+        lines, r = self.backups()
+        self.assertEqual([l.split()[0] for l in lines], ["ok", "ok"], lines)
+        self.assertEqual(os.listdir(self.folder("progress")), [])
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder("progress")).st_mode), 0o755, "not even its mode")
+        self.assertEqual(os.listdir(self.folder("planner")), ["mine.md"])
+
+    def test_a_public_or_other_remote_is_not_cloned_and_nothing_is_left(self):
+        import remote
+        self.values = {"sync.dirs.progress.remote": self.tr.bare_with(self.tmp, "eng", ["altention/sync.py"]),
+                       "sync.dirs.planner.remote": "https://example.com/alice/plan.git"}
+        public = [("anonymous", "no", "這個 repo 是公開的（讀得到）：改成 private 再設，或換一個 private 的")]
+        real = remote.check
+        with mock.patch.object(remote, "alert") as told, \
+                mock.patch.object(remote, "check", side_effect=lambda u, n=None: public if u.startswith("https:") else real(u, n)):
+            lines, r = self.backups()
+        self.assertEqual([l.split()[:2] for l in lines], [["todo", "core.backup"]] * 2, lines)
+        self.assertIn("公開的", lines[1])
+        self.assertIn("python3 ops/remote.py set planner", lines[1])
+        self.assertFalse(os.path.exists(self.folder("progress")))
+        self.assertFalse(os.path.exists(self.folder("planner")))
+        self.assertEqual([c.args[0] for c in told.call_args_list], ["clone-refused"] * 2)
+        self.assertEqual(r.code(), 2)
+
+    def test_nothing_for_a_part_off_here_unset_or_in_its_own_folder(self):
+        self.values = {"sync.dirs.progress.remote": self.tr.bare_with(self.tmp, "prog", ["STATUS.md"])}
+        self.assertEqual(self.backups(on=("planner",))[0], [], "progress off here; planner has no remote")
+        mine = os.path.join(self.home, "life")
+        self.values = {"sync.dirs.planner.remote": self.tr.bare_with(self.tmp, "plan", ["plan.md"]), "planner.folder": mine}
+        lines, _ = self.backups()
+        self.assertEqual([l.split()[0] for l in lines], ["ok"], lines)
+        self.assertFalse(os.path.exists(mine))
+        self.assertFalse(os.path.exists(self.folder("planner")))
+
+    def test_the_step_runs_after_the_plugins_and_only_with_them(self):
+        steps = re.findall(r'st\.run\("([a-z.-]+)"', open(install.__file__, encoding="utf-8").read())
+        self.assertLess(steps.index("core.install"), steps.index("core.backup"))
+        self.assertLess(steps.index("core.backup"), steps.index("core.apply"))
 
 
 if __name__ == "__main__":

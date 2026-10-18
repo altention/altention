@@ -88,11 +88,40 @@ class Link(unittest.TestCase):
         old = os.path.join(self.tmp, "old engine", "bin", "altention")
         os.makedirs(os.path.dirname(old))
         open(old, "w").close()
+        os.makedirs(os.path.join(self.tmp, "old engine", "altention"))
+        open(os.path.join(self.tmp, "old engine", "altention", "config.py"), "w").close()  # an engine's
         os.makedirs(self.bindir)
         os.symlink(old, os.path.join(self.bindir, "altention"))
         os.symlink(os.path.join(self.tmp, "gone"), os.path.join(self.bindir, "alt"))
         self.assertTrue(self.link())
         self.assertEqual((self.at("altention"), self.at("alt")), (self.src, self.src))
+
+    def test_a_link_through_an_old_name_of_this_engine_is_rewritten(self):
+        """C-17 S4: the engine moved and its old folder is a link to it; ~/.local/bin/altention still names the old
+        folder. It resolves to this very file today, and breaks once the old name goes: it is written anew."""
+        old_name = os.path.join(self.tmp, "old name")
+        os.symlink(os.path.dirname(os.path.dirname(self.src)), old_name)
+        via = os.path.join(old_name, "bin", "altention")
+        os.makedirs(self.bindir)
+        os.symlink(via, os.path.join(self.bindir, "altention"))
+        self.assertEqual(self.at("altention"), self.src, "the same file today")
+        self.assertTrue(self.link())
+        self.assertEqual(os.readlink(os.path.join(self.bindir, "altention")), self.src)
+        self.said.clear()
+        self.link()
+        self.assertTrue(all("✓" in t for t in self.said), "then nothing to change")
+
+    def test_someones_own_program_called_altention_is_left(self):
+        """#code-review-2 2026-10-16: the name alone made it another engine's and it was rewritten."""
+        theirs = os.path.join(self.tmp, "tools", "altention")
+        os.makedirs(os.path.dirname(theirs))
+        with open(theirs, "w") as f:
+            f.write("#!/bin/sh\necho mine\n")
+        os.makedirs(self.bindir)
+        os.symlink(theirs, os.path.join(self.bindir, "altention"))
+        self.assertFalse(self.link())
+        self.assertEqual(os.readlink(os.path.join(self.bindir, "altention")), theirs)
+        self.assertTrue(any("別的程式的連結" in t for t in self.said))
 
     def test_a_plain_file_is_left_alone(self):
         os.makedirs(self.bindir)

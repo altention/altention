@@ -4,7 +4,7 @@
   chart.py DATA.json OUT.png
 
 DATA.json (written by collect.py): {"today", "results": [usage/remote.py output per machine], "samples": [...],
-"plan_pro": 20, "plan_name": "Max 20x", "utc_offset": seconds east of UTC of the boards' zone (collect.py: the instance's core.timezone, else
+"plan_pro": 20, "plan_name": "Max 20x" (both null when usage.plan is not set), "utc_offset": seconds east of UTC of the boards' zone (collect.py: the instance's core.timezone, else
 this machine's)}. Three panels: API-equivalent cost per day and machine (30 days), the subscription's weekly
 percentage over time (from the hourly samples), and the projects of the last 7 days.
 """
@@ -58,9 +58,10 @@ def weekly_panel(ax, samples, pro, plan="?"):
         ax.plot([p[0] for p in pts], [p[1] for p in pts], color=COLORS[0], marker="." if len(pts) < 50 else None)
         ax.set_ylim(0, max(100, max(p[1] for p in pts) + 5))
         ax.axhline(100, color="#E45756", lw=0.8, ls="--")
-        ax.axhline(100.0 / pro * 5, color="#F58518", lw=0.8, ls=":", label="Max 5x 的整週額度")
-        ax.axhline(100.0 / pro, color="#54A24B", lw=0.8, ls=":", label="Pro 的整週額度")
-        ax.legend(fontsize=8, loc="upper left")
+        if pro:  # usage.plan not set: no Pro / Max 5x lines (they would be a guess)
+            ax.axhline(100.0 / pro * 5, color="#F58518", lw=0.8, ls=":", label="Max 5x 的整週額度")
+            ax.axhline(100.0 / pro, color="#54A24B", lw=0.8, ls=":", label="Pro 的整週額度")
+            ax.legend(fontsize=8, loc="upper left")
         short_span = pts[-1][0] - pts[0][0] < datetime.timedelta(days=2)
         ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%m-%d %H:%M" if short_span else "%m-%d", tz=TZ))
         ax.tick_params(axis="x", labelsize=8)
@@ -94,7 +95,7 @@ def main(data_path, out):
     today = datetime.date.fromisoformat(data["today"])
     fig, axes = plt.subplots(3, 1, figsize=(9, 12), gridspec_kw={"height_ratios": [1.1, 1, 1]})
     daily_panel(axes[0], data["results"], today)
-    weekly_panel(axes[1], data["samples"], data.get("plan_pro", 20), data.get("plan_name") or "?")
+    weekly_panel(axes[1], data["samples"], data.get("plan_pro"), data.get("plan_name") or "方案沒設定")
     projects_panel(axes[2], data.get("results7") or data["results"])
     fig.suptitle("用量  %s" % datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M"), fontsize=13)
     fig.tight_layout()

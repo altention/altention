@@ -127,5 +127,82 @@ class Menu(unittest.TestCase):
         reply = "● Plan:\n  1. Create bye.txt\n  2. Reply done\n" + "─" * 30 + "\n❯ \n" + "─" * 30 + "\n  ⏵⏵ bypass permissions on\n"
         self.assertEqual(panels.parse_menu(reply)[1], [], "a numbered list in Claude's reply is not a menu")
 
+class AutoDeny(unittest.TestCase):
+    """Claude Code 2.1.302 (real screens, screens/2.1.302/extra/P/): in auto mode a dangerous removal is asked about with a
+    two-minute countdown row that changes every second (manager 2026-10-18: the bot's buttons never went out)."""
+    SETS = ("colour-120x50", "colour-80x24", "nocolor-120x50", "nocolor-80x24")
+
+    def screen(self, name):
+        from altention.tests.connectors.claude_code import samples
+        return samples.extra("P", name, version="2.1.302")
+
+    def test_the_real_countdown_on_every_size_read_and_left_out(self):
+        for which in self.SETS:
+            with self.subTest(which=which):
+                a, b = self.screen("countdown-%s-a" % which), self.screen("countdown-%s-b" % which)
+                self.assertNotEqual(a, b, "the countdown moved between the two")
+                left_a, left_b = panels.auto_deny(a), panels.auto_deny(b)
+                self.assertTrue(100 <= left_b < left_a <= 120, (left_a, left_b))
+                ea, oa = panels.parse_menu(a)
+                eb, ob = panels.parse_menu(b)
+                self.assertEqual((ea, oa), (eb, ob), "the excerpt leaves the countdown out")
+                self.assertEqual([n for n, _ in oa], [1, 2])
+                self.assertIn("Do you want to proceed?", ea)
+                self.assertNotIn("automatically deny", ea)
+                self.assertNotIn("unattended session", ea, "both rows of a wrapped countdown")
+                self.assertIn("rm -rf ~", ea)
+
+    def test_no_countdown_after_it_ran_out_or_on_other_dialogs(self):
+        from altention.tests.connectors.claude_code import samples
+        self.assertIsNone(panels.auto_deny(self.screen("auto-denied-nocolor-80x24")))
+        for which in self.SETS:
+            self.assertIsNone(panels.auto_deny(samples.screen("permission", which)), which)
+
+    def test_the_screen_reader_wording_and_the_seconds(self):
+        def dialog(row):
+            return "\n".join(["─" * 40, " Bash command", " " + "╌" * 30, " rm -rf ~", " " + "╌" * 30, row,
+                              " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""])
+        tail = ", to avoid blocking progress on an unattended session"
+        for when, secs in (("1:21", 81), ("0:05", 5), ("12:00", 720), ("about 2 minutes", 120), ("about 1 minute", 60),
+                           ("about 30 seconds", 30), ("about 1 second", 1)):
+            self.assertEqual(panels.auto_deny(dialog(" ⚠ Claude Code will automatically deny this request in " + when + tail)), secs, when)
+        for row in (" ⚠ Claude Code will automatically deny this request in a while" + tail,  # no time in it
+                    " ⚠ Claude Code will automatically deny this request in 1:99" + tail,
+                    " Claude Code will automatically deny this request in 1:21" + tail,  # not the warning row
+                    " ⚠ Claude Code will automatically deny this request in 1:21" + tail + " (quoted)"):
+            self.assertIsNone(panels.auto_deny(dialog(row)), row)
+            self.assertIn(row.strip(), panels.parse_menu(dialog(row))[0], "anything else is left where it is")
+
+    def test_a_reply_above_a_dialog_that_quotes_the_words_is_no_deadline(self):
+        """#code-review of ac72a14: a dialog with no dashed rules (the trust and bypass dialogs, real 2.1.296 screens),
+        Claude's reply above it quoting the sentence on a row of its own: only rows below the dialog's top rule count."""
+        from altention.tests.connectors.claude_code import samples
+        quote = ["⏺ The dialog said:", "  ⚠ Claude Code will automatically deny this request in 1:59, to avoid blocking progress on an unattended session"]
+        for state in ("trust-dialog", "bypass-dialog"):
+            for which in self.SETS:
+                view = samples.screen(state, which)
+                self.assertIsNone(panels.auto_deny(view))
+                quoted = "\n".join(quote + view.split("\n"))
+                self.assertIsNone(panels.auto_deny(quoted), (state, which))
+                self.assertEqual(panels.parse_menu(quoted), panels.parse_menu("\n".join(quote[:1] + [quote[1]] + view.split("\n"))))
+        self.assertIsNone(panels.auto_deny("\n".join(quote + ["❯ 1. Yes", "  2. No"])), "no dialog rule at all: not taken")
+
+    def test_a_command_that_quotes_the_words_keeps_them(self):
+        """(review-words-on-screen-detectors) The words in the command itself, between its dashed rules, are the
+        command: read as it is, never taken for the countdown."""
+        quoted = " ⚠ Claude Code will automatically deny this request in 1:21, to avoid blocking progress on an unattended session"
+        view = "\n".join(["─" * 40, " Bash command", " " + "╌" * 30, " printf '%s\\n' \\", quoted, " " + "╌" * 30,
+                          " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""])
+        self.assertIsNone(panels.auto_deny(view))
+        self.assertIn(quoted.strip(), panels.parse_menu(view)[0])
+        real = self.screen("countdown-colour-120x50-a")
+        rows = real.split("\n")
+        at = [i for i, r in enumerate(rows) if "rm -rf ~" in r and not r.lstrip().startswith("⎿")][-1]
+        both = "\n".join(rows[:at + 1] + [quoted] + rows[at + 1:])  # the command quoting it, the real countdown below
+        self.assertEqual(panels.auto_deny(both), panels.auto_deny(real))
+        self.assertIn(quoted.strip(), panels.parse_menu(both)[0], "the quoted words stay")
+        self.assertEqual(panels.parse_menu(both)[0].count("automatically deny"), 1, "only the countdown goes")
+
+
 if __name__ == "__main__":
     unittest.main()

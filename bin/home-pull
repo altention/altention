@@ -14,7 +14,8 @@ channel's Claude call this without the flag, and the rule is that a refused comm
 
 The work is altention/sync.py's (the lock, no autostash, a killed rebase undone first, git keeping the lock with a
 timeout); see there. Several Claude sessions, the core's sync and update cron jobs, deploy.sh, the bot's remote streams and the usage
-collector all update this folder, which is why nobody runs a bare `git pull` here. Standard library, Python 3.8.
+collector all update this folder, which is why nobody runs a bare `git pull` here. It never pushes (C-31: a public
+engine's fork is public); who changes the engine pushes with bin/home-git push. Standard library, Python 3.8.
 """
 import os
 import sys
@@ -42,6 +43,7 @@ def main(argv):
             mode, problem = sync.update_mode()
             if problem and not quiet:
                 print("home-pull：讀不到引擎更新的模式（%s），照上次的 %s" % (problem, mode), file=sys.stderr)
+            head = repo.git("rev-parse", "HEAD", timeout=20).stdout.strip()
             if why:
                 code, note = 1, why
             elif mode == "notify" and not take:  # nothing taken by itself (manager 2026-10-14); a person's command may
@@ -64,12 +66,21 @@ def main(argv):
             try:  # the update may have taken the engine's copies of the instance's folders away: links now, not next sync
                 inst = sync.config.instance_dir()
                 if inst:
-                    sync.adopt_all(inst, lambda text: None)
-                    sync.push(repo)  # a hand-over commit adopt may have made
+                    sync.adopt_all(inst, lambda text: None)  # a hand-over commit it makes stays here: the engine is
+                    # never pushed by itself (C-31); doctor counts what is not on the upstream
             except Exception as e:
                 print("home-pull：改連結時出錯：%s" % e, file=sys.stderr)
+            if code == 0 and sync.engine_moved(repo, head) and not quiet:  # C-09: as update.py's own round
+                print("home-pull：機器人會自己重啟套用新版")
+            if code == 0:  # a skill the update brought gets its link now, not at the next sync
+                got = sync.new_skills(lambda text: None)
+                if got.get("error") and not quiet:
+                    print("home-pull：補 skill 連結時出錯：%s" % got["error"], file=sys.stderr)
     except sync.Busy as e:
         sys.exit("home-pull：%s（別的同步或部署還在跑），這次先不更新" % e)
+    done = sync.install_pending()  # C-08: the bot's packages, with the lock let go
+    if done and not quiet:
+        print("home-pull：" + done)
     if code != 0:
         sys.exit("home-pull：" + note)
     if not quiet:

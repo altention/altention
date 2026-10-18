@@ -530,12 +530,28 @@ def load(path, host=None):
     name = None
     if isinstance(data, dict) and "items" not in data and ("schedules" in data or isinstance(data.get("name"), str)):
         name = data["name"] if isinstance(data.get("name"), str) else None
+        raw = data
         data = data.get("schedules", [])  # a plugin that schedules nothing: an empty schedule, not a broken file
         if not isinstance(data, list):
             raise ScheduleError("schedules 要是清單")
+        if name and data:
+            data = overridden(name, raw)
     out = parse(data, host)
     out["plugin"] = name
     return out
+
+
+def overridden(name, d):
+    """A plugin.json's schedules as the instance overrides them (plugin.effective_schedules, C-37), as apply writes
+    its cron lines: an item turned off has "enabled": false; one whose override cannot be used is left out (plan and
+    doctor say why; its line is not touched). Settings that cannot be read: the plugin.json's own, as before (the
+    plugin's place is unknown then, and the round leaves it out anyway)."""
+    try:
+        settings = config.settings()
+    except Exception:
+        return d["schedules"]
+    items, _problems = plugin.effective_schedules(name, d, settings)
+    return [dict((k, v) for k, v in i.items() if k not in ("source", "unknown")) for i in items if not i.get("unknown")]
 
 
 def describe(item):
@@ -571,6 +587,29 @@ def zone_for(item, tz):
     if item.get("timezone") == "machine" or (tz is None and not needs_zone(item)):
         return SystemZone()
     return tz
+
+
+def recent_slots(item, now, tz, n=2):
+    """The latest `n` scheduled instants of an item at or before `now`, newest first (fewer when there are not so
+    many: a "once", or an "at" whose days are further back than LATE_MAX). For doctor: "missed two in a row" (C-37)."""
+    out, t = [], now
+    while len(out) < n:
+        slot = latest_slot(item, t, tz)
+        if slot is None:
+            break
+        out.append(slot)
+        t = slot - 1
+    return out
+
+
+def next_slot(item, after, tz):
+    """The first scheduled instant of an "every" or "at" item later than `after`, or None (C-37: doctor's first turn
+    of a line just added)."""
+    ahead = item["every"] if item["kind"] == "every" else 8 * 86400
+    found, slot = None, latest_slot(item, after + ahead, tz)
+    while slot is not None and slot > after:
+        found, slot = slot, latest_slot(item, slot - 1, tz)
+    return found
 
 
 def latest_slot(item, now, tz):

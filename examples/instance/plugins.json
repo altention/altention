@@ -28,7 +28,7 @@
   "usage": {
     "channel": "100000000000000001",
     "plan": ["Pro", 1],
-    "subscription_limits": false
+    "subscription_limits": true
   },
   "status": {
     "channel": "100000000000000001"

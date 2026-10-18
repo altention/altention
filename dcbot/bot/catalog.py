@@ -42,7 +42,7 @@ KNOWN = {
     "loop": "每隔一段時間重複執行一個提示或指令",
     "schedule": "建立、查看、執行排程的雲端代理",
     "run": "啟動並操作這個專案的 app，確認修改真的有效",
-    "doctor": "檢查 Claude Code 的安裝與設定",
+    "doctor": "Claude Code 自己的安裝檢查（Altention 的系統檢查請跟 Claude 說「跑系統檢查」）",
     "fewer-permission-prompts": "掃描紀錄，把常用的唯讀指令加進允許清單",
     "morning": "晨間簡報",
     "skill-creator": "建立、修改或評估 skill",
