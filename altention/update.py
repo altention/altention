@@ -37,6 +37,9 @@ says it, told once, tried again an hour later; killed halfway → the record is 
 supervisor runs pip itself before starting the new code (C-40), and when pip keeps failing it steps back to the old
 version here, never pushed (C-44); while HEAD is such a step back, install_pending leaves the record to the
 supervisor (it alone moves forward), and the sync drops the step back when the branch moves on.
+A machine that moves by itself (release, branch) says once in Discord when HEAD first contains a release newer than
+the one it last told, whoever moved it, with the first sentence of each point of that release's CHANGELOG section
+(tell_updated, C-55); the first round with no record writes down what it runs and says nothing.
 Nothing else here runs install.sh: a skill the new version brings gets its link from the sync's next round (sync.new_skills,
 five minutes after this one); a new cron line or hook waits for install.sh or ops/apply.py, and doctor's
 plugins.would-apply says it meanwhile.
@@ -257,6 +260,121 @@ def tell_release(tag):
         return False
 
 
+def release_in(rnd):
+    """The highest vX.Y.Z tag HEAD contains, with the lower ones it contains: (tag or None, {tag: (x, y, z)})."""
+    found = {}
+    for tag in rnd.git("tag", "-l", "v*", "--merged", "HEAD").stdout.split():
+        m = RELEASE_TAG.match(tag)
+        if m:
+            found[tag] = tuple(map(int, m.groups()))
+    return (max(found, key=found.get) if found else None), found
+
+
+def tell_updated(rnd):
+    """C-55: a machine that moves by itself (release, branch) tells once per release that it now runs it, whoever
+    moved HEAD (this round, home-pull, the sync standing in, a push to main here). updated-release: {tag, at}, the
+    release last told (or found when there was no record: written down, not told, so a new install or this code
+    arriving pushes nothing). Several releases at once: the newest told, the ones between named. The notice not
+    out: not written, tried again next round. HEAD going back tells nothing, nor a release with a rollback or step
+    back of the supervisor's above it in HEAD (it is not what runs): told once that commit is gone."""
+    path = os.path.join(state_dir(), "updated-release")
+    was = False  # no record (or one someone broke): what HEAD has now is the start
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+        if isinstance(rec, dict) and "tag" in rec and (rec["tag"] is None or RELEASE_TAG.match(str(rec["tag"]))):
+            was = rec["tag"]
+    except (OSError, ValueError):
+        pass
+    now, found = release_in(rnd)
+    if was is not False:
+        floor = tuple(map(int, RELEASE_TAG.match(was).groups())) if was else (-1, -1, -1)
+        if now is None or found[now] <= floor:  # nothing newer (HEAD gone back included): the record stays
+            return
+        above = rnd.git("log", "--format=%s", "%s..HEAD" % now)
+        if above.returncode != 0 or any(ROLLBACK_SUBJECT.match(l) or STEP_BACK_SUBJECT.match(l)
+                                        for l in above.stdout.splitlines()):
+            return  # the supervisor took it back (or git cannot say): not running it; told once that is gone
+        between = sorted((t for t, v in found.items() if floor < v < found[now]), key=found.get)
+        if not tell_version(rnd, now, between):
+            return
+        SAID.append("已推播：引擎更新到 %s" % now)
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump({"tag": now, "at": time.time()}, f)
+    os.replace(path + ".tmp", path)
+
+
+NOTES_LINES = 6     # bullets of a release's notes in the notice
+NOTES_CHARS = 1200  # and characters, at most
+NOTE_CHARS = 240    # of one bullet
+
+
+def release_notes(rnd, tag):
+    """Each bullet of `tag`'s CHANGELOG section (its "For people" part when it has one) cut to its bold lead
+    ("**…**" it starts with) or else its first sentence, NOTE_CHARS at most, as lines, and whether some were left
+    out; None when the CHANGELOG has no such section."""
+    text = rnd.git("show", "%s:CHANGELOG.md" % tag).stdout
+    section, inside = [], False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line[3:].split(" ")[0] == tag
+        elif inside:
+            section.append(line)
+    if not inside:
+        return None
+    people, part = [], None
+    for line in section:
+        if line.startswith("### "):
+            part = line[4:].strip().lower()
+        elif part in (None, "for people"):
+            people.append(line)
+    bullets = []
+    for line in people:
+        if line.startswith("- "):
+            bullets.append(line[2:].strip())
+        elif bullets and line.strip():
+            bullets[-1] += " " + line.strip()
+    lines, cut, size = [], False, 0
+    for b in bullets:
+        lead = re.match(r"\*\*[^*]+\*\*", b) or re.search(r"[.!?。](?=\s)", b)
+        line = b[:lead.end()] if lead else b
+        if len(line) > NOTE_CHARS:
+            line = line[:NOTE_CHARS - 1] + "…"
+        cut = cut or line != b
+        if len(lines) == NOTES_LINES or size + len(line) > NOTES_CHARS:
+            cut = True
+            break
+        lines.append(line)
+        size += len(line)
+    return lines, cut
+
+
+def tell_version(rnd, tag, between):
+    """The notice that this machine now runs `tag` (altention dc notify, the default channel), with its notes. True
+    when it went out."""
+    text = "✅ 引擎已更新到 %s" % tag
+    if between:
+        text += "（中間的 %s 也一起裝上了）" % "、".join(between)
+    notes = release_notes(rnd, tag)
+    if notes is None:
+        text += "。CHANGELOG.md 裡沒有這版的說明。"
+    elif not notes[0]:
+        text += "。這版改了什麼在 CHANGELOG.md 的 %s 一節。" % tag
+    else:
+        text += "。這版的重點：\n" + "\n".join("- " + n for n in notes[0])
+        if notes[1]:
+            text += "\n（只列每項的第一句；完整的在 CHANGELOG.md 的 %s 一節）" % tag
+    try:
+        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", text], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def last_alive():
     """{"at", "blocked": {"hash", "why", "since"} or None} written at the end of every round that came to its end
     (updated, nothing new, or refused), or None. The sync moves the engine only when this is old (manager
@@ -447,6 +565,8 @@ def install_deps():
 
 # dcbot/supervisor.py's subject for a step back while packages install (altention/sync.py has the same; a test holds them)
 STEP_BACK_SUBJECT = re.compile(r"^dcbot: step back to ([0-9a-f]{7}) while packages install \([0-9a-f]{7}\)$")
+# and for a rollback (put_back(); the same as altention/sync.py's, a test holds them)
+ROLLBACK_SUBJECT = re.compile(r"^dcbot: roll back( \(partial\))? to ([0-9a-f]{7}) \(.*\)$")
 RETRY_AFTER = 3600  # a pip that failed is tried again an hour later, not every round (#code-review of df95bc2)
 INSTALLING = "安裝中…"
 
@@ -794,6 +914,7 @@ def one_round(force_release=False):
     except OSError:
         SKIPPED.append("git 鎖被別人拿著")
         return 0  # the sync or a deploy has it: next round
+    mode = None
     try:
         if force_release:  # asked for now: the newest release, this round only; the setting is left as it is
             mode, problem = "release", None
@@ -808,7 +929,7 @@ def one_round(force_release=False):
             SAID.append("沒有上游，不用更新")
             mark_ok("update", {"note": "沒有上游，不用更新"})
             return 0
-        r = rnd.git("fetch", "-q") if mode == "branch" else rnd.git("fetch", "-q", "--tags")
+        r = rnd.git("fetch", "-q", "--tags")  # branch too: the release tags tell_updated looks for
         if r.returncode != 0:
             SKIPPED.append("fetch 失敗")
             alert("update", "fetch", "引擎 fetch 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:200])
@@ -871,6 +992,11 @@ def one_round(force_release=False):
         mark_ok("update", {"head": now[:12]})
         return 0
     finally:
+        if mode in ("release", "branch") and not force_release:  # whatever this round did, and whoever moved HEAD
+            try:
+                tell_updated(rnd)
+            except Exception as e:
+                alert("update", "updated-release", "告知引擎已更新到新版這一步出錯（%s: %s）" % (type(e).__name__, e), notify=False)
         rnd.lock.close()
 
 

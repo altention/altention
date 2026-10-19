@@ -775,6 +775,252 @@ class Modes(BrokenSomewhere):
                 self.assertNotIn("由同步代為更新引擎", self.alerts())
 
 
+class UpdatedNotice(Rig):
+    """C-55: a machine that moves by itself (release, branch) says once per release that it now runs it, whoever
+    moved HEAD; the first round writes down what it runs and says nothing; notify mode as it was."""
+
+    def setUp(self):
+        super().setUp()
+        self.inst = os.path.join(self.tmp, "實例 instance")
+        os.makedirs(self.inst)
+        self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        super().tearDown()
+
+    def mode(self, value):
+        with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+            json.dump({"format": 1, "core": {"update": value}}, f)
+
+    def release(self, version, points=("Something new. More about it.",), x=None):
+        """A commit whose CHANGELOG has a section for `version` with these points, tagged and pushed."""
+        text = "# Changelog\n\n## v%s — 2026-10-20\n\n### For people\n\n%s\n\n### For agents\n\n- Agents only.\n" % (
+            version, "\n".join("- " + p.replace(". ", ".\n  ", 1) for p in points))
+        self.write(self.up, "CHANGELOG.md", text)
+        commit = self.publish("tool.py", "X = %r\n" % (x or version))
+        git(self.up, "tag", "v" + version)
+        git(self.up, "push", "-q", "origin", "v" + version)
+        return commit
+
+    def record(self):
+        try:
+            with open(os.path.join(self.state, "updated-release")) as f:
+                return json.load(f)
+        except OSError:
+            return None
+
+    def notices(self):
+        return [t for t in self.told if t.startswith("✅")]
+
+    def test_first_round_writes_down_what_it_runs_and_says_nothing(self):
+        for mode in ("release", "branch"):
+            with self.subTest(mode=mode):
+                shutil.rmtree(self.state, ignore_errors=True)
+                del self.told[:]
+                self.mode(mode)
+                self.release("0.1.%d" % ("release", "branch").index(mode))
+                self.round()
+                self.assertEqual(self.notices(), [], "a new install or this code arriving: nothing pushed")
+                self.assertEqual(self.record()["tag"], "v0.1.%d" % ("release", "branch").index(mode))
+                self.round()
+                self.assertEqual(self.notices(), [])
+
+    def test_a_new_release_is_told_once_with_its_points(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.release("0.2.0", ("The board reads limits. It costs one request.", "Backups are asked about."))
+        self.round()
+        self.assertEqual(len(self.notices()), 1, self.told)
+        n = self.notices()[0]
+        self.assertTrue(n.startswith("✅ 引擎已更新到 v0.2.0"), n)
+        self.assertIn("- The board reads limits.", n)
+        self.assertIn("- Backups are asked about.", n)
+        self.assertNotIn("It costs one request", n, "the first sentence only")
+        self.assertIn("完整的在 CHANGELOG.md 的 v0.2.0 一節", n)
+        self.assertNotIn("Agents only", n, "For people only")
+        self.assertEqual(self.record()["tag"], "v0.2.0")
+        for _ in range(2):
+            self.round()
+        self.assertEqual(len(self.notices()), 1, "once per release")
+
+    def test_head_moved_by_someone_else_is_told_too(self):
+        for mode in ("branch", "release"):
+            with self.subTest(mode=mode):
+                shutil.rmtree(self.state, ignore_errors=True)
+                del self.told[:]
+                self.mode(mode)
+                self.round()
+                self.assertEqual(self.record(), {"tag": None, "at": self.record()["at"]} if mode == "branch" else self.record())
+                tag = self.release("0.%d.0" % (3 + ("branch", "release").index(mode)), ("Moved by hand.",))
+                git(self.engine, "fetch", "-q", "--tags")
+                git(self.engine, "merge", "-q", "--ff-only", tag)  # home-pull, the sync standing in, a push here
+                self.round()
+                self.assertEqual(len(self.notices()), 1, (mode, self.told))
+                self.assertIn("- Moved by hand.", self.notices()[0])
+
+    def test_no_release_yet_then_the_first_one_is_told(self):
+        self.mode("branch")
+        self.round()
+        self.assertIsNone(self.record()["tag"])
+        self.release("0.1.0")
+        self.round()
+        self.assertEqual(len(self.notices()), 1)
+        self.assertIn("v0.1.0", self.notices()[0])
+
+    def test_several_at_once_tells_the_newest_and_names_the_ones_between(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        for v in ("0.2.0", "0.9.0", "0.10.0"):  # by number, not by text
+            self.release(v, ("Point of %s." % v,), x=v + "x")
+        self.round()
+        self.assertEqual(len(self.notices()), 1, self.told)
+        n = self.notices()[0]
+        self.assertTrue(n.startswith("✅ 引擎已更新到 v0.10.0（中間的 v0.2.0、v0.9.0 也一起裝上了）"), n)
+        self.assertIn("Point of 0.10.0.", n)
+        self.assertNotIn("Point of 0.9.0.", n, "the newest one's notes only")
+
+    def test_a_notice_that_fails_is_tried_again_next_round(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.release("0.2.0")
+        failing = []
+
+        def notify_fails(argv, *a, **k):
+            if argv and str(argv[0]).endswith("altention") and argv[1:3] == ["dc", "notify"]:
+                failing.append(argv[3])
+                return subprocess.CompletedProcess(argv, 1)
+            return self.real_run(argv, *a, **k)
+        with mock.patch.object(update.subprocess, "run", notify_fails):
+            update.one_round()
+        self.assertEqual(len(failing), 1)
+        self.assertEqual(self.record()["tag"], "v0.1.0", "not out: not written down")
+        self.round()
+        self.assertEqual(len(self.notices()), 1)
+        self.assertEqual(self.record()["tag"], "v0.2.0")
+
+    def test_head_going_back_and_forward_again_tells_nothing(self):
+        self.mode("branch")
+        old = self.release("0.1.0")
+        self.round()
+        self.release("0.2.0")
+        self.round()
+        self.assertEqual(len(self.notices()), 1)
+        git(self.engine, "reset", "-q", "--hard", old)  # a rollback, a step back
+        with mock.patch.object(update, "check_tree", return_value="held back by the test"):
+            self.round()
+        self.assertEqual(self.record()["tag"], "v0.2.0")
+        self.round()
+        self.assertEqual(len(self.notices()), 1, self.told)
+
+    def stack(self, subject):
+        """A commit of the supervisor's on top of HEAD, as put_back() or a step back makes it here (never pushed)."""
+        git(self.engine, "revert", "--no-commit", "HEAD")
+        git(self.engine, "commit", "-qm", subject)
+
+    def test_a_rollback_or_step_back_on_top_waits_until_it_is_gone(self):
+        for mode, subject in (("branch", "dcbot: roll back to abcdef0 (trial failed)"),
+                              ("release", "dcbot: roll back (partial) to abcdef0 (trial failed)"),
+                              ("branch", "dcbot: step back to abcdef0 while packages install (1234567)"),
+                              ("release", "dcbot: step back to abcdef0 while packages install (1234567)")):
+            with self.subTest(mode=mode, subject=subject):
+                shutil.rmtree(self.state, ignore_errors=True)
+                del self.told[:]
+                self.mode(mode)
+                start = self.release("0.%d.0" % (len(self.notices()) + 2 * len(subject) + (mode == "release")))
+                self.round()
+                was = self.record()["tag"]
+                tag = "v0.%d.1" % (2 * len(subject) + (mode == "release"))
+                new = self.release(tag[1:], ("Shiny new thing.",))
+                git(self.engine, "fetch", "-q", "--tags")
+                git(self.engine, "merge", "-q", "--ff-only", new)  # home-pull, or the sync standing in
+                self.stack(subject)  # the trial failed: the supervisor took it back
+                for _ in range(2):
+                    self.round()
+                self.assertEqual(self.notices(), [], "it is not what runs")
+                self.assertEqual(self.record()["tag"], was, "the record stays")
+                git(self.engine, "reset", "-q", "--hard", new)  # taken out, the fixed version in
+                self.round()
+                self.assertEqual(len(self.notices()), 1, self.told)
+                self.assertIn(tag, self.notices()[0])
+                self.assertNotEqual(start, new)
+
+    def test_its_rollback_subject_is_the_syncs(self):
+        self.assertEqual(update.ROLLBACK_SUBJECT.pattern, sync.ROLLBACK_SUBJECT.pattern, "the copy in update.py")
+
+    def test_the_real_changelogs_points_are_cut_to_their_lead(self):
+        """v0.2.1's own section: a bold lead is the whole of its line, else the first sentence; none too long."""
+        with open(os.path.join(ENGINE_REAL, "CHANGELOG.md")) as f:
+            self.write(self.up, "CHANGELOG.md", f.read())
+        self.publish("tool.py", "X = 'real'\n")
+        git(self.up, "tag", "v0.2.1")
+        git(self.up, "push", "-q", "origin", "v0.2.1")
+        git(self.engine, "fetch", "-q", "--tags")
+        lines, cut = update.release_notes(update.Round(), "v0.2.1")
+        self.assertEqual(lines, [
+            "**When a new version's packages will not install, the bot steps back instead of staying down.**",
+            "**Restart the machine once after updating**",
+            "The bot's first start under the new supervisor runs `pip install` once, even when its packages did not "
+            "change: the supervisor now records which requirements it installed and checks them before every start.",
+            "**A board is no longer posted twice.**"])
+        self.assertTrue(cut)
+        self.assertTrue(all(len(l) <= update.NOTE_CHARS for l in lines))
+        self.publish("CHANGELOG.md", "## v0.2.2 — x\n\n- %s\n" % ("y" * 400))
+        git(self.up, "tag", "v0.2.2")
+        git(self.up, "push", "-q", "origin", "v0.2.2")
+        git(self.engine, "fetch", "-q", "--tags")
+        lines, cut = update.release_notes(update.Round(), "v0.2.2")
+        self.assertEqual((len(lines[0]), lines[0][-1], cut), (update.NOTE_CHARS, "…", True))
+
+    def test_notify_mode_and_an_asked_for_release_say_nothing_new(self):
+        self.mode("notify")
+        self.release("0.1.0")
+        self.round()
+        self.assertIsNone(self.record(), "notify: as it was")
+        self.assertEqual(len(self.told), 1, "only the 🆕 notice")
+        self.assertTrue(self.told[0].startswith("🆕"))
+        with self.notify, redirect_stdout(io.StringIO()):
+            update.main(["--release"])
+        self.assertIsNone(self.record())
+        self.assertEqual(self.notices(), [])
+
+    def test_a_record_someone_broke_is_a_new_start(self):
+        self.mode("release")
+        self.release("0.1.0")
+        os.makedirs(self.state, exist_ok=True)
+        for broken in ("{not json", "[1]", json.dumps({"tag": "latest"})):
+            with open(os.path.join(self.state, "updated-release"), "w") as f:
+                f.write(broken)
+            self.round()
+            self.assertEqual(self.notices(), [], broken)
+            self.assertEqual(self.record()["tag"], "v0.1.0")
+
+    def test_long_notes_are_cut_and_point_to_the_changelog(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.release("0.2.0", ["Point %d is here" % i + "x" * 300 for i in range(10)])
+        self.round()
+        n = self.notices()[0]
+        self.assertLessEqual(n.count("\n- "), update.NOTES_LINES)
+        self.assertLess(len(n), update.NOTES_CHARS + 300)
+        self.assertIn("CHANGELOG.md 的 v0.2.0 一節", n)
+
+    def test_a_release_without_a_changelog_section_says_so(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.publish("CHANGELOG.md", "# Changelog\n")
+        git(self.up, "tag", "v0.2.0")
+        git(self.up, "push", "-q", "origin", "v0.2.0")
+        self.round()
+        self.assertIn("CHANGELOG.md 裡沒有這版的說明", self.notices()[0])
+
+
 class ReleaseRig(Rig):
     """A machine with an instance whose core.update the test sets, the real supervisor, v0.1.0 published."""
 

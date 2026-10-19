@@ -27,6 +27,10 @@ with the same blacklist; the release author's address is a noreply one.
 The commit: REV's tree, its one parent the public repository's main (none for the first release), author and
 committer the release author (dates now). The main and the tag are pushed in one atomic push, without force (the
 public main moved meanwhile, or either ref refused: neither is taken, nothing half done).
+The same tag goes on REV in this repository's own remote (its branch's upstream remote, else origin), pushed after
+the public one, without force, so a machine following this repository sees the release too (C-55). Before anything
+is made: that remote must be there, and a vX.Y.Z it already has must be on REV (then it is left as it is). Its push
+failing after the public one went out: said, with the command that pushes it (exit 2); a tag once pushed never moves.
 
 Exit status: 0 done (or check passed); 1 refused (each reason said); 2 wrong usage or a step failed.
 Standard library only, Python 3.8.
@@ -209,6 +213,33 @@ def imported(rev, main, author, said):
     return True
 
 
+def private_remote():
+    """This repository's own remote: its branch's upstream remote, else origin; Failed when there is none."""
+    branch = git("symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
+    remote = git("config", "branch.%s.remote" % branch).stdout.strip() if branch else ""
+    if not remote or remote == ".":
+        remote = "origin"
+    if git("remote", "get-url", remote).returncode != 0:
+        raise Failed("找不到這個 repo 自己的 remote（%s）：發佈的標籤也要打在它上面，不知道打在哪" % remote)
+    return remote
+
+
+def private_tag(remote, version, commit, said):
+    """Whether remote already has vVERSION: True on `commit` (nothing to push), False not there; said when it is on
+    another commit (a tag never moves)."""
+    p = git("ls-remote", "--tags", remote, "refs/tags/v%s" % version, "refs/tags/v%s^{}" % version)
+    if p.returncode != 0:
+        raise Failed("讀不到這個 repo 的 remote %s：%s" % (remote, p.stderr.strip()[:200]))
+    rows = dict((x.split("\t")[1], x.split("\t")[0]) for x in p.stdout.splitlines() if "\t" in x)
+    there = rows.get("refs/tags/v%s^{}" % version) or rows.get("refs/tags/v%s" % version)
+    if there is None:
+        return False
+    if there != commit:
+        said.append("這個 repo 的 remote %s 已經有 tag v%s，在 %s，不是要發佈的 %s（tag 不移動）"
+                    % (remote, version, there[:12], commit[:12]))
+    return True
+
+
 def version_ok(version, tags, said):
     m = VERSION.match(version or "")
     if not m:
@@ -301,6 +332,8 @@ def run(action, version, rev, push):
     took = imported(commit, main, author, said)
     text = None
     if action == "publish":
+        remote = private_remote()
+        tagged = private_tag(remote, version, commit, said) if VERSION.match(version or "") else False
         good_version = version_ok(version, tags, said)
         text = changelog(commit, version, said) if good_version else None
     for n in notes:
@@ -320,13 +353,25 @@ def run(action, version, rev, push):
         return 1
     new = make_commit(tree, main, version, text, author)
     git("update-ref", NEXT_REF, new, check=True)
+    mine = ("這個 repo 的 remote %s 已經有 v%s 在 %s，不用再打" if tagged else "也會在這個 repo 的 remote %s 把 v%s 打在 %s") \
+        % (remote, version, commit[:12])
     if not push:
         print("做好了 %s（%s，parent %s），沒有推。要推：加 --push 重跑（會重做同一個 commit）；看內容：git show %s"
               % (new[:12], "v" + version, main[:12] or "沒有", NEXT_REF))
+        print("推的時候" + mine)
         return 0
     # both or neither (no force: if the public main moved meanwhile, git refuses the whole push)
     git("push", "--atomic", repo, "%s:refs/heads/main" % new, "%s:refs/tags/v%s" % (new, version), check=True)
     print("發佈了 v%s：%s 推到 %s" % (version, new[:12], repo))
+    if tagged:
+        print(mine)
+        return 0
+    p = git("push", remote, "%s:refs/tags/v%s" % (commit, version))
+    if p.returncode != 0:
+        print("公開 repo 發佈了，但這個 repo 的 remote %s 的 tag 沒推上（%s）。補推：git push %s %s:refs/tags/v%s"
+              % (remote, (p.stderr.strip() or p.stdout.strip())[:200], remote, commit, version))
+        return 2
+    print("這個 repo 的 remote %s 也打了 v%s 在 %s" % (remote, version, commit[:12]))
     return 0
 
 

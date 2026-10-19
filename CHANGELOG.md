@@ -10,6 +10,24 @@ Each version has two sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.2.2 — 2026-10-19
+
+### For people
+
+- A machine that updates the engine by itself (`core.update` is `release` or `branch`) now says so in Discord (the
+  notification channel) once per release: "✅ 引擎已更新到 vX.Y.Z", with the gist of each point of that release's
+  "For people" notes here (its bold lead, or else its first sentence). It is said whoever moved the engine, and when
+  several releases came at once it names the newest and lists the ones between. Nothing is said while the bot's
+  supervisor has rolled that release back on the machine. The first round after this update only writes down the
+  release the machine runs and says nothing. With `notify` nothing changes.
+- `ops/release.py publish --push` now also puts the release tag on the published commit in the repository you
+  publish from (its branch's upstream remote, else `origin`), so machines that follow that repository see releases
+  too. It refuses before making anything when that remote is missing or already has the tag on another commit.
+
+### For agents
+
+None.
+
 ## v0.2.1 — 2026-10-19
 
 ### For people

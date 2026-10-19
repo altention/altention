@@ -50,6 +50,10 @@ class Rig(unittest.TestCase):
         self.write("docs/compat.json", json.dumps(REGISTER))
         self.write("資料 夾/說明 檔.txt", "hello\n")
         self.commit("one")
+        self.origin = os.path.join(self.tmp, "private origin.git")  # this repository's own remote (C-55)
+        git(self.tmp, "init", "-q", "--bare", self.origin)
+        git(self.private, "remote", "add", "origin", self.origin)
+        git(self.private, "push", "-q", "-u", "origin", "main")
         self.inst = os.path.join(self.tmp, "實例 instance")
         os.makedirs(self.inst)
         self.settings({"repo": self.public, "author": AUTHOR})
@@ -270,6 +274,69 @@ class Refuses(Rig):
                 code, out = self.run_("check")
                 self.assertEqual(code, 2, out)
                 self.assertIn(says, out)
+
+    def origin_tag(self, name):
+        p = subprocess.run(["git", "-C", self.origin, "rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % name],
+                           stdout=subprocess.PIPE, universal_newlines=True)
+        return p.stdout.strip()
+
+    def test_the_tag_goes_on_this_repositorys_own_commit_too(self):
+        """C-55: a machine following this repository (not the public one) sees the release as a tag on the commit
+        whose tree was published; the dry run only says it will."""
+        head = git(self.private, "rev-parse", "HEAD")
+        code, out = self.run_("publish", "0.1.0")
+        self.assertEqual(code, 0, out)
+        self.assertIn("推的時候也會在這個 repo 的 remote origin 把 v0.1.0 打在 %s" % head[:12], out)
+        self.assertEqual(self.origin_tag("v0.1.0"), "", "the dry run pushes nothing")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.origin_tag("v0.1.0"), head, "this repository's commit, not the public one")
+        self.assertNotEqual(self.public_main(), head)
+        self.assertIn("也打了 v0.1.0", out)
+
+    def test_the_upstream_remote_of_the_branch_is_the_one(self):
+        other = os.path.join(self.tmp, "other origin.git")
+        git(self.tmp, "init", "-q", "--bare", other)
+        git(self.private, "remote", "add", "mine", other)
+        git(self.private, "push", "-q", "-u", "mine", "main")
+        self.assertEqual(self.run_("publish", "0.1.0", "--push")[0], 0)
+        self.assertEqual(git(other, "rev-parse", "v0.1.0^{commit}"), git(self.private, "rev-parse", "HEAD"))
+        self.assertEqual(self.origin_tag("v0.1.0"), "")
+
+    def test_a_tag_already_there_on_this_commit_is_left_on_another_refused(self):
+        head = git(self.private, "rev-parse", "HEAD")
+        git(self.private, "push", "-q", "origin", "%s:refs/tags/v0.1.0" % head)  # tagged by hand, as the three before
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 0, out)
+        self.assertIn("已經有 v0.1.0 在 %s，不用再打" % head[:12], out)
+        self.write("tool.py", "X = 4  %s old place, until after the release\n" % HASH)
+        self.commit("four")
+        git(self.private, "push", "-q", "origin", "%s:refs/tags/v0.2.0" % head)
+        public = self.public_main()
+        code, out = self.run_("publish", "0.2.0", "--push")
+        self.assertEqual(code, 1, out)
+        self.assertIn("已經有 tag v0.2.0，在 %s" % head[:12], out)
+        self.assertEqual(self.public_main(), public, "refused before anything was made")
+        self.assertEqual(self.origin_tag("v0.2.0"), head, "a tag never moves")
+
+    def test_this_repositorys_tag_refused_after_the_public_push_says_how_to_push_it(self):
+        hook = os.path.join(self.origin, "hooks", "update")
+        with open(hook, "w") as f:
+            f.write('#!/bin/sh\ncase "$1" in refs/tags/*) echo "no tags here" >&2; exit 1;; esac\nexit 0\n')
+        os.chmod(hook, 0o755)
+        head = git(self.private, "rev-parse", "HEAD")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 2, out)
+        self.assertTrue(self.public_main(), "the public release went out")
+        self.assertIn("補推：git push origin %s:refs/tags/v0.1.0" % head, out)
+
+    def test_no_remote_of_its_own_nothing_made(self):
+        git(self.private, "remote", "remove", "origin")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 2, out)
+        self.assertIn("找不到這個 repo 自己的 remote", out)
+        self.assertEqual(self.public_main(), "")
+        self.assertEqual(self.run_("check")[0], 0, "check does not need it")
 
     def test_usage(self):
         for argv in ([], ["push"], ["check", "--push"], ["publish"], ["publish", "1", "2", "3"]):
