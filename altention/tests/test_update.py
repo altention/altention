@@ -775,10 +775,8 @@ class Modes(BrokenSomewhere):
                 self.assertNotIn("由同步代為更新引擎", self.alerts())
 
 
-class ReleaseRollbacks(Rig):
-    """C-07: to a newer release, the rollback commits the supervisor made here are left behind (not put on top of
-    it), only when every local commit is one (manager 2026-10-17: its subject, this repo's author, on no remote);
-    a rollback mixed with anything else stops the round and says so. The rollback is made by the real supervisor."""
+class ReleaseRig(Rig):
+    """A machine with an instance whose core.update the test sets, the real supervisor, v0.1.0 published."""
 
     mode, tag = Modes.mode, Modes.tag
 
@@ -798,6 +796,12 @@ class ReleaseRollbacks(Rig):
     def tearDown(self):
         self.env.stop()
         super().tearDown()
+
+
+class ReleaseRollbacks(ReleaseRig):
+    """C-07: to a newer release, the rollback commits the supervisor made here are left behind (not put on top of
+    it), only when every local commit is one (manager 2026-10-17: its subject, this repo's author, on no remote);
+    a rollback mixed with anything else stops the round and says so. The rollback is made by the real supervisor."""
 
     def rolled_back(self, mode):
         """v0.2.0 brought a bad altention/; this machine took it, then its supervisor rolled it back."""
@@ -957,6 +961,135 @@ class ReleaseRollbacks(Rig):
             code, note = sync.update(repo, to=fix)
         self.assertEqual((code, self.head()), (0, fix), note)
         self.assertIn("沒有帶到新版上", note)
+
+
+class StepBacks(ReleaseRig):
+    """C-44: a step back the supervisor made while a new version's packages would not install is left behind in
+    every mode once the upstream moves (branch included: it is never to push), only when every local commit is one;
+    mixed with anything else the round stops. The step back is made by the real supervisor."""
+
+    fixed, main = ReleaseRollbacks.fixed, ReleaseRollbacks.main
+
+    def stepped(self, mode):
+        """v0.2.0 needs packages that would not install; this machine took it, then its supervisor stepped back."""
+        self.mode(mode)
+        self.bad = self.publish("altention/x.py", "NEEDS = 1\n")
+        self.tag("v0.2.0")
+        git(self.engine, "fetch", "-q", "--tags")
+        git(self.engine, "merge", "-q", "--ff-only", "v0.2.0")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sup_s", os.path.join(self.engine, "dcbot", "supervisor.py"))
+        sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sup)
+        sup.LOCK_WAIT = 1
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(sup.rollback(self.good, "新版本 `%s` 要的套件一直裝不上（pip …）" % self.bad[:7], step=self.bad))
+        subject = git(self.engine, "log", "-1", "--format=%s").stdout.strip()
+        self.assertTrue(sync.STEP_BACK_SUBJECT.match(subject) and update.STEP_BACK_SUBJECT.match(subject), subject)
+        self.assertEqual(sync.STEP_BACK_SUBJECT.pattern, update.STEP_BACK_SUBJECT.pattern, "the copy in update.py")
+        return self.head()
+
+    def test_every_mode_leaves_it_behind_once_the_upstream_moves_and_keeps_it_until_then(self):
+        for mode, argv in (("branch", ()), ("release", ()), ("notify", ("--release",))):
+            with self.subTest(mode=mode):
+                step = self.stepped(mode)
+                code, out = self.main(*argv)
+                self.assertEqual((code, self.head()), (0, step), "the upstream not moved: the old version runs on\n" + out)
+                fix = self.fixed()
+                code, out = self.main(*argv)
+                self.assertEqual((code, self.head()), (0, fix), "exactly the upstream: the step back not put on it\n" + out)
+                self.assertIn("退路 commit（%s" % step[:7], out)
+                self.tearDown()
+                self.setUp()
+
+    def test_a_rollback_in_branch_mode_is_still_put_on_top(self):
+        """A rollback (a version that is broken) is one to push in branch mode: rebased as before, not dropped (its push
+        failed, so it is still here)."""
+        git(self.engine, "remote", "set-url", "--push", "origin", os.path.join(self.tmp, "nowhere.git"))
+        back = ReleaseRollbacks.rolled_back(self, "branch")
+        subject = git(self.engine, "log", "-1", "--format=%s", back).stdout.strip()
+        fix = self.publish("tool.py", "X = 9\n", "something else upstream")
+        code, out = self.main()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(git(self.engine, "rev-parse", "HEAD^").stdout.strip(), fix)
+        self.assertEqual(git(self.engine, "log", "-1", "--format=%s").stdout.strip(), subject)
+
+    def test_a_step_back_with_a_commit_of_the_owners_stops_and_says_so(self):
+        for mode in ("branch", "release"):
+            with self.subTest(mode=mode):
+                step = self.stepped(mode)
+                self.write(self.engine, "mine.txt", "local\n")
+                git(self.engine, "add", "mine.txt")
+                git(self.engine, "commit", "-qm", "my own change")
+                mine = self.head()
+                self.fixed()
+                code, out = self.main()
+                self.assertEqual((code, self.head()), (1, mine), out)
+                self.assertIn("不猜哪些要留", self.alerts())
+                self.assertIn(step[:7] + "（退路）", self.alerts(), "a step back named as one, either mode")
+                self.assertTrue(os.path.exists(os.path.join(self.engine, "mine.txt")))
+                self.tearDown()
+                self.setUp()
+
+    def test_its_subject_alone_by_another_author_or_on_a_remote_branch_is_no_step_back(self):
+        for how in ("another author", "on a remote branch"):
+            with self.subTest(how=how):
+                step = self.stepped("release")
+                if how == "another author":
+                    subject = git(self.engine, "log", "-1", "--format=%s", step).stdout.strip()
+                    git(self.engine, "reset", "-q", "--hard", "HEAD~1")
+                    git(self.engine, "rm", "-q", "altention/x.py")
+                    other = dict(os.environ, GIT_AUTHOR_NAME="o", GIT_AUTHOR_EMAIL="other@example.com")
+                    subprocess.run(["git", "-C", self.engine, "commit", "-qm", subject], check=True, stdout=subprocess.PIPE, env=other)
+                else:
+                    git(self.engine, "push", "-q", "origin", "HEAD:refs/heads/side")
+                    git(self.engine, "fetch", "-q")
+                step = self.head()
+                backs, steps, others = sync.local_commits(sync.Repo(self.engine), self.bad)
+                self.assertEqual((backs, steps, others), ([], [], [(step, True)]))
+                self.fixed()
+                code, out = self.main()
+                self.assertEqual((code, self.head()), (1, step), "on releases: stops rather than guess\n" + out)
+                self.tearDown()
+                self.setUp()
+
+    def test_home_pull_and_the_sync_standing_in_leave_it_behind_too(self):
+        for path in ("home-pull", "sync standing in"):
+            with self.subTest(path=path):
+                step = self.stepped("branch")
+                fix = self.fixed()
+                if path == "home-pull":  # bin/home-pull: sync.update on the branch, under the lock
+                    repo = sync.Repo(self.engine)
+                    with sync.locked(repo):
+                        code, note = sync.update(repo)
+                    self.assertIn("退路 commit（%s" % step[:7], note)
+                    self.assertEqual(code, 0)
+                else:
+                    os.makedirs(update.state_dir(), exist_ok=True)
+                    with open(os.path.join(update.state_dir(), "last_ok-update"), "w") as f:
+                        json.dump({"at": time.time() - 2 * 3600}, f)  # update.py stopped two hours ago
+                    with mock.patch.object(sync.config, "ENGINE", self.engine), \
+                            mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                            mock.patch.object(update.subprocess, "run", self.fake_run):
+                        st = sync.run()
+                    self.assertEqual(st["engine_pulled_by"], "sync")
+                self.assertEqual(self.head(), fix)
+                self.tearDown()
+                self.setUp()
+
+    def test_the_sync_counts_the_step_back_in_every_mode_for_doctor(self):
+        for mode in ("branch", "release", "notify"):
+            with self.subTest(mode=mode):
+                self.stepped(mode)
+                with mock.patch.object(sync.config, "ENGINE", self.engine), \
+                        mock.patch.object(sync.config, "instance_dir", return_value=None), \
+                        mock.patch.object(update.subprocess, "run", self.fake_run):
+                    eng = sync.run()["engine"]
+                self.assertEqual((eng["ahead"], eng["steps"]), (1, 1), eng)
+                if mode != "branch":
+                    self.assertEqual((eng["rollbacks"], eng["rollbacks_unsure"]), (0, 0), eng)
+                self.tearDown()
+                self.setUp()
 
 
 class NoModeSeen(Rig):
@@ -1244,6 +1377,20 @@ class Deps(Rig):
         self.assertFalse(os.path.exists(self.flag))
         self.assertEqual(self.pending()["head"], newer)
         self.assertIn("no network", self.pending()["why"], "the reason kept")
+
+    def test_a_step_back_of_the_supervisors_is_left_to_it(self):
+        """C-44: HEAD is the supervisor's step back while the new version's packages install: update.py runs no pip,
+        writes no flag and keeps the record (the supervisor alone moves forward)."""
+        self.supervisor()
+        new = self.publish("dcbot/requirements.txt", "discord.py\nnewthing\n")
+        update.mark_deps(new, "pip install 失敗", 0, 1)
+        git(self.engine, "commit", "-q", "--allow-empty", "-m", "dcbot: step back to %s while packages install (%s)" % (self.head()[:7], new[:7]))
+        self.assertEqual(update.install_pending(), "")
+        self.assertEqual((self.pips(), os.path.exists(self.flag)), ([], False))
+        self.assertEqual(self.pending()["head"], new)
+        git(self.engine, "commit", "-q", "--allow-empty", "-m", "something else")
+        update.install_pending()
+        self.assertEqual(len(self.pips()), 1, "any other HEAD: as before")
 
     def test_the_same_requirements_or_no_venv_run_no_pip(self):
         self.supervisor()

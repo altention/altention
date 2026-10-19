@@ -405,6 +405,56 @@ class Upstream(Repo):
         p.stderr.close()
 
 
+class StepBack(Repo):
+    """C-44 (manager 2026-10-17, #code-review of 88e7229): a step back of the supervisor's (only on this machine) is
+    never pushed by deploy.sh, either way it is used: refused before anything is done, the origin receives nothing.
+    The real deploy.sh, in this test's repository; the upstream did not move."""
+
+    SUBJECT = "dcbot: step back to 1234567 while packages install (89abcde)"
+
+    def setUp(self):
+        super().setUp()
+        shutil.copy(os.path.join(HERE, "..", "deploy.sh"), os.path.join(self.live, "dcbot", "deploy.sh"))
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self.git("init", "-q", "--bare", self.origin)
+        self.git("remote", "add", "origin", self.origin)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "with deploy.sh")
+        self.git("push", "-q", "-u", "origin", "main")
+        self.write("altention/other.py", "x = 0\n")  # what the step back puts back
+        self.git("commit", "-q", "-am", self.SUBJECT)
+        self.upstream = self.git("rev-parse", "main", cwd=self.origin)
+
+    def deploy(self, *args):
+        env = dict(ENV, DEPLOY_NO_GUIDE="1", GIT_CEILING_DIRECTORIES=os.path.dirname(self.tmp))
+        return subprocess.run(["bash", os.path.join(self.live, "dcbot", "deploy.sh")] + list(args), cwd=self.live, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=120)
+
+    def test_both_ways_are_refused_and_nothing_reaches_the_origin(self):
+        sys.path.insert(0, os.path.join(HERE, "..", ".."))  # the engine: alone, only dcbot/ is on the path
+        from altention import sync
+        self.assertTrue(sync.STEP_BACK_SUBJECT.match(self.SUBJECT), "the subject the supervisor writes")
+        fix = self.reviewed({"dcbot/requirements.txt": "newthing==1.1\n"}, "the fix")
+        self.write("dcbot/bot/main.py", "pass  # edited here\n")
+        for args in ((["fix the bot"]), (["--commit", fix, "fix the bot"])):
+            with self.subTest(args=args[0]):
+                r = self.deploy(*args)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("這台在用舊版等套件，不能推", r.stdout)
+                step = self.git("rev-parse", "--short=7", "HEAD")
+                self.assertIn("bin/home-git rebase --onto %s^ %s" % (step, step), r.stdout, "the step back named, not HEAD^")
+                self.assertIn("SUPERVISOR-RESCUE.md", r.stdout)
+                self.assertEqual(self.git("rev-parse", "main", cwd=self.origin), self.upstream, "the origin received nothing")
+                self.assertEqual(self.git("log", "-1", "--format=%s"), self.SUBJECT, "nothing committed on top")
+        self.git("checkout", "-q", "--", "dcbot/bot/main.py")
+        self.git("commit", "-q", "--allow-empty", "-m", "a commit on top of it")
+        r = self.deploy("fix the bot")
+        self.assertEqual(r.returncode, 1, "anywhere among what would be pushed\n" + r.stdout)
+        self.assertIn("不能推", r.stdout)
+        step = self.git("rev-parse", "--short=7", "HEAD^")
+        self.assertIn("bin/home-git rebase --onto %s^ %s" % (step, step), r.stdout, "under another commit: still the step back named")
+
+
 class InPlace(unittest.TestCase):
     def test_what_the_tools_import_runs_without_a_restart(self):
         live = deploy_candidate.live_modules()

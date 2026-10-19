@@ -10,6 +10,39 @@ Each version has two sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.2.1 — 2026-10-19
+
+### For people
+
+- **When a new version's packages will not install, the bot steps back instead of staying down.** If installing the
+  packages of a new version keeps failing for 30 minutes (no network, say), the bot's supervisor goes back to the
+  last version that worked, on this machine only: it is never pushed. It keeps trying the new version's packages
+  every 10 minutes and moves forward by itself once they install. While a machine is stepped back, `deploy.sh` and
+  `bin/home-git push` there refuse and name the one command that takes the step back out; the system check says so
+  after a day.
+- **Restart the machine once after updating** (or have Claude replace the bot's supervisor as
+  `dcbot/SUPERVISOR-RESCUE.md` says): the step back lives in the supervisor, and restarting only the bot leaves the
+  old one running. The refusals of `deploy.sh` and `bin/home-git push` work at once.
+- The bot's first start under the new supervisor runs `pip install` once, even when its packages did not change: the
+  supervisor now records which requirements it installed and checks them before every start.
+- **A board is no longer posted twice.** When editing a board message fails for any reason other than the message
+  being gone (Discord slow or unreachable, a server error), the bot keeps that message and edits it again next time;
+  before, it posted a new copy and left the old one behind on old content. Only a board message deleted by hand is
+  posted again. A board that fails three times running is said once as a notification (the board, its channel and
+  the error), for a failure that will not go away by itself, such as the bot's permissions in that channel.
+
+### For agents
+
+1. Replace the running supervisor, as in v0.2.0's step 4: restart the machine, or follow
+   `dcbot/SUPERVISOR-RESCUE.md` ("換上新的 supervisor（改了 supervisor.py 之後）"). `!restart`, a deploy and the
+   updater restart only the bot; until the supervisor is replaced, nothing of the step back runs.
+2. The new supervisor's first start installs the bot's packages once (it has no record of them yet). That pip
+   failing does not stop the bot: it starts anyway. Only a new version that then fails to come up stays down as
+   C-40 does, and steps back after 30 minutes.
+3. Never push or revert a step-back commit (subject `dcbot: step back to <hash> while packages install (…)`); the
+   supervisor removes it itself when it moves forward. To take one out by hand, run the command the refusal names
+   in the engine (`bin/home-git rebase --onto <step>^ <step>`, see `dcbot/SUPERVISOR-RESCUE.md`), then `!restart`.
+
 ## v0.2.0 — 2026-10-19
 
 ### For people

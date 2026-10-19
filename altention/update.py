@@ -33,8 +33,10 @@ that move the engine (the sync standing in, home-pull; the launcher's fallback b
 after_move (C-09). When dcbot/requirements.txt changed and the bot's venv is here, the restart waits for its packages
 (C-08): deps-pending is written under the lock, and pip runs as dcbot/install.sh does once the lock is let go
 (install_pending); worked → the flag; failing → no flag, the bot keeps the old code (whose packages it has), doctor
-says it, told once, tried again an hour later; killed halfway → the record is there, the round after takes it up. A machine restarted meanwhile starts the new
-code without the package: its trial fails and the supervisor rolls it back.
+says it, told once, tried again an hour later; killed halfway → the record is there, the round after takes it up. A machine restarted meanwhile: the
+supervisor runs pip itself before starting the new code (C-40), and when pip keeps failing it steps back to the old
+version here, never pushed (C-44); while HEAD is such a step back, install_pending leaves the record to the
+supervisor (it alone moves forward), and the sync drops the step back when the branch moves on.
 Nothing else here runs install.sh: a skill the new version brings gets its link from the sync's next round (sync.new_skills,
 five minutes after this one); a new cron line or hook waits for install.sh or ops/apply.py, and doctor's
 plugins.would-apply says it meanwhile.
@@ -443,6 +445,8 @@ def install_deps():
     return "" if r.returncode == 0 else "pip install 失敗（結束碼 %d）：%s" % (r.returncode, " ".join(r.stdout.split())[-300:])
 
 
+# dcbot/supervisor.py's subject for a step back while packages install (altention/sync.py has the same; a test holds them)
+STEP_BACK_SUBJECT = re.compile(r"^dcbot: step back to ([0-9a-f]{7}) while packages install \([0-9a-f]{7}\)$")
 RETRY_AFTER = 3600  # a pip that failed is tried again an hour later, not every round (#code-review of df95bc2)
 INSTALLING = "安裝中…"
 
@@ -506,7 +510,8 @@ def install_pending(tell=None):
     of its own). The record says 安裝中… before pip starts, with a next try past PIP_TIMEOUT: killed halfway, the
     round after takes it up. Failed: why, next try in RETRY_AFTER, told the first time only (doctor keeps saying it). Worked and HEAD is still
     the head it was for: the record goes, and the restart flag if the bot runs here; HEAD moved meanwhile: the record
-    stays for that HEAD, tried again at once. "" or what it did."""
+    stays for that HEAD, tried again at once. HEAD a step back of the supervisor's (C-44): nothing, the supervisor
+    installs and moves forward. "" or what it did."""
     tell = tell or alert
     pending = deps_pending()
     if not pending:
@@ -519,6 +524,13 @@ def install_pending(tell=None):
             return ""
     except (TypeError, ValueError):
         pass
+    try:
+        subject = subprocess.run(["git", "-C", ENGINE, "log", "-1", "--format=%s"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 universal_newlines=True, timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""  # HEAD not read: the next round
+    if STEP_BACK_SUBJECT.match(subject):
+        return ""  # C-44: the supervisor stepped back while packages install; moving forward is its alone
     try:
         lock = open(os.path.join(state_dir(), DEPS_PENDING + ".lock"), "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

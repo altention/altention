@@ -275,6 +275,13 @@ _iv = rj("~/.local/state/altention/intervals.json")  # C-37 C: what update.py an
 o["intervals"] = _iv if isinstance(_iv, dict) else None
 _dp = rj("~/.local/state/altention/deps-pending")  # C-08: HEAD moved, the bot's packages not installed (update.py)
 o["deps_pending"] = _dp if isinstance(_dp, dict) else None
+_sb = rj(os.path.join(H(ENGINE), "dcbot/state/stepped-back.json"))  # C-44: the supervisor runs the old version while packages install
+o["stepped_back"] = _sb if isinstance(_sb, dict) else None
+if o["stepped_back"] and isinstance(_sb.get("commit"), str) and os.path.lexists(ch + "/.git"):
+    # left behind by the sync (no longer in HEAD's history): a record the supervisor has not cleared yet (C-44)
+    _anc = subprocess.run(["git", "-C", ch, "merge-base", "--is-ancestor", _sb["commit"], "HEAD"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, timeout=60).returncode if _sb["commit"] else 1
+    o["stepped_back"]["stale"] = _anc == 1
 _skip = rj("~/.local/state/altention/last_skip-update")
 o["update_skipped"] = _skip if isinstance(_skip, dict) else None
 _alive = rj("~/.local/state/altention/last_alive-update")
@@ -1222,7 +1229,15 @@ def check(name, m, head, instance_repo=None):
         say("core.deps-pending", "引擎已經更新到 %s，但機器人要的套件沒裝上（%s）：機器人還在跑舊版" % (
             str(dp.get("head") or "")[:12] or "新版", " ".join(str(dp.get("why") or "原因沒有記下").split())[:160]) if dp else "",
             "在 %s 的引擎跑 dcbot/install.sh，再在 Discord 打 !restart（或等它自動再試：失敗後一小時一次）；"
-            "機器在那之前重開的話，機器人會直接用新版啟動、少了套件就失敗，supervisor 會退回" % name)
+            "機器在那之前重開的話，supervisor 會先自己裝，一直裝不上時先退回舊版跑（只在這台，不推）" % name)
+    if "stepped_back" in o:  # C-44: shown only once it has lasted a day; the supervisor moves forward by itself
+        sb = o["stepped_back"] or {}
+        sb = {} if sb.get("stale") is True else sb  # the step back is not in HEAD's history any more: nothing to say
+        back_for = (o.get("now") or 0) - sb["since"] if type(sb.get("since")) in (int, float) else 0
+        say("dcbot.stepped-back", "新版 %s 要的套件一直裝不上，機器人已經用舊版跑了 %d 小時%s" % (
+            str(sb.get("target") or "")[:12] or "?", back_for // 3600, "（套件是新舊混合的，舊版重啟時可能起不來）"
+            if sb.get("venv") == "mixed" else "") if back_for > 86400 else "",
+            "照通知說的處理：在 %s 的引擎跑 dcbot/install.sh 看 pip 說什麼，裝好之後 supervisor 會自己回到新版" % name)
     if "update_skipped" in o:  # rounds in a row that never compared with the upstream: the sync takes over, a person needs the why
         sk = o["update_skipped"] or {}
         mins = int(((o.get("now") or 0) - (sk.get("since") or o.get("now") or 0)) // 60) if sk else 0
@@ -1340,15 +1355,23 @@ def check(name, m, head, instance_repo=None):
     backs = backs if type(backs) is int and 0 <= backs else 0
     unsure = (sy.get("engine") or {}).get("rollbacks_unsure")  # a rollback's subject, more than a rollback in it
     unsure = unsure if type(unsure) is int and 0 <= unsure else 0
-    if type(ahead) is int and ahead > 0 and backs >= ahead:  # C-07: what the rollback notice says, not "push it"
+    step_backs = (sy.get("engine") or {}).get("steps")  # C-44: step backs while packages install, any mode, never to push
+    step_backs = step_backs if type(step_backs) is int and 0 <= step_backs else 0
+    if type(ahead) is int and ahead > 0 and step_backs and step_backs + backs >= ahead:
+        out.append(record("sync.engine-ahead", name, "warn", "這台在用舊版等套件（新版要的套件裝不上），引擎有 %d 個這台的退路 commit" % ahead,
+                          "套件裝好後 supervisor 會自己回到新版、上游前進時同步也會丟掉它；這個 commit 不要推（%s/bin/home-git push 會把舊版推上上游）。"
+                          "要現在處理：在 %s 的引擎跑 dcbot/install.sh" % (eng, name), ahead))
+    elif type(ahead) is int and ahead > 0 and backs >= ahead:  # C-07: what the rollback notice says, not "push it"
         out.append(record("sync.engine-ahead", name, "ok", "", "", "這台的退回 commit（%d 個）留在本機：core.update 不是 branch，"
                           "下一個發佈版本會取代它，不用推" % ahead))
-    elif type(ahead) is int and ahead > 0 and (backs or unsure):  # rollbacks among them: never "push it" as it is
+    elif type(ahead) is int and ahead > 0 and (backs or unsure or step_backs):  # rollbacks among them: never "push it" as it is
         out.append(record("sync.engine-ahead", name, "warn", "引擎有 %d 個這台的 commit 不在上游：同步不推引擎（不是故障）" % ahead,
                           "不要直接推：先請人看 git log（在 %s 上 git -C %s log @{u}..）是哪些。" % (name, eng)
                           + ("其中 %d 個是 supervisor 的退回 commit（dcbot: roll back…），不要推它們，留給下一個發佈版本取代；"
                              % backs if backs else "")
-                          + ("其中 %d 個標題是退回（dcbot: roll back…）、內容卻不只是退回（可能被 amend 加了別的檔），"
+                          + ("其中 %d 個是 supervisor 的退路 commit（dcbot: step back…，套件裝不上時先用舊版跑），不要推它們；"
+                             % step_backs if step_backs else "")
+                          + ("其中 %d 個標題是退回或退路（dcbot: roll back… 或 step back…）、內容卻不只是那樣（可能被 amend 加了別的檔），"
                              "照原樣推出去等於把退回推上上游；" % unsure if unsure else "")
                           + "只有自己的、確定沒有私人值的 commit 才推（%s/bin/home-git push），退回壓在它們下面時要先處理掉" % eng,
                           ahead))

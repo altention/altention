@@ -914,6 +914,98 @@ class Records(unittest.TestCase):
         code, r = by({})
         self.assertEqual(r["status"], "ok", "an empty record says nothing")
 
+    def test_a_step_back_while_packages_install_is_not_to_push_in_any_mode(self):
+        """C-44: the supervisor's step back (counted by the sync as "steps" in every mode; altention/tests/test_update.py
+        makes it with the real supervisor and sync) is never to push, nor among other commits."""
+        def by(engine):
+            code, recs = self.records({"host-a": healthy(sync={"engine": dict({"ok": True, "error": None}, **engine),
+                                                                    "instance": {}, "links": {"memory": "instance"}})})
+            return code, {r["id"]: r for r in recs if r["machine"] == "host-a"}["sync.engine-ahead"]
+        for engine in ({"ahead": 1, "steps": 1}, {"ahead": 1, "steps": 1, "rollbacks": 0, "rollbacks_unsure": 0},
+                       {"ahead": 2, "steps": 1, "rollbacks": 1}):
+            code, r = by(engine)
+            self.assertEqual((r["status"], r["value"]), ("warn", engine["ahead"]), engine)
+            self.assertIn("在用舊版等套件", r["msg"])
+            self.assertIn("不要推", r["fix"])
+            self.assertIn("自己回到新版", r["fix"])
+            self.assertIn("dcbot/install.sh", r["fix"])
+        code, r = by({"ahead": 2, "steps": 1})
+        self.assertTrue(r["fix"].startswith("不要直接推"), r["fix"])
+        self.assertIn("其中 1 個是 supervisor 的退路 commit（dcbot: step back…", r["fix"])
+        self.assertNotIn("要推的話", r["fix"])
+        code, r = by({"ahead": 1, "steps": "1"})  # hand-edited: as if none
+        self.assertIn("要推的話", r["fix"])
+
+    def test_a_step_back_lasting_a_day_is_said(self):
+        now = time.time()
+
+        def by(sb):
+            code, recs = self.records({"host-a": healthy(now=now, stepped_back=sb)})
+            return {r["id"]: r for r in recs if r["machine"] == "host-a"}["dcbot.stepped-back"]
+        self.assertEqual(by(None)["status"], "ok")
+        self.assertEqual(by({"target": "0123456789abcdef", "since": now - 3600})["status"], "ok", "it moves forward by itself")
+        self.assertEqual(by({"target": "0123456789abcdef", "since": "x"})["status"], "ok")
+        r = by({"target": "0123456789abcdef", "since": now - 30 * 3600, "venv": ""})
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("0123456789ab", r["msg"])
+        self.assertIn("30 小時", r["msg"])
+        self.assertIn("dcbot/install.sh", r["fix"])
+        self.assertNotIn("新舊混合", r["msg"])
+        self.assertIn("新舊混合", by({"target": "0123456789abcdef", "since": now - 30 * 3600, "venv": "mixed"})["msg"])
+        self.assertEqual(by({"target": "0123456789abcdef", "since": now - 30 * 3600, "stale": True})["status"], "ok",
+                         "#code-review-2 of 88e7229: left behind by the sync, the bot runs the newer version")
+
+    def test_the_probe_says_whether_the_step_back_is_still_in_heads_history(self):
+        home = tempfile.mkdtemp()
+        try:
+            engine = os.path.join(home, "altention", "engine")
+            os.makedirs(os.path.join(engine, "dcbot", "state"))
+            env = dict(os.environ, HOME=home, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
+                       GIT_COMMITTER_EMAIL="t@example.com", GIT_CONFIG_GLOBAL=os.devnull)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", engine] + list(args), env=env, stdout=subprocess.PIPE, universal_newlines=True,
+                                      check=True).stdout.strip()
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "new version")
+            git("commit", "-q", "--allow-empty", "-m", "dcbot: step back to 1234567 while packages install (89abcde)")
+            step = git("rev-parse", "HEAD")
+
+            def probe():
+                with open(os.path.join(engine, "dcbot", "state", "stepped-back.json"), "w") as f:
+                    json.dump({"target": "abc", "commit": step, "good": "123", "since": 5.0, "venv": ""}, f)
+                r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % engine + doctor.PROBE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, universal_newlines=True, env=env, timeout=120)
+                return json.loads(r.stdout.strip().splitlines()[-1])["stepped_back"]
+            self.assertIs(probe()["stale"], False)
+            git("commit", "-q", "--allow-empty", "-m", "on top")
+            self.assertIs(probe()["stale"], False, "commits on top: still there")
+            git("reset", "-q", "--hard", "HEAD~2")
+            git("commit", "-q", "--allow-empty", "-m", "the newer upstream")
+            self.assertIs(probe()["stale"], True, "left behind")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_the_probe_reads_the_supervisors_step_back_record(self):
+        home = tempfile.mkdtemp()
+        try:
+            state = os.path.join(home, "altention", "engine", "dcbot", "state")
+            os.makedirs(state)
+            with open(os.path.join(state, "stepped-back.json"), "w") as f:  # as dcbot/supervisor.py step_back() writes it
+                json.dump({"target": "abc", "commit": "def", "good": "123", "since": 5.0, "venv": ""}, f)
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % os.path.join(home, "altention", "engine") + doctor.PROBE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               env=dict(os.environ, HOME=home), timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual((o["stepped_back"]["target"], o["stepped_back"]["since"]), ("abc", 5.0))
+            os.remove(os.path.join(state, "stepped-back.json"))
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % os.path.join(home, "altention", "engine") + doctor.PROBE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               env=dict(os.environ, HOME=home), timeout=120)
+            self.assertFalse(json.loads(r.stdout.strip().splitlines()[-1])["stepped_back"], "none: nothing to say")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
     def test_rollbacks_kept_on_a_machine_on_releases_are_not_to_push(self):
         """#bot-dev on fd23d9e (C-07): the supervisor's notice says the rollback stays here; doctor must not say to
         push it. The sync's engine record has "rollbacks" (altention/tests/test_update.py makes it with the sync)."""

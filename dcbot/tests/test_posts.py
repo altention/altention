@@ -459,6 +459,159 @@ class Posts(unittest.TestCase):
         self.assertEqual(show.files[mid], ["chart.png"], "the picture is replaced in place")
         self.assertEqual(self.bot.tmux.given, [])
 
+    def test_a_board_is_posted_again_only_when_discord_says_it_is_gone(self):
+        """Only NotFound posts a board message anew; a 5xx, a timeout or the network keeps its ID for next time
+        (posting anew left the old copy behind, a second 圖表 board, 2026-10-17). Both are said in the log."""
+        import aiohttp
+        import discord
+        fail = {}  # message id -> what its next edit or delete raises
+
+        def error(kind):
+            if kind == "gone":
+                return discord.NotFound(type("R", (), {"status": 404, "reason": "Not Found"})(), "Unknown Message")
+            if kind == "500":
+                return discord.DiscordServerError(type("R", (), {"status": 500, "reason": "Server Error"})(), "boom")
+            return {"timeout": asyncio.TimeoutError(), "net": aiohttp.ClientConnectionError("reset")}[kind]
+
+        class Msg(object):
+            def __init__(self, ch, mid):
+                self.ch, self.id = ch, mid
+
+            async def edit(self, content=None, attachments=None):
+                if self.id in fail:
+                    raise error(fail.pop(self.id))
+                self.ch.boards[self.id] = content
+                return self
+
+            async def delete(self):
+                if self.id in fail:
+                    raise error(fail.pop(self.id))
+                del self.ch.boards[self.id]
+
+        class BoardChan(Chan):
+            def __init__(self, cid, name):
+                Chan.__init__(self, cid, name)
+                self.boards, self.next = {}, 100
+
+            async def send(self, text, view=None, file=None, silent=False):
+                self.next += 1
+                self.boards[self.next] = text
+                return Msg(self, self.next)
+
+            def get_partial_message(self, mid):
+                return Msg(self, mid)
+        show = BoardChan(4, "dashboard")
+        self.bot.chans[4] = show
+        self.bot.guild.text_channels.append(show)
+        self.bot.channels_state["4"] = {"plain": True}
+        ids = lambda: self.bot.channels_state["4"]["boards"]["圖表"]
+
+        def post(text):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.post(channel="dashboard", board="圖表", text=text)
+            return out.getvalue()
+        self.assertEqual(post("v1"), "")
+        self.assertEqual(ids(), [101])
+        for kind, name in (("500", "DiscordServerError"), ("timeout", "TimeoutError"), ("net", "ClientConnectionError")):
+            fail[101] = kind
+            said = post("v2 " + kind)
+            self.assertEqual(ids(), [101], kind)
+            self.assertEqual(list(show.boards), [101], "%s: nothing posted anew" % kind)
+            self.assertIn("v1", show.boards[101], "%s: the old content stays until the next edit" % kind)
+            self.assertIn("[board] #dashboard 的看板「圖表」第 1 則這次改不了（%s" % name, said)
+        self.assertEqual(post("v3"), "")
+        self.assertIn("v3", show.boards[101], "edited again the next time")
+        fail[101] = "gone"
+        del show.boards[101]
+        said = post("v4")
+        self.assertEqual(ids(), [102], "posted again, its new ID kept")
+        self.assertIn("v4", show.boards[102])
+        self.assertIn("[board] #dashboard 的看板「圖表」第 1 則不見了（", said)
+        self.assertIn("Unknown Message", said)
+        post("x" * 5000)
+        self.assertEqual(len(ids()), len(show.boards))
+        two = ids()[1]
+        fail[two] = "500"
+        said = post("short")
+        self.assertEqual(ids(), [102, two], "a part that could not be deleted is kept, to delete it next time")
+        self.assertIn("多出來的一則這次刪不掉（DiscordServerError", said)
+        post("short again")
+        self.assertEqual(ids(), [102])
+        self.assertEqual(list(show.boards), [102])
+
+    def test_a_board_failing_three_times_running_is_said_once(self):
+        """Three times running a board does not update (not NotFound: a 403 stays a 403) is said to the owner once,
+        with the board, its channel and the error; one update that works starts the count again."""
+        import discord
+        told, fail = [], {"on": None}
+
+        async def notify(post, sender_ch):
+            told.append(post)
+
+        class Msg(object):
+            def __init__(self, ch, mid):
+                self.ch, self.id = ch, mid
+
+            async def edit(self, content=None, attachments=None):
+                if fail["on"]:
+                    raise discord.Forbidden(type("R", (), {"status": 403, "reason": "Forbidden"})(),
+                                            {"code": 50013, "message": "Missing Permissions"})
+                return self
+
+        class BoardChan(Chan):
+            async def send(self, text, view=None, file=None, silent=False):
+                return Msg(self, 101)
+
+            def get_partial_message(self, mid):
+                return Msg(self, mid)
+        show = BoardChan(4, "dashboard")
+        self.bot.chans[4] = show
+        self.bot.guild.text_channels.append(show)
+        self.bot.channels_state["4"] = {"plain": True}
+        self.p.notify = notify
+
+        def post(n=1):
+            for _ in range(n):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.post(channel="dashboard", board="圖表", text="x")
+        post()
+        fail["on"] = True
+        post(2)
+        self.assertEqual(told, [], "twice is not yet said")
+        post()
+        (said,), = [told]
+        self.assertTrue(said["notify"])
+        for word in ("#dashboard", "「圖表」", "連續 3 次", "HTTP 403", "50013", "Missing Permissions"):
+            self.assertIn(word, said["text"])
+        post(3)
+        self.assertEqual(len(told), 1, "said once, not every time after")
+        self.assertEqual(self.bot.channels_state["4"]["boards"]["圖表"], [101], "never posted anew")
+        fail["on"] = False
+        post()
+        self.assertNotIn("圖表", self.bot.channels_state["4"]["board_fails"], "one update that works starts again")
+        fail["on"] = True
+        post(3)
+        self.assertEqual(len(told), 2)
+        self.assertEqual(posts.error_code(asyncio.TimeoutError()), "TimeoutError")
+        self.assertIn("HTTP 403，錯誤碼 50013：Missing Permissions", said["text"])
+        # Discord not reachable at all: the notification goes on to safely(), which keeps it to try again
+        fail["on"], kept = False, []
+        post()
+
+        async def nowhere(post, sender_ch):
+            raise posts.Undelivered(post)
+        self.p.notify = nowhere
+        fail["on"] = True
+        post(2)
+        with mock.patch.object(posts.postbox, "fail", lambda path, p: kept.append(p)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(self.p.safely({"channel": "dashboard", "board": "圖表", "text": "x"}, "spool/1.json"))
+        (left,) = kept
+        self.assertTrue(left["notify"])
+        self.assertIn("「圖表」", left["text"])
+        self.assertEqual(self.bot.channels_state["4"]["board_fails"]["圖表"], 3, "the board's own state was saved")
+
     def test_a_question_while_on_a_post_is_announced_where_the_post_came_from(self):
         edits = []
 

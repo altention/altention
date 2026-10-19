@@ -30,16 +30,31 @@ leaves the commit behind (C-07; altention/sync.py local_commits).
 
 Packages a new version needs and that are not installed yet (altention/update.py's deps-pending record: HEAD moved,
 dcbot/requirements.txt changed, pip not done) are no sign of a bad version (C-40): before starting the bot while
-that record is there, the supervisor runs pip itself (update.py's lock, the same command as dcbot/install.sh) and
+that record is there, or while the work tree's requirements.txt is not what pip last installed (state/venv-requirements,
+a hash written on every pip that worked; however HEAD got where it is: a step back taken out by hand, a rebase, a reset),
+the supervisor runs pip itself (update.py's lock, the same command as dcbot/install.sh) and
 starts the new version once it worked (the record then goes). Only if that pip failed and the new version then dies
 in its trial is nothing rolled back (so nothing is committed, let alone pushed, in any core.update mode): the bot stays down, it is said
 (notice, and altention dc notify once per head), and pip is tried again every DEPS_RETRY.
 
+Once pip for that head has kept failing STEP_BACK_AFTER (C-44; dcbot/state/deps-failing.json), the supervisor steps back
+to last_good the way it rolls back, under a subject of its own ("dcbot: step back to <good> while packages install
+(<new>)"), and pushes it in no mode: the bot comes back on the old version (dcbot/state/stepped-back.json). Moving
+forward is the supervisor's alone (update.py's install_pending leaves a step back alone; the sync drops such a commit
+when it moves to a newer upstream): every DEPS_RETRY while the old version runs, pip installs the new version's
+requirements and, under the same pip lock, the branch is reset (--keep) to it and the bot restarted into its trial.
+When that move is refused (overlapping edits, the git lock not had), pip at once puts back what the old version's
+requirements ask, so a restart of the old version finds its packages; when that pip fails too, the venv is "mixed"
+and an old version that will not start leads straight to the move forward. A rollback that changes
+requirements.txt runs pip for the tree put back.
+
 Changing this file is risky: the bot can't roll back its own supervisor. Keep it small. Rescue: SUPERVISOR-RESCUE.md.
 """
 import fcntl
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +80,10 @@ FOLLOW_SECS = 30
 DEPS_PIP_TIMEOUT = 300  # pip for missing packages before a start; the bot is down meanwhile
 DEPS_LOCK_WAIT = 660  # update.py's own pip may hold its lock this long (its PIP_TIMEOUT and a minute)
 DEPS_RETRY = 600  # packages that would not install: tried again this often, the bot down meanwhile
+STEP_BACK_AFTER = 1800  # pip for one new version failing this long: back to last_good on this machine meanwhile (C-44)
+STEPPED, FAILING, INSTALLED = "stepped-back.json", "deps-failing.json", "venv-requirements"
+# the subject put_back gives a step back (altention/sync.py and update.py read it with the same pattern; a test holds them)
+STEP_BACK_SUBJECT = re.compile(r"^dcbot: step back to ([0-9a-f]{7}) while packages install \([0-9a-f]{7}\)$")
 OURS = "agent-rebase"  # altention.sync's mark for a rebase that is ours to undo
 REFUSED = 10  # the sync child's exit status when update() said no (a conflict...): not a reason for the fallback
 SYNC_CHILD = """import os, sys
@@ -181,6 +200,13 @@ def run_child(top, lock, timeout):
         return None, "no answer in %ds" % timeout
 
 
+def steps_below():
+    """C-44 (manager 2026-10-17, #code-review of 60c6eec): commits a push would send (@{u}..HEAD) with a step back's
+    subject, the subject alone (more held back rather than less): short hashes; [] with no upstream."""
+    rc, out, _ = git("log", "--format=%h%x00%s", "@{u}..HEAD")
+    return [l.split("\0")[0] for l in out.splitlines() if rc == 0 and STEP_BACK_SUBJECT.match((l.split("\0") + [""])[1])]
+
+
 def put_on_remote(lock, until):
     """The rollback commit on top of the remote, then pushed; True if pushed. Never raises, and nothing runs
     past `until`: a commit not pushed by then stays here until someone pushes it (the sync does not push the
@@ -293,39 +319,76 @@ def deps_pending():
         return None
 
 
-def install_deps():
-    """pip install -r requirements.txt into the bot's venv, as dcbot/install.sh and update.py do, under update.py's
-    lock for it (waited for: update.py may be installing right now). "" when it worked or update.py did it meanwhile
-    (the record is then gone), else why not. When it worked the record goes whatever HEAD it names: pip installed what
-    the work tree asks for now (#code-review on e9622a9: a record of another HEAD left behind kept a broken version
-    from being rolled back)."""
+def deps_lock():
+    """update.py's lock for pip, waited for up to DEPS_LOCK_WAIT (update.py may be installing right now):
+    (open file, "") or (None, why not)."""
     try:
         lock = open(deps_path() + ".lock", "a")
     except OSError as e:
-        return "拿不到套件安裝的鎖（%s）" % e
-    try:
-        until = time.time() + DEPS_LOCK_WAIT
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.time() > until:
-                    return "update.py 正在裝套件，等了 %d 秒還沒結束" % DEPS_LOCK_WAIT
-                time.sleep(BACKOFF)
-        pending = deps_pending()
-        if pending is None:
-            return ""  # update.py installed them while we waited
+        return None, "拿不到套件安裝的鎖（%s）" % e
+    until = time.time() + DEPS_LOCK_WAIT
+    while True:
         try:
-            r = subprocess.run([PY, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=ROOT, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace",
-                               timeout=DEPS_PIP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            return "pip install %d 秒沒有結束" % DEPS_PIP_TIMEOUT
-        except OSError as e:
-            return "跑不了 pip（%s）" % e
-        if r.returncode != 0:
-            return "pip install 失敗（結束碼 %d）：%s" % (r.returncode, " ".join(r.stdout.split())[-300:])
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock, ""
+        except OSError:
+            if time.time() > until:
+                lock.close()
+                return None, "update.py 正在裝套件，等了 %d 秒還沒結束" % DEPS_LOCK_WAIT
+            time.sleep(BACKOFF)
+
+
+def pip(req="requirements.txt"):
+    """pip install -q -r `req` (from ROOT) into the bot's venv, as dcbot/install.sh and update.py do: "" or why not."""
+    try:
+        r = subprocess.run([PY, "-m", "pip", "install", "-q", "-r", req], cwd=ROOT, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace",
+                           timeout=DEPS_PIP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "pip install %d 秒沒有結束" % DEPS_PIP_TIMEOUT
+    except OSError as e:
+        return "跑不了 pip（%s）" % e
+    if r.returncode != 0:
+        return "pip install 失敗（結束碼 %d）：%s" % (r.returncode, " ".join(r.stdout.split())[-300:])
+    try:  # what the venv now holds (C-44: compared before every start, however HEAD got where it is)
+        write(INSTALLED, reqs_hash(os.path.join(ROOT, req)))
+    except OSError as e:
+        log("cannot write %s (%s)" % (INSTALLED, e))
+    return ""
+
+
+def reqs_hash(path=None):
+    """sha256 of a requirements file (the work tree's by default); "" when there is none."""
+    try:
+        with open(path or os.path.join(ROOT, "requirements.txt"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def reqs_changed():
+    """The work tree's requirements.txt is not what pip last installed into the venv (state/venv-requirements, written
+    on every pip that worked; none yet counts as changed): pip before the start, as for deps-pending (manager
+    2026-10-17, #code-review-2 of 60c6eec: a step back taken out by hand left nothing that said so). No
+    requirements.txt: nothing to install."""
+    now = reqs_hash()
+    return bool(now) and now != read(INSTALLED)
+
+
+def install_deps():
+    """pip install -r requirements.txt into the bot's venv under update.py's lock for it. "" when it worked or
+    update.py did it meanwhile (the record is then gone), else why not. When it worked the record goes whatever HEAD
+    it names: pip installed what the work tree asks for now (#code-review on e9622a9: a record of another HEAD left
+    behind kept a broken version from being rolled back)."""
+    lock, why = deps_lock()
+    if lock is None:
+        return why
+    try:
+        if deps_pending() is None and not reqs_changed():
+            return ""  # installed while we waited
+        why = pip()
+        if why:
+            return why
         try:
             os.remove(deps_path())
         except OSError:
@@ -333,6 +396,151 @@ def install_deps():
         return ""
     finally:
         lock.close()
+
+
+def read_json(name):
+    """A dict this supervisor wrote in state/, or None."""
+    try:
+        with open(os.path.join(STATE, name)) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_json(name, data):
+    try:
+        with open(os.path.join(STATE, name + ".tmp"), "w") as f:
+            json.dump(data, f)
+        os.replace(os.path.join(STATE, name + ".tmp"), os.path.join(STATE, name))
+    except OSError as e:
+        log("cannot write %s (%s)" % (name, e))
+
+
+def drop(*paths):
+    """Remove files of state/ (or absolute paths); gone already is fine."""
+    for p in paths:
+        try:
+            os.remove(os.path.join(STATE, p))
+        except OSError:
+            pass
+
+
+def failing_since(head):
+    """C-44: when pip for `head` first failed (state/deps-failing.json, started over for another head), this failure
+    counted."""
+    rec = read_json(FAILING) or {}
+    same = rec.get("head") == head and type(rec.get("since")) in (int, float)
+    tries = rec.get("tries") if same and type(rec.get("tries")) is int else 0
+    since = rec["since"] if same else time.time()
+    write_json(FAILING, {"head": head, "since": since, "tries": tries + 1})
+    return since
+
+
+def step_back(good, target, why):
+    """C-44: pip for the new version `target` kept failing: back to `good` here, under the step-back subject, pushed in
+    no mode; the record that lets the supervisor move forward again. True if stepped back."""
+    if not safe_rollback(good, "新版本 `%s` 要的套件一直裝不上（%s）" % (target[:7], why), step=target):
+        return False
+    commit, parent = git("rev-parse", "HEAD")[1], git("rev-parse", "HEAD^")[1]
+    write_json(STEPPED, {"target": parent, "commit": commit, "good": good, "since": time.time(), "venv": ""})
+    drop(FAILING)
+    tell_once("step:" + parent, "⚠️ 機器人先用舊版回來了：新版 `%s` 要的套件裝不上（%s），先退回 `%s`；套件裝好後會自己回到新版。"
+              "這個退回只在這台，不要推。要現在處理：在這台的引擎跑 dcbot/install.sh" % (parent[:7], why, good[:7]))
+    return True
+
+
+def step_forward(rec, running):
+    """C-44: stepped back (`rec`, state/stepped-back.json): pip for the new version's requirements, then at once (same
+    pip lock) the branch reset --keep to it, the records gone and, when the bot runs (`running`), the restart flag.
+    "" when moved forward; "gone" when HEAD is no longer the step-back commit (the sync dropped it, or someone moved
+    it: the record goes, nothing reset); else why not. A move refused after pip worked puts the old version's
+    packages back (pip of the work tree's requirements); that failing too marks the venv "mixed"."""
+    target, commit = str(rec.get("target") or ""), str(rec.get("commit") or "")
+    if not target or not commit:
+        drop(STEPPED)
+        return "gone"
+    if git("rev-parse", "HEAD")[1] != commit:
+        return moved_on(commit)
+    lock, why = deps_lock()
+    if lock is None:
+        return why
+    try:
+        rc, text, err = git("show", "%s:./requirements.txt" % target, strip=False)
+        if rc != 0:
+            return "讀不到新版 `%s` 的 requirements.txt（%s）" % (target[:7], err[:200])
+        write("requirements-target.txt", text)
+        why = pip(os.path.join(STATE, "requirements-target.txt"))
+        if why:
+            return why
+        moved = forward(target, commit)
+        if not moved:
+            drop(STEPPED, FAILING, deps_path())
+            if running:
+                write("restart-requested", '{"channel": ""}\n')  # as deploy.sh and update.py write it
+            log("packages for %s installed; moved forward to it" % target[:7])
+            return ""
+        back = pip()  # the old version runs on: its packages back as its requirements ask
+        if moved == "gone":
+            return moved_on(commit)
+        rec.update(venv="mixed" if back else "", blocked=moved)
+        write_json(STEPPED, rec)
+        if back:
+            text = ("新版 `%s` 的套件裝好了，但回到新版沒成功（%s），把套件裝回舊版要的版本也失敗（%s）：舊版重啟時可能起不來，"
+                    "起不來時會直接試回到新版。要現在處理：在這台的引擎跑 dcbot/install.sh" % (target[:7], moved, back))
+            notice("⚠️ " + text)
+            tell_once("mixed:" + target, "⚠️ " + text)
+        else:
+            notice("新版 `%s` 的套件裝好了，但回到新版沒成功（%s）：已經把套件裝回舊版要的版本，舊版照常跑，%d 分鐘後再試"
+                   % (target[:7], moved, DEPS_RETRY // 60))
+        return "回到新版沒成功（%s）" % moved
+    finally:
+        lock.close()
+
+
+def left_behind():
+    """The step-back commit of state/stepped-back.json, or None. Its records go once that commit is not in HEAD's
+    history (the sync or update.py left it behind on moving on; #code-review-2 of 88e7229: a trial never got to
+    step_forward, and doctor told of a step back long gone); still in it (commits on top) they stay."""
+    commit = (read_json(STEPPED) or {}).get("commit")
+    if commit and git("merge-base", "--is-ancestor", str(commit), "HEAD")[0] == 1:
+        log("the step back %s is no longer in HEAD's history: its records go" % str(commit)[:7])
+        drop(STEPPED, FAILING, "requirements-target.txt")
+        return None
+    return commit
+
+
+def moved_on(commit):
+    """HEAD is no longer the step-back commit `commit`. Not in its history (the sync left it behind, or someone took
+    it away): the record goes, "gone". Still in it, commits on top (a deploy, a commit by hand; #code-review of
+    88e7229): the record stays (doctor keeps telling), said once, nothing moved; why. Not known: kept, why."""
+    rc = git("merge-base", "--is-ancestor", commit, "HEAD")[0]
+    if rc == 1:
+        drop(STEPPED, FAILING, "requirements-target.txt")
+        return "gone"
+    if rc != 0:
+        return "看不出退路 commit `%s` 還在不在歷史裡" % commit[:7]
+    notice("⚠️ 退路 commit `%s`（套件裝不上時先用舊版跑）上面疊了別的 commit，supervisor 不會自己回到新版。請人處理："
+           "在引擎跑 `bin/home-git rebase --onto %s^ %s` 拿掉退路（dcbot/SUPERVISOR-RESCUE.md），之後交給 supervisor；都不要推"
+           % (commit[:7], commit[:7], commit[:7]))
+    return "退路 commit `%s` 上面疊了別的 commit，要人處理" % commit[:7]
+
+
+def forward(target, commit):
+    """reset --keep from the step-back commit to `target`, under the git lock: "" moved; "gone" HEAD is not that
+    commit any more (moved_on tells which way); else why not (nothing moved)."""
+    gl = git_lock()
+    if gl is None:
+        return "拿不到 git 鎖（等了 %d 秒）" % LOCK_WAIT
+    try:
+        if git("rev-parse", "HEAD")[1] != commit:
+            return "gone"
+        if git("rev-parse", commit + "^")[1] != target:
+            return "退路 commit 的上一個不是 `%s`" % target[:7]
+        rc, _, err = git("reset", "-q", "--keep", target)
+        return "工作樹有跟新版重疊的修改（%s）" % err[:200] if rc != 0 else ""
+    finally:
+        gl.close()
 
 
 def tell_once(key, text):
@@ -403,9 +611,10 @@ def save_edits(paths, top):
         return dest, False
 
 
-def rollback(good, reason):
+def rollback(good, reason, step=""):
     """Put the engine back to commit `good` as a new commit (the whole tree, or only dcbot/ and altention/ when the
-    whole tree cannot go back cleanly). True if a rollback commit was made."""
+    whole tree cannot go back cleanly). True if a rollback commit was made. `step`: the new version whose packages
+    would not install (C-44): the step-back subject, nothing put on the remote."""
     if not good:
         return False
     if git("cat-file", "-e", good + "^{commit}")[0] != 0:
@@ -419,13 +628,13 @@ def rollback(good, reason):
     if lock is None:
         log("rollback: the git lock was not had in %ds; going ahead" % LOCK_WAIT)
     try:
-        return put_back(good, reason, lock, until)
+        return put_back(good, reason, lock, until, step)
     finally:
         if lock:
             lock.close()
 
 
-def put_back(good, reason, lock, until):
+def put_back(good, reason, lock, until, step=""):
     top = git("rev-parse", "--show-toplevel")[1]
     scope_partial = [":(top)" + os.path.relpath(os.path.normpath(os.path.join(ROOT, p)), top) for p in PATHS]
     why = partial_reasons(good, top)
@@ -457,7 +666,9 @@ def put_back(good, reason, lock, until):
              for h, s in undone]
     if attempt == "partial":
         lines.insert(0, "部分退回：只退了 dcbot/ 和 altention/，引擎現在是沒有一起跑過的組合，需要人處理。原因：%s" % "、".join(why[:10]))
-    rc, _, err = git("commit", "-q", "-m", "dcbot: roll back%s to %s (%s)" % (" (partial)" if attempt == "partial" else "", good[:7], reason),
+    subject = ("dcbot: step back to %s while packages install (%s)" % (good[:7], step[:7]) if step else
+               "dcbot: roll back%s to %s (%s)" % (" (partial)" if attempt == "partial" else "", good[:7], reason))
+    rc, _, err = git("commit", "-q", "-m", subject,
                      "-m", "Taken back:\n" + "\n".join(lines) if lines else "", "--", *[":(top)" + p for p in changed])
     if rc != 0:
         notice("⚠️ %s，但退回失敗：%s" % (reason, err[:200]))
@@ -470,14 +681,24 @@ def put_back(good, reason, lock, until):
     except Exception as e:  # never a reason not to roll back: then nothing on the remote, the careful way
         log("rollback: core.update not read (%r); nothing put on the remote" % e)
         mode = "notify"
-    pushed = put_on_remote(lock, until) if mode == "branch" else None
+    below = steps_below() if mode == "branch" and not step else []
+    pushed = put_on_remote(lock, until) if mode == "branch" and not step and not below else None
     shown = lines[:15] + (["…還有 %d 個（git log 看）" % (len(lines) - 15)] if len(lines) > 15 else [])
-    text = "⚠️ %s，已把%s退回 `%s`（壞掉的版本仍在 git 歷史裡）。被退掉的 commit：\n%s" % (
-        reason, "整個引擎" if attempt == "whole" else " dcbot/ 和 altention/（部分退回）", good[:7], "\n".join(shown))
+    scope = "整個引擎" if attempt == "whole" else " dcbot/ 和 altention/（部分退回）"
+    if step:
+        text = ("⚠️ %s，先把%s退回 `%s` 用舊版跑；套件裝好後會自己回到新版。這個退回只在這台，不要推。"
+                "要現在處理：在這台的引擎跑 dcbot/install.sh。暫時退掉的 commit：\n%s" % (reason, scope, good[:7], "\n".join(shown)))
+    else:
+        text = "⚠️ %s，已把%s退回 `%s`（壞掉的版本仍在 git 歷史裡）。被退掉的 commit：\n%s" % (reason, scope, good[:7], "\n".join(shown))
     if saved:
         text += ("\n別的頻道沒提交的修改（%s）另存在 `%s`：請自己把修改合併回去，不要整個複製回去"
                  "（另存的是整個檔，複製回去等於把退回撤掉）" % ("、".join(overlap[:10]), saved))
-    if pushed is None:
+    if step:
+        pass  # pushed in no mode, said above
+    elif below:  # rolled back here all the same; a step back must never reach the upstream
+        text += ("\n退路 commit（%s，套件裝不上時先用舊版跑）壓在下面，沒推：先在引擎跑 `bin/home-git rebase --onto %s^ %s` 拿掉退路"
+                 "（dcbot/SUPERVISOR-RESCUE.md），再推自己的 commit，不要直接推" % ("、".join(below), below[-1], below[-1]))
+    elif pushed is None:
         text += ("\n這台的 core.update 是 %s：退回的 commit 只留在這台，不推出去、也不拉上游的分支；"
                  "之後更新到新的發佈版本時它會被丟掉（新版取代它），不用推" % mode)
     elif not pushed:
@@ -485,15 +706,26 @@ def put_back(good, reason, lock, until):
                  "被拒的話先 `bin/home-pull` 再推（系統檢查會一直列著，直到推出去）；這台已經是退回後的版本")
     if not same:
         text += "\n（退回後的樹和 `%s` 不完全相同，請人看一下）" % good[:7]
+    req = os.path.relpath(os.path.join(ROOT, "requirements.txt"), top)
+    if not step and req in changed and os.path.exists(PY):  # the venv as the tree put back asks (C-44; install.sh's way)
+        lock, why = deps_lock()
+        if lock:
+            try:
+                why = pip()
+            finally:
+                lock.close()
+        log("rollback: packages for the tree put back: %s" % (why or "installed"))
+        if why:
+            text += "\n退回後的套件沒裝上（%s）：在這台的引擎跑 dcbot/install.sh" % why
     notice(text)
     return True
 
 
-def safe_rollback(good, reason):
+def safe_rollback(good, reason, step=""):
     """rollback() that never ends the supervisor: anything unexpected is said, and the bot is started as is.
     None when it failed that way (not False: "nothing to roll back to" would be wrong to say then)."""
     try:
-        return rollback(good, reason)
+        return rollback(good, reason, step)
     except Exception as e:
         log("rollback failed: %r" % e)
         try:
@@ -601,6 +833,7 @@ def main():
         head = git("rev-parse", "HEAD")[1]
         ver, btree = version(), bot_tree()
         good = read("last_good")
+        stepped = left_behind()  # C-44: a step-back commit never becomes last_good
         trial = not good or version(good) != ver
         start = time.time()
         try:
@@ -608,14 +841,17 @@ def main():
         except OSError:
             pass
         deps_why = None
-        if deps_pending() is not None and os.path.exists(PY):  # C-40: the new version's packages first
-            log("packages for %s pending (update.py's deps-pending); installing before the start" % head[:7])
+        if (deps_pending() is not None or reqs_changed()) and os.path.exists(PY):  # C-40, C-44: the packages first
+            log("packages for %s pending (update.py's deps-pending, or requirements.txt not what the venv holds); "
+                "installing before the start" % head[:7])
             deps_why = install_deps()
             log("packages: %s" % (deps_why or "installed"))
+            if not deps_why:
+                drop(FAILING)
         log("starting bot %s%s" % (head[:7], " (trial)" if trial else ""))
         proc = subprocess.Popen([PY, "-m", "bot.main"], cwd=ROOT)
         write("bot.pid", str(proc.pid))
-        marked, followed = False, 0
+        marked, followed, next_step = False, 0, start + DEPS_RETRY
         while proc.poll() is None:
             time.sleep(POLL)
             up = time.time() - start
@@ -625,13 +861,18 @@ def main():
                 proc.kill()
                 break
             if not marked and up > STABLE_SECS and ready:
-                write("last_good", head)
+                if head != stepped:
+                    write("last_good", head)
                 marked, backoff, followed = True, BACKOFF, time.time()
                 log("version %s is good" % head[:7])
             if marked and time.time() - followed > FOLLOW_SECS:  # commits elsewhere: last_good follows HEAD
                 followed, now = time.time(), git("rev-parse", "HEAD")[1]
-                if now and now != read("last_good") and version(now) == ver:
+                if now and now != read("last_good") and now != stepped and version(now) == ver:
                     write("last_good", now)
+                stepped = left_behind()
+            if not trial and time.time() >= next_step and read_json(STEPPED):  # C-44: the new version's packages again
+                next_step = time.time() + DEPS_RETRY
+                log("stepped back: %s" % (step_forward(read_json(STEPPED), True) or "moved forward; restarting"))
             if trial and not marked and up > TRIAL_SECS and not ready:
                 log("version %s never came up; killing" % head[:7])
                 proc.kill()
@@ -641,11 +882,27 @@ def main():
         log("bot exited with %s after %ds" % (code, up))
         if code == EXIT_RESTART:
             continue  # deploy or !restart: start whatever is checked out now
+        rec = read_json(STEPPED)
+        if rec and rec.get("venv") == "mixed" and not trial and not marked and not os.path.exists(os.path.join(STATE, "stop")):
+            # the old version on a venv the new version's pip left mixed: no crash backoff, the move forward at once
+            why = step_forward(rec, False)
+            log("old version down on a mixed venv: %s" % (why or "moved forward"))
+            if why and why != "gone":
+                text = ("舊版 `%s` 起不來（套件是新舊混合的），試著回到新版 `%s`：%s。每 %d 分鐘會再試；"
+                        "要現在處理：在這台的引擎跑 dcbot/install.sh" % (head[:7], str(rec.get("target"))[:7], why, DEPS_RETRY // 60))
+                notice("⚠️ " + text)
+                tell_once("mixed-down:" + str(rec.get("target")), "⚠️ 機器人停著：" + text)
+                time.sleep(DEPS_RETRY)
+            continue
         if trial and not marked and deps_why:
             # pip failed before this start: its packages are not installed, no sign the version is bad, nothing rolled
             # back (C-40). Only then: a pip that worked, or none tried, and a failure is the version's own
-            text = ("新版本 `%s` 啟動不了，它要的套件還沒裝上（%s）：這不算新版壞掉，沒有退回。每 %d 分鐘會再裝一次；"
-                    "要現在處理：在這台的引擎跑 dcbot/install.sh" % (head[:7], deps_why, DEPS_RETRY // 60))
+            since = failing_since(head)
+            if time.time() - since >= STEP_BACK_AFTER and step_back(good, head, deps_why):  # C-44
+                continue
+            text = ("新版本 `%s` 啟動不了，它要的套件還沒裝上（%s）：這不算新版壞掉，沒有退回。每 %d 分鐘會再裝一次，"
+                    "%d 分鐘後還裝不上就先退回上一個能跑的版本（只在這台）；要現在處理：在這台的引擎跑 dcbot/install.sh"
+                    % (head[:7], deps_why, DEPS_RETRY // 60, STEP_BACK_AFTER // 60))
             notice(text)
             tell_once(head, "⚠️ 機器人停著：" + text)
             time.sleep(DEPS_RETRY)

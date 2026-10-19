@@ -69,6 +69,8 @@ bin/home-git revert --no-edit "$C" && bin/home-git push
 
 它做錯的退回也要撤掉：`git log --oneline --grep='^dcbot: roll back'` 找出這次的，逐個 `bin/home-git revert --no-edit <hash>`，最後 `bin/home-git push`。退回的 commit 訊息裡列了它退掉的每個 commit（`git log -1 <hash>` 看）。新版退回時另存的、別的頻道沒提交的修改在 `.git/altention-saved/<時間>-rollback/`：另存的是整個檔，要自己把修改合併回去，不要整個複製回去（那等於把退回撤掉）。
 
+套件裝不上時的退路 commit（`dcbot: step back to … while packages install (…)`）不一樣：它只在這台、不能推，也不要 revert（revert 之後推出去就把兩個都推上去了）。要拿掉它（不管上面有沒有疊別的 commit）：`git log --oneline --grep='^dcbot: step back to'` 找出它的 hash，在引擎跑 `bin/home-git rebase --onto <退路>^ <退路>`。其餘交給 supervisor：它的紀錄會自己刪掉，新版啟動前會先裝套件（裝不上就照舊停著等，30 分鐘後再先退回舊版（只在這台））。拿掉之後在 Discord 打 !restart（或等下一次重啟），機器人才會換到新版，換之前會先裝套件。有退路 commit 時，這台的 `deploy.sh`（兩種用法）和 `bin/home-git push` 都會拒絕推，supervisor 的退回也不推；要修 requirements.txt 的部署請在別台做，或先照上面把退路拿掉。
+
 主工作樹卡在 rebase 中途（`ls .git/rebase-merge .git/rebase-apply` 有東西）：`git rebase --abort; rm -f .git/agent-rebase`。
 
 ### 3. 重新啟動

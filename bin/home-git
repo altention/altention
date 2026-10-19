@@ -8,8 +8,9 @@
 Automated jobs (the sync, home-pull, deploy.sh) take `<git dir>/altention-git.lock` before touching the repo; a
 commit made without it can land while one of them is moving the branch. This takes the same lock (waits up to
 2 minutes), runs `git -C <this engine> <arguments>` with the lock held, and exits with git's status. `-C FOLDER`
-first: that repo and its own lock instead (a plugin's data repo, which the sync commits too, C-26). Standard
-library, Python 3.8.
+first: that repo and its own lock instead (a plugin's data repo, which the sync commits too, C-26). A push of the
+engine with a step back of the supervisor's among the commits it would send is refused (C-44). Standard library,
+Python 3.8.
 """
 import os
 import subprocess
@@ -55,6 +56,9 @@ def main(argv):
     repo = sync.Repo(where)
     try:
         with sync.locked(repo):
+            steps = sync.steps_unpushed(repo) if argv[0] == "push" and where == REPO else []
+            if steps:  # C-44: a step back of the supervisor's is never pushed
+                sys.exit("home-git：" + sync.steps_no_push(steps))
             return subprocess.run(["git", "-C", where] + argv).returncode
     except sync.Busy as e:
         sys.exit("home-git：%s（別的同步或部署還在跑），稍後再試" % e)

@@ -382,8 +382,8 @@ class Releases(Rig):
                 self.assertIn("core.update 是 %s" % value, self.notice())
                 self.assertNotIn("home-git push", self.notice(), "no push asked of a machine on releases")
                 from altention import sync
-                backs, others = sync.local_commits(sync.Repo(self.engine), bad)
-                self.assertEqual((len(backs), others), (1, []), "the reader knows the writer's commit")
+                backs, steps, others = sync.local_commits(sync.Repo(self.engine), bad)
+                self.assertEqual((len(backs), steps, others), (1, [], []), "the reader knows the writer's commit")
                 self.assertTrue(sync.ROLLBACK_SUBJECT.match(self.last_log().splitlines()[0]))
                 os.remove(os.path.join(self.dc, "state", "notice.txt"))
                 self.good = self.head()
@@ -635,3 +635,326 @@ class PackagesPending(Rig):
             f.write('{"head": "%s", "why": "安裝中…", "at": 1, "next": 0, "tries": 0}' % bad)
         self.run_main()
         self.assertTrue(self.wait(lambda: self.head() not in (new, bad) and "roll back" in self.last_log()), self.notice())
+
+
+NEW_BOT = NEEDS_PACKAGES_BOT.replace("    sys.exit(1)", """    sys.exit(1)
+if os.path.exists(os.environ["FAKE_BROKEN"]):  # broken all the same, its packages there
+    sys.exit(1)""")
+
+
+class StepBack(Rig):
+    """C-44 (design: docs/refactor/c44-design.md): pip for a new version failing STEP_BACK_AFTER steps back to
+    last_good under a subject of its own, pushed in no mode; the supervisor alone moves forward once pip for the new
+    version's requirements works, at once; a move refused puts the old version's packages back ("mixed" when that
+    fails too, and then an old version that will not start leads straight to the move forward). The venv's python is
+    a fake: `-m pip` logs its arguments and the requirements file it was given, works only when told to, and never
+    touches a real environment."""
+
+    def setUp(self):
+        super().setUp()
+        self.good = self.commit({"dcbot/requirements.txt": "discord.py==2.4.0\n"}, "good, with its requirements")
+        d = self.tmp
+        self.piplog, self.pipok, self.installed = (os.path.join(d, n) for n in ("pip.log", "pip-works", "installed"))
+        self.restore_fails, self.old_down, self.broken = (os.path.join(d, n) for n in ("restore-fails", "old-down", "broken"))
+        py = os.path.join(self.dc, ".venv", "bin", "python")
+        os.remove(py)
+        write(py, """#!/bin/sh
+D="%s"
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  echo "$*" >> "$D/pip.log"
+  echo "REQ $(tr '\\n' ' ' < "$6")" >> "$D/pip.log"
+  if [ -f "$D/pip-works" ] && ! { [ "$6" = requirements.txt ] && [ -f "$D/restore-fails" ]; } \\
+     && ! { grep -q newthing "$6" && [ -f "$D/new-fails" ]; }; then
+    if grep -q newthing "$6"; then touch "$D/installed"; fi
+    exit 0
+  fi
+  echo "error: no compiler"; exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "bot.main" ] && [ -f "$D/old-down" ] && ! grep -q newthing requirements.txt; then exit 1; fi
+exec "%s" "$@"
+""" % (d, sys.executable))
+        os.chmod(py, 0o755)
+        self.told = os.path.join(d, "told")
+        write(os.path.join(self.engine, "bin", "altention"), '#!/bin/sh\necho "$3" >> "%s"\n' % self.told)  # untracked
+        os.chmod(os.path.join(self.engine, "bin", "altention"), 0o755)
+        for k, v in (("FAKE_INSTALLED", self.installed), ("FAKE_BROKEN", self.broken)):
+            self.saved_env[k] = os.environ.get(k)
+            os.environ[k] = v
+        self.sup.DEPS_RETRY, self.sup.TRIAL_SECS, self.sup.STABLE_SECS, self.sup.STEP_BACK_AFTER = 2, 6, 1, 3
+
+    def new_version(self):
+        new = self.commit({"dcbot/requirements.txt": "discord.py==2.4.0\nnewthing==1.0\n", "dcbot/bot/main.py": NEW_BOT},
+                          "a version needing a new package")
+        self.record = os.path.join(os.path.expanduser("~"), ".local", "state", "altention", "deps-pending")
+        write(self.record, '{"head": "%s", "why": "安裝中…", "at": 1, "next": 0, "tries": 0}' % new)
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        self.upstream = sh(self.origin, "git", "rev-parse", "main").stdout.strip()
+        return new
+
+    def stepped(self):
+        return self.sup.read_json(self.sup.STEPPED)
+
+    def reqs(self):
+        """The requirements each pip was given, in order ("new" or "old")."""
+        try:
+            lines = slurp(self.piplog).splitlines()
+        except OSError:
+            return []
+        return ["new" if "newthing" in l else "old" for l in lines if l.startswith("REQ ")]
+
+    def subject(self):
+        return self.last_log().splitlines()[0]
+
+    def step_back(self, mode="branch"):
+        self.mode(mode)
+        new = self.new_version()
+        self.run_main()
+        self.assertTrue(self.wait(lambda: self.stepped() and self.ready_for_head(), 60), self.notice())
+        return new
+
+    def test_pip_failing_under_the_limit_is_c40_and_counted(self):
+        self.sup.STEP_BACK_AFTER = 3600
+        new = self.new_version()
+        self.run_main()
+        self.assertTrue(self.wait(lambda: slurp(self.piplog).count("pip install") >= 2 if os.path.exists(self.piplog) else False))
+        self.assertEqual(self.head(), new, "not stepped back yet")
+        self.assertIn("這不算新版壞掉，沒有退回", self.notice())
+        failing = self.sup.read_json(self.sup.FAILING)
+        self.assertEqual(failing["head"], new)
+        self.assertGreaterEqual(failing["tries"], 1)
+
+    def test_past_the_limit_it_steps_back_here_and_pushes_nothing_in_branch_mode(self):
+        self.stepped_back_in("branch")
+
+    def test_past_the_limit_it_steps_back_here_and_pushes_nothing_in_release_mode(self):
+        self.stepped_back_in("release")
+
+    def test_past_the_limit_it_steps_back_here_and_pushes_nothing_in_notify_mode(self):
+        self.stepped_back_in("notify")
+
+    def stepped_back_in(self, mode):
+        new = self.step_back(mode)
+        self.assertRegex(self.subject(), r"^dcbot: step back to %s while packages install \(%s\)$" % (self.good[:7], new[:7]))
+        from altention import sync
+        self.assertTrue(sync.STEP_BACK_SUBJECT.match(self.subject()), "the reader knows the writer's subject")
+        self.assertEqual(sh(self.engine, "git", "rev-parse", "HEAD^").stdout.strip(), new)
+        self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), self.upstream, "nothing pushed")
+        self.assertEqual(sh(self.engine, "git", "rev-parse", "origin/main").stdout.strip(), self.upstream, "nothing fetched")
+        rec = self.stepped()
+        self.assertEqual((rec["target"], rec["commit"], rec["good"]), (new, self.head(), self.good))
+        self.assertIn("先把整個引擎退回 `%s` 用舊版跑" % self.good[:7], self.notice())
+        self.assertIn("不要推", self.notice())
+        self.assertNotIn("home-git push", self.notice())
+        self.assertEqual(slurp(self.told).count("先用舊版回來了"), 1, "told once")
+        time.sleep(1.5)
+        self.assertEqual(self.sup.read("last_good"), self.good, "a step back never becomes last_good")
+        self.assertTrue(self.wait(lambda: self.reqs()[-1:] == ["old"]), "the old version's packages at its start")
+
+    def test_pip_working_moves_forward_at_once_and_the_new_version_comes_up(self):
+        new = self.step_back()
+        step = self.head()
+        n = len(self.reqs())
+        open(self.pipok, "w").close()
+        self.assertTrue(self.wait(lambda: self.head() == new and self.ready_for_head(), 60), self.notice())
+        self.assertEqual(self.reqs()[n], "new", "pip for the new version's requirements, not the work tree's")
+        self.assertIsNone(self.stepped())
+        self.assertFalse(os.path.exists(self.record), "update.py's record goes with it")
+        self.assertNotEqual(sh(self.engine, "git", "merge-base", "--is-ancestor", step, "HEAD").returncode, 0, "the step back is gone")
+        self.assertEqual(sh(self.engine, "git", "rev-list", "--count", "%s..HEAD" % new).stdout.strip(), "0", "no new commit")
+        self.assertTrue(self.wait(lambda: self.sup.read("last_good") == new))
+
+    def test_the_new_version_broken_after_moving_forward_is_rolled_back_pushed_and_its_packages_put_back(self):
+        new = self.step_back()
+        open(self.broken, "w").close()
+        open(self.pipok, "w").close()
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log(), 60), self.notice())
+        self.assertEqual(sh(self.engine, "git", "rev-parse", "HEAD^").stdout.strip(), new)
+        self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+        self.assertTrue(self.wait(self.pushed), "branch mode: the rollback of a broken version is pushed (after its commit)")
+        self.assertTrue(self.wait(lambda: self.reqs()[-1:] == ["old"]), "pip for the tree put back")
+        self.assertTrue(self.wait(self.ready_for_head))
+
+    def test_head_moved_away_by_the_sync_drops_the_record_and_resets_nothing(self):
+        self.step_back()
+        other = os.path.join(self.tmp, "other")
+        sh(self.tmp, "git", "clone", "-q", self.origin, other)
+        write(os.path.join(other, "ops", "y.py"), "Y = 1\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "upstream moved on")
+        sh(other, "git", "push", "-q")
+        sh(self.engine, "git", "fetch", "-q")
+        sh(self.engine, "git", "reset", "-q", "--keep", "origin/main")  # what sync.update does with a step back
+        moved = self.head()
+        n = len(self.reqs())
+        self.assertTrue(self.wait(lambda: self.stepped() is None, 20))
+        time.sleep(1)
+        self.assertEqual(self.head(), moved)
+        self.assertEqual(self.reqs()[n:], [], "no pip for a step back that is gone")
+
+    def test_a_refused_move_puts_the_old_packages_back_and_is_tried_again(self):
+        """Items 6 and 8: overlapping edits refuse the move after pip installed the new version's packages: pip again
+        at once with the work tree's (the old version's) requirements, the edits kept, said once; the edits gone, the
+        next round moves forward."""
+        new = self.step_back()
+        step = self.head()
+        main_py = os.path.join(self.dc, "bot", "main.py")
+        write(main_py, slurp(main_py) + "# another channel's edit\n")
+        n = len(self.reqs())
+        open(self.pipok, "w").close()
+        self.assertTrue(self.wait(lambda: (self.stepped() or {}).get("blocked"), 30), self.notice())
+        self.assertEqual(self.reqs()[n:n + 2], ["new", "old"], "the old version's packages back at once")
+        self.assertEqual((self.stepped() or {}).get("venv"), "")
+        self.assertEqual(self.head(), step)
+        self.assertIn("another channel's edit", slurp(main_py))
+        self.assertIn("回到新版沒成功", self.notice())
+        self.assertIn("舊版照常跑", self.notice())
+        time.sleep(2.5)
+        self.assertEqual(self.notice().count("回到新版沒成功"), 1, "said once")
+        pid = self.sup.read("bot.pid")
+        sh(self.engine, "git", "checkout", "--", "dcbot/bot/main.py")
+        self.assertTrue(self.wait(lambda: self.head() == new and self.ready_for_head(), 60), self.notice())
+        self.assertNotEqual(self.sup.read("bot.pid"), pid)
+
+    def test_a_mixed_venv_leads_an_old_version_that_will_not_start_straight_to_the_move(self):
+        new = self.step_back()
+        main_py = os.path.join(self.dc, "bot", "main.py")
+        write(main_py, slurp(main_py) + "# another channel's edit\n")
+        open(self.restore_fails, "w").close()
+        open(self.pipok, "w").close()
+        self.assertTrue(self.wait(lambda: (self.stepped() or {}).get("venv") == "mixed", 30), self.notice())
+        self.assertIn("舊版重啟時可能起不來", self.notice())
+        self.assertEqual(slurp(self.told).count("舊版重啟時可能起不來"), 1)
+        open(self.old_down, "w").close()  # the old version on the mixed venv will not start
+        n = len(self.reqs())
+        os.kill(int(self.sup.read("bot.pid")), 9)
+        self.assertTrue(self.wait(lambda: "起不來（套件是新舊混合的）" in self.notice(), 30), self.notice())
+        self.assertIn("new", self.reqs()[n:], "the move forward tried at once")
+        self.assertEqual(slurp(self.told).count("起不來（套件是新舊混合的）"), 1)
+        sh(self.engine, "git", "checkout", "--", "dcbot/bot/main.py")
+        self.assertTrue(self.wait(lambda: self.head() == new and self.ready_for_head(), 60), self.notice())
+
+    def test_no_last_good_stays_down_as_c40(self):
+        new = self.new_version()
+        os.remove(os.path.join(self.dc, "state", "last_good"))
+        self.run_main()
+        self.assertTrue(self.wait(lambda: os.path.exists(self.piplog) and slurp(self.piplog).count("pip install") >= 4, 60))
+        self.assertEqual(self.head(), new)
+        self.assertIsNone(self.stepped())
+        self.assertNotIn("step back", self.last_log())
+
+    def test_commits_on_top_of_the_step_back_keep_the_record_and_are_said(self):
+        """#code-review of 88e7229: a commit on top of the step back (a deploy, a commit by hand) is no step back the
+        sync left behind: the record stays (doctor keeps telling), said once, nothing reset; the step back taken
+        out of the history, the record goes."""
+        self.step_back()
+        step = self.head()
+        self.commit({"ops/z.py": "Z = 1\n"}, "a commit on top", push=False)
+        top = self.head()
+        open(self.pipok, "w").close()
+        self.assertTrue(self.wait(lambda: "上面疊了別的 commit" in self.notice(), 20), self.notice())
+        n = len(self.reqs())  # tries before the commit on top ran pip for the new version (and failed)
+        time.sleep(2.5)
+        self.assertEqual(self.head(), top, "nothing reset")
+        self.assertEqual((self.stepped() or {}).get("commit"), step, "the record stays")
+        self.assertEqual(self.notice().count("上面疊了別的 commit"), 1, "said once")
+        self.assertEqual(self.reqs()[n:], [], "no pip for a move that cannot happen")
+        sh(self.engine, "git", "rebase", "-q", "--onto", step + "^", step)  # what SUPERVISOR-RESCUE.md says
+        self.assertTrue(self.wait(lambda: self.stepped() is None, 20), "out of the history: the record goes")
+
+    def test_a_step_back_left_behind_loses_its_records_at_the_next_start_even_a_trial(self):
+        """#code-review-2 of 88e7229 (manager 2026-10-17): update.py left the step back behind on moving to a newer
+        version and restarted the bot into its trial; step_forward never ran then, and the record stayed (doctor told
+        of a step back long gone). Every start, trial or not, drops the records of a step back not in HEAD's history."""
+        self.step_back()
+        self.sup.DEPS_RETRY = 100  # step_forward out of the way: only a start may drop it
+        pid = self.sup.read("bot.pid")
+        write(os.path.join(self.dc, "state", "restart-requested"), '{"channel": ""}\n')
+        self.assertTrue(self.wait(lambda: self.sup.read("bot.pid") not in ("", pid) and self.ready_for_head()))
+        self.assertIsNotNone(self.stepped(), "still in HEAD's history: kept")
+        other = os.path.join(self.tmp, "other")
+        sh(self.tmp, "git", "clone", "-q", self.origin, other)
+        write(os.path.join(other, "dcbot", "requirements.txt"), "discord.py==2.4.0\n")
+        write(os.path.join(other, "dcbot", "bot", "main.py"), FAKE_BOT)
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "commit", "-qm", "v1.3: the new package not needed after all")
+        sh(other, "git", "push", "-q")
+        sh(self.engine, "git", "fetch", "-q")
+        sh(self.engine, "git", "reset", "-q", "--keep", "origin/main")  # what sync.update does with a step back
+        write(os.path.join(self.dc, "state", "restart-requested"), '{"channel": ""}\n')  # update.py's flag
+        self.assertTrue(self.wait(lambda: self.stepped() is None, 15), "dropped at the trial's start")
+        self.assertIsNone(self.sup.read_json(self.sup.FAILING))
+        self.assertTrue(self.wait(self.ready_for_head))
+
+    def x_on_top_of_the_step_back(self):
+        """A commit X of someone's on top of the step back S, changing dcbot/: X's own trial at the next start."""
+        self.step_back()
+        step = self.head()
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        x = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "X on top of the step back", push=False)
+        return step, x
+
+    def test_a_rollback_with_a_step_back_under_it_is_made_here_and_not_pushed(self):
+        """#code-review of 60c6eec (manager 2026-10-17): X's trial fails, the rollback is made (the bot back on a
+        good version) but not pushed: S would go with it. Then X good and a later version rolled back to X: the same."""
+        step, x = self.x_on_top_of_the_step_back()
+        from altention import sync
+        self.assertEqual(self.sup.STEP_BACK_SUBJECT.pattern, sync.STEP_BACK_SUBJECT.pattern, "the copy in the supervisor")
+        open(self.pipok, "w").close()  # X's packages install (its requirements are the old version's): its own trial decides
+        os.environ["FAKE_BAD"] = "a.json,b.json"
+        self.saved_env.setdefault("FAKE_BAD", None)
+        write(os.path.join(self.dc, "state", "restart-requested"), '{"channel": ""}\n')
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log(), 60), self.notice())
+        os.environ.pop("FAKE_BAD")
+        self.assertEqual(sh(self.engine, "git", "rev-parse", "HEAD^").stdout.strip(), x)
+        self.assertIn("壓在下面，沒推", self.notice())
+        self.assertIn("bin/home-git rebase --onto %s^ %s" % (step[:7], step[:7]), self.notice())
+        time.sleep(2)
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), self.upstream, "the origin received nothing")
+        self.assertTrue(self.wait(self.ready_for_head), "the bot back on the version put back")
+
+    def test_a_rollback_to_a_good_version_on_top_of_a_step_back_is_not_pushed(self):
+        step, x = self.x_on_top_of_the_step_back()
+        write(os.path.join(self.dc, "state", "last_good"), x)  # X came up and was marked good
+        self.break_altention_unpushed = self.commit({"altention/thing.py": "def broken(:\n"}, "bad altention", push=False)
+        self.assertTrue(self.sup.rollback(x, "test"))
+        self.assertEqual(self.sup.tree(), self.sup.tree(x))
+        self.assertIn("壓在下面，沒推", self.notice())
+        self.assertNotIn("還沒推出去（網路或衝突）", self.notice())
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), self.upstream, "the origin received nothing")
+        self.assertEqual(sh(self.engine, "git", "rev-parse", "origin/main").stdout.strip(), self.upstream, "nothing fetched either")
+
+    def test_a_step_back_alone_taken_out_by_hand_installs_the_new_packages_before_the_trial(self):
+        self.taken_out_by_hand("alone on top")
+
+    def test_a_step_back_under_a_commit_taken_out_by_hand_installs_the_new_packages_before_the_trial(self):
+        self.taken_out_by_hand("under a commit")
+
+    def taken_out_by_hand(self, how):
+        """Manager 2026-10-17 (#code-review-2 of 60c6eec): the old version's start had installed its own packages (the
+        deps-pending record gone); the step back taken out as SUPERVISOR-RESCUE.md says, alone on top or under a
+        commit of someone's, then !restart: pip for the new requirements before the trial (state/venv-requirements
+        differs), and pip failing rolls nothing back and pushes nothing (C-40)."""
+        new = self.step_back()
+        step = self.head()
+        open(self.pipok, "w").close()
+        open(os.path.join(self.tmp, "new-fails"), "w").close()  # the old packages install, the new ones do not
+        pid = self.sup.read("bot.pid")
+        write(os.path.join(self.dc, "state", "restart-requested"), '{"channel": ""}\n')
+        self.assertTrue(self.wait(lambda: self.sup.read("bot.pid") not in ("", pid) and self.ready_for_head()))
+        self.assertTrue(self.wait(lambda: not os.path.exists(self.record)), "the old version's start installed its packages")
+        if how == "under a commit":
+            self.commit({"ops/z.py": "Z = 1\n"}, "someone's commit on top", push=False)
+        sh(self.engine, "git", "rebase", "-q", "--onto", step + "^", step)  # SUPERVISOR-RESCUE.md
+        self.assertNotEqual(sh(self.engine, "git", "merge-base", "--is-ancestor", step, "HEAD").returncode, 0)
+        top = self.head()
+        n = len(self.reqs())
+        write(os.path.join(self.dc, "state", "restart-requested"), '{"channel": ""}\n')  # !restart
+        self.assertTrue(self.wait(lambda: "new" in self.reqs()[n:], 30), self.notice())
+        self.assertTrue(self.wait(lambda: "`%s` 啟動不了，它要的套件還沒裝上" % top[:7] in self.notice(), 30), self.notice())
+        self.assertEqual(self.reqs()[n], "new", "pip for the new requirements before the trial")
+        time.sleep(2)
+        self.assertEqual(self.head(), top, "nothing rolled back")
+        self.assertNotIn("roll back", self.last_log())
+        self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), self.upstream, "nothing pushed")
+        self.assertEqual(self.sup.read("last_good"), self.good)

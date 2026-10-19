@@ -29,6 +29,15 @@ EXTRA=("${@:3}")  # 相對於 dcbot/ 的路徑，例如 ../docs/x.md（只有原
 if [ -n "$REVIEWED" ] && [ "${#EXTRA[@]}" -gt 0 ]; then
   echo "✗ --commit 提交的就是那個 commit 改的檔，不用另外列路徑"; exit 2
 fi
+refuse_steps() {  # C-44：supervisor 的退路 commit（套件裝不上時先用舊版跑）不能推；只看標題，寧可多擋
+  local s
+  s="$(git log --format='%h %s' '@{u}..HEAD' 2>/dev/null | grep -E '^[0-9a-f]+ dcbot: step back to [0-9a-f]{7} while packages install \([0-9a-f]{7}\)$' | cut -d' ' -f1 | tr '\n' ' ' || true)"
+  [ -z "$s" ] && return 0
+  local last="${s% }"; last="${last##* }"  # git log lists the newest first: the command names the oldest
+  echo "✗ 這台在用舊版等套件，不能推（退路 commit：${s% }）；等它自己回到新版，或在引擎跑 bin/home-git rebase --onto ${last}^ ${last} 拿掉（dcbot/SUPERVISOR-RESCUE.md）。要修 requirements.txt 的部署請在別台做，或先把退路拿掉"
+  return 1
+}
+refuse_steps || exit 1  # 兩種用法都在做任何事之前
 sync_guide() {  # 說明頻道跟不上不該擋住部署
   [ -z "${DEPLOY_NO_GUIDE:-}" ] || return 0  # 在試跑用的 clone 裡：不碰 Discord
   echo "== 同步說明頻道"
@@ -164,6 +173,7 @@ OTHERS="$(git status --porcelain -- .. ':!.' | head -20)"
 # 裡 rebase，再用 reset --keep 移過來，所以工作樹裡各頻道改到一半的檔案不會擋住、也不會被動到；不用 autostash。
 # 上游是 update 擋下的 hash 就不接上去、停下這次部署（manager 2026-10-07，DESIGN 7.1）：部署不是把別人的壞 commit
 # 拉進機器人那台的出路；真的要越過，先 bin/home-pull --take-refused 再部署。
+refuse_steps || { echo "  這次的 commit 留在這台、沒有推出去，機器人也不重啟。"; flock -u 9; exit 1; }  # 檢查期間才退回的
 PUSH_ERR="$(mktemp)"
 HELD=""
 if timeout 300 git push -q 2>"$PUSH_ERR"; then

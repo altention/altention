@@ -392,12 +392,18 @@ class Posts(object):
 
     async def board(self, ch, name, text, post=None):
         """dcpost --board: the board's messages are edited in place (more parts than before are added, fewer
-        are deleted), so the channel always shows its latest state without a trail of old copies."""
+        are deleted), so the channel always shows its latest state without a trail of old copies.
+
+        Only a message Discord says is gone (NotFound: deleted by hand) is posted again. Any other failure (a 5xx,
+        a timeout, the network) keeps its ID and is tried again next time: posting anew then left the old copy
+        behind, stuck on old content (a second 圖表 board in #dashboard, 2026-10-17). A board that fails so
+        BOARD_FAILS times running (a 403 never gets better by itself) is said to the owner once, as a
+        notification; one time that works starts the count again."""
         st = self.bot.chan(ch)
         boards = st.setdefault("boards", {})
         stamp = time.strftime("%m-%d %H:%M")
         parts = split_message("📌 **%s**\n-# 更新於 %s\n%s" % (name, stamp, text or "（空白）"))
-        old, kept = list(boards.get(name) or []), []
+        old, kept, errors = list(boards.get(name) or []), [], []
         attach = (post or {}).get("file_b64")  # a chart and the like: on the board's first message, replaced each time
         for i, part in enumerate(parts):
             msg, extra = None, {}
@@ -407,8 +413,14 @@ class Posts(object):
                 try:
                     edit = {"attachments": [extra["file"]]} if extra else {}
                     msg = await ch.get_partial_message(old[i]).edit(content=part, **edit)
-                except discord.HTTPException:
-                    msg = None  # deleted by hand: post it again
+                except discord.NotFound as e:
+                    print("[board] #%s 的看板「%s」第 %d 則不見了（%s），重貼" % (ch.name, name, i + 1, e), flush=True)
+                except Exception as e:  # a 5xx, a timeout, the network (aiohttp's errors): anything but NotFound
+                    print("[board] #%s 的看板「%s」第 %d 則這次改不了（%s: %s），留著原本那則，下一次再改"
+                          % (ch.name, name, i + 1, type(e).__name__, e), flush=True)
+                    errors.append(e)
+                    kept.append(old[i])
+                    continue
             if msg is None:
                 if extra:
                     extra["file"] = discord.File(io.BytesIO(base64.b64decode(attach)), post.get("file_name") or "board.png")
@@ -417,10 +429,25 @@ class Posts(object):
         for mid in old[len(parts):]:
             try:
                 await ch.get_partial_message(mid).delete()
-            except discord.HTTPException:
+            except discord.NotFound:
                 pass
+            except Exception as e:  # a 5xx, a timeout, the network (aiohttp's errors): anything but NotFound
+                print("[board] #%s 的看板「%s」多出來的一則這次刪不掉（%s: %s），下一次再刪"
+                      % (ch.name, name, type(e).__name__, e), flush=True)
+                errors.append(e)
+                kept.append(mid)  # beyond the parts, so the next time deletes it again
         boards[name] = kept
+        fails = st.setdefault("board_fails", {})
+        if errors:
+            fails[name] = fails.get(name, 0) + 1
+        else:
+            fails.pop(name, None)
         self.bot.save()
+        if fails.get(name) == BOARD_FAILS:  # said once; Undelivered goes on to safely(), which keeps it for retry
+            await self.notify({"notify": True, "from_name": "機器人", "text":
+                               "#%s 的看板「%s」連續 %d 次更新失敗（%s），停在舊的內容。機器人每次都會再試，好了就不用管；"
+                               "一直這樣的話，看看機器人在 #%s 的權限（要能看、能發訊息），或那個頻道是不是被封存了。"
+                               % (ch.name, name, BOARD_FAILS, error_code(errors[-1]), ch.name)}, None)
 
     async def give(self, ch, sender, sender_ch, text, post):
         body = text + ("\n（附件：%s，在 Discord 的這則訊息上）" % post.get("file_name") if post.get("file_b64") else "")
@@ -574,6 +601,19 @@ class Posts(object):
                     self.inflight.discard(path)
         finally:
             self.retrying = False
+
+
+BOARD_FAILS = 3  # times running a board fails to update (not NotFound) before the owner is told, once
+
+
+def error_code(e):
+    """How a failed Discord call is said: HTTP status and Discord's own code for an HTTPException, else its type."""
+    status = getattr(e, "status", None)
+    if isinstance(status, int):
+        code = getattr(e, "code", 0)
+        text = str(getattr(e, "text", "") or "")[:200]
+        return "HTTP %d%s%s" % (status, "，錯誤碼 %d" % code if code else "", "：" + text if text else "")
+    return "%s: %s" % (type(e).__name__, str(e)[:200]) if str(e) else type(e).__name__
 
 
 class Undelivered(Exception):

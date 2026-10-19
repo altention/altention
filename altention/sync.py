@@ -392,24 +392,29 @@ def update(repo, to=None):
     ahead, behind = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
     said = None
     if behind:
-        if ahead == 0:
+        if ahead and to is None:  # C-44: a step back the supervisor made here is never put on a newer upstream, any mode
+            code, said = drop_steps(repo, up)
+            if code:
+                return code, said
+        if said is None and ahead == 0:
             r = repo.git("merge", "-q", "--ff-only", up)
             if r.returncode != 0:
                 return 1, "沒有更新：沒提交的修改跟遠端改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
-        elif to is not None:  # a release (C-07): a rollback the supervisor made here is never put on top of a new one
-            backs, others = local_commits(repo, to)
+        elif said is None and to is not None:  # a release (C-07): a rollback the supervisor made here is never put on top of a new one
+            backs, steps, others = local_commits(repo, to)
             if backs is None:
                 return 1, "沒有更新：讀不出這台在發佈版本之上有哪些 commit（%s），不猜" % others
-            if backs and not others:
+            if (backs or steps) and not others:
                 r = repo.git("reset", "-q", "--keep", to, timeout=120)
                 if r.returncode != 0:
                     return 1, "沒有更新：沒提交的修改跟要合進來的變更改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
-                said = "這台的退回 commit（%s）沒有帶到新版上：它只是避開舊版的問題，新版取代它" % "、".join(h[:7] for h in backs)
-            elif backs or any(looks for _, looks in others):
+                said = "；".join(([STEPS_LEFT % "、".join(h[:7] for h in steps)] if steps else []) +
+                                ([BACKS_LEFT % "、".join(h[:7] for h in backs)] if backs else []))
+            elif backs or steps or any(looks for _, looks in others):
                 return 1, ("沒有更新：這台在發佈版本之上有退回 commit，也有別的 commit（%s），不猜哪些要留；"
                            "請人看 git log 之後處理（只留自己的 commit，退回的不要帶到新版上）"
-                           % "、".join(h[:7] + ("（退回）" if looks else "") for h, looks in
-                                      ([(h, True) for h in backs] + others)[:8]))
+                           % "、".join(h[:7] + ("（退路）" if h in steps else "（退回）" if looks else "") for h, looks in
+                                      ([(h, True) for h in steps + backs] + others)[:8]))
         if said is None and ahead:
             code, note = rebase_aside(repo, to)
             if code:
@@ -419,36 +424,83 @@ def update(repo, to=None):
     return 0, said
 
 
-# the subject dcbot/supervisor.py put_back() gives a rollback commit
+# the subjects dcbot/supervisor.py put_back() gives a rollback commit and a step back while packages install (C-44;
+# update.py has a copy of the second)
 ROLLBACK_SUBJECT = re.compile(r"^dcbot: roll back( \(partial\))? to ([0-9a-f]{7}) \(.*\)$")
+STEP_BACK_SUBJECT = re.compile(r"^dcbot: step back to ([0-9a-f]{7}) while packages install \([0-9a-f]{7}\)$")
+BACKS_LEFT = "這台的退回 commit（%s）沒有帶到新版上：它只是避開舊版的問題，新版取代它"
+STEPS_LEFT = "這台的退路 commit（%s，套件裝不上時先用舊版跑）沒有帶到新版上"
+
+
+STEPS_NO_PUSH = ("這台在用舊版等套件，不能推（退路 commit：%s）；等它自己回到新版，或在引擎跑 bin/home-git rebase --onto %s^ %s 拿掉"
+                 "（dcbot/SUPERVISOR-RESCUE.md）。要修 requirements.txt 的部署請在別台做，或先把退路拿掉")
+
+
+def steps_no_push(hashes):
+    """STEPS_NO_PUSH for these step backs (newest first, as git log lists them): the command names the oldest."""
+    return STEPS_NO_PUSH % ("、".join(h[:7] for h in hashes), hashes[-1][:7], hashes[-1][:7])
+
+
+def steps_unpushed(repo):
+    """C-44 (manager 2026-10-17, #code-review of 88e7229): the commits a push would send (@{u}..HEAD) with a step
+    back's subject; the subject alone, so that more is refused rather than less. [] when there is no upstream."""
+    r = repo.git("log", "--format=%H%x00%s", "@{u}..HEAD", timeout=20)
+    return [l.split("\0")[0] for l in r.stdout.splitlines()
+            if r.returncode == 0 and STEP_BACK_SUBJECT.match((l.split("\0") + [""])[1])]
+
+
+def drop_steps(repo, up):
+    """C-44, before a branch (any mode with `up` its upstream) moves on: when the commits HEAD has and `up` has not
+    are only step backs the supervisor made here, the branch goes to `up` (reset --keep) and they are left behind.
+    (0, note) dropped; (0, None) none here (the usual rebase follows: a rollback in branch mode is one to push);
+    (1, why) step backs mixed with other commits, or git cannot tell: not guessed."""
+    subjects = repo.git("log", "--format=%s", "%s..HEAD" % up, timeout=20)
+    if subjects.returncode == 0 and not any(STEP_BACK_SUBJECT.match(l) for l in subjects.stdout.splitlines()):
+        return 0, None
+    backs, steps, others = local_commits(repo, up)
+    if backs is None:
+        return 1, "沒有更新：讀不出這台在上游之上有哪些 commit（%s），不猜" % (others or subjects.stderr.strip())[:200]
+    if not steps:
+        return 0, None  # only a step back's subject, not the supervisor's: an ordinary commit
+    if backs or others:
+        return 1, ("沒有更新：這台在上游之上有退路 commit（套件裝不上時先用舊版跑），也有別的 commit（%s），不猜哪些要留；"
+                   "請人看 git log 之後處理（只留自己的 commit，退路的不要帶到新版上）"
+                   % "、".join(h[:7] + ("（退路）" if h in steps else "（退回）" if h in backs else "") for h in
+                              (steps + backs + [h for h, _ in others])[:8]))
+    r = repo.git("reset", "-q", "--keep", up, timeout=120)
+    if r.returncode != 0:
+        return 1, "沒有更新：沒提交的修改跟要合進來的變更改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
+    return 0, STEPS_LEFT % "、".join(h[:7] for h in steps)
 
 
 def local_commits(repo, up):
-    """(rollbacks, others): the commits HEAD has and `up` has not. rollbacks: those the supervisor made here, only
+    """(rollbacks, steps, others): the commits HEAD has and `up` has not. rollbacks: those the supervisor made here, only
     when all of it says so (manager 2026-10-17): the subject put_back gives it, one parent, this repo's own author
     (git var GIT_AUTHOR_IDENT), on no remote branch, and what it does is only that: every file it changes is, in it,
     as in the good commit its subject names (gone there: not in good either; #code-review of 239abcc: the author
     is this repo's for the owner's commits too, and an amended rollback or a commit of the owner's with that subject
-    carried a file of theirs away). others: [(hash, looks like a rollback)] for the rest, a commit with that subject
-    that fails another of these marked (the caller stops rather than put it on a release). (None, why) when git
-    cannot list them."""
+    carried a file of theirs away). steps: the same for its step backs while packages install (C-44:
+    STEP_BACK_SUBJECT, the good commit named first). others: [(hash, looks like a rollback)] for the rest, a commit
+    with either subject that fails another of these marked (the caller stops rather than put it on a release).
+    (None, None, why) when git cannot list them."""
     ident = repo.git("var", "GIT_AUTHOR_IDENT", timeout=20)
     here = repo.git("rev-list", "HEAD", "--not", up, "--remotes", timeout=20)  # on no remote branch
     log = repo.git("log", "--format=%H%x00%P%x00%ae%x00%s", "%s..HEAD" % up, timeout=20)
     for r in (ident, here, log):
         if r.returncode != 0:
-            return None, (r.stderr.strip() or r.stdout.strip())[:200]
+            return None, None, (r.stderr.strip() or r.stdout.strip())[:200]
     me = ident.stdout[ident.stdout.find("<") + 1:ident.stdout.find(">")]
     here = set(here.stdout.split())
-    backs, others = [], []
+    backs, steps, others = [], [], []
     for line in log.stdout.splitlines():
         h, parents, author, subject = (line.split("\0") + ["", "", ""])[:4]
-        m = ROLLBACK_SUBJECT.match(subject)
-        if m and me and author == me and h in here and len(parents.split()) == 1 and restores(repo, h, m.group(2)):
-            backs.append(h)
+        m, s = ROLLBACK_SUBJECT.match(subject), STEP_BACK_SUBJECT.match(subject)
+        good = m.group(2) if m else s.group(1) if s else ""
+        if good and me and author == me and h in here and len(parents.split()) == 1 and restores(repo, h, good):
+            (backs if m else steps).append(h)
         else:
-            others.append((h, bool(m)))
-    return backs, others
+            others.append((h, bool(m or s)))
+    return backs, steps, others
 
 
 def restores(repo, h, good):
@@ -1233,15 +1285,19 @@ def run(say=lambda text: None):
                                      before=before, after=after, protected=SHARED, pull=pull, refuse=refused, push_out=False)
         install_pending()  # the lock let go: pip for a move this round (or an earlier one) marked
         eng = status["engine"]
-        if mode != "branch" and type(eng.get("ahead")) is int and eng["ahead"] > 0:
+        if type(eng.get("ahead")) is int and eng["ahead"] > 0:
             try:  # C-07: rollbacks the supervisor keeps here on releases are not to push; doctor says which are which
-                backs, others = local_commits(Repo(config.ENGINE), "@{u}")
-                eng["rollbacks"] = len(backs) if backs is not None else None
-                # with a rollback's subject but not only a rollback (amended with a file of the owner's, say):
-                # not to push as it is either (#code-review-2 of 7daa3df)
-                eng["rollbacks_unsure"] = len([h for h, looks in others if looks]) if backs is not None else None
+                backs, steps, others = local_commits(Repo(config.ENGINE), "@{u}")
+                eng["steps"] = len(steps) if backs is not None else None  # C-44: step backs, never to push in any mode
+                if mode != "branch":
+                    eng["rollbacks"] = len(backs) if backs is not None else None
+                    # with a rollback's subject but not only a rollback (amended with a file of the owner's, say):
+                    # not to push as it is either (#code-review-2 of 7daa3df)
+                    eng["rollbacks_unsure"] = len([h for h, looks in others if looks]) if backs is not None else None
             except Exception as e:
-                eng["rollbacks"] = eng["rollbacks_unsure"] = None
+                eng["steps"] = None
+                if mode != "branch":
+                    eng["rollbacks"] = eng["rollbacks_unsure"] = None
                 _alert_plain("sync", "rollbacks", "數不出引擎有幾個退回 commit（%s: %s）" % (type(e).__name__, e))
     else:  # unpacked from an archive: the instance's folders are still linked; nothing to commit, pull or push
         before(None)
