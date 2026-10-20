@@ -68,7 +68,7 @@ class Rig(unittest.TestCase):
         self.state = update.state_dir()
         shutil.rmtree(self.state, ignore_errors=True)
         branch_mode(os.path.expanduser("~"))  # these test what follows the branch: the mode our machines keep
-        self.told = []
+        self.told, self.where = [], []
         self.notify = mock.patch.object(update.subprocess, "run", self.fake_run)
         self.real_run = subprocess.run
 
@@ -80,7 +80,8 @@ class Rig(unittest.TestCase):
 
     def fake_run(self, argv, *a, **k):
         if argv and str(argv[0]).endswith("altention") and argv[1:3] == ["dc", "notify"]:
-            self.told.append(argv[3])
+            self.told.append(argv[-1])
+            self.where.append(argv[argv.index("-c") + 1] if "-c" in argv else "")
             return subprocess.CompletedProcess(argv, 0)
         return self.real_run(argv, *a, **k)
 
@@ -170,6 +171,56 @@ class Moves(Rig):
         self.assertIn("update\tff\t", self.alerts())
         with open(os.path.join(self.engine, "tool.py")) as f:
             self.assertEqual(f.read(), "X = 'being edited'\n", "the edit is untouched")
+
+    def test_what_was_in_the_way_is_said_in_plain_words(self):
+        """C-57: a file not in the engine with a name the new version adds was told as an overlapping edit; now
+        each cause in its own words, naming the file, and the technical part in brackets."""
+        self.write(self.engine, "new.txt", "mine, not the engine's\n")
+        old = self.head()
+        self.publish("new.txt", "the engine's new file\n")
+        self.assertEqual(self.round(), 1)
+        self.assertEqual(self.head(), old)
+        self.assertIn("要加的檔案（new.txt），這台已經有同名的檔", self.told[-1], self.told)
+        self.assertNotIn("修改", self.told[-1].split("（細節")[0])
+        with open(os.path.join(self.engine, "new.txt")) as f:
+            self.assertEqual(f.read(), "mine, not the engine's\n")
+        os.remove(os.path.join(self.engine, "new.txt"))
+        self.round()
+        self.write(self.engine, "tool.py", "X = 'being edited'\n")
+        self.publish("tool.py", "X = 31\n")
+        with mock.patch.object(update, "TELL_EVERY", 0):
+            self.assertEqual(self.round(), 1)
+        self.assertIn("你自己改過的檔（tool.py），新版本也改了同一個檔", self.told[-1], self.told)
+        for word in ("存", "commit"):
+            self.assertNotIn(word, self.told[-1].split("（細節：")[0], "plain words, not an engineer's")
+        self.assertIn("你的修改都還在", self.told[-1])
+        for t in self.told:
+            self.assertTrue(t.startswith("⚠️ 引擎更新："), t)
+        self.assertEqual(set(self.where), {"update"}, "C-57: to #update")
+
+    def test_a_detached_engine_says_once_that_it_does_not_update(self):
+        """C-57: it used to say nothing, ever, even to --release."""
+        git(self.engine, "checkout", "-q", "--detach")
+        old = self.head()
+        self.publish("tool.py", "X = 32\n")
+        for argv in ([], [], ["--release"]):
+            out = io.StringIO()
+            with self.notify, redirect_stdout(out):
+                self.assertEqual(update.main(argv), 0)
+            self.assertIn("固定的版本", out.getvalue())
+        self.assertEqual(self.head(), old)
+        self.assertEqual(len(self.told), 1, self.told)
+        self.assertIn("不會自己更新", self.told[0])
+        self.assertEqual(self.where, ["update"])
+        git(self.engine, "commit", "-q", "--allow-empty", "-m", "elsewhere")  # HEAD changed: said again
+        self.round()
+        self.assertEqual(len(self.told), 2)
+
+    def test_the_sync_stopping_goes_to_the_default_channel(self):
+        with self.notify:
+            update.alert("update", "sync-stale", "同步停了")
+            update.alert("update", "check", "沒通過")
+        self.assertEqual(self.where, ["", "update"], "not about updating: the default channel")
 
     def test_local_commits_go_through_the_syncs_update_in_a_child(self):
         self.write(self.engine, "local.txt", "a commit of this machine\n")
@@ -277,6 +328,18 @@ class Skips(Rig):
         self.assertEqual(self.head(), old)
         self.round()
         self.assertEqual(self.head(), new)
+
+    def test_release_asked_for_with_the_lock_held_says_so_by_its_exit(self):
+        """C-57 U5 (manager): update.py --release that did nothing because the git lock was held exits 75, so
+        ops/apply.py tries again instead of installing on the old engine; a plain round still 0."""
+        self.publish("tool.py", "X = 9\n")
+        old = self.head()
+        with open(os.path.join(self.engine, ".git", update.LOCK_NAME), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with self.notify, redirect_stdout(io.StringIO()):
+                self.assertEqual(update.main(["--release"]), update.LOCKED)
+                self.assertEqual(update.main([]), 0, "cron's round: next round, as before")
+        self.assertEqual(self.head(), old)
 
     def test_a_rebase_underway_skips(self):
         self.publish("tool.py", "X = 10\n")
@@ -637,7 +700,7 @@ class Modes(BrokenSomewhere):
 
         def notify_fails(argv, *a, **k):
             if argv and str(argv[0]).endswith("altention") and argv[1:3] == ["dc", "notify"]:
-                failing.append(argv[3])
+                failing.append(argv[-1])
                 return subprocess.CompletedProcess(argv, 1)
             return self.real_run(argv, *a, **k)
         with mock.patch.object(update.subprocess, "run", notify_fails):
@@ -892,7 +955,7 @@ class UpdatedNotice(Rig):
 
         def notify_fails(argv, *a, **k):
             if argv and str(argv[0]).endswith("altention") and argv[1:3] == ["dc", "notify"]:
-                failing.append(argv[3])
+                failing.append(argv[-1])
                 return subprocess.CompletedProcess(argv, 1)
             return self.real_run(argv, *a, **k)
         with mock.patch.object(update.subprocess, "run", notify_fails):
@@ -976,17 +1039,200 @@ class UpdatedNotice(Rig):
         lines, cut = update.release_notes(update.Round(), "v0.2.2")
         self.assertEqual((len(lines[0]), lines[0][-1], cut), (update.NOTE_CHARS, "…", True))
 
-    def test_notify_mode_and_an_asked_for_release_say_nothing_new(self):
+    def test_notify_mode_says_nothing_but_an_asked_for_release_is_told(self):
+        """C-57: the update the person asked for (--release) is told too, from the release HEAD had before it (a
+        notify machine keeps no record); the plain notify rounds as they were."""
         self.mode("notify")
         self.release("0.1.0")
         self.round()
-        self.assertIsNone(self.record(), "notify: as it was")
-        self.assertEqual(len(self.told), 1, "only the 🆕 notice")
-        self.assertTrue(self.told[0].startswith("🆕"))
         with self.notify, redirect_stdout(io.StringIO()):
             update.main(["--release"])
-        self.assertIsNone(self.record())
-        self.assertEqual(self.notices(), [])
+        self.assertEqual(self.record()["tag"], "v0.1.0")
+        self.assertEqual([t[0] for t in self.told], ["🆕", "✅"], "the asked-for update told, from no release before")
+        self.release("0.2.0", ("Asked for.",))
+        self.round()
+        self.assertEqual([t[0] for t in self.told], ["🆕", "✅", "🆕"], "notify rounds: only the 🆕 notices")
+        with self.notify, redirect_stdout(io.StringIO()):
+            update.main(["--release"])
+        self.assertEqual(len(self.notices()), 2, self.told)
+        self.assertTrue(self.notices()[1].startswith("✅ 引擎已更新到 v0.2.0"), self.notices())
+        self.assertIn("- Asked for.", self.notices()[1])
+        self.assertEqual(self.record()["tag"], "v0.2.0")
+        with self.notify, redirect_stdout(io.StringIO()):
+            update.main(["--release"])
+        self.assertEqual(len(self.notices()), 2, "nothing new: told once")
+
+    def test_a_record_and_an_asked_for_release_tell_from_the_record(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.mode("notify")
+        self.release("0.2.0", ("Two.",))
+        self.release("0.3.0", ("Three.",))
+        with self.notify, redirect_stdout(io.StringIO()):
+            update.main(["--release"])
+        self.assertEqual(len(self.notices()), 1, self.told)
+        self.assertTrue(self.notices()[0].startswith("✅ 引擎已更新到 v0.3.0（中間的 v0.2.0 也一起裝上了）"), self.notices())
+
+    def test_an_old_record_and_an_asked_for_release_tell_from_what_ran_before(self):
+        """#code-review on 288359a: a notify machine's record stays at v0.1.0 while v0.2.0 comes by another path
+        (apply, home-pull); the asked-for v0.3.0 is told from v0.2.0, not as bringing v0.2.0 too."""
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.mode("notify")
+        self.release("0.2.0", ("Two.",))
+        git(self.engine, "fetch", "-q", "--tags", "origin")
+        git(self.engine, "merge", "-q", "--ff-only", "v0.2.0")
+        self.round()
+        self.assertEqual(self.notices(), [], "notify rounds tell no ✅")
+        self.assertEqual(self.record()["tag"], "v0.1.0", "and keep the record where it was")
+        self.release("0.3.0", ("Three.",))
+        with self.notify, redirect_stdout(io.StringIO()):
+            update.main(["--release"])
+        self.assertEqual(len(self.notices()), 1, self.told)
+        n = self.notices()[0]
+        self.assertTrue(n.startswith("✅ 引擎已更新到 v0.3.0"), n)
+        self.assertNotIn("v0.2.0", n, "v0.2.0 ran before this update")
+        self.assertNotIn("Two.", n)
+        self.assertIn("- Three.", n)
+        self.assertEqual(self.record()["tag"], "v0.3.0")
+
+    def changelog(self, versions):
+        """A CHANGELOG with a section for each of `versions` (newest first), as the real one keeps them all."""
+        return "# Changelog\n\n" + "".join("## v%s — 2026-10-20\n\n### For people\n\n%s\n\n### For agents\n\n- Agents only.\n\n" % (
+            v, "\n".join("- %s" % p for p in pts)) for v, pts in versions)
+
+    def cumulative(self, versions):
+        """Tag each of `versions` ((version, points), oldest first; the ones tagged already left) on a commit whose
+        CHANGELOG has them all so far."""
+        for i, (v, _) in enumerate(versions):
+            if git(self.up, "tag", "-l", "v" + v).stdout.strip():
+                continue  # tagged by an earlier call
+            self.write(self.up, "CHANGELOG.md", self.changelog(list(reversed(versions[:i + 1]))))
+            self.publish("tool.py", "X = %r\n" % v)
+            git(self.up, "tag", "v" + v)
+            git(self.up, "push", "-q", "origin", "v" + v)
+
+    def test_several_at_once_list_each_newest_first(self):
+        """C-57 (owner 2026-10-19): what each release between brought, newest first, EACH_LINES points each."""
+        self.mode("release")
+        self.cumulative([("0.1.0", ["Start."])])
+        self.round()
+        self.cumulative([("0.1.0", ["Start."]), ("0.2.0", ["Two a.", "Two b.", "Two c.", "Two d."]), ("0.3.0", ["Three."])])
+        self.round()
+        n = self.notices()[0]
+        self.assertTrue(n.startswith("✅ 引擎已更新到 v0.3.0（中間的 v0.2.0 也一起裝上了）"), n)
+        self.assertLess(n.index("**v0.3.0**"), n.index("**v0.2.0**"), "newest first")
+        self.assertIn("- Three.", n)
+        self.assertIn("- Two c.", n)
+        self.assertNotIn("Two d.", n, "EACH_LINES of each")
+        self.assertNotIn("Start.", n, "only what is new here")
+        self.assertIn("完整的在 CHANGELOG.md", n)
+
+    def test_many_releases_name_the_ones_that_do_not_fit(self):
+        self.mode("release")
+        self.cumulative([("0.1.0", ["Start."])])
+        self.round()
+        many = [("0.1.0", ["Start."])] + [("0.%d.0" % i, ["Point %d %s." % (i, "x" * 200)] * 3) for i in range(2, 9)]
+        self.cumulative(many)
+        self.round()
+        n = self.notices()[0]
+        self.assertLess(len(n), update.ALL_CHARS + 600, len(n))
+        self.assertIn("**v0.8.0**", n)
+        self.assertRegex(n, r"還有 v0\.\d\.0(、v0\.\d\.0)* 的改動沒列出來")
+        self.assertIn("v0.2.0 的改動沒列出來", n, "the oldest ones are the ones left out")
+
+    def own_words(self, version, people, zh, agents="- Agents only.\n"):
+        """A CHANGELOG section with English points and, when `zh` is not None, a "For people (zh-TW)" part."""
+        text = "## v%s — 2026-10-20\n\n### For people\n\n%s\n\n" % (version, "\n".join("- " + p for p in people))
+        if zh is not None:
+            text += "### For people (zh-TW)\n\n%s\n\n" % "\n".join("- " + p for p in zh)
+        return text + "### For agents\n\n" + agents + "\n"
+
+    def test_the_installations_own_words_are_quoted_else_english(self):
+        """C-57 U8: core.language (zh-TW when not set) picks "For people (zh-TW)"; none, or one without a point, or
+        another language: the English For people. Never the For agents part."""
+        log = "# Changelog\n\n" + self.own_words("0.3.0", ["**English lead.** More."], ["**中文的重點。** 細節。"]) \
+            + self.own_words("0.2.0", ["Only English. More."], None) + self.own_words("0.1.0", ["Old one."], [])
+        notes = lambda tag, **kw: update.release_notes(None, tag, log, **kw)
+        self.assertEqual(notes("v0.3.0"), (["**中文的重點。**"], True), "not set: zh-TW")
+        self.assertEqual(notes("v0.3.0", lang="ZH-tw"), (["**中文的重點。**"], True))
+        self.assertEqual(notes("v0.3.0", lang="en"), (["**English lead.**"], True))
+        self.assertEqual(notes("v0.2.0"), (["Only English."], True), "a release without them: English")
+        self.assertEqual(notes("v0.1.0"), (["Old one."], False), "a part without a point: English")
+        for core, lang in (({"language": "en"}, "en"), ({"language": " zh-TW "}, "zh-TW"), ({}, "zh-TW"),
+                           ({"language": 3}, "zh-TW"), ({"language": ""}, "zh-TW")):
+            with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+                json.dump({"format": 1, "core": core}, f)
+            self.assertEqual(update.notes_language(), lang, core)
+        self.assertEqual(notes("v0.3.0"), (["**中文的重點。**"], True))
+        with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+            f.write("{ broken")
+        self.assertEqual(update.notes_language(), "zh-TW", "settings that cannot be read: the default")
+
+    def test_a_chinese_first_sentence_ends_at_its_full_stop(self):
+        """No bold lead: in the installation's words a sentence ends at 。！？ with no space after it; the English
+        part keeps ending only where a space follows (its quoted 「…。」 is not the end)."""
+        log = "# Changelog\n\n" + self.own_words(
+            "0.3.0", ["Say 「引擎回到更新前。」 to go back. More."], ["第一句沒有粗體。第二句", "問號也算？後面", "沒有句號的一項"])
+        self.assertEqual(update.release_notes(None, "v0.3.0", log), (["第一句沒有粗體。", "問號也算？", "沒有句號的一項"], True))
+        self.assertEqual(update.release_notes(None, "v0.3.0", log, lang="en"),
+                         (["Say 「引擎回到更新前。」 to go back."], True))
+
+    def test_several_at_once_each_in_its_own_words_or_english(self):
+        """The notice after an update over several releases: each release by the same rule, the ones without the
+        installation's words in English (v0.2.x have none)."""
+        self.mode("release")
+        self.cumulative([("0.1.0", ["Start."])])
+        self.round()
+        log = "# Changelog\n\n" + self.own_words("0.3.0", ["**Three.**"], ["**三。**"]) \
+            + self.own_words("0.2.0", ["**Two.**"], None) + self.own_words("0.1.0", ["Start."], None)
+        for v in ("0.2.0", "0.3.0"):
+            self.write(self.up, "CHANGELOG.md", log)
+            self.publish("tool.py", "X = %r\n" % v)
+            git(self.up, "tag", "v" + v)
+            git(self.up, "push", "-q", "origin", "v" + v)
+        self.round()
+        n = self.notices()[0]
+        self.assertTrue(n.startswith("✅ 引擎已更新到 v0.3.0（中間的 v0.2.0 也一起裝上了）"), n)
+        self.assertIn("**v0.3.0**\n- **三。**", n)
+        self.assertIn("**v0.2.0**\n- **Two.**", n)
+        self.assertNotIn("**Three.**", n)
+        self.assertNotIn("Agents only", n)
+
+    def test_the_new_release_notice_lists_what_is_new_since_this_machine(self):
+        self.mode("release")
+        self.cumulative([("0.1.0", ["Start."])])
+        self.round()
+        self.mode("notify")
+        self.cumulative([("0.1.0", ["Start."]), ("0.2.0", ["Two."]), ("0.3.0", ["Three."])])
+        self.round()
+        new = [t for t in self.told if t.startswith("🆕")]
+        self.assertEqual(len(new), 1, self.told)
+        self.assertTrue(new[0].startswith("🆕 有新版本 v0.3.0 可以更新（這台現在是 v0.1.0）"), new[0])
+        self.assertLess(new[0].index("**v0.3.0**"), new[0].index("**v0.2.0**"))
+        self.assertNotIn("Start.", new[0])
+        self.assertIn("更新引擎", new[0])
+        for word in ("commit", "rebase", "worktree", "HEAD", "core.update"):
+            self.assertNotIn(word, new[0], "plain words (C-57)")
+
+    def test_notices_go_to_the_update_channel(self):
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        self.release("0.2.0")
+        self.round()
+        self.assertEqual(self.where, ["update"], "C-57: #update when not set")
+        with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+            json.dump({"format": 1, "core": {"update": "release", "update_channel": "系統/更新"}}, f)
+        self.release("0.3.0")
+        self.round()
+        self.assertEqual(self.where[-1], "系統/更新")
+        for broken in ('{"core": {"update_channel": 3}}', "{ broken"):
+            with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+                f.write(broken)
+            self.assertEqual(update.update_channel(), "update", broken)
 
     def test_a_record_someone_broke_is_a_new_start(self):
         self.mode("release")

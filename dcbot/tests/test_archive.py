@@ -99,7 +99,7 @@ class Back(unittest.TestCase):
         self.bot = FakeBot([self.old, self.other])
         self.arch = archive.Archive(self.bot)
 
-        async def unarchive(ch, cwd):
+        async def unarchive(ch, rec, cwd, fallback=None):
             ch.category = "project"
         self.arch.unarchive = unarchive
         self.bot.channels_state["1"] = {"archived": {"pane": P, "pane_session": "st", "home": None,

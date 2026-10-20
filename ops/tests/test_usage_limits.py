@@ -465,6 +465,20 @@ class AFreshInstance(unittest.TestCase):
         except OSError:
             return []
 
+    def test_no_limits_read_before_setup_is_done(self):
+        """C-48: nothing spends the subscription until #setup is done; the board says why."""
+        asked = []
+        self.settings({"usage": {"channel": "42", "subscription_limits": True}, "setup": {"done": False}})
+        with mock.patch.object(collect, "read_limits", lambda zone=None: asked.append(1) or ([], "x")):
+            self.round()
+        self.assertEqual(asked, [])
+        limits = [t for _, b, t in self.posted if b == "訂閱額度"]
+        self.assertTrue(limits and "設定還沒做完" in limits[0], self.posted)
+        self.settings({"usage": {"channel": "42", "subscription_limits": True}, "setup": {"done": True}})
+        with mock.patch.object(collect, "read_limits", lambda zone=None: asked.append(1) or ([], "x")):
+            self.round()
+        self.assertEqual(asked, [1], "done: read as set")
+
     def test_sources_not_set_collects_this_machine_and_posts_the_boards(self):
         from altention import config
         code, st, err = self.round()

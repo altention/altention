@@ -3,6 +3,9 @@
 
   python3 ops/instance.py init            a new instance on this machine (<root>/instance), local only until it is
                                           given a remote (install.sh runs it when there is none)
+  python3 ops/instance.py init --permission auto|manual
+                                          the same for a new installation (install.sh): its settings are asked in
+                                          Discord's #setup (setup.done false) and the bot's permission mode is set
   python3 ops/instance.py seed REPO_URL   once, on one machine: fill the empty instance repo from what the engine
                                           holds today (memory/, the machine list, ssh_config) and push it
   python3 ops/instance.py join REPO_URL   on every machine (apply.py runs it): clone the instance, point
@@ -63,12 +66,19 @@ def system_timezone(fallback="UTC"):
     return fallback
 
 
-def plugins_skeleton():
+def plugins_skeleton(permission=None):
     """A new instance's plugins.json: this machine's time zone; zh-TW, the only language the texts are in yet; the
-    usage board's subscription limits on, as when not set, written out so that it can be seen and turned off."""
-    return {"format": 1, "core": {"language": "zh-TW", "timezone": system_timezone()},
-            "sync": {"interval": "15m", "dirs": {}, "owns": ["knowledge"]},
-            "usage": {"subscription_limits": True}}
+    usage board's subscription limits on, as when not set, written out so that it can be seen and turned off.
+    permission (init, for install.sh: C-48): a new installation, whose settings are asked in Discord's #setup:
+    setup.done false until then, and the bot's permission mode set (auto, or manual where Claude Code has no auto),
+    never left unset (the bot's last resort lets everything through)."""
+    d = {"format": 1, "core": {"language": "zh-TW", "timezone": system_timezone()},
+         "sync": {"interval": "15m", "dirs": {}, "owns": ["knowledge"]},
+         "usage": {"subscription_limits": True}}
+    if permission:
+        d["dcbot"] = {"default_permission": permission}
+        d["setup"] = {"done": False}
+    return d
 
 
 GITATTRIBUTES = "# appended to from several machines: merged, never a conflict\nmemory/MEMORY.md merge=union\n"
@@ -211,7 +221,7 @@ def seed(url):
     return 0
 
 
-def init():
+def init(permission=None):
     """A local instance for a machine that has none (3a.9, install.sh): memory/, the settings skeleton, a git repo
     with no remote, and the pointer. Made in a folder of its own and moved into place only when whole (an install
     cut short and run again starts that folder over). 0 made or already there; 1 refused (said why)."""
@@ -231,7 +241,7 @@ def init():
     write_new(os.path.join(dest, "memory", "MEMORY.md"), "")
     os.makedirs(os.path.join(dest, "knowledge"))  # the engine's knowledge/ links here (sync.owns)
     write_new(os.path.join(dest, "knowledge", "README.md"), KNOWLEDGE)
-    write_new(os.path.join(dest, "plugins.json"), json.dumps(plugins_skeleton(), ensure_ascii=False, indent=2) + "\n")
+    write_new(os.path.join(dest, "plugins.json"), json.dumps(plugins_skeleton(permission), ensure_ascii=False, indent=2) + "\n")
     write_new(os.path.join(dest, ".gitattributes"), GITATTRIBUTES)
     write_new(os.path.join(dest, "README.md"), README)
     write_new(os.path.join(dest, ".gitignore"), "__pycache__/\n*.tmp\n")
@@ -484,8 +494,9 @@ def main(argv):
             return 1
     rejoin = "--rejoin" in argv
     argv = [a for a in argv if a != "--rejoin"]
-    if argv[:1] == ["init"]:
-        return init()
+    if argv[:1] == ["init"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--permission"
+                                                    and argv[2] in ("auto", "manual"))):
+        return init(argv[2] if len(argv) == 3 else None)
     if len(argv) >= 2 and argv[0] == "seed":
         return seed(argv[1])
     if len(argv) >= 2 and argv[0] == "join":

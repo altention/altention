@@ -20,10 +20,10 @@ import discord
 from altention.connectors.claude_code import sessions as cc_sessions
 from altention.connectors.claude_code import transcript
 
-from . import archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, messages, peers, posts, process, remote, routes, screens, sessions, setup, slash, terminal, tmuxio
+from . import archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, sessions, setup, slash, terminal, tmuxio
 from .claude_bridge import run_turn
 from .tmux_bridge import TmuxBridge, fence
-from . import frames, util
+from . import frames, update_cards, util
 from .util import split_message
 
 STATE = config.STATE
@@ -34,20 +34,20 @@ NOTICE = os.path.join(STATE, "notice.txt")
 EXIT_RESTART = 42
 RESTART_WAIT = 60  # seconds a restart waits for half-done work (posts, events) before going anyway
 SELFTEST = "selftest"  # the channel of the made-up event Bot.self_test() sends through the hook
-BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!commands", "!attach", "!detach", "!stop",
+BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!commands", "!attach", "!detach", "!archive", "!stop",
             "!cwd", "!mode", "!screen", "!key", "!files", "!restart", "!rollback")
 
 HELP = """**內建指令**（不經過 Claude，Claude 壞掉時也能用）
 `!status` 機器人狀態　`!reset` 這個頻道開新對話　`!stop` 中止這個頻道正在跑的工作
 `!resume` 列出最近的對話　`!resume <編號或 id 開頭>` 接回那個對話（`!reset` 之後想回去時用）
 `!rename <名字>` 頻道和 Claude Code 對話一起改名　`!recap [幾輪]` 顯示這個頻道的對話最近幾輪（預設 3）　`!commands [refresh]` Claude Code 的指令和 skill 清單
-`!attach` 列出這台機器 tmux 裡的 Claude Code　`!attach <編號> [專案名]` 幫它開一個頻道接上　`!attach project:<專案名>` 或 `!attach all` 一次接上多個　`!detach` 卸下這個頻道
+`!attach` 列出這台機器 tmux 裡的 Claude Code　`!attach <編號> [專案名]` 幫它開一個頻道接上　`!attach project:<專案名>` 或 `!attach all` 一次接上多個　`!detach` 卸下這個頻道　`!archive` 封存這個頻道（任何種類；打字可以接回或恢復）
 `!cwd <路徑>` 設定這個頻道的工作目錄　`!restart` 重啟機器人　`!rollback` 退回上一個正常版本
 `!mode tmux|print` 切換這個頻道的模式（tmux：常駐對話，可中途補充、背景工作會回報；print：每則訊息跑一次，備用）
 `!screen` 看 Claude 的終端機畫面　`!key <按鍵…>` 送按鍵（例如 `!key Down Enter`、`!key Escape`）
 `!files [路徑]` 檔案瀏覽器（從這個頻道的資料夾開始，可以點進資料夾、看檔案、找檔案）
 其他訊息都會交給這個頻道的 Claude 對話處理；`/` 開頭的訊息是 Claude Code 的指令（例如 `/model`）。
-打 `/` 會跳出選單的那幾個（`/status` `/reset` `/resume` `/stop` `/screen` `/key` `/mode` `/cwd` `/attach` `/detach` `/usage` `/context` `/compact`）是註冊在 Discord 的版本，功能跟對應的 `!` 指令或 Claude Code 指令相同。"""
+打 `/` 會跳出選單的那幾個（`/status` `/reset` `/resume` `/stop` `/screen` `/key` `/mode` `/cwd` `/attach` `/detach` `/archive` `/usage` `/context` `/compact`）是註冊在 Discord 的版本，功能跟對應的 `!` 指令或 Claude Code 指令相同。"""
 
 SYSTEM_NOTE = """你是使用者在 Discord 上的助理機器人，背後是 Claude Code，可以在這台機器（{host}）上執行指令、讀寫檔案、用 SSH 連到其他機器。
 - 現在在 Discord 頻道 #{channel}，工作目錄 {cwd}。你的回覆會直接貼到 Discord：用繁體中文、精簡、先講結論；長內容放程式碼區塊或分點。
@@ -103,6 +103,25 @@ def git(*args):
 FIND_MIN = 8  # characters of an id's start that name a conversation not in the list (the connector's sessions.find())
 
 
+RECONCILE_SECS = 300  # setup.py reconcile at a start: given up after this long (it moves channels, may run dcctl guide)
+SETUP_FIRST = "請用 setup skill 帶使用者做完設定。"  # what #setup's Claude is told first (setup-in-discord.md 2)
+
+
+def setup_folder():
+    """#setup's working folder (install.py makes it), from HOME at call time."""
+    return os.path.expanduser("~/.local/state/altention/setup")
+
+
+def setup_done():
+    """Is the installation's setup done? The instance's setup.done; no such key (an installation from before C-48),
+    or settings that cannot be read: done (nothing is opened on a guess)."""
+    try:
+        return remote.alt().setting("setup.done") is not False
+    except Exception:
+        traceback.print_exc()
+        return True
+
+
 class Bot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -119,6 +138,7 @@ class Bot(discord.Client):
         self.forwards = {}  # channel id -> (forwarded message, its text, the timer that sends it alone)
         self.merging = {}   # channel id -> a future: a comment is being put together with the forwards before it
         self.posts = posts.Posts(self)
+        self.cards = update_cards.Cards(self)
         self.tmux.asks.on_done = self.posts.answered  # a question announced in another channel: update that notice
         self.files = files.Files(self)
         self.catchup = catchup.Catchup(self)
@@ -139,9 +159,7 @@ class Bot(discord.Client):
     async def on_ready(self):
         guild = self.get_guild(config.GUILD_ID)
         if guild:
-            self.audit_ch = await self.ensure_channel(guild, config.AUDIT_CHANNEL, "機器人做的每件事都記在這裡")
-            if self.new_install and not self.channels_state:  # a new installation: no channel has ever been set up
-                await self.first_chat(guild)
+            await self.own_channels(guild)
         head = git("rev-parse", "--short", "HEAD")
         notice = ""
         if os.path.exists(NOTICE):
@@ -167,6 +185,55 @@ class Bot(discord.Client):
             self.loop.create_task(self.catchup.run())  # what the owner said while the bot was down
             if catalog.stale(catalog.load()):
                 self.loop.create_task(self.refresh_catalog())
+            self.loop.create_task(self.reconcile())  # what this engine version declares, once it is not the one compared
+            if guild:
+                self.loop.create_task(self.adopt_archived(guild))  # channels moved into the archive by hand (C-63)
+
+    async def adopt_archived(self, guild):
+        """archive.Archive.adopt_all() once per start, on its own task (it edits channels one by one; Discord paces
+        that). Whatever goes wrong is printed and said in #audit; the bot goes on."""
+        try:
+            await self.archive.adopt_all(guild)
+        except Exception as e:
+            traceback.print_exc()
+            await self.audit("整理封存分類沒有做完：%s" % e)
+
+    async def reconcile(self):
+        """ops/setup.py reconcile --if-changed (C-57 S3) once per start, in a process of its own: it does nothing when
+        the engine is the one it compared last, and fills in or asks in #setup what a newer version needs (it talks
+        to the bot through the spool and dcctl, so the bot must not wait on it). Not there (an engine before S3):
+        nothing. Its output goes to the log; a failure to #audit, once."""
+        script = os.path.join(os.path.dirname(config.ROOT), "ops", "setup.py")
+        if not os.path.exists(script):
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(sys.executable, script, "reconcile", "--if-changed", stdin=asyncio.subprocess.DEVNULL,
+                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await asyncio.wait_for(proc.communicate(), RECONCILE_SECS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return await self.audit("補齊（setup.py reconcile）%d 秒沒跑完，這次先不管，下次啟動再試" % RECONCILE_SECS)
+        except Exception as e:
+            return await self.audit("補齊（setup.py reconcile）跑不起來：%s" % e)
+        text = out.decode("utf-8", "replace").strip()
+        print("[reconcile] exit %s: %s" % (proc.returncode, text[-1000:]), flush=True)
+        if proc.returncode != 0:
+            await self.audit("補齊（setup.py reconcile）沒有做完（結束碼 %s）：%s" % (proc.returncode, text[-500:]))
+
+    async def own_channels(self, guild):
+        """#audit at every start. A new installation (no channel ever set up) gets its basic layout first (C-57: the
+        system category at the bottom with #audit and #guide in it, #update in the main area; layout.py), then #chat;
+        any other installation is left as it is (its channels are moved by the reconcile, through the spool)."""
+        if self.new_install and not self.channels_state:
+            self.audit_ch = await layout.first_layout(guild)
+            if setup_done():
+                await self.first_chat(guild)  # an installation whose setup was done in the terminal (or before C-48)
+            else:
+                await self.open_setup(guild)  # #chat comes when setup.py done asks for it (open_chat)
+        else:
+            self.audit_ch = await self.ensure_channel(guild, config.AUDIT_CHANNEL, "機器人做的每件事都記在這裡")
+            if not setup_done():  # setup not finished and its channel gone (deleted, or never made): again
+                await self.open_setup(guild, resend=False)
 
     async def self_test(self):
         """Run the real hook (tools/dchook) with a made-up event, as Claude Code would. pump() sees it come out of
@@ -264,9 +331,10 @@ class Bot(discord.Client):
         """Buttons and menus under Claude's questions (slash commands go through self.tree, not here)."""
         try:
             if await self.tmux.asks.on_interaction(interaction) or await self.tmux.menus.on_interaction(interaction) \
+                    or await self.tmux.startup.on_interaction(interaction) \
                     or await self.setup.on_interaction(interaction) or await self.archive.on_interaction(interaction) \
                     or await self.terminal.on_interaction(interaction) or await self.posts.on_interaction(interaction) \
-                    or await self.files.on_interaction(interaction) \
+                    or await self.files.on_interaction(interaction) or await self.cards.on_interaction(interaction) \
                     or await self.tmux.on_interaction(interaction):
                 return
             ref = routes.button_ref((interaction.data or {}).get("custom_id"))
@@ -290,6 +358,34 @@ class Bot(discord.Client):
                 ch = await guild.create_text_channel(name, topic=topic)
             except discord.HTTPException:
                 return None
+        return ch
+
+    async def open_setup(self, guild, resend=True, first=SETUP_FIRST):
+        """#setup (C-48): a Claude in the bot's tmux, in ~/.local/state/altention/setup/ (install.py makes it: the
+        setup skill and the one allow rule), permission always auto, given `first` once it is up. Already there with
+        its conversation: `first` sent again when `resend` (the reconcile has new questions: open_setup), else left
+        alone; there but never set up (a channel of the owner's by that name): left alone, said in #audit. `first`
+        None: only opened (the update card's ask_claude hands it its own words). The channel, or None."""
+        ch = discord.utils.get(guild.text_channels, name=config.SETUP_CHANNEL)
+        st = self.channels_state.get(str(ch.id)) if ch is not None else None
+        if ch is not None and not (st and st.get("configured")):
+            await self.audit("#%s 已經有了，但不是機器人開的設定頻道，沒有動它" % ch.name)
+            return None
+        folder = setup_folder()
+        if ch is None:
+            if not os.path.isdir(folder):
+                await self.audit("要開 #%s，可是設定資料夾 %s 還沒準備好（在機器人那台的引擎跑 ./install.sh），先不開"
+                                 % (config.SETUP_CHANNEL, folder.replace(os.path.expanduser("~"), "~")))
+                return None
+            ch = await self.ensure_channel(guild, config.SETUP_CHANNEL, "設定：一題一題回答，答完機器人的功能就照你的選擇開好")
+            if ch is None:
+                return None
+            self.chan(ch).update({"configured": True, "mode": "tmux", "cwd": folder, "permission": "auto"})
+            self.save()
+        elif not resend:
+            return ch
+        if first:
+            await self.tmux.submit(posts.Origin(ch), first)
         return ch
 
     async def first_chat(self, guild):
@@ -327,7 +423,7 @@ class Bot(discord.Client):
         if "cwd" not in st:
             category = getattr(channel, "category", None)
             inherited = None
-            if category is not None and category.name not in config.NOT_PROJECTS:
+            if category is not None and not config.not_a_project(category.name):
                 inherited = routes.sibling_cwd([c.id for c in category.text_channels if c.id != channel.id],
                                                self.channels_state)
             if inherited:  # a new channel inside a project's category works in that project
@@ -373,9 +469,12 @@ class Bot(discord.Client):
         if getattr(message.channel, "name", None) == config.GUIDE_CHANNEL:
             return  # the manual: not a place to talk
         self.posts.owner_spoke(getattr(message.channel, "parent_id", None) or message.channel.id)
+        if (self.channels_state.get(str(message.channel.id)) or {}).get("archived") and \
+                archive.is_shelf(getattr(message.channel, "category", None)):  # any kind (a record channel keeps `plain`: C-63)
+            return await self.archive.offer(message.channel)
         if (self.channels_state.get(str(message.channel.id)) or {}).get("plain") or \
                 getattr(message.channel, "name", None) in (config.AUDIT_CHANNEL, "notifications"):  # inboxes
-            if message.content.strip().split(" ")[0] in ("!setup", "!help", "!status", "!files"):
+            if message.content.strip().split(" ")[0] in ("!setup", "!help", "!status", "!files", "!archive"):
                 return await self.command(message.channel, message.content.strip(), message.channel.send)
             return  # a plain channel: for records, the bot stays out of it
         if isinstance(message.channel, discord.Thread):
@@ -390,7 +489,8 @@ class Bot(discord.Client):
             # a subagent's or workflow's log, not a conversation
             return await message.channel.send("這個討論串是子代理或 workflow 的過程紀錄，這裡的訊息不會送給 Claude。要說話請回到 <#%d>。"
                                               % message.channel.parent_id)
-        if getattr(getattr(message.channel, "category", None), "name", None) == config.ARCHIVE_CATEGORY:
+        if archive.is_shelf(getattr(message.channel, "category", None)) and \
+                getattr(message.channel.category, "name", None) != archive.LEGACY:  # (the old "archive": until C-63's adopt)
             return await self.archive.offer(message.channel)
         text = message.content.strip()
         if (self.channels_state.get(str(message.channel.id)) or {}).get("kind") == "files":
@@ -840,7 +940,7 @@ class Bot(discord.Client):
             new, back = into, False
             project = getattr(getattr(into, "category", None), "name", None) or "無"
         else:
-            category = discord.utils.get(guild.categories, name=project) or await guild.create_category(project)
+            category = await layout.category(guild, project)
             archived = discord.utils.get(guild.categories, name=config.ARCHIVE_CATEGORY)
             kept = archive.remembered_by(self.channels_state, pane)  # an archived channel that followed this pane
             new = self.get_channel(kept) if kept else None
@@ -849,8 +949,9 @@ class Bot(discord.Client):
             back = new is not None
         if into is not None:
             pass
-        elif back:  # this pane had a channel before: take it out of the archive, its history comes along
-            await new.edit(category=category)
+        elif back:  # this pane had a channel before: take it out of the archive (where it came from), its history comes along
+            await self.archive.unarchive(new, (self.channels_state.get(str(new.id)) or {}).get("archived") or {}, None,
+                                         fallback=category)
         else:
             name = routes.channel_name(pane, project)
             if discord.utils.get(category.text_channels, name=name):  # two Claude panes in one window
@@ -943,18 +1044,18 @@ class Bot(discord.Client):
         where = ("tmux `%s` 裡的視窗" % home["session"]) if home else tmuxio.label(st["pane"])
         await self.tmux.close(ch, kill=False)
         await routes.unbind_any(ch.id, (st.get("pane") or {}).get("host"))
-        self.channels_state[str(ch.id)] = {"archived": archive.record(st, why), "cwd": st.get("cwd")}  # for 接回
+        place = archive.where_from(ch, ch.guild)  # where it was, for 接回 to put it back there (C-63)
+        rec = dict(archive.record(st, why), **place)
+        self.channels_state[str(ch.id)] = {"archived": rec, "cwd": st.get("cwd")}  # for 接回
         self.save()
         try:
-            guild = ch.guild
-            shelf = discord.utils.get(guild.categories, name=config.ARCHIVE_CATEGORY) or \
-                await guild.create_category(config.ARCHIVE_CATEGORY)
-            await ch.edit(category=shelf)
+            shelf = await archive.shelf(ch.guild)
+            await ch.edit(category=shelf, topic=archive.topic_with(place.get("topic") or "", rec))
         except discord.HTTPException as e:
             return "已卸下，但頻道沒有移到封存（%s）。對話還在：%s" % (e, where)
         reuse = "" if home else "；之後對同一個 tmux 視窗 `!attach`，會把這個頻道搬回去沿用"
         return "已卸下。對話還在原處繼續跑（%s），機器人不再跟著它。這個頻道移到「%s」，不會再處理這裡的訊息%s。" % (
-            where, config.ARCHIVE_CATEGORY, reuse)
+            where, shelf.name, reuse)
 
     async def command(self, ch, text, send):
         """A built-in command, from a "!" message or from Discord's "/" menu. `send` posts the answer."""
@@ -979,6 +1080,9 @@ class Bot(discord.Client):
                 view.stop()  # clicks arrive in on_interaction by custom_id
         elif cmd == "!detach":
             await send(await self.detach(ch, st))
+        elif cmd == "!archive":
+            text, view = await self.archive.put(ch)
+            await (send(text, view=view) if view is not None else send(text))
         elif cmd == "!setup":
             pane = st.get("pane")
             if st.get("tmux") or (pane and (not st.get("home") or await tmuxio.exists(pane))):

@@ -12,7 +12,8 @@
     {
       "name": "dashboard",
       "kind": "board",
-      "setting": "usage.channel"
+      "setting": "usage.channel",
+      "category": "main"
     }
   ],
   "schedules": [
@@ -50,6 +51,15 @@
       "path": "~/.local/share/usage",
       "sync": "none",
       "private": true
+    }
+  ],
+  "asks": [
+    {
+      "key": "usage.plan",
+      "question": "usage.plan",
+      "unless": {
+        "usage.subscription_limits": false
+      }
     }
   ]
 }

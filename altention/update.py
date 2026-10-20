@@ -3,7 +3,9 @@
 
   python3 altention/update.py            # one round (its own cron line, ahead of the sync's)
   python3 altention/update.py --release  # one round now, to the newest release whatever core.update says (the
-                                         # person asked to update; the same checks); then run install.sh
+                                         # person asked to update; the same checks); then run install.sh. Exit 75:
+                                         # the git lock was held (the sync, a deploy) and nothing was done: try again
+                                         # (a plain round too with ALT_UPDATE_LOCKED_EXIT=1: ops/apply.py, branch mode)
 
 Standard library only, and no other module of the engine is imported (as the supervisor): a bug anywhere else
 must not stop the fixes from arriving. One round:
@@ -23,7 +25,7 @@ must not stop the fixes from arriving. One round:
   autostash. To a release, rollback commits the supervisor made here are left behind, never put on top of it, and
   rollbacks mixed with other local commits stop the round (C-07; sync.local_commits).
 Before moving, besides the syntax check, a load check: the upstream altention/ is imported (update, sync, config,
-engine_id) in a child; their top-level code runs, in an isolated throwaway place (python3 -I, HOME and cwd there).
+engine_id, update_go) in a child; their top-level code runs, in an isolated throwaway place (python3 -I, HOME and cwd there).
 A commit that compiles but throws when loaded never arrives this way.
 After a move that changes what the supervisor counts as the bot's version (the trees of dcbot/ and altention/), and
 only while this engine's supervisor runs here, dcbot/state/restart-requested is written as deploy.sh writes it: the
@@ -40,6 +42,14 @@ supervisor (it alone moves forward), and the sync drops the step back when the b
 A machine that moves by itself (release, branch) says once in Discord when HEAD first contains a release newer than
 the one it last told, whoever moved it, with the first sentence of each point of that release's CHANGELOG section
 (tell_updated, C-55); the first round with no record writes down what it runs and says nothing.
+Every notice about updating (🆕, ✅, the ⚠️ of a round) goes to the instance's core.update_channel, #update when not
+set (C-57; a channel not there: the default one, saying so), in plain words with the technical part in brackets; a
+notice lists what each release between brought, newest first. An update the person asked for (--release) is told
+too, and an engine detached from its branch, which never updates, says so once. On the bot's machine the 🆕 is a
+card with the buttons (altention update card, U2), the other machines tell none of their own (U5), and a round that altention update go runs (ALT_UPDATE_CARD)
+pushes no ✅ or ⚠️ of its own: the card says it. Before HEAD moves to a release, a local tag altention/before-vX on
+where it was (never pushed; the newest 3 kept; before-tags.json says where each move went), for altention update
+undo (C-57 U3).
 Nothing else here runs install.sh: a skill the new version brings gets its link from the sync's next round (sync.new_skills,
 five minutes after this one); a new cron line or hook waits for install.sh or ops/apply.py, and doctor's
 plugins.would-apply says it meanwhile.
@@ -76,6 +86,7 @@ ENGINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALWAYS = ("altention/update.py", "altention/sync.py", "altention/config.py", "altention/engine_id.py",
           "altention/cron_update.py", "altention/cron_sync.py",  # the cron entries themselves
           "altention/dc/post.py", "altention/dc/notify.py",  # every Claude's message and every notice
+          "altention/update_go.py", "altention/dc/card.py",  # the update button's way (C-57 U2)
           # tools without an extension every Claude or every notice goes through (manager 2026-10-06)
           "dcbot/tools/dchook", "dcbot/tools/dcctl", "dcbot/tools/dcremote",
           "bin/home-pull", "bin/home-git", "bin/altention")
@@ -154,6 +165,18 @@ def update_mode():
         if m in UPDATE_MODES:
             return m, problem
         return "notify", problem or "%s，也沒有上次讀到的模式：照 notify，不自動更新" % (unseen or "上次讀到的模式不能用")
+    core, problem, unseen = instance_core()
+    if core is None:
+        return last(problem, unseen)
+    mode = core.get("update", "notify")
+    if mode not in UPDATE_MODES:
+        return last("plugins.json 的 core.update 是 %s，只能是 notify、release 或 branch" % json.dumps(mode, ensure_ascii=False)[:40])
+    return mode, ""
+
+
+def instance_core():
+    """(the instance's core settings, "", "") the way altention/config.py finds the instance; (None, problem, "")
+    when they cannot be read, (None, "", what was not seen) when there is no instance or plugins.json to be seen."""
     named = os.environ.get("ALT_INSTANCE")
     pointer = os.path.expanduser("~/.config/altention/instance")
     if not named and os.path.exists(pointer):
@@ -161,32 +184,62 @@ def update_mode():
             with open(pointer) as f:
                 named = f.readline().strip()
         except (OSError, UnicodeDecodeError) as e:
-            return last("讀不了 %s（%s）" % (pointer, e))
+            return None, "讀不了 %s（%s）" % (pointer, e), ""
     if named == "-":  # this machine has left its instance
-        return last(unseen="這台已經離開實例")
+        return None, "", "這台已經離開實例"
     if named:
         inst = os.path.expanduser(named)
         if not os.path.isdir(inst):
-            return last("實例資料夾不存在：%s" % inst)
+            return None, "實例資料夾不存在：%s" % inst, ""
     else:
         inst = os.path.join(os.path.expanduser(os.environ.get("ALT_ROOT") or "~/altention"), "instance")
         if not os.path.isdir(inst):
-            return last(unseen="看不到實例（%s）" % inst)
+            return None, "", "看不到實例（%s）" % inst
     path = os.path.join(inst, "plugins.json")
     try:
         with open(path, encoding="utf-8") as f:
             got = json.load(f)
     except FileNotFoundError:
-        return last(unseen="實例裡沒有 %s" % path)
+        return None, "", "實例裡沒有 %s" % path
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return last("讀不出 %s（%s）" % (path, e))
+        return None, "讀不出 %s（%s）" % (path, e), ""
     core = got.get("core", {}) if isinstance(got, dict) else None
     if not isinstance(core, dict):
-        return last("%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"))
-    mode = core.get("update", "notify")
-    if mode not in UPDATE_MODES:
-        return last("%s 的 core.update 是 %s，只能是 notify、release 或 branch" % (path, json.dumps(mode, ensure_ascii=False)[:40]))
-    return mode, ""
+        return None, "%s 的%s不是物件" % (path, " core" if isinstance(got, dict) else "內容"), ""
+    return core, "", ""
+
+
+UPDATE_CHANNEL = "update"  # C-57: where the notices about updating go, unless core.update_channel names another
+
+
+def update_channel():
+    """The instance's core.update_channel (a channel name, category/name or ID), UPDATE_CHANNEL when not set or not
+    readable. A channel that is not there: altention dc notify sends to the default one, saying so."""
+    core = instance_core()[0]
+    ch = core.get("update_channel") if core else None
+    return ch.strip() if isinstance(ch, str) and ch.strip() else UPDATE_CHANNEL
+
+
+LANGUAGE = "zh-TW"  # an installation's language when core.language is not set (altention/text.py's DEFAULT)
+
+
+def notes_language():
+    """The instance's core.language, LANGUAGE when not set or not readable: which CHANGELOG part the notices quote
+    (C-57 U8)."""
+    core = instance_core()[0]
+    lang = core.get("language") if core else None
+    return lang.strip() if isinstance(lang, str) and lang.strip() else LANGUAGE
+
+
+def send(text, channel=None):
+    """altention dc notify -c `channel` (update_channel() when None; "" the default channel): True when it went out."""
+    where = ["-c", update_channel() if channel is None else channel] if channel != "" else []
+    try:
+        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify"] + where + [text],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def remember_mode(mode):
@@ -220,7 +273,7 @@ def latest_release(rnd):
     return (best[1], commit) if commit else None
 
 
-def available(found):
+def available(found, rnd=None):
     """update-available: the release newer than HEAD that notify mode saw ({tag, commit, at, told}), for doctor;
     removed when there is none or the mode is not notify. A release not told yet is told (C-18: once per release,
     pushed out like a notice; told: the tag whose notice went out, kept while the file is). True when told now."""
@@ -232,7 +285,7 @@ def available(found):
         told = None
     try:
         if found:
-            if told != found[0] and tell_release(found[0]):
+            if told != found[0] and tell_release(rnd, found[0]):
                 told = found[0]
             os.makedirs(state_dir(), exist_ok=True)
             with open(path + ".tmp", "w") as f:
@@ -246,18 +299,55 @@ def available(found):
     return False
 
 
-def tell_release(tag):
-    """The notice that `tag` is out (altention dc notify, the default channel), with how to take it. True when it
-    went out; not, and it is tried again next round."""
-    text = ("🆕 引擎有新的發佈版本 %s（這台的 core.update 是 notify：不會自己更新）。要更新：跟 Claude 說「更新引擎」"
-            "（它照全域說明在引擎跑 python3 altention/update.py --release、./install.sh、python3 ops/doctor.py；"
-            "這版改了什麼在 CHANGELOG.md）。要以後自動跟著發佈版本：實例 plugins.json 的 core.update 設成 release。" % tag)
+NOT_THE_BOT_MACHINE = 3  # altention update card's exit when the bot runs elsewhere (altention/update_go.py)
+
+
+def tell_release(rnd, tag):
+    """The notice that `tag` is out (to update_channel()), with what it brings since the release HEAD has (every
+    version between, newest first) and how to take it, in plain words (C-57). On the bot's machine a card with the
+    buttons (altention update card, U2; this round's git lock handed to it, ALT_GIT_LOCK_FD); on another machine
+    while the list names the bot's, nothing (that machine tells it, U5); no bot machine known, or the card cannot
+    be posted, the notice in words. True when it went out; not, and it is tried again next round."""
+    if card_of(rnd, tag):
+        return True  # posted as a card, or the bot's machine tells it (U5: one 🆕 for the whole installation)
+    now, found = release_in(rnd)
+    newer = releases_between(rnd, found[now] if now else None, tag)
+    text = "🆕 有新版本 %s 可以更新" % tag
+    text += "（這台現在是 %s）。" % now if now else "。"
+    text += notes_of(rnd, tag, newer)
+    text += ("\n\n要更新：跟 Claude 說「更新引擎」。更新前會先檢查新版能不能正常跑；沒通過就不換，你改過的東西也不會被蓋掉。"
+             "\n想以後有新版就自己更新：跟 Claude 說「引擎改成自動更新」。")
+    return send(text)
+
+
+def card_of(rnd, tag):
+    """altention update card `tag` (the 🆕 card with the buttons, posted only from the bot's machine): True when it
+    is posted, or when the bot runs on another machine (exit NOT_THE_BOT_MACHINE: that machine tells it, U5)."""
+    fd = rnd.lock.fileno() if rnd is not None and rnd.lock else None
+    env = dict(os.environ, ALT_GIT_LOCK_FD=str(fd)) if fd is not None else dict(os.environ)
     try:
-        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", text], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        return r.returncode == 0
+        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "update", "card", tag], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace",
+                           timeout=300, env=env, pass_fds=(fd,) if fd is not None else ())
     except (OSError, subprocess.SubprocessError):
         return False
+    if r.returncode not in (0, NOT_THE_BOT_MACHINE):
+        SKIPPED.append("貼不了更新卡片（%s），改用文字" % " ".join((r.stdout or "").split())[-160:])
+    return r.returncode in (0, NOT_THE_BOT_MACHINE)
+
+
+def releases_between(rnd, floor, tag):
+    """The vX.Y.Z tags above `floor` (a version tuple, None for none) up to `tag`, newest first."""
+    top = tuple(map(int, RELEASE_TAG.match(tag).groups()))
+    got = {}
+    for t in rnd.git("tag", "-l", "v*").stdout.split():
+        m = RELEASE_TAG.match(t)
+        if m:
+            v = tuple(map(int, m.groups()))
+            if (floor is None or v > floor) and v <= top:
+                got[t] = v
+    got[tag] = top
+    return sorted(got, key=got.get, reverse=True)
 
 
 def release_in(rnd):
@@ -270,13 +360,99 @@ def release_in(rnd):
     return (max(found, key=found.get) if found else None), found
 
 
-def tell_updated(rnd):
+def vtuple(tag):
+    """A release tag as numbers to compare; None (no release) below them all."""
+    return tuple(map(int, RELEASE_TAG.match(tag).groups())) if tag else (-1, -1, -1)
+
+
+def taken_back(rnd, tag):
+    """Is `tag` not what runs here: a rollback or step back of the supervisor's above it in HEAD, or git cannot say
+    (tell_updated; altention update go before its ✅, C-57 U2)."""
+    above = rnd.git("log", "--format=%s", "%s..HEAD" % tag)
+    return above.returncode != 0 or any(ROLLBACK_SUBJECT.match(l) or STEP_BACK_SUBJECT.match(l)
+                                        for l in above.stdout.splitlines())
+
+
+BEFORE = "altention/before-%s"  # a local tag on HEAD before it moves to a release (C-57 U3), never pushed
+BEFORE_KEPT = 3
+
+
+def mark_before(rnd, head, tag):
+    """altention/before-<tag> on `head`, before HEAD moves to the release `tag` (altention update undo goes back to
+    it); the BEFORE_KEPT newest kept. Its name, or None (not a release: branch mode; or git refused)."""
+    if not tag:
+        return None
+    name = BEFORE % tag
+    if rnd.git("tag", "-f", name, head).returncode != 0:
+        return None
+    marks = []
+    for t in rnd.git("tag", "-l", BEFORE % "v*").stdout.split():
+        m = RELEASE_TAG.match(t[len(BEFORE % ""):])
+        if m:
+            marks.append((tuple(map(int, m.groups())), t))
+    for _, t in sorted(marks, reverse=True)[BEFORE_KEPT:]:
+        rnd.git("tag", "-d", t)
+        forget_before(t)
+    return name
+
+
+def drop_before(rnd, name):
+    """The mark of a move that did not happen."""
+    if name:
+        rnd.git("tag", "-d", name)
+        forget_before(name)
+
+
+def befores_path():
+    return os.path.join(state_dir(), "before-tags.json")
+
+
+def befores():
+    """{tag name: {before, after, at}}: where each mark's move went (undo goes back only from there)."""
+    try:
+        with open(befores_path()) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_befores(got):
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(befores_path() + ".tmp", "w") as f:
+        json.dump(got, f)
+    os.replace(befores_path() + ".tmp", befores_path())
+
+
+def note_after(name, before, after):
+    if name:
+        got = befores()
+        got[name] = {"before": before, "after": after, "at": time.time()}
+        try:
+            write_befores(got)
+        except OSError:  # the move is done: undo then says it has no mark to go back from
+            pass
+
+
+def forget_before(name):
+    got = befores()
+    if got.pop(name, None) is not None:
+        try:
+            write_befores(got)
+        except OSError:
+            pass
+
+
+def tell_updated(rnd, start=False):
     """C-55: a machine that moves by itself (release, branch) tells once per release that it now runs it, whoever
     moved HEAD (this round, home-pull, the sync standing in, a push to main here). updated-release: {tag, at}, the
     release last told (or found when there was no record: written down, not told, so a new install or this code
     arriving pushes nothing). Several releases at once: the newest told, the ones between named. The notice not
     out: not written, tried again next round. HEAD going back tells nothing, nor a release with a rollback or step
-    back of the supervisor's above it in HEAD (it is not what runs): told once that commit is gone."""
+    back of the supervisor's above it in HEAD (it is not what runs): told once that commit is gone. `start`: the
+    release HEAD had before an update the person asked for (update.py --release, C-57), the start when there is no
+    record (a notify machine keeps none), or when it is newer than the record (a notify machine's record stays
+    where it was while apply or home-pull move HEAD), so that update is told from what really ran before it."""
     path = os.path.join(state_dir(), "updated-release")
     was = False  # no record (or one someone broke): what HEAD has now is the start
     try:
@@ -286,19 +462,22 @@ def tell_updated(rnd):
             was = rec["tag"]
     except (OSError, ValueError):
         pass
+    if start is not False and (was is False or vtuple(start) > vtuple(was)):
+        was = start  # the newer of the two: a notify machine's record can be old (HEAD moved by apply, home-pull)
     now, found = release_in(rnd)
     if was is not False:
-        floor = tuple(map(int, RELEASE_TAG.match(was).groups())) if was else (-1, -1, -1)
+        floor = vtuple(was)
         if now is None or found[now] <= floor:  # nothing newer (HEAD gone back included): the record stays
             return
-        above = rnd.git("log", "--format=%s", "%s..HEAD" % now)
-        if above.returncode != 0 or any(ROLLBACK_SUBJECT.match(l) or STEP_BACK_SUBJECT.match(l)
-                                        for l in above.stdout.splitlines()):
+        if taken_back(rnd, now):
             return  # the supervisor took it back (or git cannot say): not running it; told once that is gone
         between = sorted((t for t, v in found.items() if floor < v < found[now]), key=found.get)
-        if not tell_version(rnd, now, between):
+        if os.environ.get(ON_A_CARD):  # altention update go: its card says it (C-57 U2), the record is written
+            SAID.append("引擎更新到 %s（寫在更新卡片上）" % now)
+        elif not tell_version(rnd, now, between):
             return
-        SAID.append("已推播：引擎更新到 %s" % now)
+        else:
+            SAID.append("已推播：引擎更新到 %s" % now)
     os.makedirs(state_dir(), exist_ok=True)
     with open(path + ".tmp", "w") as f:
         json.dump({"tag": now, "at": time.time()}, f)
@@ -308,13 +487,18 @@ def tell_updated(rnd):
 NOTES_LINES = 6     # bullets of a release's notes in the notice
 NOTES_CHARS = 1200  # and characters, at most
 NOTE_CHARS = 240    # of one bullet
+EACH_LINES = 3      # several releases in one notice: bullets of each (C-57, owner 2026-10-19)
+ALL_CHARS = 1500    # and characters of all of them together
 
 
-def release_notes(rnd, tag):
-    """Each bullet of `tag`'s CHANGELOG section (its "For people" part when it has one) cut to its bold lead
-    ("**…**" it starts with) or else its first sentence, NOTE_CHARS at most, as lines, and whether some were left
-    out; None when the CHANGELOG has no such section."""
-    text = rnd.git("show", "%s:CHANGELOG.md" % tag).stdout
+def release_notes(rnd, tag, text=None, most=NOTES_LINES, room=NOTES_CHARS, lang=None):
+    """Each bullet of `tag`'s CHANGELOG section (its "For people (<lang>)" part when it has one, `lang` being
+    notes_language() when None; else its "For people" part when it has one) cut to its bold lead ("**…**" it starts
+    with) or else its first sentence, NOTE_CHARS at most, as lines (`most` of them, `room` characters together),
+    and whether some were left out; None when the CHANGELOG (`tag`'s own, or `text`) has no such section. A
+    release without its own words in `lang` is quoted in English (C-57 U8: releases before v0.3.0 have none)."""
+    if text is None:
+        text = rnd.git("show", "%s:CHANGELOG.md" % tag).stdout
     section, inside = [], False
     for line in text.splitlines():
         if line.startswith("## "):
@@ -325,26 +509,35 @@ def release_notes(rnd, tag):
             section.append(line)
     if not inside:
         return None
-    people, part = [], None
+    parts, part = {}, None
     for line in section:
         if line.startswith("### "):
             part = line[4:].strip().lower()
-        elif part in (None, "for people"):
-            people.append(line)
-    bullets = []
-    for line in people:
-        if line.startswith("- "):
-            bullets.append(line[2:].strip())
-        elif bullets and line.strip():
-            bullets[-1] += " " + line.strip()
+            continue
+        parts.setdefault(part, []).append(line)
+
+    def bullets_of(lines):
+        got = []
+        for line in lines:
+            if line.startswith("- "):
+                got.append(line[2:].strip())
+            elif got and line.strip():
+                got[-1] += " " + line.strip()
+        return got
+    own = "for people (%s)" % (notes_language() if lang is None else lang).lower()
+    bullets = bullets_of(parts.get(own, []))
+    # a sentence ends at "." "!" "?" before a space; in the installation's own words also at 。！？ (no space after
+    # them), not in the English part, whose quoted Chinese would end its first sentence too early
+    end = r"[.!?](?=\s)|[。！？]" if bullets else r"[.!?。](?=\s)"
+    bullets = bullets or bullets_of(parts.get(None, []) + parts.get("for people", []))
     lines, cut, size = [], False, 0
     for b in bullets:
-        lead = re.match(r"\*\*[^*]+\*\*", b) or re.search(r"[.!?。](?=\s)", b)
+        lead = re.match(r"\*\*[^*]+\*\*", b) or re.search(end, b)
         line = b[:lead.end()] if lead else b
         if len(line) > NOTE_CHARS:
             line = line[:NOTE_CHARS - 1] + "…"
         cut = cut or line != b
-        if len(lines) == NOTES_LINES or size + len(line) > NOTES_CHARS:
+        if len(lines) == most or size + len(line) > room:
             cut = True
             break
         lines.append(line)
@@ -352,27 +545,48 @@ def release_notes(rnd, tag):
     return lines, cut
 
 
+def notes_of(rnd, tag, versions):
+    """What `versions` (newest first, `tag` the newest) brought, from `tag`'s CHANGELOG: one release, its points
+    (release_notes); several, a part for each, newest first, EACH_LINES points each and ALL_CHARS together, the
+    ones that do not fit named (C-57: owner 2026-10-19). Starts with a line break when not empty."""
+    if len(versions) <= 1:
+        notes = release_notes(rnd, tag)
+        if notes is None:
+            return "CHANGELOG.md 裡沒有這版的說明。"
+        if not notes[0]:
+            return "這版改了什麼在 CHANGELOG.md 的 %s 一節。" % tag
+        text = "這版的重點：\n" + "\n".join("- " + n for n in notes[0])
+        if notes[1]:
+            text += "\n（只列每項的第一句；完整的在 CHANGELOG.md 的 %s 一節）" % tag
+        return text
+    log = rnd.git("show", "%s:CHANGELOG.md" % tag).stdout
+    parts, left, room, cut = [], [], ALL_CHARS, False
+    for v in versions:
+        notes = None if left or room <= 0 else release_notes(rnd, v, log, EACH_LINES, room)
+        if left or room <= 0 or (notes and not notes[0] and notes[1]):  # points, but no room left for them
+            left.append(v)
+            continue
+        if notes is None or not notes[0]:
+            parts.append("**%s**：CHANGELOG.md 裡沒有這版的重點" % v)
+            continue
+        parts.append("**%s**\n" % v + "\n".join("- " + n for n in notes[0]))
+        room -= sum(len(n) for n in notes[0])
+        cut = cut or notes[1]
+    text = "改了什麼（新的在前）：\n\n" + "\n\n".join(parts)
+    if left:
+        text += "\n\n（還有 %s 的改動沒列出來；完整的在 CHANGELOG.md）" % "、".join(left)
+    elif cut:
+        text += "\n\n（只列每項的第一句；完整的在 CHANGELOG.md）"
+    return text
+
+
 def tell_version(rnd, tag, between):
-    """The notice that this machine now runs `tag` (altention dc notify, the default channel), with its notes. True
-    when it went out."""
+    """The notice that this machine now runs `tag` (to update_channel()), with what it and the releases `between`
+    brought. True when it went out."""
     text = "✅ 引擎已更新到 %s" % tag
     if between:
         text += "（中間的 %s 也一起裝上了）" % "、".join(between)
-    notes = release_notes(rnd, tag)
-    if notes is None:
-        text += "。CHANGELOG.md 裡沒有這版的說明。"
-    elif not notes[0]:
-        text += "。這版改了什麼在 CHANGELOG.md 的 %s 一節。" % tag
-    else:
-        text += "。這版的重點：\n" + "\n".join("- " + n for n in notes[0])
-        if notes[1]:
-            text += "\n（只列每項的第一句；完整的在 CHANGELOG.md 的 %s 一節）" % tag
-    try:
-        r = subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", text], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        return r.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+    return send(text + "。" + notes_of(rnd, tag, [tag] + sorted(between, key=lambda t: tuple(map(int, RELEASE_TAG.match(t).groups())), reverse=True)))
 
 
 def last_alive():
@@ -480,6 +694,8 @@ def alert(source, kind, text, notify=True):
         pass
     if not notify:
         return
+    if os.environ.get(ON_A_CARD) and source == "update" and kind not in NOT_ABOUT_UPDATING:
+        return  # altention update go tells it on its card (C-57 U2); the 6-hour record left for the plain rounds
     told_path = os.path.join(folder, "alerts-told.json")
     try:
         with open(told_path) as f:
@@ -502,11 +718,15 @@ def alert(source, kind, text, notify=True):
         os.replace(told_path + ".tmp", told_path)
     except OSError:
         pass  # cannot write the record: then every time (better twice than never)
-    try:
-        subprocess.run([os.path.join(ENGINE, "bin", "altention"), "dc", "notify", "⚠️ %s：%s" % (source, text)], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    if source == "update" and kind not in NOT_ABOUT_UPDATING:  # C-57: about updating, to update_channel()
+        send("⚠️ 引擎更新：%s" % text)
+    else:
+        send("⚠️ %s：%s" % (source, text), DEFAULT_CHANNEL)
+
+
+ON_A_CARD = "ALT_UPDATE_CARD"  # set by altention update go: its card tells what this round did, no notice of its own
+NOT_ABOUT_UPDATING = ("sync-stale",)  # update.py's notices that go to the default channel, not update_channel()
+DEFAULT_CHANNEL = ""  # send() without -c: altention dc notify's default channel (core.notify_channel)
 
 
 BOT_PATHS = ("dcbot", "altention")  # dcbot/supervisor.py version(): what makes the bot's next start a trial
@@ -545,7 +765,8 @@ def write_restart_flag(tell=None):
         os.replace(flag + ".tmp", flag)
         return True
     except OSError as e:
-        (tell or alert)("update", "restart", "引擎更新了，但寫不了機器人的重啟旗標（%s）：機器人還在跑舊版，請用 !restart" % e)
+        (tell or alert)("update", "restart", "新版本已經換上，但沒辦法叫機器人自己重啟，所以機器人還在跑舊版；你的東西都沒動。"
+                         "要套用新版：在 Discord 打 !restart。（細節：寫不了機器人的重啟旗標：%s）" % e)
         return False
 
 
@@ -662,8 +883,9 @@ def install_pending(tell=None):
         why = install_deps()
         if why:
             mark_deps(head, why, time.time() + RETRY_AFTER, tries + 1)
-            (tell if not tries else lambda *a: alert(*a, notify=False))("update", "deps", "引擎更新到 %s，但機器人要的套件沒裝上（%s）：沒有重啟，機器人繼續跑舊版。一小時後會再試；"
-                 "要現在處理：在這台的引擎跑 dcbot/install.sh，再在 Discord 打 !restart" % (head[:12], why))
+            (tell if not tries else lambda *a: alert(*a, notify=False))("update", "deps", "新版本已經換上，但機器人需要的套件沒裝好，所以機器人還在跑舊版，一小時後會自己再試；你的東西都沒動。"
+                 "要現在處理：跟 Claude 說「幫我裝機器人的套件」。（細節：引擎更新到 %s，套件沒裝上：%s；"
+                 "在這台的引擎跑 dcbot/install.sh，再在 Discord 打 !restart）" % (head[:12], why))
             return "機器人要的套件沒裝上，沒有重啟（見 alerts）"
         now = subprocess.run(["git", "-C", ENGINE, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              universal_newlines=True, timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL).stdout.strip()
@@ -799,7 +1021,8 @@ def check_tree(rnd, upstream, files):
         shutil.rmtree(base, ignore_errors=True)
 
 
-LOADED = ("altention.update", "altention.sync", "altention.config", "altention.engine_id")
+LOADED = ("altention.update", "altention.sync", "altention.config", "altention.engine_id",
+          "altention.update_go")  # the button's way finishes in the new version's update_go (C-57 U2)
 
 
 def load_check(rnd, upstream, base):
@@ -885,6 +1108,50 @@ def watch_sync():
         alert("update", "sync-stale", "引擎和實例的同步已經 %d 分鐘沒有成功" % ((time.time() - t) // 60))
 
 
+UNTRACKED_IN_THE_WAY = re.compile(r"untracked working tree files would be (?:overwritten|removed)")
+CHANGES_IN_THE_WAY = re.compile(r"local changes to the following files would be overwritten")
+
+
+def ff_cause(said):
+    """(for the log, for the person) of a fast-forward git refused, from what git said: a file not in the engine
+    with a name the new version adds, or edits not committed to files it changes (C-57: the words were wrong for the
+    first; manager 2026-10-19: the person may not be an engineer, so no "saved" or commit); else that it did not work."""
+    files = [l.strip() for l in said.splitlines() if l.startswith(("\t", "        "))][:5]
+    names = "（%s）" % "、".join(files) if files else ""
+    if UNTRACKED_IN_THE_WAY.search(said):
+        return ("沒追蹤的檔跟新版要加的檔同名",
+                "新版本要加的檔案%s，這台已經有同名的檔（不是引擎原本就有的）。為了不蓋掉它，這次沒有更新，現在照舊版跑。"
+                "要更新：把那個檔改名或移走，或到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」。" % names)
+    if CHANGES_IN_THE_WAY.search(said):
+        return ("還沒 commit 的修改跟新版改到同一個檔",
+                "你自己改過的檔%s，新版本也改了同一個檔。為了不蓋掉你的修改，這次先不更新，現在照舊版跑，你的修改都還在。"
+                "要更新：到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」。" % names)
+    return ("快轉被 git 拒絕", "換到新版本這一步沒成功，這次沒有更新，現在照舊版跑，你的東西都沒動。"
+            "要處理：到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」。")
+
+
+def tell_detached(head):
+    """Said once per HEAD (detached-told: {head}) that an engine detached from its branch is never updated (C-57: it
+    used to stay silent); told again when HEAD changes. Not out: tried again next round."""
+    path = os.path.join(state_dir(), "detached-told")
+    try:
+        with open(path) as f:
+            if json.load(f).get("head") == head:
+                return
+    except (OSError, ValueError, AttributeError):
+        pass
+    if not send("⚠️ 引擎更新：這台的引擎現在停在一個固定的版本上，沒有跟著平常更新的那條線走，所以不會自己更新，也不會通知有新版；"
+                "你的東西都沒動。要恢復：到 #setup 跟 Claude 說「引擎停在固定版本了，幫我接回去」。（細節：detached HEAD %s）" % head[:12]):
+        return
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump({"head": head, "at": time.time()}, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
 def one_round(force_release=False):
     """0 fine (or skipped on purpose), 1 something to tell (told). force_release: update.py --release."""
     kind, why = verdict()
@@ -912,9 +1179,9 @@ def one_round(force_release=False):
         rnd.lock = open(os.path.join(gd, LOCK_NAME), "a")
         fcntl.flock(rnd.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        SKIPPED.append("git 鎖被別人拿著")
+        SKIPPED.append(LOCK_BUSY)
         return 0  # the sync or a deploy has it: next round
-    mode = None
+    mode, start = None, False
     try:
         if force_release:  # asked for now: the newest release, this round only; the setting is left as it is
             mode, problem = "release", None
@@ -924,6 +1191,13 @@ def one_round(force_release=False):
             alert("update", "mode", "讀不到引擎更新的模式（%s），這一輪照 %s" % (problem, mode))
         elif not force_release:
             remember_mode(mode)
+        if rnd.git("symbolic-ref", "-q", "HEAD").returncode != 0:  # detached: never updated, so said once (C-57)
+            head = rnd.git("rev-parse", "HEAD").stdout.strip()
+            REACHED.append("detached")
+            SAID.append("引擎停在固定的版本上（detached HEAD %s），不會更新；要更新先切回分支（git checkout main）" % head[:12])
+            mark_ok("update", {"note": "detached HEAD，不會更新", "head": head[:12]})
+            tell_detached(head)
+            return 0
         if rnd.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").returncode != 0:
             REACHED.append("no upstream")
             SAID.append("沒有上游，不用更新")
@@ -932,16 +1206,19 @@ def one_round(force_release=False):
         r = rnd.git("fetch", "-q", "--tags")  # branch too: the release tags tell_updated looks for
         if r.returncode != 0:
             SKIPPED.append("fetch 失敗")
-            alert("update", "fetch", "引擎 fetch 失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:200])
+            alert("update", "fetch", "連不上放新版本的地方，這次沒能檢查有沒有新版，下一輪會再試；你的東西都沒動。"
+                  "（細節：引擎 fetch 失敗：%s）" % (r.stderr.strip() or r.stdout.strip())[:200])
             return 1
         head = rnd.git("rev-parse", "HEAD").stdout.strip()
+        if force_release:
+            start = release_in(rnd)[0]
         if mode == "branch":
             up = rnd.git("rev-parse", "@{u}").stdout.strip()
         else:
             rel = latest_release(rnd)
             newer = rel if rel and head and rnd.git("merge-base", "--is-ancestor", rel[1], head).returncode != 0 else None
             if mode == "notify" or not newer:
-                told = available(newer if mode == "notify" else None)
+                told = available(newer if mode == "notify" else None, rnd)
                 REACHED.append(mode)
                 SAID.append("有新版 %s（core.update 是 notify：不自動更新%s）" % (newer[0], "；已推播" if told else "") if newer
                             else "沒有比現在新的發佈版本（%s）" % (rel[0] if rel else "還沒有任何發佈版本"))
@@ -968,36 +1245,47 @@ def one_round(force_release=False):
             BLOCKED.append((up, why))
             REACHED.append("refused")
             SAID.append("擋下 %s：%s" % (up[:12], " ".join(why.split())[:150]))  # one line: the log takes one
-            alert("update", "check", "上游 %s 沒通過檢查，沒有更新，照舊版跑：%s" % (up[:12], why))
+            alert("update", "check", "新版本沒通過檢查，這次沒有更新，現在照舊版跑，你的東西都沒動；等修好的版本出來會再試。"
+                  "（細節：上游 %s 沒通過檢查：%s）" % (up[:12], why))
             return 1
         note = ""
+        before = mark_before(rnd, head, None if mode == "branch" else newer[0])
         if rnd.git("merge-base", "--is-ancestor", head, up).returncode == 0:
             r = rnd.git("merge", "--ff-only", "-q", up)
             if r.returncode != 0:
-                SKIPPED.append("快轉失敗（工作樹的修改跟它重疊？）")
-                alert("update", "ff", "快轉到 %s 失敗（工作樹的修改跟它重疊？），照舊版跑：%s"
-                      % (up[:12], (r.stderr.strip() or r.stdout.strip())[:200]))
+                drop_before(rnd, before)
+                said = (r.stderr.strip() or r.stdout.strip())
+                SKIPPED.append("快轉失敗（%s）" % ff_cause(said)[0])
+                alert("update", "ff", "%s（細節：快轉到 %s 失敗：%s）" % (ff_cause(said)[1], up[:12], said[:200]))
                 return 1
         else:
             why, note = rebase_in_child(rnd, None if mode == "branch" else up)
             if why:
+                drop_before(rnd, before)
                 SKIPPED.append("有本機 commit，rebase 沒成功")
-                alert("update", "rebase", "有本機 commit，更新到 %s 沒成功，照舊版跑：%s" % (up[:12], why))
+                alert("update", "rebase", "這台的引擎有你自己改過的地方，新版本也改了同一段，接不起來。為了不蓋掉你的修改，這次先不更新，"
+                      "現在照舊版跑，你的修改都還在。要更新：到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」。"
+                      "（細節：有本機 commit，更新到 %s 沒成功：%s）" % (up[:12], why))
                 return 1
         REACHED.append("updated")
         now = rnd.git("rev-parse", "HEAD").stdout.strip()
+        note_after(before, head, now)
         restart = after_move(rnd, head, now)
         SAID.append("更新了 %s → %s%s%s" % (head[:12], now[:12], "；" + note if note else "",
                                          "；機器人會自己重啟套用新版（#audit 看得到）" if restart else ""))
         mark_ok("update", {"head": now[:12]})
         return 0
     finally:
-        if mode in ("release", "branch") and not force_release:  # whatever this round did, and whoever moved HEAD
+        if mode in ("release", "branch"):  # whatever this round did, and whoever moved HEAD; an asked-for one too
             try:
-                tell_updated(rnd)
+                tell_updated(rnd, start)
             except Exception as e:
                 alert("update", "updated-release", "告知引擎已更新到新版這一步出錯（%s: %s）" % (type(e).__name__, e), notify=False)
         rnd.lock.close()
+
+
+LOCK_BUSY = "git 鎖被別人拿著"
+LOCKED = 75  # update.py --release's exit when the git lock was held and nothing was done (EX_TEMPFAIL)
 
 
 def main(argv):
@@ -1031,6 +1319,8 @@ def main(argv):
     # the round in one line, just before DONE: cron_update.py writes it into cron-update.log (manager 2026-10-07)
     print(" ".join(("；".join(SAID) if SAID else "沒有更新：%s" % SKIPPED[-1] if SKIPPED else "沒有更新").split()))
     print("ALT-UPDATE-DONE")  # cron_update.py: this round came to its end
+    if (argv or os.environ.get("ALT_UPDATE_LOCKED_EXIT")) and not REACHED and SKIPPED and SKIPPED[-1] == LOCK_BUSY:
+        return LOCKED  # asked for (--release, or ops/apply.py's plain round) and nothing done: the asker tries again
     return code
 
 

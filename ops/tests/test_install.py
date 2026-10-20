@@ -1133,6 +1133,123 @@ class Instance(Base):
         self.assertRegex(out.getvalue(), r"(?m)^ok core.engine-links", "run again: nothing to change")
 
 
+class Setup(Base):
+    """C-48: a new installation's instance waits for #setup (setup.done false, the permission mode set), progress
+    is held until then, and #setup's folder lets only setup.py (and the update subcommands) through."""
+
+    def instance(self, **settings):
+        inst = os.path.join(self.home, "實例")
+        os.makedirs(inst, exist_ok=True)
+        with open(os.path.join(inst, "plugins.json"), "w") as f:
+            json.dump(dict({"format": 1}, **settings), f)
+        return mock.patch.dict(os.environ, {"ALT_INSTANCE": inst})
+
+    def test_a_new_installations_instance(self):
+        import instance as ops_instance
+        eng = os.path.join(self.home, "altention", "engine")
+        os.makedirs(os.path.join(eng, "altention"))
+        with mock.patch.object(ops_instance, "ENGINE", eng), redirect_stdout(io.StringIO()):
+            self.assertEqual(ops_instance.main(["init", "--permission", "manual"]), 0)
+            self.assertEqual(ops_instance.main(["init", "--permission", "bypassPermissions"]), 2, "never written as is")
+        d = install.config.read_json(os.path.join(self.home, "altention", "instance", "plugins.json"))
+        self.assertEqual((d["setup"], d["dcbot"]), ({"done": False}, {"default_permission": "manual"}))
+        self.assertNotIn("setup", ops_instance.plugins_skeleton(), "seed and the rest: no setup to ask")
+
+    def test_init_is_told_the_permission_this_claude_code_has(self):
+        for modes, want in ((["auto", "manual"], "auto"), (["acceptEdits", "default"], "manual"), (None, "auto")):
+            with self.subTest(modes=modes):
+                r, out = self.run_()
+                seen = []
+                fake = mock.Mock()
+                fake.claude_modes.return_value = modes
+                with mock.patch.object(install, "setup_cmd", return_value=fake), \
+                        mock.patch.object(r, "script", side_effect=lambda label, argv: seen.append(argv) or (1, "no")), \
+                        redirect_stdout(out):
+                    install.find_instance(r, False)
+                self.assertEqual(seen[0][-2:], ["--permission", want])
+
+    def test_progress_waits_for_setup(self):
+        for setup, held in (({"done": False}, ["progress"]), ({"done": True}, []), (None, [])):
+            with self.subTest(setup=setup), self.instance(**({"setup": setup} if setup else {})):
+                r, out = self.run_()
+                holds = []
+                with redirect_stdout(out):
+                    install.hold_until_setup(r, holds)
+                self.assertEqual(holds, held)
+                self.assertEqual("skip core.setup" in out.getvalue(), bool(held))
+
+    def test_the_last_line_points_to_setup(self):
+        with self.instance(setup={"done": False}):
+            r, out = self.run_()
+            with redirect_stdout(out):
+                install.done(r, install.Steps(r), "安裝")
+        self.assertRegex(out.getvalue(), r"(?m)^ok core.done 安裝跑完了：到 Discord 的 #setup 把設定做完$")
+
+    def test_what_is_missing_is_said(self):
+        r, out = self.run_()
+        with mock.patch.object(install.shutil, "which", return_value=None), \
+                mock.patch.object(install.subprocess, "run", return_value=install.subprocess.CompletedProcess([], 1)), \
+                redirect_stdout(out):
+            install.needs(r)
+        line = out.getvalue()
+        self.assertTrue(line.startswith("todo core.needs "), line)
+        for word in ("tmux", "Claude Code", "python3-venv"):
+            self.assertIn(word, line)
+
+    def test_a_local_only_skill_is_never_linked_globally(self):
+        from altention import plugin
+        eng = os.path.join(self.home, "引擎")
+        for name in ("a", "setup"):
+            os.makedirs(os.path.join(eng, "skills", name))
+        open(os.path.join(eng, "skills", "setup", plugin.LOCAL_ONLY), "w").close()
+        with redirect_stdout(io.StringIO()):
+            got = plugin.link_skills(eng)
+        self.assertEqual((got["names"], got["made"]), (["a"], ["a"]))
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", "setup")))
+
+    def test_setups_folder(self):
+        eng = os.path.join(self.home, "引擎")
+        os.makedirs(os.path.join(eng, "skills", "setup"))
+        os.makedirs(os.path.join(eng, "skills", "update"))
+        folder = os.path.join(self.home, ".local", "state", "altention", "setup")
+        with mock.patch.object(install, "ENGINE", eng):
+            r, out = self.run_()
+            with redirect_stdout(out):
+                install.setup_folder(r, False)
+            self.assertIn("skip core.setup-folder", out.getvalue())
+            self.assertFalse(os.path.exists(folder))
+            r, out = self.run_()
+            with redirect_stdout(out):
+                install.setup_folder(r, True)
+            self.assertIn("changed core.setup-folder", out.getvalue())
+            with open(os.path.join(folder, ".claude", "settings.json")) as f:
+                allow = json.load(f)["permissions"]["allow"]
+            self.assertEqual(allow[0], "Bash(python3 %s/ops/setup.py:*)" % eng)
+            self.assertEqual(allow[1:], ["Bash(%s/bin/altention update %s:*)" % (eng, s)
+                                         for s in ("check", "go", "save", "apply", "undo")])
+            for name in ("setup", "update"):  # S4a: an update handed over is #setup's too
+                self.assertEqual(os.readlink(os.path.join(folder, ".claude", "skills", name)),
+                                 os.path.join(eng, "skills", name))
+                self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", name)), "never global")
+            self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", "setup")), "never global")
+            self.assertEqual(oct(os.stat(folder).st_mode & 0o777), oct(0o700))
+            os.makedirs(os.path.join(folder, "update-work"))
+            with open(os.path.join(folder, "update-work", "x"), "w") as f:
+                f.write("U chain's")
+            with open(os.path.join(folder, ".claude", "settings.json"), "w") as f:
+                f.write('{"permissions": {"allow": ["Bash(rm:*)"]}}')  # added by hand: written over
+            r, out = self.run_()
+            with redirect_stdout(out):
+                install.setup_folder(r, True)
+            with open(os.path.join(folder, ".claude", "settings.json")) as f:
+                self.assertNotIn("rm:", f.read())
+            self.assertTrue(os.path.exists(os.path.join(folder, "update-work", "x")))
+            r, out = self.run_()
+            with redirect_stdout(out):
+                install.setup_folder(r, True)
+            self.assertIn("ok core.setup-folder", out.getvalue())
+
+
 class InstallNode(Base):
     """usage/install-node.sh: the .tar.gz of this system's node (no xz needed: minimal Ubuntu has none, support-4
     2026-10-15), macOS's own build on a Mac. uname, curl and the tarball are stand-ins; tar and gzip are the real ones."""

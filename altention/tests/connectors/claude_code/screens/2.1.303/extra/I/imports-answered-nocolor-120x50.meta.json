@@ -1,0 +1,19 @@
+{
+ "claude_code": "2.1.303 (Claude Code)",
+ "colour": false,
+ "env": "NO_COLOR=1",
+ "TERM": "tmux-256color",
+ "pane": [
+  120,
+  50
+ ],
+ "clients_attached": 0,
+ "claude_args": "--permission-mode default",
+ "how": "the same pane after Enter on Yes: the conversation's input box",
+ "captured": "2026-10-20 00:50:06",
+ "files": {
+  "plain": "tmux capture-pane -p",
+  "esc": "tmux capture-pane -p -e"
+ },
+ "api": "a stand-in on 127.0.0.1 (no real model); scratch HOME, theme dark"
+}

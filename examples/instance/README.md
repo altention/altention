@@ -43,9 +43,11 @@ not write it as one key with a dot in its name (`"usage.plan": …`): such a key
   private SSH keys (`~` home, `*` within a name, `**` any depth). `core.secret_guard: false` turns the guard off. See
   `SECURITY.md`.
 - `core.notify_channel`: where `altention dc notify` posts when no channel is given (`category/name` or a channel ID).
+- `core.update_channel`: where the notices about updating the engine go (a new version, updated, an update that did not work); default `update`. A channel that is not there: the default notification channel, saying so.
 - `core.guide`: words used when the bot writes its help text (display names of machines, example channels).
 - `dcbot.channels`: names of the bot's own channels, if you want others than `audit`, `chat` and `guide`
-  (for example `{"chat": "console"}`).
+  (for example `{"chat": "console"}`); `system` names the category at the bottom that holds `audit` and `guide`
+  (default `系統`).
 - `dcbot.talk_limit`: how many times two of the bot's Claudes may hand over to each other without you before the bot
   pauses and asks you (0: no limit; 10 when not set). A channel can set its own with `/talklimit`.
 - `dcbot.default_model`, `dcbot.default_permission`: what new channels' conversations are opened with. Each channel

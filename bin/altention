@@ -4,6 +4,7 @@
   altention doctor [機器…] [--json] [--fix]   check every machine            (ops/doctor.py)
   altention apply <機器|all> [--dry-run]      install what the list says      (ops/apply.py)
   altention plugins list | show [機器]        the plugins and where they run  (ops/plugins.py)
+  altention update check | go <vX.Y.Z>       update this machine's engine    (altention/update_go.py)
   altention dc post <頻道> "…"               post to a Discord channel       (altention/dc/post.py)
   altention dc read <頻道> [則數]             read a channel                  (altention/dc/read.py)
   altention dc notify "…"                    push a notification             (altention/dc/notify.py)
@@ -17,7 +18,7 @@ import shutil
 import sys
 
 ENGINE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-TOP = {"doctor": "ops/doctor.py", "apply": "ops/apply.py", "plugins": "ops/plugins.py"}
+TOP = {"doctor": "ops/doctor.py", "apply": "ops/apply.py", "plugins": "ops/plugins.py", "update": "altention/update_go.py"}
 DC = {"post": "altention/dc/post.py", "read": "altention/dc/read.py", "notify": "altention/dc/notify.py"}
 
 

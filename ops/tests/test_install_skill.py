@@ -45,11 +45,12 @@ class Permissions(unittest.TestCase):
 
 
 class TranslationExample(unittest.TestCase):
-    """The skill's sentence-by-sentence English example quotes progress's question: it must be the printed one."""
+    """The setup skill's sentence-by-sentence English example quotes progress's question: it must be the printed
+    one (the questions moved from the install skill to #setup, C-48)."""
 
     def test_the_example_quotes_what_questions_prints(self):
-        text = read(".claude", "skills", "install", "SKILL.md")
-        part = " ".join(text[text.index("**The printed questions**"):text.index("Then check what they kept")].split())
+        text = read("skills", "setup", "SKILL.md")
+        part = " ".join(text[text.index("For example, progress's question"):text.index("## 1. Where things stand")].split())
         found, _ = plugin.discover(plugin.ENGINE, instance="", root=tempfile.gettempdir())
         q = [q for q in plugins.questions(found) if q["plugin"] == "progress"][0]
         quoted = [x.replace(" ", "") for x in re.findall(r"「(.*?)」", part)]
@@ -58,22 +59,29 @@ class TranslationExample(unittest.TestCase):
 
 
 class Backup(unittest.TestCase):
-    """C-25 (data-safety 2.2-2.4): the install asks about the backup with the printed questions, after the instance
-    and before Discord, and sets every remote through ops/remote.py set (its checks), never by hand."""
+    """C-25 (data-safety 2.2-2.4), now in #setup (C-48): the backup question is a printed one, and every remote is
+    set through setup.py backup-set, which makes only private repositories and runs ops/remote.py set's checks."""
 
-    def test_the_step_asks_the_printed_questions_and_sets_through_remote_py(self):
-        text = read(".claude", "skills", "install", "SKILL.md")
-        step = text[text.index("## 3b. Backup"):text.index("## 4. ")]
-        self.assertLess(text.index("python3 ops/instance.py init"), text.index("## 3b. Backup"))
-        self.assertIn("python3 ops/plugins.py questions --backup --json", step)
-        self.assertIn("python3 ops/remote.py set <instance|logs|progress|planner> <URL>", step)
-        self.assertIn("gh repo create <account>/<repo> --private", step)
-        self.assertFalse(re.search(r"gh repo create[^\n`]*--public", text), "no public repository is ever created")
-        for gone in ("remote add origin", "git push -u"):  # the old hand way, with no checks
-            self.assertNotIn(gone, text)
+    def test_the_step_sets_through_setup_py(self):
+        text = read("skills", "setup", "SKILL.md")
+        step = text[text.index("## 4. Backups"):text.index("## 5. ")]
+        self.assertIn("python3 <ENGINE>/ops/setup.py backup-set <name> --create <account>/altention-<name>", step)
+        self.assertIn("login-check", step)
+        for gone in ("remote add origin", "git push -u", "gh repo create", "remote.py set"):  # never by hand here
+            self.assertNotIn(gone, step)
+        code = read("ops", "setup.py")
+        self.assertIn('"gh", "repo", "create", target, "--private"', code)
+        self.assertNotIn("--public", code)
+        self.assertIn('"remote.py"), "set", name, url]', code)
         import remote
         for name in remote.NAMES:
-            self.assertIn("altention-%s" % name, step)
+            self.assertIn("`altention-%s`" % name, step)
+
+    def test_the_install_skill_asks_no_setting(self):
+        text = read(".claude", "skills", "install", "SKILL.md")
+        for gone in ("questions --setup", "questions --backup", "instance.py init", "AskUserQuestion), header 「方案」"):
+            self.assertNotIn(gone, text)
+        self.assertIn("#setup", text)
 
     def test_the_readmes_say_how_and_the_known_limit(self):
         for path, words in ((("README.md",), ("## Backup and restore", "up to an hour", "python3 ops/remote.py set")),
@@ -84,28 +92,22 @@ class Backup(unittest.TestCase):
 
 
 class Restore(unittest.TestCase):
-    """C-45 (C-30 drill): /install asks new install or restore first; the restore path asks none of the setup
-    questions and never runs init (they would write over what came back), and takes the old machine's name only
-    after the person says it will not be used again (manager 2026-10-17)."""
+    """C-45, moved to #setup (C-57 S2): the install skill restores nothing in the terminal; #setup asks new or
+    restore first, and goes: the login, which backup, restore (setup.py's checks), which machine, done."""
 
     def test_the_restore_path(self):
         text = read(".claude", "skills", "install", "SKILL.md")
-        self.assertLess(text.index("## 1b. A new install, or back from the backups"), text.index("## 2. Ask the questions"))
-        first = text[text.index("## 1b."):text.index("### Restoring from the backups")]
-        self.assertIn("config.instance_dir()", first)
-        self.assertIn("「新安裝」", first)
-        self.assertIn("「從備份還原」", first)
-        restore = text[text.index("### Restoring from the backups"):text.index("## 2. Ask the questions")]
-        for gone in ("instance.py init", "questions --setup", "questions --backup", "remote.py set"):
-            self.assertNotIn(gone, restore)
-        steps = [restore.index(w) for w in ("instance.py join <URL>", "instance.py names --json", "「不會再用了」",
-                                            "instance.py take-name", "install.sh discord")]
-        self.assertEqual(steps, sorted(steps), "join, the names, the person's yes, take-name, then the install")
-        self.assertIn("連不上不代表它沒了", restore)
-        self.assertIn("--only-in-settings", restore)
-        self.assertIn("mv ~/.config/altention/host ~/.config/altention/host.bak", restore, "kept, never deleted")
-        self.assertNotIn("rm ~/.config/altention/host", restore)
-        self.assertLess(restore.index("log --oneline -1 -- X/"), restore.index("host.bak"), "no records under X first")
+        part = text[text.index("## 1b."):text.index("## 4. The Discord application")]
+        for gone in ("instance.py names", "take-name", "host.bak", "AskUserQuestion"):
+            self.assertNotIn(gone, part, "done in #setup now")
+        self.assertIn("#setup", part)
+        self.assertIn("instance.py join <URL>", part, "kept for the advanced way only")
+        skill = read("skills", "setup", "SKILL.md")
+        restore = skill[skill.index("## Back from the backups"):skill.index("## 5. The tour")]
+        steps = [restore.index(w) for w in ("login-check", "setup.py repos --json", "setup.py restore <URL>",
+                                            "answer machine", "machine.confirm", "a few minutes; run `done`")]
+        self.assertEqual(steps, sorted(steps), "login, which backup, restore, which machine, its confirmation, done")
+        self.assertIn("kept, not deleted", " ".join(restore.split()))
 
     def test_the_readmes_say_how_to_restore(self):
         for path, words in ((("README.md",), ("「從備份還原」", "instance.py take-name", "~/.local/share/usage", "core.git-user")),

@@ -37,6 +37,10 @@ Ask (AskUserQuestion, one question, single choice), header 「導覽」:
 「之後再說」 or 「不用了」: one line with the tour back, then stop. 「開始」: say 「這個問題就是 Claude 用按鈕問你的
 樣子；選項以外的答案按「其他…」或直接打字都可以。先隨便打一句話給我，例如「你好」。」 and end the turn.
 
+**From #setup.** When you were started with 「設定做完了。請用 tour skill 帶使用者導覽：從第 1 步開始，不用再問開場那一
+題。」, they already chose 「開始」 there: do not ask the opening question. Say 「我們開始吧。你在 #setup 按的那種選項，就是
+Claude 用按鈕問你的樣子；選項以外的答案按「其他…」或直接打字都可以。先隨便打一句話給我，例如「你好」。」 and end the turn.
+
 ## 1. Typing and the reply
 
 When they write: say one sentence first (「我先看看這台開了哪些功能。」), then run `altention plugins show`, then

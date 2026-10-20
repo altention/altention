@@ -1090,8 +1090,9 @@ class Records(unittest.TestCase):
         self.assertIn("usage.out", r["fix"])
         code, r, _ = check(usage_last_run=iso(70), usage_failed={"at": iso(10), "why": why})
         self.assertEqual(r["status"], "fail", "failing since it last worked")
-        code, r, _ = check(usage_last_run=iso(10), usage_failed={"at": iso(70), "why": why})
-        self.assertEqual((r["status"], r["value"]), ("ok", iso(10)), "a good round after it")
+        good = iso(10)  # once: a second may pass between the round and the check (it did, 2026-10-19)
+        code, r, _ = check(usage_last_run=good, usage_failed={"at": iso(70), "why": why})
+        self.assertEqual((r["status"], r["value"]), ("ok", good), "a good round after it")
         code, r, _ = check(usage_last_run=None, usage_failed=None, usage_log_tail="usage：沒有 ccusage")
         self.assertEqual(r["status"], "fail")
         self.assertIn("還沒有收集成功過，輸出的最後一行：usage：沒有 ccusage", r["msg"])
@@ -1475,9 +1476,9 @@ class Records(unittest.TestCase):
         self.assertEqual(code, 0, "shown, not a problem")
         self.assertEqual(by["status.channel"]["status"], "warn")
         self.assertIn("看板頻道沒設定：status.channel", by["status.channel"]["msg"])
-        self.assertIn('"status": {"channel": "<頻道 ID>"}', by["status.channel"]["fix"])
-        self.assertIn('"usage": {"channel": "<頻道 ID>"}', by["usage.channel"]["fix"])
-        self.assertIn("dcctl ensure dashboard", by["usage.channel"]["fix"])
+        for k in ("status.channel", "usage.channel"):  # C-57 S3: the reconcile asks in #setup, or setup.py makes it
+            self.assertIn("python3 ops/setup.py reconcile", by[k]["fix"])
+            self.assertIn("python3 ops/setup.py dashboard", by[k]["fix"])
         self.assertEqual(by["planner.channel"]["status"], "warn")
         self.assertIn("對話頻道沒設定：planner.channel", by["planner.channel"]["msg"])
         self.assertIn("--new-claude \"$(python3 planner/remind.py --secretary)\"", by["planner.channel"]["fix"])
@@ -1983,6 +1984,18 @@ class Records(unittest.TestCase):
         self.assertIsNone(item(), "an engine that does not probe it")
         self.assertNotIn("dcbot.posts-failed", doctor.WATCHED + doctor.WATCHED_WARN)
 
+    def test_update_cards_that_keep_failing(self):
+        def item(**probe):
+            _, recs = self.records({"host-a": healthy(**probe)})
+            return next((r for r in recs if r["id"] == "dcbot.cards-failed"), None)
+        r = item(cards_failed=2)
+        self.assertEqual((r["status"], r["value"]), ("warn", 2))
+        self.assertIn("2 張更新卡片", r["msg"])
+        self.assertIn("每 5 分鐘再試", r["msg"])
+        self.assertIsNone(item(cards_failed=0))
+        self.assertIsNone(item(cards_failed="x"), "not a number: said by core.probe-odd")
+        self.assertIsNone(item())
+
     def test_routes_without_their_panes_process_are_listed(self):
         """Stage 3b step 1.9: the first format of a route (just the channel) and one with no process are still read;
         shown for the owner to attach again, nothing is failing."""
@@ -2037,6 +2050,75 @@ def backup_row(name, **kw):
         row["setting"] = row["origin"]
     row.update(kw)
     return row
+
+
+class CardsFailed(unittest.TestCase):
+    """C-57 D2's update cards in posts-failed/ ("card" in the post) are the bot's to retry: not counted as
+    notifications that could be shown nowhere; said apart once one kept failing 15 minutes (manager 2026-10-19)."""
+
+    def probe(self, posts):
+        home = tempfile.mkdtemp(prefix="家 cards ")
+        self.addCleanup(shutil.rmtree, home, True)
+        eng = os.path.join(home, "altention", "engine")
+        folder = os.path.join(eng, "dcbot", "state", "posts-failed")
+        os.makedirs(folder)
+        for i, post in enumerate(posts):
+            with open(os.path.join(folder, "%03d.json" % i), "w") as f:
+                json.dump(post, f)
+        r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), timeout=120)
+        o = json.loads(r.stdout.strip().splitlines()[-1])
+        return o["posts_failed"], o["cards_failed"]
+
+    def test_counted_apart(self):
+        now = time.time()
+        card = lambda ago: {"card": {"id": "update-v0.3.0", "text": "⏳"}, "channel": "update", "failed_at": now - ago}
+        self.assertEqual(self.probe([{"notify": True, "text": "x", "failed_at": now}, card(60)]), (1, 0),
+                         "a card the bot is still retrying is no notification lost")
+        self.assertEqual(self.probe([card(20 * 60), card(60), {"card": {"id": "y"}}]), (0, 2), "kept failing, or no time")
+
+
+class AsksLeft(unittest.TestCase):
+    """C-57 S3: a declared setting the instance has not got is said, with the reconcile to ask it."""
+
+    def test_said_until_set(self):
+        inst = tempfile.mkdtemp(prefix="實例 ")
+        self.addCleanup(shutil.rmtree, inst, True)
+        rows = [("core", "/c", {"asks": [{"key": "dcbot.default_permission", "question": "x"}]}, "on", ""),
+                ("usage", "/u", {"asks": [{"key": "usage.plan", "question": "usage.plan",
+                                           "unless": {"usage.subscription_limits": False}}]}, "on", ""),
+                ("gone", "/g", {"asks": [{"key": "gone.x", "question": "x"}]}, "disabled", "")]
+        for settings, said in (({}, ["dcbot.default_permission", "usage.plan"]),
+                               ({"usage": {"subscription_limits": False}}, ["dcbot.default_permission"]),
+                               ({"dcbot": {"default_permission": "auto"}, "usage": {"plan": ["Pro", 1]}}, None)):
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                json.dump(dict({"format": 1}, **settings), f)
+            with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}), \
+                    mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])):
+                rec = doctor.asks_record()
+            if said is None:
+                self.assertIsNone(rec)
+            else:
+                self.assertEqual(rec["msg"], "這版要的設定還沒選：%s" % "、".join(said))
+                self.assertIn("setup.py reconcile", rec["fix"])
+
+
+class SetupLeft(unittest.TestCase):
+    """C-48: a new installation whose #setup is not done is said (a warn, with where to go), nothing otherwise."""
+
+    def test_said_only_while_not_done(self):
+        inst = tempfile.mkdtemp(prefix="實例 ")
+        self.addCleanup(shutil.rmtree, inst, True)
+        for setup, said in (({"done": False}, True), ({"done": True}, False), (None, False)):
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                json.dump(dict({"format": 1}, **({"setup": setup} if setup else {})), f)
+            with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}):
+                rec = doctor.setup_record()
+            if said:
+                self.assertEqual((rec["id"], rec["status"]), ("core.setup", "warn"))
+                self.assertIn("#setup", rec["msg"])
+            else:
+                self.assertIsNone(rec)
 
 
 class Backups(unittest.TestCase):

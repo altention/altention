@@ -352,8 +352,20 @@ def attention_board(records, note, state, now):
 
 
 # ------------------------------------------------------------------------------------------------ 在等你的事
-def waiting_board(state, now):
+def setup_left():
+    """The instance's setup.done is false: #setup has questions left (C-48); False when that cannot be read."""
+    try:
+        engine_on_path()
+        from altention import config
+        return config.setting("setup.done", True) is False
+    except Exception:
+        return False
+
+
+def waiting_board(state, now, setup=False):
     folder, rows = os.path.join(state, "asks"), []
+    if setup:  # first: nothing else runs as chosen until it is done
+        rows.append((-1, "", "- 設定還沒做完：到 #setup 接著回答（在那裡打任何一句，Claude 會從還沒答的題目接著問）"))
     try:
         names = sorted(n for n in os.listdir(folder) if n.endswith(".json") and not n.startswith("."))
     except OSError:
@@ -386,7 +398,7 @@ def boards(now=None, here=None):
     return [(ORDER[0], channels_board(channels, here, now)),
             (ORDER[1], machines_board(records, note, state, kept, now)),
             (ORDER[2], attention_board(records, note, state, now)),
-            (ORDER[3], waiting_board(state, now))]
+            (ORDER[3], waiting_board(state, now, setup_left()))]
 
 
 def settings():

@@ -816,6 +816,40 @@ class Dcpost(unittest.TestCase):
         p = dcpost.build(["行程", "--board", "本週", "- 週一"], "", {}, "h", "/x")
         self.assertEqual((p["board"], p["text"]), ("本週", "- 週一"))
 
+    def test_file_with_text_from_stdin(self):
+        """main(): text from stdin goes along with --file, as usage says (it was dropped: stdin was read only when the
+        channel was all the command line held, support-2 2026-10-20)."""
+        path = os.path.join(os.path.dirname(ROOT), "altention", "dc", "post.py")
+        loader = importlib.machinery.SourceFileLoader("dcpost", path)
+        dcpost = importlib.util.module_from_spec(importlib.util.spec_from_loader("dcpost", loader))
+        loader.exec_module(dcpost)
+
+        def run(argv, stdin):
+            sent = []
+            with mock.patch.object(dcpost, "deliver", lambda post: (sent.append(post), (0, ""))[1]), \
+                    mock.patch("sys.argv", ["post.py"] + argv), mock.patch("sys.stdin", io.StringIO(stdin)), \
+                    mock.patch.dict(os.environ, {"DCBOT_CHANNEL": "55"}):
+                with self.assertRaises(SystemExit) as e:
+                    dcpost.main()
+            self.assertIn(e.exception.code, (0, None))
+            return sent[0]
+
+        with tempfile.NamedTemporaryFile(suffix=".md") as f:
+            f.write(b"# report")
+            f.flush()
+            name = os.path.basename(f.name)
+            p = run(["reports", "--file", f.name], "long text\nfrom stdin\n")
+            self.assertEqual((p["text"], p["file_name"]), ("long text\nfrom stdin", name), "--file and stdin: both")
+            p = run(["reports", "--file", f.name, "weekly"], "ignored\n")
+            self.assertEqual((p["text"], p["file_name"]), ("weekly", name), "--file and text: the text given, stdin unread")
+            p = run(["reports", "--file", f.name], "")
+            self.assertEqual((p["text"], p["file_name"]), ("", name), "--file alone")
+            self.assertTrue(p["file_b64"])
+        p = run(["reports"], "only stdin\n")
+        self.assertEqual(p["text"], "only stdin")
+        p = run(["reports", "--history"], "not for it\n")
+        self.assertEqual((p.get("history"), p["text"]), (True, ""), "--history does not read stdin")
+
 
 
 class ServerMap(unittest.TestCase):

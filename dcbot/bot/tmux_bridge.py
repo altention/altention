@@ -24,7 +24,7 @@ from altention.connectors.claude_code import launch as cc_launch
 from altention.connectors.claude_code import typist as cc_typing
 
 from . import posts as posts_mod
-from . import agents, ask, attachments, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, tmuxio
+from . import agents, ask, attachments, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, startup_ask, tmuxio
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
@@ -356,6 +356,7 @@ class Runtime(object):
         self.opening = None   # a window being opened for the channel (ensure_home): True, then its pane, until it is kept
         self.outcome = None   # what the checks before the last message typed came to (Typing; may_type())
         self.closed = []      # windows the bot closed for the channel lately (close()), until one of their number starts anew
+        self.unanswered = False  # the last opening gave up waiting on the owner's answer to a startup dialog (wait_ready)
 
 
 def write_settings():
@@ -412,6 +413,7 @@ class TmuxBridge(object):
             self.asks.on_done = host.posts.answered
         self.agents = agents.Agents(host)
         self.menus = menus.Menus(self)
+        self.startup = startup_ask.StartupAsk(self)
         self.streams = {}  # machine -> the SSH process bringing its events
         self.handling = False  # an event is being posted: a restart waits for it (main.Bot.busy_with_work)
         self.held = set()  # channels whose next event waits in the spool for its row (pump_once)
@@ -560,11 +562,12 @@ class TmuxBridge(object):
         saved = st.get("session_id")
         for resume in ([saved, None] if saved else [None]):
             rt.ready.clear()
+            rt.unanswered = False
             st["busy"] = False
             pane = None
             try:
                 pane = await start(resume, how)
-                if pane is not None and await self.wait_ready(pane, rt):
+                if pane is not None and await self.wait_ready(pane, rt, ask=lambda choice, p=pane: self.startup.post(ch, p, choice)):
                     await kept(pane, bool(saved and not resume))
                     opened(st, rt)
                     if saved and not resume:
@@ -573,6 +576,8 @@ class TmuxBridge(object):
             finally:
                 rt.opening = None
             await failed(pane)
+            if rt.unanswered:  # the owner did not answer its startup dialog: no new conversation in place of the saved
+                break          # one, which would ask the same again (#code-review of 5b4d448); the next message opens it
         return False
 
     async def ensure_home(self, ch, st, rt):
@@ -622,28 +627,44 @@ class TmuxBridge(object):
                 await self.told(lambda body: self.say(ch, body), not_opened(rt, e, message=False))
                 return False
 
-    async def wait_ready(self, where, rt):
+    async def wait_ready(self, where, rt, ask=None):
         """Wait for SessionStart, answering the startup dialogs (trust this folder, bypass mode) with Yes.
-        `where`: the pane the conversation was opened in (tmuxio.Pane, or what one is made from)."""
+        `where`: the pane the conversation was opened in (tmuxio.Pane, or what one is made from). A startup dialog
+        the bot does not answer for the owner (screen.startup_choice: 2.1.303's external imports) is handed to
+        `ask(choice)` once (startup_ask posts it with buttons and gives its token) and waited on without the
+        START_SECS limit, up to startup_ask.ASK_SECS; its buttons go when the wait ends."""
         pane = tmuxio.pane(where)
-        t0 = time.time()
-        while time.time() - t0 < START_SECS:
-            if rt.ready.is_set():
-                await asyncio.sleep(1)  # the prompt box appears just after the hook fires
-                return True
-            how = await pane.standing()
-            if how == "gone":
-                return False
-            if how == "unknown":  # asked and not answered (the line to that machine): it may be starting all the same.
-                await asyncio.sleep(0.5)  # Taken for gone, the window was closed and a new conversation begun in its place
-                continue
-            if pane.remote and screen.has_prompt(await pane.raw_screen()):
-                return True  # another machine: its SessionStart may have come before the route was written
-            key = screen.startup_key(await pane.raw_screen())
-            if key:
-                await pane.keys(key)
-            await asyncio.sleep(0.5)
-        return False
+        t0 = first = time.time()
+        token, ok = None, False
+        try:
+            while time.time() - t0 < START_SECS and time.time() - first < startup_ask.ASK_SECS:
+                if rt.ready.is_set():
+                    await asyncio.sleep(1)  # the prompt box appears just after the hook fires
+                    ok = True
+                    return True
+                how = await pane.standing()
+                if how == "gone":
+                    return False
+                if how == "unknown":  # asked and not answered (the line to that machine): it may be starting all the same.
+                    await asyncio.sleep(0.5)  # Taken for gone, the window was closed and a new conversation begun in its place
+                    continue
+                view = await pane.raw_screen()
+                if pane.remote and screen.has_prompt(view):
+                    ok = True
+                    return True  # another machine: its SessionStart may have come before the route was written
+                key = screen.startup_key(view)
+                if key:
+                    await pane.keys(key)
+                elif ask is not None and screen.startup_choice(view) is not None:
+                    if token is None:
+                        token = await ask(screen.startup_choice(view)) or "-"
+                    t0 = time.time()  # the owner is deciding: not a start that hangs
+                await asyncio.sleep(0.5)
+            rt.unanswered = token is not None
+            return False
+        finally:
+            if token not in (None, "-"):
+                await self.startup.done(token, "" if ok else "等太久了，這次沒有開起來；再發一則訊息會重新開，問題會再出現一次。")
 
     # ------------------------------------------------------------------ input
     async def submit(self, message, text, out=None, now=False, confirmed=False):

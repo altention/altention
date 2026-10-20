@@ -515,14 +515,27 @@ def first_question(plugins):
                         {"label": "關掉一些", "description": "接著一個一個問"}]}
 
 
-def secretary_question(plugins):
+def secretary_question(plugins, again=False, gone=False):
     """Open the secretary or not, from planner's plugin.json; None when planner is not there. Asked with the other
-    setup questions, so that once the bot is up its channel is opened without asking again."""
+    setup questions, so that once the bot is up its channel is opened without asking again. again: they chose to open
+    it before and its channel was never made (setup.py done did not get to it): asked as that, not as new (manager
+    2026-10-20, Z trial). gone: its channel was there and is not any more (deleted): asked as that (before again)."""
     d = next((d for n, _, d in plugins if n == SECRETARY), None)
     if d is None:
         return None
     title = d.get("title") or SECRETARY
     pitch = d.get("pitch", "").strip()
+    lose = "少了%s" % title + ("，" + d["lose"] if d.get("lose") else "")
+    if gone:
+        return {"key": "plugins.%s" % SECRETARY, "values": ["on", "off"], "header": "秘書", "multiSelect": False,
+                "question": "#secretary 已經不在了，要重新建一個嗎？",
+                "options": [{"label": "重新建（建議）", "description": "照之前選的時間再開一個 #secretary"},
+                            {"label": "不開了", "description": lose}]}
+    if again:
+        return {"key": "plugins.%s" % SECRETARY, "values": ["on", "off"], "header": "秘書", "multiSelect": False,
+                "question": "上次你選了開%s，可是 #secretary 還沒建好（那時設定沒做完）。要現在建好嗎？" % title,
+                "options": [{"label": "建好它（建議）", "description": "照上次選的時間開 #secretary"},
+                            {"label": "不開了", "description": "少了%s" % title + ("，" + d["lose"] if d.get("lose") else "")}]}
     return {"key": "plugins.%s" % SECRETARY, "values": ["on", "off"], "header": "秘書", "multiSelect": False,
             "question": "%s：%s%s要開嗎？開的話接著問時間。" % (
                 title, pitch, "" if pitch.endswith("。") or not pitch else "。"),
@@ -553,7 +566,8 @@ def briefing_questions():
 
 
 def setup_questions(plugins, zone, unpacked):
-    """The install's first questions (five, and the secretary's when planner is there), word for word as the skill passes them on (Claude wrote them itself once
+    """The install's first questions (five, and the secretary's when planner is there), in #setup's order (time zone,
+    permission, talk limit, update, the optional parts: C-48), word for word as the skill passes them on (Claude wrote them itself once
     and mixed in English and setting names, 2026-10-15). The permission modes keep Claude Code's own names, the ones
     its screen shows, with their meaning in front of each description. "key" and "values" are for the skill: the
     setting each answer goes into and the value of each option, in order; the person sees neither. zone: this machine's time zone
@@ -570,24 +584,118 @@ def setup_questions(plugins, zone, unpacked):
     return [
         ask("core.timezone", "時區", "提醒和排程要用哪個時區？要用別的時區，選「其他」打它的名稱，例如 Europe/Berlin。",
             zones, [z.replace("（建議）", "") for z, _ in zones]),
-        first_question(plugins),
-        ask("core.update", "引擎更新", "有新版本時要怎麼做？" + (
-            "這份引擎是從壓縮檔解開的，不管選哪個都不會自己更新，也不會通知新版；要新版請重新下載。" if unpacked else ""),
-            [("只通知（建議）", "有新版時在狀態看板和健康檢查裡告訴你，不會自己更新"),
-             ("自動更新", "每次出新版就自己更新，更新前先檢查程式能不能正常載入")], ["notify", "release"]),
-        ask("dcbot.default_permission", "權限", "機器人開的 Claude Code 對話，可以不問你就做多少事？之後每個頻道可以各自設定。",
-            [("auto（建議）", "自動判斷：安全的直接做；有風險的（刪工作資料夾以外的東西、強制推送、執行從網路下載的程式、改開機會自動啟動的東西等）"
-                                "會被擋下，Claude 改走別的路或停下來說明，不會先問你；被擋幾次之後才改成在 Discord 用按鈕問你。"
-                                "目前被擋下時 Discord 不會另外顯示"),
-             ("manual", "每次都問：每個需要權限的動作都先在 Discord 用按鈕問你。最安全，要按的按鈕也最多"),
-             ("bypassPermissions", "從不問：不問你，有風險的動作也不先擋（只剩機器人自己的禁止規則和保護密碼、金鑰的檢查照樣擋）。"
-                        "誰控制你的 Discord 帳號，幾乎就能在這台機器上執行任何指令")],
+        ask("dcbot.default_permission", "權限", "機器人裡的 Claude 可以不問你就做多少事？這關係到安全，也關係到你要按幾次「允許」。"
+            "之後每個頻道可以各自設定。",
+            [("auto（建議）", "自動判斷：一般的事直接做，不用一直按「允許」；危險的事（例如刪掉重要的檔案、改動整台電腦的設定、"
+                                "執行從網路下載的程式）會被擋下，Claude 改用別的方法，或停下來跟你說。被擋好幾次之後，才會在 Discord "
+                                "跳按鈕問你。被擋下時，Discord 目前不會另外通知你"),
+             ("manual", "每次都問：Claude 每次要改檔案或執行指令，都先在 Discord 跳按鈕，等你按「允許」。最安全，但要按很多次"),
+             ("bypassPermissions", "從不問：不問你也不擋，危險的事也直接做（只剩機器人自己的幾條禁止規則，和保護密碼、金鑰的檢查還在）。"
+                        "誰拿到你的 Discord 帳號，幾乎就能控制這台電腦。不建議")],
             ["auto", "manual", "bypassPermissions"]),
         ask("dcbot.talk_limit", "來回上限", "各頻道的 Claude 可以互相交辦工作、回覆對方。連續來回幾次、中間你都沒說話時，"
             "機器人要先停下來問你要不要繼續？它會標註你，手機會跳通知。之後每個頻道可以各自設定。",
             [("10 次（建議）", "一般的交辦和回覆都夠用"), ("30 次", "讓長一點的來回不被打斷"),
              ("不限", "一直來回到做完為止，可能用掉很多訂閱額度")], [10, 30, 0]),
+        ask("core.update", "引擎更新", "有新版本時要怎麼做？" + (
+            "這份引擎是從壓縮檔解開的，不管選哪個都不會自己更新，也不會通知新版；要新版請重新下載。" if unpacked else ""),
+            [("只通知（建議）", "有新版時在狀態看板和健康檢查裡告訴你，不會自己更新"),
+             ("自動更新", "每次出新版就自己更新，更新前先檢查程式能不能正常載入")], ["notify", "release"]),
+        first_question(plugins),
     ] + [q for q in [secretary_question(plugins)] if q]
+
+
+def times_question():
+    """C-48: the secretary's suggested times, or choose each one (briefing_questions); asked once it is opened."""
+    return {"key": "planner.times", "values": ["suggested", "custom"], "header": "秘書時間", "multiSelect": False,
+            "question": "秘書什麼時候叫你？建議的時間是：早報每天 08:00、晚間回顧每天 22:00、每週回顧週日 21:00。"
+                        "要用這些時間，還是自己選？之後跟秘書說一聲就能改。",
+            "options": [{"label": "用建議的時間（建議）", "description": "早報 08:00、晚間回顧 22:00、每週回顧週日 21:00"},
+                        {"label": "自己選", "description": "接著三個時間各問一次"}]}
+
+
+PLANS = (("Pro", 1), ("Max 5x", 5), ("Max 20x", 20))  # usage.plan as [name, how many Pro allowances]
+
+
+def plan_question():
+    """The plan, for the usage board's subscription limits (the install skill's own words until C-48); values are
+    the plan's name, "none" for not reading the limits. Another plan typed in: "<name>=<Pro allowances>"."""
+    return {"key": "usage.plan", "values": [n for n, _ in PLANS] + ["none"], "header": "方案", "multiSelect": False,
+            "question": "你的 Claude 訂閱是哪個方案？用量看板會顯示訂閱額度用了多少：為了讀額度，每小時用 haiku 送一個最小的請求，"
+                        "會算進 5 小時的額度。不想花這個額度就選最後一個。",
+            "options": [{"label": n, "description": "顯示訂閱額度（每小時一個最小的 haiku 請求）"} for n, _ in PLANS]
+            + [{"label": "不顯示訂閱額度（不花額度）", "description": "看板不顯示額度用了多少，也不送讀額度的請求；之後想看再開"}]}
+
+
+PROGRESS_EVERY = ("10m", "30m", "1h")  # C-47: until the measurement (10/26), the default first (manager 2026-10-19)
+
+
+def progress_question():
+    """How often progress sums up the projects (C-47): plugins.progress.schedules.run.when.every."""
+    words = {"10m": "10 分鐘", "30m": "30 分鐘", "1h": "1 小時"}
+    return {"key": "progress.every", "values": list(PROGRESS_EVERY), "header": "進度頻率", "multiSelect": False,
+            "question": "進度多久整理一次？越常整理，每個專案的進度越新，用的訂閱額度也越多。之後跟 Claude 說一聲就能改。",
+            "options": [{"label": "%s%s" % (words[v], "（建議）" if i == 0 else ""),
+                         "description": d} for i, (v, d) in enumerate(zip(PROGRESS_EVERY, (
+                             "每 10 分鐘整理一次，進度最新", "每 30 分鐘一次，額度用得比較少", "每小時一次，額度用得最少")))]}
+
+
+def install_question():
+    """#setup's first question (C-57 S2): a new installation, or back from the backups (the install skill's words)."""
+    return {"key": "install", "values": ["new", "restore"], "header": "安裝", "multiSelect": False,
+            "question": "這台要怎麼裝？",
+            "options": [{"label": "新安裝（建議）", "description": "第一次用 Altention，或想從頭開始"},
+                        {"label": "從備份還原", "description": "換了電腦，或舊的壞了：從之前備份的 private repo 拿回記憶、設定和紀錄"}]}
+
+
+def machine_question(names, listed=False):
+    """Which old machine this one takes the place of, after a restore (the install skill's words; C-45). names:
+    [(name, [where])] as instance.names() gives them; the last option keeps this machine's own name, offered only
+    when the instance has no machine list (listed): a machine the list does not have installs nothing (C-57 S2;
+    adding a machine to a set that is still in use is another thing, not a restore: manager 2026-10-20)."""
+    only = ["plugins.json"]  # instance.ONLY_SETTINGS
+    shown, rest = (names[:4], names[4:]) if listed else (names[:3], names[3:])  # four options at most: the others typed
+    return {"key": "machine", "values": [n for n, _ in shown] + ([] if listed else [""]) + [n for n, _ in rest],
+            "header": "接替哪台", "multiSelect": False,
+            "question": "這台要接替哪一台舊機器？照機器名字記的設定（哪台關掉了哪些功能、對話紀錄寫進哪個資料夾）會變成這台的。"
+                        + ("其他的名字（%s）選「其他」打出來。" % "、".join(n for n, _ in rest) if rest else "")
+                        + ("從備份還原就是接替其中一台。舊機器還在用、想多加一台的話，這不是還原：在原本那套的 Discord "
+                           "跟 Claude 說「加一台機器」。" if listed else ""),
+            "options": [{"label": n, "description": "只出現在設定裡：可能是打錯的，或是一台沒寫進機器清單的機器"
+                         if w == only else "出現在：%s" % "、".join(w)} for n, w in shown]
+            + ([] if listed else [{"label": "當成新的一台",
+                                   "description": "用這台自己的名字：照舊名字記的設定不會套到這台，之後要自己重設"}])}
+
+
+def dashboard_question(again=False, gone=False):
+    """C-57 S3: an installation from before #dashboard (or whose board channel is gone): make it, or turn the boards
+    off. Asked, never made unasked: it is one more channel in the main area (owner's decision 7, 2026-10-19).
+    again: they chose to make it before and it was never made: asked as that. gone: it was there and was deleted."""
+    if gone:
+        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
+                "question": "#dashboard 已經不在了，要重新建一個嗎？",
+                "options": [{"label": "重新建（建議）", "description": "在主區再開一個 #dashboard，看板自己更新"},
+                            {"label": "不要了", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
+    if again:
+        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
+                "question": "上次你選了開 #dashboard，可是它還沒建好（那時設定沒做完）。要現在建好嗎？",
+                "options": [{"label": "建好它（建議）", "description": "在主區開 #dashboard，看板自己更新"},
+                            {"label": "不要了", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
+    return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
+            "question": "要開一個 #dashboard 頻道放看板嗎？看板會顯示各頻道在忙什麼、機器的狀況、要注意的事，"
+                        "還有訂閱額度用了多少。之後想關，跟 Claude 說一聲就好。",
+            "options": [{"label": "開（建議）", "description": "在主區多一個 #dashboard，看板自己更新"},
+                        {"label": "不要", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
+
+
+def tour_question():
+    """The last question of #setup, once it is done: the tour (the tour skill's own opening, word for word)."""
+    return {"key": "tour", "values": ["start", "later", "no"], "header": "導覽", "multiSelect": False,
+            "question": "要我帶你試一下機器人的主要功能嗎？大約十分鐘，每一步你做一件事。會用掉一點訂閱額度，"
+                        "大約跟平常聊十幾二十句差不多。",
+            "options": [{"label": "開始", "description": "一步一步試幾個主要功能"},
+                        {"label": "之後再說", "description": "之後任何頻道打 /tour 再叫我"},
+                        {"label": "不用了", "description": "不帶導覽"}]}
 
 
 BACKUPS = (("instance", None, "記憶、知識、設定和機器清單"),  # remote.py's names, the plugin each needs, what it holds

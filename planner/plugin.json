@@ -12,7 +12,8 @@
     {
       "name": "secretary",
       "kind": "claude",
-      "setting": "planner.channel"
+      "setting": "planner.channel",
+      "category": "main"
     }
   ],
   "schedules": [

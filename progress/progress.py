@@ -374,14 +374,19 @@ def load_projects():
 
 
 def match_project(meta, projects):
+    """The project the rules give a session: by its remote, else the longest known path holding its folder, else the
+    engine's project for work in the instance. Several projects knowing one remote (a session once filed wrongly
+    taught it) give the instance's progress.instance_project when it is one of them, else the first by id, the same
+    every round whatever order the folders are listed in."""
     remote = norm_remote((meta.get("git") or {}).get("remote"))
     if remote:
-        for pid, p in projects.items():
-            if remote in [norm_remote(r) for r in p.get("remotes", [])]:
-                return pid, "remote"
+        hits = sorted(pid for pid, p in projects.items() if remote in [norm_remote(r) for r in p.get("remotes", [])])
+        if hits:
+            chosen = config.setting("progress.instance_project")
+            return (chosen if chosen in hits else hits[0]), "remote"
     cwd = (meta.get("cwd") or "").rstrip("/")
     best, best_len = None, 0
-    for pid, p in projects.items():
+    for pid, p in sorted(projects.items()):
         for path in p.get("paths", []):
             path = path.rstrip("/")
             if path and (cwd == path or cwd.startswith(path + "/")) and len(path) > best_len:
@@ -393,6 +398,28 @@ def match_project(meta, projects):
         if pid:
             return pid, "instance"
     return None, None
+
+
+def resolve_project(name, projects):
+    """The project an answer names: that id; else the project listing the name among its aliases, or the one the
+    instance's progress.aliases ({old name: id}) sends it to; else the name, slugged, as a new project. A renamed
+    project keeps its old name as an alias, so work still given the old name joins it instead of making the old
+    project again (agent-home → altention, 2026-10-20)."""
+    name = name or MISC
+    if name in projects:
+        return name
+    key = slug(name)
+    if key in projects:
+        return key
+    table = config.setting("progress.aliases")
+    if isinstance(table, dict):
+        for old, pid in sorted(table.items()):
+            if pid in projects and slug(old) == key:
+                return pid
+    for pid, p in sorted(projects.items()):
+        if any(isinstance(a, str) and slug(a) == key for a in p.get("aliases") or []):
+            return pid
+    return key
 
 
 def learn_identity(project, meta):
@@ -812,11 +839,9 @@ def run(dry=False, max_n=MAX_PER_RUN, backfill=False):
         cost += c
         tag = "推測（只有使用者訊息）" if kind == "recon" else ("主動匯報" if w.get("report") else "")
         entries = out.get("entries", [])
-        solo = len(set(e.get("project") for e in entries if e.get("project") != MISC)) == 1
-        for e in entries:
-            pid = e.get("project") or MISC
-            if pid not in projects:
-                pid = slug(pid)
+        pids = [resolve_project(e.get("project"), projects) for e in entries]
+        solo = len(set(p for p in pids if p != MISC)) == 1
+        for e, pid in zip(entries, pids):
             if pid not in projects:
                 np = e.get("new_project") or {}
                 projects[pid] = {"id": pid, "name": np.get("name") or pid, "description": np.get("description", ""),

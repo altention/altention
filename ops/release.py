@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)  # the repository whose commit is published (tests point it elsewhere)
 SCAN = os.path.join(ENGINE, "tools", "privacy-scan")
 sys.path.insert(0, ENGINE)
-from altention import config  # noqa: E402
+from altention import config, text as alt_text  # noqa: E402
 
 VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
@@ -278,6 +278,22 @@ def changelog(rev, version, said):
     return text
 
 
+def own_words(version, text, notes):
+    """C-57 U8: the update notices quote a release's "### For people (<language>)" part in an installation of that
+    language, its English "For people" when it has none. Each language the engine speaks (altention/text.py) whose
+    part `text` (the "## vVERSION" section) lacks, or has without a point, noted: a reminder, not a refusal."""
+    parts, part = {}, None
+    for line in text.splitlines():
+        if line.startswith("### "):
+            part = line[4:].strip().lower()
+        elif line.startswith("- "):
+            parts[part] = parts.get(part, 0) + 1
+    for lang in sorted(alt_text.TEXT):
+        if not parts.get("for people (%s)" % lang.lower()):
+            notes.append("%s 的 v%s 沒有「### For people (%s)」這段（或裡面沒有項目）：那個語言的安裝在更新卡片上"
+                         "會看到英文的 For people" % (CHANGELOG, version, lang))
+
+
 # ------------------------------------------------------------------------------------------- making it
 def message(version, text):
     return "Altention v%s\n\n%s\n" % (version, text)
@@ -336,6 +352,8 @@ def run(action, version, rev, push):
         tagged = private_tag(remote, version, commit, said) if VERSION.match(version or "") else False
         good_version = version_ok(version, tags, said)
         text = changelog(commit, version, said) if good_version else None
+        if text:
+            own_words(version, text, notes)
     for n in notes:
         print("提醒：" + n)
     if said or not (clean and registered and took):

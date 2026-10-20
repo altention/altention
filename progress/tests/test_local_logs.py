@@ -88,6 +88,25 @@ class OneMachineNoRemote(Base):
         self.assertEqual(progress.run_noted(), 0)
         self.assertEqual(self.state_json().get("last_processed"), 1)
 
+    def test_a_renamed_project_is_not_made_again_under_its_old_name(self):
+        chatlog_repo(self.logs)
+        self.add_session("11111111-aaaa-bbbb-cccc-000000000003", "幫我做示範")
+        self.assertEqual(progress.run_noted(), 0)
+        projects = os.path.join(progress.PROGRESS, "projects")
+        # the owner renames it, as with agent-home → altention: folder moved, id changed, the old name kept as an alias
+        os.rename(os.path.join(projects, "demo"), os.path.join(projects, "sample"))
+        pj = os.path.join(projects, "sample", "project.json")
+        d = progress.read_json(pj, {})
+        d.update(id="sample", name="Sample", aliases=["demo"])
+        write(pj, d)
+        self.add_session("11111111-aaaa-bbbb-cccc-000000000004", "再做一個")  # Claude still answers "demo"
+        self.assertEqual(progress.run_noted(), 0)
+        self.assertEqual(self.state_json().get("last_processed"), 1)
+        self.assertFalse(os.path.exists(os.path.join(projects, "demo")), "the old name came back as a new project")
+        log = os.path.join(projects, "sample", "log")
+        self.assertEqual(progress.read(os.path.join(log, os.listdir(log)[0])).count("做了示範"), 2)
+        self.assertEqual(progress.read_json(pj, {}).get("id"), "sample")
+
     def test_a_new_install_with_no_conversation_yet_is_a_quiet_round(self):
         chatlog_repo(self.logs, commit=False)
         self.assertEqual(progress.run_noted(), 0)

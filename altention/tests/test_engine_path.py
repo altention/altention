@@ -47,7 +47,7 @@ class EnginePath(unittest.TestCase):
         import apply
         for template in (apply.SCRIPT, apply.PREVIEW, apply.HELD):
             script = template.format(instance="''", repo="''", name="''", engine=config.engine_on({"engine": "~/my 引擎"}),
-                                     plugins="", names="progress", bot_leaves="0", allow="")
+                                     plugins="", names="progress", bot_leaves="0", allow="", take="0", how="--release")
             line = next(l for l in script.splitlines() if l.startswith("H="))
             self.assertEqual(shell(line + '; printf %s "$H"', self.home), os.path.join(self.home, "my 引擎"))
 

@@ -138,7 +138,10 @@ def check(d, path="plugin.json", core=False):
         _need(s.get("sync", "timer") in SYNC, path, "data[%d].sync 只能是 %s" % (i, "、".join(SYNC)))
     _list_of(d, "skills", path, ["name", "path"])
     _list_of(d, "requires", path, ["plugin"], [("data", str)])
-    _list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str)])
+    for i, c in enumerate(_list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str), ("name_setting", str)])):
+        _need(c.get("category", "main") in ("main", "system"), path, "channels[%d].category 只能是 main 或 system" % i)
+    for i, a in enumerate(_list_of(d, "asks", path, ["key", "question"])):  # C-57 S3: a setting the reconcile asks in #setup
+        _need(isinstance(a.get("unless", {}), dict), path, "asks[%d].unless 要是物件（設定 → 那個值就不用問）" % i)
     _list_of(d, "secrets", path, ["name", "path"])
     _list_of(d, "commands", path, ["name", "path"], [("desc", str)])
     if core:
@@ -521,6 +524,9 @@ def skills_unsure(machine=None, engine=None):
     return set(sk for sk, owner in skill_owners(rows, engine).items() if where.get(owner) == "unknown")
 
 
+LOCAL_ONLY = ".local-only"  # in a skill's folder: linked only into one working folder (install.py: setup), never ~/.claude/skills
+
+
 def link_skills(engine=None, add_only=False):
     """~/.claude/skills/<name> linked to each skill folder under <engine>/skills, except those whose plugin is
     turned off here (skills_off). {"names", "off", "made", "removed", "taken", "kept", "waiting"}: made = links made
@@ -535,7 +541,8 @@ def link_skills(engine=None, add_only=False):
     engine = engine or ENGINE
     home_skills = os.path.expanduser("~/.claude/skills")
     folder = os.path.join(engine, "skills")
-    names = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))) if os.path.isdir(folder) else []
+    names = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))
+                   and not os.path.exists(os.path.join(folder, d, LOCAL_ONLY))) if os.path.isdir(folder) else []
     out = {"names": names, "off": set(), "made": [], "removed": [], "taken": [], "kept": [], "waiting": [], "why": {}}
     try:
         rows, _ = on_this_machine(None, engine)

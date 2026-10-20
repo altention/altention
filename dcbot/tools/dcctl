@@ -10,7 +10,11 @@
   dcctl rename CHANNEL NEWNAME
   dcctl topic CHANNEL TEXT
   dcctl move CHANNEL CATEGORY             move into a category (by name or ID)
-  dcctl archive CHANNEL                   move into the "archive" category (created if needed)
+  dcctl position WHAT (--above X | --below X | --top | --bottom)
+                                          reorder: a category among the categories, a channel among the channels of
+                                          its own category (and of its own kind: text or voice); the system category
+                                          stays at the bottom when another one is moved
+  dcctl archive CHANNEL                   archive it as /archive does (the bot does it: queued while it is offline)
   dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
   dcctl send CHANNEL TEXT                 post a message
   dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off)
@@ -117,6 +121,74 @@ def find(ref, kind=None):
     return found
 
 
+TEXTLIKE, VOICELIKE = (0, 5, 15, 16), (2, 13)  # Discord sorts these apart inside a category
+
+
+def peer_ref(ref, chans):
+    """The category or channel `ref` names (an ID, a name, "category/name"): (it, None) or (None, why). A name that is
+    both a category's and a channel's is not guessed."""
+    ref = str(ref or "").strip().lstrip("#")
+    if ref.isdigit():
+        found = next((c for c in chans if str(c["id"]) == ref), None)
+        return (found, None) if found else (None, "找不到 ID %s" % ref)
+    cats = [c for c in chans if c["type"] == 4 and c["name"] == ref]
+    others = [c for c in chans if c["type"] != 4]
+    chan, why = None, None
+    if "/" in ref or any(c["name"] == ref for c in others):  # the whole list: resolve reads the categories' names in it
+        chan, why = resolve(ref, chans)  # (#code-review of 0e0d4b9: given the channels alone, "category/name" never matched)
+        chan = chan if chan is None or chan["type"] != 4 else None
+    if cats and chan is not None:
+        return None, "「%s」同時是分類和頻道的名字，請用 ID 指定（dcctl channels 看得到）" % ref
+    if len(cats) > 1:
+        return None, "有 %d 個分類叫「%s」，請用 ID 指定" % (len(cats), ref)
+    if cats:
+        return cats[0], None
+    return (chan, None) if chan is not None else (None, why or "找不到「%s」" % ref)
+
+
+def position_plan(chans, what, how, other=None, system=None):
+    """The new order for `dcctl position`: (payload for PATCH /guilds/{id}/channels, the names in their new order,
+    a note) or raises ValueError with why. `how`: "above", "below" (next to `other`), "top" or "bottom". A category
+    is placed among the categories; a channel among the channels of its own category and kind. When a category
+    other than the system one (`system`, its name) moves, the system category is kept last (C-57 D1) if it was last
+    (one the owner put elsewhere is left there, manager 2026-10-20)."""
+    target, why = peer_ref(what, chans)
+    if target is None:
+        raise ValueError(why)
+    if target["type"] == 4:
+        peers = [c for c in chans if c["type"] == 4]
+    else:
+        kind = TEXTLIKE if target["type"] in TEXTLIKE else VOICELIKE if target["type"] in VOICELIKE else (target["type"],)
+        peers = [c for c in chans if c["type"] in kind and c.get("parent_id") == target.get("parent_id")]
+    order = sorted(peers, key=lambda c: (c.get("position", 0), int(c["id"])))
+    system_last = bool(order) and order[-1]["name"] == system
+    order = [c for c in order if c["id"] != target["id"]]
+    if how in ("above", "below"):
+        ref, why = peer_ref(other, chans)
+        if ref is None:
+            raise ValueError(why)
+        if ref["id"] == target["id"]:
+            raise ValueError("不能放在自己的上面或下面")
+        at = next((i for i, c in enumerate(order) if c["id"] == ref["id"]), None)
+        if at is None:
+            raise ValueError("「%s」跟「%s」不在同一層（分類只跟分類比，頻道只跟同一個分類、同一種的頻道比）"
+                             % (target["name"], ref["name"]))
+        order.insert(at if how == "above" else at + 1, target)
+    elif how == "top":
+        order.insert(0, target)
+    elif how == "bottom":
+        order.append(target)
+    else:
+        raise ValueError("要給 --above、--below、--top 或 --bottom 其中一個")
+    note = ""
+    if target["type"] == 4 and system and target["name"] != system and system_last:
+        last = [c for c in order if c["name"] == system]
+        if last and order[-1]["id"] != last[0]["id"]:
+            order = [c for c in order if c["id"] != last[0]["id"]] + last
+            note = "「%s」維持在最下面" % system
+    return [{"id": c["id"], "position": i} for i, c in enumerate(order)], [c["name"] for c in order], note
+
+
 def notify_default():
     """The channel a notification without one goes to: this (the bot's) machine's core.notify_channel."""
     try:
@@ -159,13 +231,13 @@ def notify_target(post, chans, sender_category=None):
 
 def post_target_error(post, sender_category=None, chans=None):
     """Why a post's channel cannot be found (None if it can, or the post makes it / does not need one)."""
-    if post.get("attach") or post.get("new_claude"):
-        return None
+    if post.get("attach") or post.get("new_claude") or post.get("open_chat") or post.get("open_setup"):
+        return None  # the bot makes the channel (open_chat, open_setup: ops/setup.py's)
     ref = str(post.get("channel") or "").strip().lstrip("#")
     if ref.isdigit():
         return None  # an ID: the bot checks it (it may be a thread)
     found, why = resolve(ref, chans if chans is not None else channels(), 0, sender_category)
-    if found is not None or ((post.get("create") or post.get("notify")) and why and why.startswith("找不到")):
+    if found is not None or ((post.get("create") or post.get("notify") or post.get("card")) and why and why.startswith("找不到")):
         return None
     return why + ("" if why.startswith("有 ") else "；真的要開一個新的紀錄頻道，加上 --create。")
 
@@ -363,9 +435,11 @@ def guide_plan(mine, chunks, note=None, keep=KEEP_NOTES):
 def guide(note=None):
     name = config.GUIDE_CHANNEL
     ch = next((c for c in channels() if c["name"] == name and c["type"] == 0), None)
-    if ch is None:
+    if ch is None:  # in the system category when there is one (C-57: a new installation's bot makes both on its first start)
+        system = next((c for c in channels() if c["type"] == 4 and c["name"] == config.SYSTEM_CATEGORY), None)
         ch = call("POST", "/guilds/%d/channels" % config.GUILD_ID,
-                  {"name": name, "type": 0, "topic": "機器人的使用說明和更新紀錄。這裡不聊天，機器人不會回應這個頻道的訊息。"})
+                  dict({"name": name, "type": 0, "topic": "機器人的使用說明和更新紀錄。這裡不聊天，機器人不會回應這個頻道的訊息。"},
+                       **({"parent_id": system["id"]} if system else {})))
         audit("建立頻道 #%s" % name)
     me = call("GET", "/users/@me")["id"]
     mine = [(m["id"], m.get("content") or "") for m in history(ch["id"], 200) if m["author"]["id"] == me]
@@ -536,15 +610,34 @@ def main(argv):
         call("PATCH", "/channels/%s" % c["id"], {"topic": " ".join(args[1:])})
         print("已更新主題")
         audit("#%s 更新主題" % c["name"])
-    elif cmd in ("move", "archive"):
+    elif cmd == "archive":  # as /archive (C-63): the bot closes, records and moves; here it is only asked for
+        from bot import postbox  # standard library only: this runs with the system Python
         c = find(args[0])
-        catname = args[1] if cmd == "move" else "archive"
+        postbox.write({"channel": str(c["id"]), "archive": True, "from_name": "dcctl archive"})
+        age = postbox.heartbeat_age()
+        print("已請機器人封存 #%s，結果會記在 #audit%s" % (c["name"], "" if age is not None and age <= 90 else
+                                                     "（機器人目前離線，上線後才會做）"))
+    elif cmd == "move":
+        c = find(args[0])
+        catname = args[1]
         cat = next((x for x in channels() if x["type"] == 4 and (x["name"] == catname or str(x["id"]) == catname)), None)
         if cat is None:
             cat = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": catname, "type": 4})
         call("PATCH", "/channels/%s" % c["id"], {"parent_id": cat["id"]})
         print("已移到 %s" % cat["name"])
         audit("#%s 移到 %s" % (c["name"], cat["name"]))
+    elif cmd == "position":
+        how = next((h for h in ("above", "below", "top", "bottom") if "--" + h in args), None)
+        if not args or args[0].startswith("--") or how is None:
+            sys.exit("用法：dcctl position <分類或頻道> --above <X> | --below <X> | --top | --bottom")
+        try:
+            other = opt("--" + how) if how in ("above", "below") and args.index("--" + how) + 1 < len(args) else None
+            payload, names, note = position_plan(channels(), args[0], how, other, config.SYSTEM_CATEGORY)
+        except ValueError as e:
+            sys.exit("dcctl position：%s" % e)
+        call("PATCH", "/guilds/%d/channels" % config.GUILD_ID, payload)
+        print("新的順序：" + " > ".join(names) + ("（%s）" % note if note else ""))
+        audit("調整 %s 的位置（%s）：%s" % (args[0], how, " > ".join(names)))
     elif cmd == "delete":
         if "--yes" not in args:
             sys.exit("刪除需要使用者在對話中明確同意後，加上 --yes")

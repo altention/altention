@@ -132,6 +132,19 @@ class Publishes(Rig):
         self.assertEqual(git(self.public, "show", "-s", "--format=%P", second), first, "on top of the public main")
         self.assertEqual(git(self.public, "rev-list", "--count", second), "2", "nothing of the private history")
 
+    def test_a_release_without_its_own_words_is_reminded_not_refused(self):
+        """C-57 U8: no "### For people (zh-TW)" (or one without a point): a reminder; published all the same."""
+        code, out = self.run_("publish", "0.1.0")
+        self.assertEqual(code, 0, out)
+        self.assertIn("提醒：CHANGELOG.md 的 v0.1.0 沒有「### For people (zh-TW)」這段", out)
+        for part, said in (("### For people (zh-TW)\n\n", True), ("### For people (zh-tw)\n\n- 新的\n", False)):
+            with self.subTest(part=part):
+                self.write("CHANGELOG.md", CHANGES.replace("- first\n- 中文 too\n", "### For people\n\n- first\n\n" + part))
+                self.commit("words " + part)
+                code, out = self.run_("publish", "0.1.0")
+                self.assertEqual(code, 0, out)
+                self.assertEqual("For people (zh-TW)」這段" in out, said, out)
+
     def test_the_public_main_moved_after_it_was_read_nothing_half_done(self):
         self.assertEqual(self.run_("publish", "0.1.0", "--push")[0], 0)
         self.write("tool.py", "X = 3  %s old place, until after the release\n" % HASH)

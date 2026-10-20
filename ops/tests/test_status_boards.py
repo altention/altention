@@ -277,6 +277,19 @@ class Waiting(World):
         self.put("asks/c.json", {"channel": "100000000000000003", "questions": [{}], "answers": {}, "ts": at(16, 40), "host": "host-b"})
         self.assertEqual(self.texts()["在等你的事"], "- <#100000000000000003> · 提問還有 1 題沒回答 · 從 16:40 等到現在")
 
+    def test_setup_not_done_waits_first(self):
+        """C-48: #setup's questions left are the first thing waiting for the owner, until setup.done."""
+        self.put("asks/a.json", {"channel": "100000000000000001", "questions": [{}], "answers": {}, "ts": at(16, 40)})
+        inst = os.path.join(self.tmp, "實例")
+        os.makedirs(inst)
+        for done, first in ((False, "- 設定還沒做完：到 #setup"), (True, "- <#100000000000000001>")):
+            with open(os.path.join(inst, "plugins.json"), "w") as f:
+                json.dump({"format": 1, "setup": {"done": done}}, f)
+            with mock.patch.dict(os.environ, {"ALT_INSTANCE": inst}):
+                lines = self.texts()["在等你的事"].splitlines()
+            self.assertTrue(lines[0].startswith(first), lines)
+            self.assertEqual(len(lines), 1 if done else 2)
+
     def test_nothing_here_speaks_of_permission_dialogs(self):
         self.put("asks/a.json", {"channel": "100000000000000001", "questions": [{}], "answers": {}, "ts": at(16, 40)})
         for text in (self.texts()["在等你的事"], boards.waiting_board(os.path.join(self.tmp, "nowhere"), NOW)):

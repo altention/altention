@@ -32,6 +32,7 @@ PLAIN = {
     "screen": ("看 Claude 的終端機畫面（圖片，按 📝 看文字）", "!screen", False),
     "setup": ("重新叫出這個頻道的設定卡（一般頻道要改成 Claude 或終端機時）", "!setup", False),
     "detach": ("卸下這個頻道接的 tmux 對話（對話本身不受影響），頻道移到封存", "!detach", False),
+    "archive": ("封存這個頻道（任何種類）：機器人開的視窗關掉、對話留著，之後打字可以接回，搬回原本的分類", "!archive", False),
 }
 # name -> (description, what is typed into Claude Code)
 CLAUDE = {

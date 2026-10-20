@@ -3,12 +3,116 @@
 Every release has a `## vX.Y.Z — date` heading, newest first. The release tool publishes the text under a version's
 heading as that version's notes.
 
-Each version has two sections:
+Each version has these sections:
 
 - **For people**: what changed, for you to read.
+- **For people (zh-TW)**: the most important of those points in plain Chinese, the ones that matter most first.
+  The update notices in `#update` quote it in an installation whose language (`core.language`) is zh-TW, each
+  point cut to its bold lead; a version without it is quoted from For people.
 - **For agents**: what an agent updating an installation to this version needs to know, in plain words (settings to
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
+
+## v0.3.0 — 2026-10-20
+
+### For people
+
+- **Setting up happens in Discord, in `#setup`.** The install in the terminal asks nothing any more: it installs
+  with safe defaults and ends by sending you to `#setup`. On its first start the bot opens `#setup`, where a Claude
+  asks the questions one at a time, in your language, and you can stop and come back; `#chat` opens once that is
+  done. Nothing that spends your subscription (progress, reading the usage limits) runs until then.
+- **Coming back from your backups is done in `#setup` too**: choose 「從備份還原」, pick the repository, and your
+  settings, records, progress and the secretary's plan come back. The fresh install is kept beside it, never
+  deleted, and put back if anything fails.
+- **A tidier channel list.** A new installation puts the bot's record and guide channels (`#audit`, `#guide`) in a
+  「系統」 category at the bottom, and update news in `#update` in the main area. If you move 「系統」 somewhere
+  else, the bot leaves it there. Categories whose name starts with 「━」 are taken as dividers, not projects.
+- **Updates have their own channel and a button.** News about updating goes to `#update` and lists what changed in
+  every release in between, in plain words; an update you asked for with `--release` is announced too, and an
+  engine stuck on one fixed version says once that it will not update. On the bot's machine a new release shows
+  up as a card with 更新 / 之後再說 / 看要做什麼. Pressing 更新 checks first and, when nothing of yours is in the
+  way, updates, installs, fills in what the new version needs and checks the system on its own, each step written
+  on the same card. `altention update check` and `altention update go <version>` do the same from a terminal.
+  With several machines, only the bot's machine says a new release is out, and pressing 更新 updates the others
+  the same way, each a line on the card.
+- **Nothing of yours is lost in an update.** Every update leaves a mark where the engine was: say 「引擎回到更新
+  前」 to the Claude in `#setup` to go back (your edits are kept, and changes made since are never thrown away).
+  When your own edits are in the way, the card says so in plain words and 「請 Claude 幫忙」 hands it to `#setup`,
+  where the Claude explains what happened and asks before doing anything: it can keep your edits and update, merge
+  your changes with the new version's in a copy aside, show you the result and put it in place only on your yes.
+  A file of yours with the name of one the new version adds is left alone and named on the card: rename or move
+  it, then press 更新 again. When an update notice says an update is stuck, say what it tells you to the Claude
+  in `#setup` (for example 「引擎更新卡住了，幫我處理」). The engine keeps running the version it ran until then.
+- **An update cut off halfway is finished.** If the machine restarts or the update is stopped after the engine
+  moved, the next 更新 (or asking the Claude in `#setup`) does only the steps left, and the interrupted card says
+  where it went on.
+- **After an update, what the new version needs is set up or asked.** Anything that costs nothing and adds
+  nothing to your channel list is set up by itself (for an older installation: `#update`, and `#audit` and
+  `#guide` moved into 「系統」). Anything that would add a channel you see or spend your subscription is asked in
+  `#setup`, one question at a time; `#update` names what will be asked. A setting you already have is never asked
+  again. A channel you chose to open that was never made, or that was deleted (`#secretary`, `#dashboard`), is
+  asked as that, not as a new question. If you never chose how much Claude may do on its own (the permission
+  mode), `#setup` asks that too: until you answer, it works as before (it neither asks nor blocks); once you
+  answer, the conversations opened after that follow what you chose.
+- **`/archive` puts away any channel.** The bot's window for it is closed and the conversation is kept; the
+  channel moves to a 「封存」 category, its topic saying where it was. Writing in it later does not bring it back by
+  itself: the bot asks how to go on, with 「接回原本的對話」 or 「在這裡開新對話」 for a conversation's channel and
+  「恢復這個頻道」 for any other, and the channel goes back to its old category once you press one. A full 「封存」
+  (50 channels) gets a 「封存 2」. Channels you moved into 「封存」 by hand are recorded when the bot starts.
+- Smaller changes:
+  - When Claude Code asks in a new channel whether to read files outside its folder (Claude Code 2.1.303's
+    external `CLAUDE.md` imports), the question and its buttons show in the channel instead of the window waiting
+    unseen.
+  - On a phone or tablet that cannot drag categories, ask Claude to reorder channels and categories
+    (`dcctl position`); each change is recorded in `#audit`.
+  - `altention dc post --file` with the text piped in now posts the text with the file (it used to post the file
+    alone).
+  - Progress: a project you renamed keeps its history under the new name (an old name, or one listed in
+    `progress.aliases`, joins it instead of starting a new project), and a repository several projects share is
+    given the same project every round.
+
+### For people (zh-TW)
+
+- **設定改在 Discord 的 #setup 裡做。** 終端機的安裝不再問問題，裝好後會叫你去 #setup，由 Claude 一題一題問，可以中途停下來，之後再回來接著回答。設定做完才會開 #chat；在那之前，任何會用到訂閱額度的功能都不會開始跑。
+- **有新版時，#update 會出現一張卡片，按「更新」就會自己更新。** 卡片會先檢查，沒有東西擋路就更新、安裝、補上新版需要的設定，再檢查一次系統，每一步都寫在同一張卡片上。有好幾台機器時，只有機器人那台會通知，按一次就會連其他台一起更新。
+- **更新不會弄丟你的東西。** 每次更新前都會留一個記號，想退回去，跟 #setup 的 Claude 說「引擎回到更新前」。你改過的檔案擋到更新時，卡片會用白話說明；按「請 Claude 幫忙」，Claude 會先解釋，問過你才動手。
+- **更新做到一半斷掉，下次會接著做完。** 機器重開或更新被中斷時，再按一次「更新」（或請 #setup 的 Claude），只會做剩下的步驟。
+- **頻道列表比較整齊了。** 機器人的紀錄和說明頻道（#audit、#guide）放在最下面的「系統」分類，更新消息放在 #update。你把「系統」移到別處，機器人不會再拉回去；名字用「━」開頭的分類當作分隔線，不算專案。
+- **用 /archive 可以把任何頻道收起來。** 頻道會移到「封存」分類，主題寫著它原本在哪裡，對話也會保留。之後在裡面打字，機器人會問你要怎麼繼續：對話的頻道可以按「接回原本的對話」或「在這裡開新對話」，其他頻道按「恢復這個頻道」，按了才會回到原本的分類。
+- **可以從備份還原。** 在 #setup 選「從備份還原」、選好倉庫，設定、紀錄、進度和秘書的計畫就會回來。新裝的那份會留在旁邊，不會刪掉，還原失敗時會換回來。
+- 其他小改動：
+  - 新頻道的資料夾裡，CLAUDE.md 引用了資料夾外面的檔案時，Claude Code 一開始會問要不要允許匯入這些外部的 CLAUDE.md（Allow external CLAUDE.md file imports?）。這個問題和按鈕現在會貼在頻道裡由你回答，不會卡住。
+  - 手機或平板拖不動分類時，可以請 Claude 幫你調整頻道和分類的順序，每次調整都記在 #audit。
+  - 進度：專案改名後，舊的紀錄會接到新名字下面。
+
+### For agents
+
+1. After updating, run `./install.sh` on each machine, then `python3 ops/doctor.py`. The install writes `#setup`'s
+   working folder (`~/.local/state/altention/setup/`): its `.claude/settings.json` allows `ops/setup.py` and
+   `altention update check / go / save / apply / undo`, one rule each, and links the `setup` and `update` skills
+   there only. Do not edit that settings file: it is rewritten whole.
+2. The bot restarts by itself on the new version. On that first start it runs `ops/setup.py reconcile`: on an
+   older installation it opens `#update`, moves `#audit` and `#guide` into the 「系統」 category, opens `#guide`
+   when there is none, and opens `#setup` when something is to be decided: what adds a channel or spends the
+   subscription, and the permission mode (`dcbot.default_permission`) when the instance has none. Until that is
+   answered the bot runs as it did with none set; afterwards new conversations use the chosen mode. Tell the
+   person they will see `#setup` and why; the questions are answered there, not by you. `python3 ops/setup.py
+   reconcile --dry-run` shows what it would do.
+3. An installation from before this version has no `setup` entry in its instance and counts as set up: nothing
+   is asked again except what the reconcile lists.
+4. `ops/apply.py` now updates each machine's engine through that machine's own `altention/update.py`, behind the
+   same syntax and load check as any update: `--release` when the instance's `core.update` is notify or release,
+   a plain round when it is branch. A refused release stops that machine at the engine step (`--take-refused`
+   goes past the check as before). `update.py --release` exits 75 when the git lock was held and nothing was done;
+   apply tries again for about two minutes, then says that machine's engine did not move.
+5. The bot's machine is the machine list's entry with the `dcbot` role, matched by this machine's name;
+   `"ssh": ["local"]` only says how a machine is reached. A machine whose name the list does not know posts no
+   update card and leads no other machine.
+6. Copies made for merging live in `~/.local/state/altention/setup/update-work/`; an interrupted update's record
+   is `~/.local/state/altention/update-go.json` (`python3 ops/setup.py status --json` reports it as
+   `update_unfinished`). Leave both to `altention update`.
+7. Known limit: in automatic (`release`) mode each machine still posts its own ✅ in words; they are not gathered
+   on the bot's card yet.
 
 ## v0.2.2 — 2026-10-19
 

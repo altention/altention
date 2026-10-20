@@ -96,12 +96,19 @@ class Rig(unittest.TestCase):
     def tearDown(self):
         open(os.path.join(self.dc, "state", "stop"), "w").close()
         time.sleep(0.3)
+        for t in getattr(self, "mains", []):  # a main loop still going went on in the folder removed below, during
+            # the next test: git's "repository corruption on the remote side" and a traceback now and then (manager
+            # 2026-10-20: a fetch from an origin being deleted)
+            t.join(30)
+        alive = [t for t in getattr(self, "mains", []) if t.is_alive()]
         shutil.rmtree(self.tmp, ignore_errors=True)
         for k, v in self.saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        # last: a failure here must not leave GIT_SSH_COMMAND, FAKE_BAD, ALT_INSTANCE to the next tests (#code-review of bc3398d)
+        self.assertEqual(alive, [], "the main loop stopped before its folder went")
 
     def mode(self, value):
         """The instance's core.update, as the supervisor reads it (update_mode, a copy of update.py's)."""
@@ -155,6 +162,7 @@ class Rig(unittest.TestCase):
     def run_main(self):
         t = threading.Thread(target=self.sup.main, daemon=True)
         t.start()
+        self.mains = getattr(self, "mains", []) + [t]
         return t
 
     def wait(self, cond, secs=40):

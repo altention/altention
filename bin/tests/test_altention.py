@@ -23,6 +23,8 @@ class Target(unittest.TestCase):
         for argv, tool, rest in ((["doctor", "host-a", "--json"], "ops/doctor.py", ["host-a", "--json"]),
                                  (["apply", "all", "--dry-run"], "ops/apply.py", ["all", "--dry-run"]),
                                  (["plugins", "show"], "ops/plugins.py", ["show"]),
+                                 (["update", "go", "v0.3.0", "--card", "update-v0.3.0"], "altention/update_go.py",
+                                  ["go", "v0.3.0", "--card", "update-v0.3.0"]),
                                  (["dc", "post", "#project-a", "中文 訊息"], "altention/dc/post.py", ["#project-a", "中文 訊息"]),
                                  (["dc", "read", "#project-a", "--threads"], "altention/dc/read.py", ["#project-a", "--threads"]),
                                  (["dc", "notify", "hi"], "altention/dc/notify.py", ["hi"])):

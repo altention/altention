@@ -203,6 +203,62 @@ class InstanceSessions(Base):
         self.assertEqual(progress.match_project({"cwd": inst}, several), ("altention-private", "instance"), "by the repo's name")
 
 
+
+class SharedRemote(Base):
+    """Several projects knowing one remote: the same answer every round, whatever order the folders come in."""
+    ORIGIN = "git@github.com:alice/tool.git"
+
+    def projects(self, order):
+        made = {"zeta": {"id": "zeta", "remotes": [self.ORIGIN]}, "alpha": {"id": "alpha", "remotes": [self.ORIGIN]},
+                "mid": {"id": "mid", "remotes": [self.ORIGIN]}}
+        return {k: made[k] for k in order}
+
+    def test_first_by_id_in_any_order(self):
+        meta = {"git": {"remote": "https://github.com/alice/tool"}, "cwd": "/x"}
+        for order in (["zeta", "alpha", "mid"], ["mid", "zeta", "alpha"], ["alpha", "mid", "zeta"]):
+            self.assertEqual(progress.match_project(meta, self.projects(order)), ("alpha", "remote"), order)
+
+    def test_the_instances_project_when_it_is_one_of_them(self):
+        self.instance({"progress": {"instance_project": "mid"}})
+        meta = {"git": {"remote": self.ORIGIN}, "cwd": "/x"}
+        self.assertEqual(progress.match_project(meta, self.projects(["zeta", "alpha", "mid"])), ("mid", "remote"))
+        self.instance({"progress": {"instance_project": "elsewhere"}})
+        self.assertEqual(progress.match_project(meta, self.projects(["zeta", "mid"])), ("mid", "remote"), "not one of them")
+
+    def test_equal_paths_in_any_order(self):
+        made = {"b": {"id": "b", "paths": ["/w/tool"]}, "a": {"id": "a", "paths": ["/w/tool"]}}
+        for order in (["b", "a"], ["a", "b"]):
+            self.assertEqual(progress.match_project({"cwd": "/w/tool/src"}, {k: made[k] for k in order}), ("a", "path"))
+
+
+class Aliases(Base):
+    """A name the answer gives that is an old name of a project goes to that project, never a new one."""
+    PROJECTS = {"altention": {"id": "altention", "aliases": ["agent-home"]}, "life": {"id": "life", "aliases": []},
+                "_misc": {"id": "_misc"}}
+
+    def test_ids_and_their_slugs_first(self):
+        self.assertEqual(progress.resolve_project("life", self.PROJECTS), "life")
+        self.assertEqual(progress.resolve_project("Life", self.PROJECTS), "life")
+        self.assertEqual(progress.resolve_project(None, self.PROJECTS), "_misc")
+        self.assertEqual(progress.resolve_project("", self.PROJECTS), "_misc")
+
+    def test_an_old_name_joins_the_renamed_project(self):
+        for said in ("agent-home", "Agent Home", "AGENT_HOME"):
+            self.assertEqual(progress.resolve_project(said, self.PROJECTS), "altention", said)
+
+    def test_an_unknown_name_is_a_new_project(self):
+        self.assertEqual(progress.resolve_project("New Thing", self.PROJECTS), "new-thing")
+        self.assertEqual(progress.resolve_project("agent", self.PROJECTS), "agent", "a part of an alias is not it")
+
+    def test_the_instances_table(self):
+        self.instance({"progress": {"aliases": {"old-tool": "life", "gone": "no-such-project", "x": 3}}})
+        plain = {"life": {"id": "life"}}
+        self.assertEqual(progress.resolve_project("Old Tool", plain), "life")
+        self.assertEqual(progress.resolve_project("gone", plain), "gone", "a table entry to a missing project is not used")
+        self.instance({"progress": {"aliases": ["not", "a", "table"]}})
+        self.assertEqual(progress.resolve_project("old-tool", plain), "old-tool")
+
+
 class BackgroundClaude(unittest.TestCase):
     def test_the_claude_it_asks_is_marked_as_a_background_one(self):
         """altention/background.py (stage 3b step 1.9b): the mark every part knows, not a name of one plugin's hook."""

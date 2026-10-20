@@ -135,6 +135,35 @@ class Broken(Base):
         self.assertTrue(config.stray_bot_settings())
 
 
+class TheBotsMachine(Base):
+    """C-57 U5 (manager 2026-10-20): the list's dcbot entry, this machine by name only: the examples write the bot's
+    machine "ssh": ["local"] (reached from itself), which says nothing of who reads the list."""
+
+    def listing(self, me, machines):
+        write(os.path.join(self.home, "altention", "instance", "machines.json"), {"machines": machines})
+        write(os.path.join(self.home, ".config", "altention", "host"), me + "\n")
+
+    def test_the_examples_list_read_from_another_machine_is_elsewhere(self):
+        self.listing("host-b", {"host-a": {"ssh": ["local"], "roles": ["dcbot"]}, "host-b": {"ssh": ["host-b"], "roles": []}})
+        name, m, here = config.bot_machine()
+        self.assertEqual((name, here), ("host-a", False))
+        self.assertTrue(config.known_here())
+        self.listing("host-a", {"host-a": {"ssh": ["local"], "roles": ["dcbot"]}, "host-b": {"ssh": ["host-b"], "roles": []}})
+        self.assertEqual(config.bot_machine()[::2], ("host-a", True))
+
+    def test_both_written_local_the_name_decides(self):
+        machines = {"host-a": {"ssh": ["local"], "roles": ["dcbot"]}, "host-b": {"ssh": ["local"], "roles": []}}
+        self.listing("host-b", machines)
+        self.assertEqual(config.bot_machine()[::2], ("host-a", False))
+        self.listing("host-a", machines)
+        self.assertEqual(config.bot_machine()[::2], ("host-a", True))
+
+    def test_a_name_the_list_does_not_know(self):
+        self.listing("stranger", {"host-a": {"ssh": ["local"], "roles": ["dcbot"]}})
+        self.assertFalse(config.known_here())
+        self.assertEqual(config.bot_machine()[::2], ("host-a", True), "its posts still go: the entry is reached locally")
+
+
 class Text(Base):
     def test_every_language_uses_the_same_fields(self):
         import string

@@ -467,7 +467,17 @@ _rt = rj(os.path.join(H(ENGINE), "dcbot/state/routes.json"))  # routes written b
 o["routes_without_pid"] = sorted(str((v if isinstance(v, str) else (v or {}).get("channel")) if isinstance(v, (str, dict)) else "?")
                                  for v in (_rt.values() if isinstance(_rt, dict) else []) if not isinstance(v, dict) or not v.get("pid"))
 _pf = os.path.join(H(ENGINE), "dcbot/state/posts-failed")  # the bot: notifications it could show nowhere
-o["posts_failed"] = len([n for n in os.listdir(_pf) if n.endswith(".json") and not n.startswith(".")]) if os.path.isdir(_pf) else 0
+o["posts_failed"], o["cards_failed"] = 0, 0  # an update card ("card", C-57 D2) is the bot's to retry: said once it kept failing
+for _n in (os.listdir(_pf) if os.path.isdir(_pf) else []):
+    if _n.endswith(".json") and not _n.startswith("."):
+        _p = rj(os.path.join(_pf, _n))
+        if isinstance(_p, dict) and isinstance(_p.get("card"), dict):
+            import time as _t
+            _at = _p.get("failed_at")
+            if not isinstance(_at, (int, float)) or isinstance(_at, bool) or _t.time() - _at >= 15 * 60:  # ~3 retries
+                o["cards_failed"] += 1
+        else:
+            o["posts_failed"] += 1
 o["typed_as_paste"] = rj(os.path.join(H(ENGINE), "dcbot/state/typed-as-paste.json"))  # the bot: typed text taken for a paste
 o["enter_differs"] = rj(os.path.join(H(ENGINE), "dcbot/state/enter-differs.json"))  # the bot: Enter on a box that was not what it typed
 o["turn_ends_late"] = rj(os.path.join(H(ENGINE), "dcbot/state/turn-ends-late.json"))  # the bot: turns whose end came without its reply's row
@@ -500,7 +510,8 @@ PRIVATE = [os.path.join(_data, "logs"), os.path.join(_data, "progress"), os.path
 o["open_dirs"] = [d for d in PRIVATE if os.path.isdir(H(d)) and os.stat(H(d)).st_mode & 0o077]
 try:  # the skills this machine's engine has (install.sh links every folder under skills/), and which are linked
     _skd = os.path.join(H(ENGINE), "skills")
-    o["skills_expected"] = sorted(d for d in os.listdir(_skd) if os.path.isdir(os.path.join(_skd, d)))
+    o["skills_expected"] = sorted(d for d in os.listdir(_skd) if os.path.isdir(os.path.join(_skd, d))
+                                  and not os.path.exists(os.path.join(_skd, d, ".local-only")))  # plugin.LOCAL_ONLY
 except OSError:
     o["skills_expected"] = None
 o["skills"] = sorted(n for n in (o["skills_expected"] or ()) if os.path.exists(H("~/.claude/skills/" + n)))
@@ -685,7 +696,7 @@ def tidy(o):
         for key in ("repo", "hook", "own"):
             fix(row, key, lambda v: isinstance(v, bool), where="backup.")
     fix(o.get("sync") or {}, "data", obj, dict, "sync.")
-    for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_failed", "bot_heartbeat_age", "update_alive_at",
+    for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_failed", "cards_failed", "bot_heartbeat_age", "update_alive_at",
                 "bot_started_age"):
         fix(o, key, num)
     for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "adopted", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice",
@@ -858,7 +869,8 @@ def engine_skills():
     own engine's is checked against."""
     folder = os.path.join(ENGINE_DIR, "skills")
     try:
-        return sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d)))
+        return sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))
+                      and not os.path.exists(os.path.join(folder, d, altplugin.LOCAL_ONLY)))
     except OSError:
         return []
 
@@ -1088,8 +1100,8 @@ def check(name, m, head, instance_repo=None):
         where = "寫進實例 plugins.json 的 \"%s\": {\"%s\": \"<頻道 ID>\"}" % (section, field)
         if kind == "board":
             out.append(record("%s.channel" % plugin_name, name, "warn", "看板頻道沒設定：%s（%s 的看板不會貼出來）" % (key, plugin_name),
-                              "在機器人那台的引擎建一個頻道（python3 dcbot/tools/dcctl ensure dashboard），用 dcctl channels 查它的 ID，"
-                              + where))
+                              "在機器人那台的引擎跑 python3 ops/setup.py reconcile：它會在 #setup 問要不要開看板頻道；"
+                              "或直接跑 python3 ops/setup.py dashboard（建 #dashboard、寫好 ID、貼看板）"))
         elif plugin_name == "planner":  # the secretary has a channel of its own, working in its folder
             out.append(record("%s.channel" % plugin_name, name, "warn", "對話頻道沒設定：%s（%s 要叫醒的頻道，沒設就不會叫）" % (key, plugin_name),
                               SECRETARY_FIX))
@@ -1451,6 +1463,12 @@ def check(name, m, head, instance_repo=None):
                           "（頭 24 小時每 5 分鐘重試一次）" % n if n else "",
                           "看 %s 上 dcbot/state/posts-failed/ 裡每個檔的 text（通知的內容）和 dcbot/state/supervisor.out 的錯誤；"
                           "Discord 通了它們會自己送出並消失，超過 24 小時的讀完自己移走" % name, n))
+    if o.get("cards_failed") and "dcbot" in roles:  # update cards: said once the bot's retries kept failing 15 minutes
+        n = o["cards_failed"]  # (a card stuck at ⏳ for hours looks like an update still running; #bot-dev 2026-10-19)
+        out.append(record("dcbot.cards-failed", name, "warn",
+                          "#update 有 %d 張更新卡片一直貼不上去（Discord 那邊出錯），機器人每 5 分鐘再試，留在 dcbot/state/posts-failed/" % n,
+                          "看 %s 上 dcbot/state/supervisor.out 的錯誤（例如機器人在 #update 沒有權限）；修好之後，"
+                          "讀完 dcbot/state/posts-failed/ 裡那幾個檔（卡片的內容）就移走" % name, n))
     tp = o.get("typed_as_paste") or {}
     if "typed_as_paste" in o and "dcbot" in roles:  # shown for a week after the last time; a warning, not told
         at, days = _time(tp.get("at")), None
@@ -1654,7 +1672,47 @@ def collect(names):
                           "進度同時排程在 %s，只能有一台" % ", ".join(running) if len(running) > 1 else "",
                           "實例 plugins.json 的 plugins.progress.on 只寫一台，再對其他台跑 python3 ops/apply.py <機器>"))
     scan = privacy_record()
-    return out + ([scan] if scan else [])
+    setup = setup_record()
+    asks = asks_record()
+    return [r for r in (setup, asks) if r] + out + ([scan] if scan else [])
+
+
+def asks_record():
+    """C-57 S3: settings this version declares (plugin.json "asks") that the instance has not got, for the plugins
+    in use; the reconcile asks them in #setup. None when there is none, or it cannot be told."""
+    try:
+        from altention import config as altconfig
+        rows, _ = altplugin.on_this_machine()
+        left = []
+        for n, _f, d, where, _why in rows:
+            if n != "core" and where not in ("on", "off"):
+                continue
+            for a in (d or {}).get("asks", []):
+                if not isinstance(a, dict) or altconfig.setting(a.get("key", "")) is not None:
+                    continue
+                if any(altconfig.setting(k) == v for k, v in (a.get("unless") or {}).items()):
+                    continue
+                left.append(a["key"])
+    except Exception:
+        return None
+    if not left:
+        return None
+    return record("core.asks", None, "warn", "這版要的設定還沒選：%s" % "、".join(left),
+                  "在機器人那台跑 python3 ops/setup.py reconcile：它會在 Discord 的 #setup 一題一題問", len(left))
+
+
+def setup_record():
+    """C-48: a new installation whose settings #setup has not finished (setup.done false), or None. Nothing that
+    spends the subscription runs until then (install.py holds it), so it is said until it is done."""
+    try:
+        from altention import config as altconfig
+        left = altconfig.setting("setup.done", True) is False
+    except Exception:
+        left = False
+    if not left:
+        return None
+    return record("core.setup", None, "warn", "設定還沒做完：到 Discord 的 #setup",
+                  "在 #setup 打任何一句，Claude 會從還沒答的題目接著問；做完之前不會整理進度、不讀訂閱額度")
 
 
 BOT_CONNECTING = 180  # seconds: a bot run just begun that has no heartbeat yet is still logging in (the supervisor's trial)

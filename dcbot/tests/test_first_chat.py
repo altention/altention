@@ -33,6 +33,19 @@ class Names(unittest.TestCase):
         with mock.patch("altention.config.setting", broken), mock.patch.object(config, "_env", {}):
             self.assertEqual(config.channel_name("chat", "chat"), "chat")
 
+    def test_the_system_category_is_named_where_the_channels_are(self):
+        """Manager 2026-10-19: dcbot.channels.system (default 系統), not the bot's env file, so the engine (ops/setup.py)
+        reads the same name without opening the file that holds the token."""
+        self.assertEqual(self.name_of("system", "系統", lambda p: "下面" if p == "dcbot.channels.system" else None), "下面")
+        self.assertEqual(self.name_of("system", "系統", None), "系統")
+        import inspect
+        self.assertIn('channel_name("system", "系統")', inspect.getsource(config))
+
+    def name_of(self, key, default, said):
+        with mock.patch("altention.config.setting", lambda path, d=None: said(path) if callable(said) else said), \
+                mock.patch.object(config, "_env", {}):
+            return config.channel_name(key, default)
+
     def test_no_development_channel_is_named(self):
         self.assertFalse(hasattr(config, "DEV_CHANNEL"))
 

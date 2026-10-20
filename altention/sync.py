@@ -486,10 +486,12 @@ def local_commits(repo, up):
     ident = repo.git("var", "GIT_AUTHOR_IDENT", timeout=20)
     here = repo.git("rev-list", "HEAD", "--not", up, "--remotes", timeout=20)  # on no remote branch
     log = repo.git("log", "--format=%H%x00%P%x00%ae%x00%s", "%s..HEAD" % up, timeout=20)
-    for r in (ident, here, log):
+    for r in (here, log):
         if r.returncode != 0:
             return None, None, (r.stderr.strip() or r.stdout.strip())[:200]
-    me = ident.stdout[ident.stdout.find("<") + 1:ident.stdout.find(">")]
+    # a machine without a git identity (install.sh only lists it as a todo): no commit here is taken for the
+    # supervisor's, so a rollback-looking one stops the caller (C-57 U3: #code-review-2 of 5fb6b99)
+    me = ident.stdout[ident.stdout.find("<") + 1:ident.stdout.find(">")] if ident.returncode == 0 else ""
     here = set(here.stdout.split())
     backs, steps, others = [], [], []
     for line in log.stdout.splitlines():
@@ -528,32 +530,58 @@ def rebase_aside(repo, to=None):
     temporary worktree, then move the branch there with `reset --keep`, which keeps uncommitted edits (other
     channels' work in progress) and refuses rather than lose one. So a dirty tree no longer stops the sync, no
     autostash is needed, and a rebase killed halfway is in the throwaway worktree, never in the real one."""
+    code, why, _ = rebase_in_worktree(repo, to, move=True)
+    return code, why
+
+
+def try_rebase(repo, to=None):
+    """rebase_aside's trial alone (C-57 U2, the update's check before it moves anything): the rebase in a temporary
+    worktree, the branch never moved. (0, None, []) when this machine's commits go on top cleanly; (1, why, the
+    files git stopped on) when not."""
+    return rebase_in_worktree(repo, to, move=False)
+
+
+IDENT_FALLBACK = ["-c", "user.name=altention", "-c", "user.email=altention@localhost"]
+
+
+def ident_args(repo):
+    """-c options giving git an identity on a machine that has none (a rebase writes commits), else []."""
+    return [] if repo.git("var", "GIT_COMMITTER_IDENT", timeout=20).returncode == 0 else list(IDENT_FALLBACK)
+
+
+def rebase_in_worktree(repo, to=None, move=True):
     gd = repo.git_dir()
-    aside = os.path.join(gd, ASIDE, "%d-%d" % (os.getpid(), time.time()))
-    os.makedirs(os.path.dirname(aside), exist_ok=True)
+    where = os.path.join(gd, ASIDE, "%d-%d" % (os.getpid(), time.time()))
+    os.makedirs(os.path.dirname(where), exist_ok=True)
     start = repo.git("rev-parse", "HEAD", timeout=20).stdout.strip()
-    r = repo.git("worktree", "add", "-q", "--detach", aside, start, timeout=120)
+    r = repo.git("worktree", "add", "-q", "--detach", where, start, timeout=120)
     if r.returncode != 0:
-        return 1, "建暫時的工作目錄失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:300]
+        return 1, "建暫時的工作目錄失敗：%s" % (r.stderr.strip() or r.stdout.strip())[:300], []
     try:
         upstream = to or repo.git("rev-parse", "@{u}", timeout=20).stdout.strip()  # the detached worktree has no @{u}
-        r = subprocess.run(limited(["git", "-C", aside, "-c", "gc.autoDetach=false", "rebase", "-q", upstream], GIT_TIMEOUT),
+        r = subprocess.run(limited(["git", "-C", where, "-c", "gc.autoDetach=false"] + ident_args(repo) + ["rebase", "-q", upstream],
+                                   GIT_TIMEOUT),
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=GIT_TIMEOUT + 10,
                            pass_fds=(repo.lock_fd,) if repo.lock_fd is not None else ())
         if r.returncode != 0:
-            subprocess.run(["git", "-C", aside, "rebase", "--abort"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return 1, "rebase 失敗（兩台改到同一段），這台維持原樣，需要人合併：%s" % (r.stderr.strip() or r.stdout.strip())[:300]
-        new = subprocess.run(["git", "-C", aside, "rev-parse", "HEAD"], stdout=subprocess.PIPE,
+            stuck = subprocess.run(["git", "-C", where, "diff", "--name-only", "--diff-filter=U"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, universal_newlines=True).stdout.split("\n")
+            subprocess.run(["git", "-C", where, "rebase", "--abort"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return 1, "rebase 失敗（兩台改到同一段），這台維持原樣，需要人合併：%s" % (r.stderr.strip() or r.stdout.strip())[:300], \
+                [f for f in stuck if f]
+        if not move:
+            return 0, None, []
+        new = subprocess.run(["git", "-C", where, "rev-parse", "HEAD"], stdout=subprocess.PIPE,
                              universal_newlines=True).stdout.strip()
         if repo.git("rev-parse", "HEAD", timeout=20).stdout.strip() != start:  # someone committed meanwhile (no lock)
-            return 1, "同步期間這裡有新的 commit，這次不移動分支，下次再試"
+            return 1, "同步期間這裡有新的 commit，這次不移動分支，下次再試", []
         r = repo.git("reset", "-q", "--keep", new, timeout=120)
         if r.returncode != 0:
-            return 1, "沒有更新：沒提交的修改跟要合進來的變更改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300]
-        return 0, None
+            return 1, "沒有更新：沒提交的修改跟要合進來的變更改到同一個檔（%s）" % (r.stderr.strip() or r.stdout.strip())[:300], []
+        return 0, None, []
     finally:
-        repo.git("worktree", "remove", "--force", aside, timeout=120)
-        shutil.rmtree(aside, ignore_errors=True)
+        repo.git("worktree", "remove", "--force", where, timeout=120)
+        shutil.rmtree(where, ignore_errors=True)
 
 
 def push(repo, track=False):

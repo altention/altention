@@ -33,6 +33,7 @@
 - `/setup`, `!setup`: 重新叫出這個頻道的設定卡。
 - `/attach`, `!attach`: 把 tmux 裡自己開的 Claude Code 接到頻道（見「接上你自己開的 Claude」）。
 - `/detach`, `!detach`: Discord 不再跟著這個對話，對話本身不受影響，頻道移到封存。
+- `/archive`, `!archive`: 封存這個頻道（任何種類）。機器人開的視窗關掉、對話留著；之後在頻道打字可以接回或恢復，會搬回原本的分類。
 - `/talklimit`, `!talklimit`: 這個頻道的 Claude 跟別的頻道最多連續來回幾次（`off` 不限制）。
 - `/commands`, `!commands`: 列出 Claude Code 的指令和 skill；`refresh` 重新整理選單。
 - `/run`: 終端機頻道執行一行指令，可以從跑過的指令裡搜尋（見「終端機和檔案」）。

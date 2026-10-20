@@ -493,6 +493,42 @@ def startup_key(view):
     return "Enter" if picked and option(picked[-1]).startswith("Yes") else "Down"
 
 
+
+def startup_choice(view):
+    """A dialog Claude Code opens with that asks the owner a choice the bot does not make for them (2.1.303: "Allow
+    external CLAUDE.md file imports?", when the folder's CLAUDE.md imports files outside it: Yes reads those files
+    into the conversation without any tool, past the secrets guard; so the owner is asked, never answered for).
+    {"title", "text", "options": [two labels, as drawn], "picked": index of the one ❯ points at} or None. Told only
+    where a dialog is drawn, as startup_key(): no input box, the rows after the last rule end in two answers
+    without numbers, one starting "No", the other "Yes", next to each other, with nothing after them but the
+    dialog's hint; not one of the dialogs startup_key() answers ("No, exit"), nor a numbered menu (menus.py's).
+    Its answers take no number key: the arrow keys and Enter (keys_for())."""
+    if pane_state(view) != "dialog":
+        return None
+    rows = view.split("\n")
+    rules = [i for i, r in enumerate(rows) if is_box_rule(r)]
+    own = [r.strip() for r in rows[rules[-1] + 1 if rules else 0:] if r.strip()]
+    if own and DIALOG.search(own[-1]):
+        own = own[:-1]
+    if len(own) < 3:
+        return None
+    last = own[-2:]
+    labels = [r[1:].strip() if r.startswith("❯") else r for r in last]
+    if any(re.match(r"^\d+\.\s", lab) for lab in labels) or STARTUP_NO in labels:
+        return None
+    if not (labels[0].startswith("No") and labels[1].startswith("Yes") or labels[0].startswith("Yes") and labels[1].startswith("No")):
+        return None
+    picked = [i for i, r in enumerate(last) if r.startswith("❯")]
+    if len(picked) != 1:
+        return None
+    return {"title": own[0], "text": "\n".join(own[:-2]), "options": labels, "picked": picked[0]}
+
+
+def keys_for(choice, index):
+    """The keys that pick answer `index` of a startup_choice(): the arrows from the one picked now, then Enter."""
+    move = index - choice["picked"]
+    return ["Down"] * move + ["Up"] * -move + ["Enter"]
+
 # Claude Code's agents list (the left key on an empty input box): the pane's conversation has moved to a background
 # process and the pane shows the list of background conversations, with an input box of its own. What is typed there
 # and entered starts a NEW background conversation; Enter on an empty box opens the row under the cursor. Real screens

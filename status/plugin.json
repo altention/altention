@@ -12,7 +12,8 @@
     {
       "name": "dashboard",
       "kind": "board",
-      "setting": "status.channel"
+      "setting": "status.channel",
+      "category": "main"
     }
   ],
   "schedules": [

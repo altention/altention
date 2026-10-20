@@ -149,8 +149,12 @@ def bot_here():
 
 
 def bot_machine():
-    """(name, machine, here) of the machine that runs the bot: this one if its settings are here, else the
-    one the list gives the role `dcbot`; (None, None, False) if neither."""
+    """(name, machine, here) of the machine that runs the bot: the list's entry with the role dcbot, here when its
+    name is this machine's (this_machine()). "local" in an entry's ssh only says it is reached from itself, never
+    who it is: with the list the examples teach, every machine would otherwise take itself for the bot's (C-57 U5,
+    manager 2026-10-20). With no such entry: this one if the bot's settings are here; (None, None, False) if
+    neither. A machine whose name the list does not know (known_here() false) cannot tell by name: an entry reached
+    "local" is taken as here, so that its posts still go (U5's cards and leading are not done then)."""
     try:
         me = this_machine()
         inventory()
@@ -159,12 +163,26 @@ def bot_machine():
             return stated_name() or hostname(), {"ssh": ["local"], "roles": ["dcbot"]}, True
         raise
     listed = [(name, m) for name, m in (inventory().get("machines") or {}).items() if "dcbot" in m.get("roles", [])]
-    elsewhere = [(name, m) for name, m in listed if name != me and "local" not in m.get("ssh", [])]
-    if elsewhere and not any(name == me for name, _ in listed):  # the list says it is another machine: believe it
-        return elsewhere[0][0], elsewhere[0][1], False  # (a stray ~/.config/dcbot here is reported by doctor)
-    if bot_here() or listed:
+    if listed:
+        if any(name == me for name, _ in listed):
+            return me, {"ssh": ["local"], "roles": ["dcbot"]}, True
+        if not known_here():
+            mine = [(name, m) for name, m in listed if "local" in m.get("ssh", [])]
+            if mine:
+                return mine[0][0], {"ssh": ["local"], "roles": ["dcbot"]}, True
+        return listed[0][0], listed[0][1], False  # the list says it is another machine: believe it (the bot's
+        # settings found here as well are reported by doctor)
+    if bot_here():
         return me, {"ssh": ["local"], "roles": ["dcbot"]}, True
     return None, None, False
+
+
+def known_here():
+    """Does the machine list know this machine by name (its given name or hostname)? False without a list entry."""
+    try:
+        return this_machine() in (inventory().get("machines") or {})
+    except ConfigError:
+        return False
 
 
 def stray_bot_settings():

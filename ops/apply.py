@@ -9,6 +9,7 @@ machine set up by hand and one set up from here go the same way.
   python3 ops/apply.py host-b --force-move    # see "single-machine plugins" below
   python3 ops/apply.py mac --allow-time chatlog/sync   # passed on to plugins.py apply there (a line's time changed)
   python3 ops/apply.py lap --moved-from ~/old-engine   # the engine moved and its old folder is gone: its lines go too
+  python3 ops/apply.py lap --take-refused     # the engine even past update.py's check (see below)
 
 Where each plugin runs comes from plugin.json and the instance's plugins.json (ops/plugins.py show). A machine where
 that cannot be worked out is left alone and said (exit 1); the other machines are done (manager 2026-10-06).
@@ -31,6 +32,13 @@ plugin shows "別台還有" (exit 1) until the run for real has taken it off the
 
 Update the controlling machine first: apply.py waits for the installer's last line (ok core.done), which an older
 engine on the other machine may not print; it stops there, writing nothing (manager 2026-10-06).
+
+The engine is updated with its own altention/update.py (C-57 U5): --release (the newest release), or a plain round when
+the instance's core.update is branch (the branch, as the machines that follow it expect); behind the same syntax and
+load check as every update, a refused one not taken (the machine stops there, said). The git lock held meanwhile (exit
+75): tried again for about 2 minutes, then that machine stops, saying its engine did not move. --take-refused takes it
+anyway, through home-pull --take-refused as before (the way out when that check is wrong; docs/gotchas.md); so does an
+engine too old to have update.py.
 
 The instance is updated with `ops/instance.py pull --take-refused`: past the settings check the sync holds a broken
 upstream back with (the way out when that check is wrong; docs/gotchas.md), as the engine is with home-pull's.
@@ -86,8 +94,22 @@ step() {{  # a step's name, the line it prints once it really ran ("" for none),
     echo "  ✗ 停在「$NAME」：結束碼 0，但沒看到它跑完的記號（$MARK），可能被別的同名指令頂替了；後面的步驟都沒做"; exit 1
   fi
 }}
+release_now() {{  # update.py: --release, or a plain round when the instance follows its branch (core.update branch);
+  # exit 75 (the git lock held, nothing done) tried again, about 2 minutes in all
+  N=0
+  while :; do
+    ALT_UPDATE_LOCKED_EXIT=1 python3 "$H/altention/update.py" {how} && RC=0 || RC=$?
+    [ "$RC" = 75 ] || return "$RC"
+    N=$((N+1))
+    if [ "$N" -ge 12 ]; then echo "引擎這次沒換版（有別的程序在用 git，等了約 2 分鐘）"; return 75; fi
+    sleep "${{ALT_APPLY_RETRY_SECS:-10}}"
+  done
+}}
 if [ -d "$H/.git" ]; then
-  if [ -x "$H/bin/home-pull" ]; then step "更新引擎" "" "$H/bin/home-pull" --quiet --take-refused; else step "更新引擎" "" git -C "$H" pull -q --ff-only; fi
+  # the newest release behind update.py's own checks (syntax, load: C-57 U5); --take-refused, or an engine from
+  # before update.py: home-pull past them, as it always was
+  if [ {take} = 0 ] && [ -f "$H/altention/update.py" ]; then step "更新引擎（先檢查新版能不能正常載入）" "" release_now
+  elif [ -x "$H/bin/home-pull" ]; then step "更新引擎" "" "$H/bin/home-pull" --quiet --take-refused; else step "更新引擎" "" git -C "$H" pull -q --ff-only; fi
 elif [ -e "$H" ]; then
   echo "  ✗ 停在「更新引擎」：$H 在，但不是 git repo"; exit 1
 elif [ -z {repo} ]; then
@@ -199,7 +221,7 @@ def still_held(name, needs, inv):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    dry = force = False
+    dry = force = take = False
     allow, moved, names, odd = [], [], [], []
     while args:  # nothing unknown is ignored: a mistyped flag must not turn into a write
         a = args.pop(0)
@@ -207,6 +229,8 @@ def main(argv=None):
             dry = True
         elif a == "--force-move":
             force = True
+        elif a == "--take-refused":
+            take = True  # the engine past update.py's checks (home-pull --take-refused): the way out when they are wrong
         elif a == "--allow-time" and args and not args[0].startswith("-"):
             allow.append(args.pop(0))  # passed on to plugins.py apply on every machine done (the Mac's minute)
         elif a == "--moved-from" and args and not args[0].startswith("-"):
@@ -216,7 +240,7 @@ def main(argv=None):
         else:
             names.append(a)
     if odd or not names:
-        print("不認得：%s。用法：python3 ops/apply.py <機器…|all> [--dry-run] [--force-move] [--allow-time 插件/項目]… [--moved-from 舊引擎資料夾]…"
+        print("不認得：%s。用法：python3 ops/apply.py <機器…|all> [--dry-run] [--force-move] [--allow-time 插件/項目]… [--moved-from 舊引擎資料夾]… [--take-refused]"
               % " ".join(odd or ["（沒有機器）"]))
         return 2
     allow_args = " ".join(["--allow-time " + config.shell_quote(x) for x in allow] +
@@ -231,6 +255,9 @@ def main(argv=None):
               "要更新引擎到最新的發佈版本：在引擎跑 python3 altention/update.py --release，說「更新了」之後再跑 ./install.sh。")
         return 1
     names = list(inv["machines"]) if names == ["all"] else names
+    # the instance's core.update is one value for every machine: branch follows the branch (update.py's plain round),
+    # anything else the newest release (#code-review of 49b8896, manager 2026-10-20)
+    how = "" if config.setting("core.update", "notify") == "branch" else "--release"
     unknown = [n for n in names if n not in inv["machines"]]
     if unknown:
         print("清單裡沒有：%s" % ", ".join(unknown))
@@ -318,7 +345,8 @@ def main(argv=None):
         else:
             script = SCRIPT.format(engine=engine_on(m), repo=config.shell_quote(clone_from(inv)), name=config.shell_quote(n),
                                    instance=config.shell_quote((inv.get("instance") or {}).get("repo", "")),
-                                   bot_leaves="1" if bot_leaves else "0", allow=allow_args + holds)
+                                   bot_leaves="1" if bot_leaves else "0", allow=allow_args + holds, take="1" if take else "0",
+                                   how=how)
         alias, code, out, err = run_on(m, script, interpreter="sh", timeout=900)
         if out.strip():
             print(out.rstrip())

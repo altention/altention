@@ -115,13 +115,77 @@ def find_instance(r, light):
     if light:
         r.say("skip", "core.instance", "這台還沒有實例（--links 不建；跑完整的 install.sh 會建）")
         return None
-    rc, out = r.script("instance init", [sys.executable, os.path.join(HERE, "instance.py"), "init"])
+    rc, out = r.script("instance init", [sys.executable, os.path.join(HERE, "instance.py"), "init",
+                                         "--permission", new_permission()])
     inst = config.instance_dir() if rc == 0 else None
     if not inst:
         r.say("fail", "core.instance", "建不出本機實例（%s）" % (out.strip().splitlines() or ["沒有說明"])[-1])
         return None
     r.say("changed", "core.instance", "建了本機實例 %s（沒有遠端）" % inst)
     return inst
+
+
+def setup_cmd():
+    """ops/setup.py as a module (its name is no package's: loaded by its path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("altention_setup_cmd", os.path.join(HERE, "setup.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def new_permission():
+    """A new installation's permission mode (C-48): auto, or manual when this Claude Code lists modes without it.
+    Not asked of Claude Code (not installed yet): auto, which core.needs then says to install."""
+    modes = setup_cmd().claude_modes()
+    return "manual" if modes is not None and "auto" not in modes else "auto"
+
+
+def setup_pending():
+    """The instance's setup.done is false: a new installation whose settings #setup has not finished (C-48)."""
+    try:
+        return config.setting("setup.done", True) is False
+    except Exception:
+        return False
+
+
+def hold_until_setup(r, holds):
+    """C-48: while #setup is not done, progress (it spends the subscription every round) is held like apply's
+    --hold: not installed, no schedule; `setup.py done` runs install.sh again and it starts. (The usage board's
+    limits wait in usage/collect.py itself.)"""
+    if setup_pending() and "progress" not in holds:
+        holds.append("progress")
+        r.say("skip", "core.setup", "設定還沒做完（Discord 的 #setup）：先不裝、不排程會用訂閱額度的進度整理；設定做完會自己開始")
+
+
+def needs(r):
+    """What the bot and the install need besides python3 and git (install.sh checks those): said, never installed."""
+    missing = []
+    if not shutil.which("tmux"):
+        missing.append("tmux（Debian/Ubuntu：sudo apt install tmux；Fedora：sudo dnf install tmux；macOS：brew install tmux）")
+    if not setup_cmd().claude_binary():
+        missing.append("Claude Code（照 https://docs.claude.com/claude-code 裝好，再在終端機開一次 claude 登入）")
+    p = subprocess.run([sys.executable, "-c", "import ensurepip, venv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if p.returncode != 0:
+        missing.append("python3 的 venv（Debian/Ubuntu：sudo apt install python3-venv）")
+    if missing:
+        r.say("todo", "core.needs", "這台還缺：%s。裝好再重跑 ./install.sh" % "；".join(missing))
+    else:
+        r.say("ok", "core.needs", "tmux、Claude Code、python3 的 venv 都在")
+
+
+def setup_folder(r, bot_here):
+    """#setup's working folder on the bot's machine (setup.py's write_setup_folder: the allow rule, the skill)."""
+    if not bot_here:
+        r.say("skip", "core.setup-folder", "機器人不在這台：#setup 的資料夾不用")
+        return
+    folder, changed, problem = setup_cmd().write_setup_folder(ENGINE)
+    if problem:
+        r.say("todo", "core.setup-folder", problem)
+    elif changed:
+        r.say("changed", "core.setup-folder", "#setup 的資料夾 %s：%s" % (folder, "、".join(changed)))
+    else:
+        r.say("ok", "core.setup-folder", "#setup 的資料夾 %s" % folder)
 
 
 def skills(r):
@@ -825,7 +889,10 @@ def install(argv, after_discord=False):
     if light:
         done(r, st, "輕的部分")
         return r.code()
+    st.run("core.needs", needs, r)
     st.run("core.ssh", ssh, r, inst, needs=["core.instance"])
+    if inst:
+        hold_until_setup(r, holds)
     here = st.run("core.plugins", plugins_here, r, holds, needs=["core.instance"])
     found, bot_here = here if here else ([], False)
     ok = st.run("core.install", install_plugins, r, found, needs=["core.instance", "core.plugins"])
@@ -835,6 +902,7 @@ def install(argv, after_discord=False):
     st.run("core.apply", write_schedules, r, getattr(plugins_here, "held", holds), allow, moved,
            needs=["core.instance", "core.plugins", "core.install"])
     st.run("dcbot.token", token, r, bot_here, needs=["core.instance", "core.plugins"])
+    st.run("core.setup-folder", setup_folder, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.git-user", git_user, r)
     r.say("ok", "core.log", "詳細輸出：%s" % r.log_path)
     done(r, st, "安裝")
@@ -849,8 +917,8 @@ def done(r, st, what):
         r.say("fail", "core.done", "%s沒跑完：%s 沒成功或不知道（見上面那幾行）" % (what, "、".join(dict.fromkeys(stopped)) or "有一步"))
     else:  # "ok core.done " stays the start of the line: ops/apply.py waits for it
         left = [i for st_, i in r.said if st_ == "todo"]
-        r.say("ok", "core.done", "%s跑完了%s" % (what, "，但還有要你做的：%s（照上面那幾行做完再重跑）" % "、".join(dict.fromkeys(left))
-                                              if left else ""))
+        r.say("ok", "core.done", "%s跑完了%s%s" % (what, "，但還有要你做的：%s（照上面那幾行做完再重跑）" % "、".join(dict.fromkeys(left))
+                                                if left else "", "：到 Discord 的 #setup 把設定做完" if setup_pending() else ""))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,9 @@
   altention dc post 行程 --board 本週 "…"                          a board: one message kept up to date, edited in place each time
                                                                    (its title on top, with when it was last updated); never handed
                                                                    to a Claude
+  altention dc post audit --move-to 系統 ["why"]                   move that channel into a category (made if there is none: the
+                                                                   bot's system category at the bottom); never makes the channel;
+                                                                   said in #audit, with the text when given
 
 The message is headed with where it comes from ("📨 來自 #st-1"), worked out here: the channel whose Claude
 this is (when run by a session the Discord bot looks after), else "<machine> 上的 Claude（<folder>）".
@@ -103,7 +106,9 @@ def pane_address(target):
 
 
 def build(argv, stdin_text, env, host, cwd):
-    """The post (a dict for `dcctl post`) from the command line."""
+    """The post (a dict for `dcctl post`) from the command line. `stdin_text`: the text read from stdin, or a function
+    that reads it, called only when the command line holds no text and asks for no --attach, --resume, --history,
+    --new-claude or --move-to."""
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
@@ -138,6 +143,13 @@ def build(argv, stdin_text, env, host, cwd):
         del args[i:i + 2]
         if not new_claude:
             sys.exit("altention dc post：--new-claude 要給資料夾")
+    move_to = None
+    if "--move-to" in args:
+        i = args.index("--move-to")
+        move_to = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        if not move_to.strip():
+            sys.exit("altention dc post：--move-to 要給分類名稱")
     board = None
     if "--board" in args:
         i = args.index("--board")
@@ -145,11 +157,15 @@ def build(argv, stdin_text, env, host, cwd):
         del args[i:i + 2]
         if not board:
             sys.exit("altention dc post：--board 要給名稱")
+    if not args and callable(stdin_text):  # stdin is read only when no text was given here (--file with it too)
+        stdin_text = "" if any((attach, resume, history, new_claude, move_to)) else stdin_text()
     text = " ".join(args) if args else (stdin_text or "")
     post = {"channel": argv[0].lstrip("#"), "text": text.strip(),
             "from_name": "%s 上的 Claude（%s）" % (host, os.path.basename(cwd.rstrip("/")) or cwd), "from_host": host}
     if board:
         post["board"] = board
+    if move_to:
+        post["move_to"] = move_to.strip()
     if create:
         post["create"] = True
     if resume:
@@ -170,26 +186,40 @@ def build(argv, stdin_text, env, host, cwd):
         if len(data) > MAX_FILE:
             sys.exit("altention dc post：檔案太大（上限 8 MB）")
         post["file_name"], post["file_b64"] = os.path.basename(file_path), base64.b64encode(data).decode()
-    if not post["text"] and not file_path and not any(k in post for k in ("new_claude", "resume", "history")):
+    if not post["text"] and not file_path and not any(k in post for k in ("new_claude", "resume", "history", "move_to")):
         sys.exit("altention dc post：沒有內容")
     return post
 
 
-def main():
-    stdin_text = sys.stdin.read() if len(sys.argv) <= 2 and not sys.stdin.isatty() else ""
-    host = socket.gethostname().split(".")[0]
-    post = build(sys.argv[1:], stdin_text, os.environ, host, os.getcwd())
+def deliver(post, capture=False):
+    """Hand a post to dcctl post on the bot's machine (here, or over SSH). (exit status, what it printed): with
+    `capture` its output is collected (altention.dc.card raises with it), else it goes to this terminal. Never
+    exits: no machine with the bot is (1, why) too; only main() turns a failure into an exit (manager 2026-10-19)."""
     data = json.dumps(post, ensure_ascii=False).encode("utf-8")
-    name, m, here = bot_machine()
+    out = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT} if capture else {}
+    try:
+        name, m, here = bot_machine()
+    except SystemExit as e:  # bot_machine() is shared with altention dc notify, which exits on it
+        return 1, str(e.code if e.code is not None else "altention dc post：找不到負責 Discord 機器人的機器")
     if here:
-        sys.exit(subprocess.run([local_dcctl(this_engine(name)), "post"], input=data).returncode)
+        r = subprocess.run([local_dcctl(this_engine(name)), "post"], input=data, **out)
+        return r.returncode, (r.stdout or b"").decode("utf-8", "replace")
     for alias in m.get("ssh", []):
         if alias == "local":
             continue
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", alias, dcctl_on(m) + " post"], input=data)
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", alias, dcctl_on(m) + " post"], input=data, **out)
         if r.returncode != 255:
-            sys.exit(r.returncode)
-    sys.exit("altention dc post：連不上 %s" % name)
+            return r.returncode, (r.stdout or b"").decode("utf-8", "replace")
+    return 1, "altention dc post：連不上 %s" % name
+
+
+def main():
+    host = socket.gethostname().split(".")[0]
+    post = build(sys.argv[1:], lambda: "" if sys.stdin.isatty() else sys.stdin.read(), os.environ, host, os.getcwd())
+    code, said = deliver(post)
+    if said:
+        sys.exit(said)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

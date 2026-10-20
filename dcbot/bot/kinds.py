@@ -24,6 +24,8 @@ UNKNOWN = "unknown"     # a `kind` this version does not know
 CLAUDE_CODE = "claude_code"   # the connector of every conversation there is so far
 
 DETACHED, MOVED = "detached", "channel_moved"   # why a channel is archived; open as well
+BY_OWNER = "archived_by_owner"                  # /archive (C-63)
+ADOPTED = "found_in_archive"                    # in an archive category without a record, given one at a start (C-63)
 
 
 def has_conversation(st):

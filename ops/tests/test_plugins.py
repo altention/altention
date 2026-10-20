@@ -151,10 +151,11 @@ class Questions(unittest.TestCase):
         self.assertEqual((q["key"], q["values"]), ("plugins", ["keep", "some"]))
 
     def test_setup_the_five_in_order(self):
+        """#setup's order (C-48): time zone, permission, talk limit, update, the optional parts."""
         asked = plugins.setup_questions(self.ROWS, "Europe/Berlin", False)
         self.assertEqual([q["key"] for q in asked],
-                         ["core.timezone", "plugins", "core.update", "dcbot.default_permission", "dcbot.talk_limit"])
-        self.assertEqual(asked[1], plugins.first_question(self.ROWS))
+                         ["core.timezone", "dcbot.default_permission", "dcbot.talk_limit", "core.update", "plugins"])
+        self.assertEqual(asked[4], plugins.first_question(self.ROWS))
         self.assertEqual(asked[0]["values"], ["Europe/Berlin", "UTC"])
         self.assertEqual(asked[0]["options"][0]["label"], "Europe/Berlin（建議）")
         self.assertEqual(asked[0]["options"][1], {"label": "UTC", "description": "世界標準時間"})
@@ -165,12 +166,12 @@ class Questions(unittest.TestCase):
         unknown = plugins.setup_questions(self.ROWS, None, False)[0]
         self.assertEqual(unknown["values"], ["UTC", "Asia/Taipei"])
         self.assertNotIn("這台機器目前的時區", json.dumps(unknown, ensure_ascii=False), "nothing said it")
-        self.assertEqual(asked[2]["values"], ["notify", "release"])
-        self.assertEqual(asked[3]["values"], ["auto", "manual", "bypassPermissions"])
-        self.assertEqual([o["label"] for o in asked[3]["options"]], ["auto（建議）", "manual", "bypassPermissions"],
+        self.assertEqual(asked[3]["values"], ["notify", "release"])
+        self.assertEqual(asked[1]["values"], ["auto", "manual", "bypassPermissions"])
+        self.assertEqual([o["label"] for o in asked[1]["options"]], ["auto（建議）", "manual", "bypassPermissions"],
                          "Claude Code's own names: its screen shows them")
-        self.assertEqual([o["description"][:4] for o in asked[3]["options"]], ["自動判斷", "每次都問", "從不問："])
-        self.assertEqual(asked[4]["values"], [10, 30, 0])
+        self.assertEqual([o["description"][:4] for o in asked[1]["options"]], ["自動判斷", "每次都問", "從不問："])
+        self.assertEqual(asked[2]["values"], [10, 30, 0])
         for q in asked:
             self.assertEqual(len(q["values"]), len(q["options"]), q["key"])
             self.assertTrue(2 <= len(q["options"]) <= 4 and len(q["header"]) <= 12, q["key"])
@@ -190,8 +191,8 @@ class Questions(unittest.TestCase):
 
     def test_setup_says_when_the_engine_never_updates(self):
         said = "這份引擎是從壓縮檔解開的，不管選哪個都不會自己更新，也不會通知新版；要新版請重新下載。"
-        self.assertIn(said, plugins.setup_questions(self.ROWS, "UTC", True)[2]["question"])
-        self.assertNotIn(said, plugins.setup_questions(self.ROWS, "UTC", False)[2]["question"])
+        self.assertIn(said, plugins.setup_questions(self.ROWS, "UTC", True)[3]["question"])
+        self.assertNotIn(said, plugins.setup_questions(self.ROWS, "UTC", False)[3]["question"])
 
     def test_setup_main_fills_this_machines_zone(self):
         with mock.patch.object(plugins.plugin, "discover", return_value=(self.ROWS, [])), \
@@ -229,8 +230,8 @@ class Questions(unittest.TestCase):
         later without asking again."""
         rows = self.ROWS + [self.PLANNER]
         asked = plugins.setup_questions(rows, "UTC", False)
-        self.assertEqual([q["key"] for q in asked], ["core.timezone", "plugins", "core.update", "dcbot.default_permission",
-                                                     "dcbot.talk_limit", "plugins.planner"])
+        self.assertEqual([q["key"] for q in asked], ["core.timezone", "dcbot.default_permission", "dcbot.talk_limit",
+                                                     "core.update", "plugins", "plugins.planner"])
         q = asked[-1]
         self.assertEqual((q["header"], q["values"]), ("秘書", ["on", "off"]))
         self.assertTrue(q["question"].startswith("秘書提醒：叫醒秘書。要開嗎？"))

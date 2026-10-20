@@ -47,6 +47,8 @@ def load_settings():
         from altention import config
         channel, plan = config.setting("usage.channel"), config.setting("usage.plan")
         limits = config.setting(SWITCH, True)
+        if config.setting("setup.done", True) is False:  # C-48: nothing spent before #setup is done
+            limits = "setup"
     except Exception as e:
         return None, "實例設定讀不出來（%s）" % e
     if not channel:
@@ -95,6 +97,8 @@ def default_sources(config):
 
 def switched_off(value):
     """Why the limits are not read, for the board, when SWITCH is not true."""
+    if value == "setup":
+        return "設定還沒做完（Discord 的 #setup）：做完之前不讀訂閱額度"
     if value is False:
         return ("關掉了（實例 plugins.json 的 usage.subscription_limits 是 false）。要看就跟 Claude 說「打開訂閱額度看板」，"
                 "或把它改成 true：每小時用 haiku 送一個最小的請求去讀，會算進 5 小時的額度")
@@ -397,7 +401,7 @@ def main(show_only=False):
             limits, why = read_limits(zone)
         except Exception as e:
             limits, why = [], repr(e)
-    if why and limits_on is not False:  # the cron log (plugin.json do.log): not for a plain "off"
+    if why and limits_on not in (False, "setup"):  # the cron log (plugin.json do.log): not for a plain "off"
         print("%s usage：讀不到用量額度：%s" % (time.strftime("%F %T"), why), file=sys.stderr)
     week = next(((p, r) for t, p, r in limits if t == "Current week (all models)"), (None, None))
     cost7 = sum(d["cost"] for r in results for d in r.get("daily", []) if d["date"] > (

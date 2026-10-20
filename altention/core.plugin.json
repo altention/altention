@@ -191,5 +191,31 @@
    "sync": "timer",
    "private": true
   }
+ ],
+ "channels": [
+  {
+   "name": "audit",
+   "kind": "bot",
+   "category": "system",
+   "name_setting": "dcbot.channels.audit"
+  },
+  {
+   "name": "guide",
+   "kind": "bot",
+   "category": "system",
+   "name_setting": "dcbot.channels.guide"
+  },
+  {
+   "name": "update",
+   "kind": "bot",
+   "category": "main",
+   "name_setting": "core.update_channel"
+  }
+ ],
+ "asks": [
+  {
+   "key": "dcbot.default_permission",
+   "question": "dcbot.default_permission"
+  }
  ]
 }

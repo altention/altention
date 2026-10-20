@@ -113,9 +113,9 @@ class RemoteScript(Rig):
             os.chmod(p, 0o755)
         return h
 
-    def run_script(self, h, bot_leaves="0", path=None):
+    def run_script(self, h, bot_leaves="0", path=None, take="0", how="--release"):
         script = apply.SCRIPT.format(engine=apply.config.shell_path(h), repo="''", name="'box'", instance="'git@x:i.git'",
-                                     bot_leaves=bot_leaves, allow=self.allow)
+                                     bot_leaves=bot_leaves, allow=self.allow, take=take, how=how)
         env = dict(os.environ, HOME=self.home, CALLS=self.calls)
         if path:
             env["PATH"] = path + os.pathsep + os.environ["PATH"]
@@ -131,6 +131,74 @@ class RemoteScript(Rig):
         self.assertIn("ok core.instance", r.stdout)
         with open(os.path.join(self.home, ".config/altention/host")) as f:
             self.assertEqual(f.read(), "box\n")
+
+    def test_the_engine_through_update_py_and_its_check(self):
+        """C-57 U5: an engine with altention/update.py takes the newest release through it (its syntax and load check),
+        not home-pull --take-refused; it refusing stops the machine there; --take-refused goes past, as before."""
+        for code, take, first in ((0, "0", "update --release"), (1, "0", "update --release"),
+                                  (0, "1", "home-pull --quiet --take-refused")):
+            with self.subTest(code=code, take=take):
+                if os.path.exists(self.calls):
+                    os.remove(self.calls)
+                shutil.rmtree(os.path.join(self.tmp, "engine 引擎"), ignore_errors=True)
+                h = self.engine()
+                with open(self.mkfile(h, "altention/update.py"), "w") as f:
+                    f.write("import sys\nopen(%r, 'a').write('update ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit(%d)\n"
+                            % (self.calls, code))
+                r = self.run_script(h, take=take)
+                self.assertEqual(self.called()[0], first, r.stdout)
+                if code:
+                    self.assertNotEqual(r.returncode, 0)
+                    self.assertIn("停在「更新引擎（先檢查新版能不能正常載入）」", r.stdout)
+                    self.assertEqual(len(self.called()), 1, "nothing after it")
+                else:
+                    self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_the_git_lock_held_is_waited_for_then_said_not_taken_for_done(self):
+        """Manager on U5: update.py --release exit 75 (the git lock held, nothing done) is tried again, about 2 minutes
+        in all; still held: that machine stops, said, never installed on as if updated."""
+        for after, code in ((2, 0), (99, 1)):
+            with self.subTest(after=after):
+                if os.path.exists(self.calls):
+                    os.remove(self.calls)
+                shutil.rmtree(os.path.join(self.tmp, "engine 引擎"), ignore_errors=True)
+                h = self.engine()
+                count = os.path.join(self.tmp, "count")
+                if os.path.exists(count):
+                    os.remove(count)
+                with open(self.mkfile(h, "altention/update.py"), "w") as f:
+                    f.write("import os, sys\nopen(%r, 'a').write('update\\n')\nn = len(open(%r).read().splitlines())\n"
+                            "sys.exit(75 if n <= %d else 0)\n" % (count, count, after))
+                os.environ["ALT_APPLY_RETRY_SECS"] = "0"
+                try:
+                    r = self.run_script(h)
+                finally:
+                    del os.environ["ALT_APPLY_RETRY_SECS"]
+                with open(count) as f:
+                    tries = len(f.read().splitlines())
+                if code == 0:
+                    self.assertEqual((r.returncode, tries), (0, 3), r.stdout)
+                    self.assertEqual(self.called()[-1].split()[0], "install")
+                else:
+                    self.assertNotEqual(r.returncode, 0)
+                    self.assertEqual(tries, 12)
+                    self.assertIn("引擎這次沒換版（有別的程序在用 git", r.stdout)
+                    self.assertNotIn("install", " ".join(self.called()))
+
+    def test_branch_mode_takes_a_plain_round(self):
+        """#code-review of 49b8896: the machines follow their branch (core.update branch): update.py without --release
+        (the branch, same check), told to say a held git lock by its exit."""
+        h = self.engine()
+        with open(self.mkfile(h, "altention/update.py"), "w") as f:
+            f.write("import os, sys\nopen(%r, 'a').write('update [' + ' '.join(sys.argv[1:]) + '] ' + "
+                    "os.environ.get('ALT_UPDATE_LOCKED_EXIT', '-') + '\\n')\n" % self.calls)
+        r = self.run_script(h, how="")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.called()[0], "update [] 1")
+
+    def mkfile(self, h, rel):
+        os.makedirs(os.path.dirname(os.path.join(h, rel)), exist_ok=True)
+        return os.path.join(h, rel)
 
     def test_the_installer_is_told_not_to_check_the_path(self):  # it would run the user's rc files every apply
         self.run_script(self.engine())
@@ -204,7 +272,7 @@ class RemoteScript(Rig):
 
     def test_no_engine_and_nowhere_to_clone_from_stops(self):
         script = apply.SCRIPT.format(engine=apply.config.shell_path(os.path.join(self.tmp, "none")), repo="''", name="''",
-                                     instance="''", bot_leaves="0", allow="")
+                                     instance="''", bot_leaves="0", allow="", take="0", how="--release")
         r = subprocess.run(["sh", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True, env=dict(os.environ, HOME=self.home))
         self.assertNotEqual(r.returncode, 0)
@@ -344,6 +412,32 @@ class Machines(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             code = apply.main(args)
         return code, out.getvalue(), ran
+
+    def test_the_engine_step_follows_the_instances_core_update(self):
+        """#code-review of 49b8896 (manager): core.update branch → update.py's plain round (the branch); notify or
+        release → --release (the newest release)."""
+        scripts = []
+
+        def keep(m, script, **k):
+            scripts.append(script)
+            if "plugins.py\" held" in script:
+                return m["ssh"][0], 0, json.dumps({"bot": False}) + "\n", ""
+            return m["ssh"][0], 0, "ok", ""
+        for mode, how in (("branch", 'update.py"  && RC=0'), ("notify", 'update.py" --release && RC=0'),
+                          ("release", 'update.py" --release && RC=0')):
+            with self.subTest(mode=mode):
+                del scripts[:]
+                with mock.patch.object(apply.config, "setting", lambda key, default=None: mode if key == "core.update" else default), \
+                        mock.patch.object(apply, "inventory", return_value={"machines": {"a": {"ssh": ["A"], "roles": []}}}), \
+                        mock.patch.object(apply.plugins, "placements", side_effect=lambda n: ([row("chatlog", "on")], [], [])), \
+                        mock.patch.object(apply.config, "bot_machine", return_value=("b", None, False)), \
+                        mock.patch.object(apply, "run_on", keep), \
+                        mock.patch.object(apply, "engine_origin", return_value="git@x:e.git"), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    apply.main(["a"])
+                applied = [x for x in scripts if "release_now" in x]
+                self.assertTrue(applied, scripts)
+                self.assertIn(how, applied[-1])
 
     def test_machines_without_a_single_plugin_go_first(self):
         code, text, ran = self.run_apply(["b", "a", "c"])

@@ -30,7 +30,7 @@ import discord
 
 from altention.connectors.claude_code import sessions as cc_sessions
 
-from . import config, files, kinds, messages, postbox, remote
+from . import config, files, kinds, layout, messages, postbox, remote
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 
@@ -270,6 +270,21 @@ class Posts(object):
             return await self.switch(post, sender_ch)
         if post.get("notify") and not post.get("board"):  # dcnotify: shown, never handed to a Claude, never dropped
             return await self.notify(post, sender_ch)
+        if post.get("open_chat") or post.get("open_setup"):  # ops/setup.py (C-48): done, or the reconcile's questions
+            guild = self.bot.get_guild(config.GUILD_ID)
+            if post.get("open_chat"):
+                return await self.bot.first_chat(guild)  # #chat there and set up already: nothing (done run again)
+            return await self.bot.open_setup(guild, resend=True)
+        if post.get("card"):  # altention.dc.card: #update's card, edited in place, with buttons (C-57)
+            return await self.bot.cards.show(post)
+        if post.get("move_to"):  # dcpost --move-to: a channel into a category (C-57: the reconcile's)
+            return await self.move_to(post, sender_ch)
+        if post.get("archive"):  # dcctl archive: as /archive (C-63), said in #audit
+            ch = await self.channel(post.get("channel") or "", sender_ch, create=False)
+            if ch is None:
+                return await self.bot.audit("dcctl archive：找不到頻道 %s，沒有封存" % post.get("channel"))
+            text, _ = await self.bot.archive.put(ch)  # (one at work is not stopped: put() says so, no button here)
+            return await self.bot.audit("dcctl archive #%s：%s" % (ch.name, text))
         ch = await self.channel(post.get("channel") or "", sender_ch, create=bool(post.get("create")))
         if ch is None:
             return await self.bot.audit("altention dc post：找不到頻道 %s" % post.get("channel"))
@@ -293,6 +308,22 @@ class Posts(object):
             if limit and self.streak[pair] > limit:
                 return await self.hold(ch, sender, post, limit, sender_ch)
         await self.give(ch, sender, sender_ch, text, post)
+
+    async def move_to(self, post, sender_ch):
+        """altention dc post <channel> --move-to <category>: the channel (never made here) into that category, which is
+        made when there is none (the system category at the bottom, any other kept above it: layout). Said in #audit,
+        with the post's text when it has one; a channel not found is said there too."""
+        ch = await self.channel(post.get("channel") or "", sender_ch, create=False)
+        want = str(post["move_to"]).strip()
+        if ch is None:
+            return await self.bot.audit("altention dc post --move-to：找不到頻道 %s，沒有移" % post.get("channel"))
+        if getattr(getattr(ch, "category", None), "name", None) == want:
+            return
+        guild = self.bot.get_guild(config.GUILD_ID)
+        await ch.edit(category=await layout.category(guild, want))
+        text = (post.get("text") or "").strip()
+        await self.bot.audit("#%s 移到分類「%s」（%s）%s" % (ch.name, want, post.get("from_name") or "altention dc post",
+                                                       "：" + text if text else ""))
 
     async def attach(self, post, sender_ch):
         """Attach the pane a post names (as /attach would, in the category the post names), and tell the sender."""
@@ -367,8 +398,7 @@ class Posts(object):
             if ch is None:
                 home = getattr(sender_ch, "category", None)
                 if category_name:  # the category named: made if it does not exist yet
-                    home = next((c for c in guild.categories if c.name == category_name), None) or \
-                        await guild.create_category(category_name)
+                    home = await layout.category(guild, category_name)
                 ch = await guild.create_text_channel(name, category=home, topic=topic)
             elif topic:
                 await ch.edit(topic=topic)
@@ -566,7 +596,9 @@ class Posts(object):
                 return
         except Exception:
             traceback.print_exc()
-            if post.get("notify") and not post.get("board"):  # not what notify() foresaw: kept all the same
+            # not what notify() foresaw: kept all the same; and a card (#code-review of 12a1556: a 5xx on the last
+            # "✅ updated" left the card at "⏳" for good); retry() shows it again, update_cards skips it if a newer came
+            if (post.get("notify") and not post.get("board")) or post.get("card"):
                 try:
                     postbox.fail(path, post)
                 except Exception:  # not even kept: its spool file stays, as above
