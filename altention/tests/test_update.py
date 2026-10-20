@@ -172,6 +172,21 @@ class Moves(Rig):
         with open(os.path.join(self.engine, "tool.py")) as f:
             self.assertEqual(f.read(), "X = 'being edited'\n", "the edit is untouched")
 
+    def test_an_ignored_file_of_the_same_name_stops_the_move(self):
+        """C-66 (manager): git overwrites an ignored file on a fast-forward without a word; one the person ignores
+        with the name of a file the new version adds stops the round, as one not tracked does."""
+        with open(os.path.join(self.engine, ".git", "info", "exclude"), "a") as f:
+            f.write("notes-of-mine.txt\n")
+        self.write(self.engine, "notes-of-mine.txt", "mine\n")
+        old = self.head()
+        self.publish("notes-of-mine.txt", "the engine's\n")
+        self.assertEqual(self.round(), 1)
+        self.assertEqual(self.head(), old)
+        with open(os.path.join(self.engine, "notes-of-mine.txt")) as f:
+            self.assertEqual(f.read(), "mine\n", "not overwritten")
+        self.assertIn("update\tin-the-way\t", self.alerts())
+        self.assertIn("你自己的檔（notes-of-mine.txt）跟新版要加的檔同名", self.told[-1])
+
     def test_what_was_in_the_way_is_said_in_plain_words(self):
         """C-57: a file not in the engine with a name the new version adds was told as an overlapping edit; now
         each cause in its own words, naming the file, and the technical part in brackets."""
@@ -180,7 +195,8 @@ class Moves(Rig):
         self.publish("new.txt", "the engine's new file\n")
         self.assertEqual(self.round(), 1)
         self.assertEqual(self.head(), old)
-        self.assertIn("要加的檔案（new.txt），這台已經有同名的檔", self.told[-1], self.told)
+        self.assertIn("你自己的檔（new.txt）跟新版要加的檔同名，這次先不更新", self.told[-1], self.told)  # C-66: before the move
+        self.assertIn("到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」", self.told[-1])
         self.assertNotIn("修改", self.told[-1].split("（細節")[0])
         with open(os.path.join(self.engine, "new.txt")) as f:
             self.assertEqual(f.read(), "mine, not the engine's\n")
@@ -876,6 +892,24 @@ class UpdatedNotice(Rig):
 
     def notices(self):
         return [t for t in self.told if t.startswith("✅")]
+
+    def test_release_mode_stops_on_an_ignored_file_in_the_way(self):
+        """C-66: the automatic round to a release, with a file the person ignores that the release adds."""
+        self.mode("release")
+        self.release("0.1.0")
+        self.round()
+        with open(os.path.join(self.engine, ".git", "info", "exclude"), "a") as f:
+            f.write("mine.cfg\n")
+        self.write(self.engine, "mine.cfg", "mine\n")
+        old = self.head()
+        self.write(self.up, "mine.cfg", "the release's\n")
+        self.release("0.2.0")
+        self.assertEqual(self.round(), 1)
+        self.assertEqual(self.head(), old)
+        with open(os.path.join(self.engine, "mine.cfg")) as f:
+            self.assertEqual(f.read(), "mine\n")
+        self.assertEqual(self.notices(), [], "no ✅: not moved")
+        self.assertEqual(git(self.engine, "tag", "-l", "altention/before-v0.2.0").stdout, "", "no mark for a move not made")
 
     def test_first_round_writes_down_what_it_runs_and_says_nothing(self):
         for mode in ("release", "branch"):

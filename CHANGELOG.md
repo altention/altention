@@ -13,6 +13,40 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.3.1 — 2026-10-20
+
+### For people
+
+- **A file of yours in the way of an update is renamed aside, once you say so.** When a new version adds a file
+  whose name one of your own files already has, 「請 Claude 幫忙」 now lets `#setup`'s Claude rename yours to
+  `<name>.mine` beside it (`.mine.2` and on when that is taken; the contents stay) and go on with the update,
+  after asking you once. Before, you had to move it yourself first.
+- **Ignored files count too.** A file you ignore (`.gitignore`, `.git/info/exclude`) with the name of one the new
+  version adds used to be overwritten by the update without a word; now it stops the update like any other file
+  of yours in the way.
+- **Updates that run on their own check for such files as well.** An update that moves by itself (`core.update`
+  set to `release` or `branch`, or `update.py --release`) now stops before the move when one of your files is in
+  the way, leaves it as it is, and tells you to say 「引擎更新卡住了，幫我處理」 in `#setup`.
+- **`#update`'s other lines are the system's notices too.** The lines the setup steps post there (the
+  welcome when `#update` is opened, 「整理頻道」, 「有 N 件事要你決定」, and 「你在 #setup 回答的都設定好了」) now
+  look like the update notices, not like a message from one of the Claudes.
+
+### For people (zh-TW)
+
+- **擋到更新的同名檔，問過你就改名留著。** 新版要加的檔跟你自己的檔同名時，按「請 Claude 幫忙」，#setup 的 Claude 問過你一次，就把你的檔改名成「<名字>.mine」放在旁邊（內容不動），接著更新；以前要你自己先搬走。
+- **被忽略的檔也會擋下來。** 寫在 .gitignore 裡、跟新版要加的檔同名的檔，以前更新時會被直接蓋掉，現在會先停下來，跟其他同名檔一樣處理。
+- **自動更新也會先檢查同名檔。** 自己跑的更新（core.update 是 release 或 branch，或 update.py --release）遇到同名檔會先停下來、不動你的檔，並請你到 #setup 說「引擎更新卡住了，幫我處理」。
+- **#update 裡其他幾則也改成系統通知。** 開頻道時的說明、「整理頻道」、「有幾件事要你決定」、「你在 #setup 回答的都設定好了」，現在跟更新通知一樣是系統發的，不再顯示成某個 Claude 傳來的。
+
+### For agents
+
+1. New command `altention update aside <vX.Y.Z>`: it renames the files not tracked or ignored here that have the
+   name of one the release adds to `<name>.mine` (never over anything), contents untouched. `#setup`'s allow
+   rules gain it; `altention update go` (the 更新 button) writes them through its reconcile, `./install.sh` does
+   too. Do not edit that settings file.
+2. `altention update check --json` kind `untracked` now also lists ignored files with such a name. Do not move or
+   delete those files yourself: send the person to `#setup`, whose update skill asks and then runs `aside`.
+
 ## v0.3.0 — 2026-10-20
 
 ### For people

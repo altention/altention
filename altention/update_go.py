@@ -8,6 +8,8 @@
                                           it); without --card it is said on this terminal only
   altention update save <vX.Y.Z>          keep the edits not committed as one commit ("local edits before vX.Y.Z"), so
                                           go can take them on top of the release (asked first: Claude does)
+  altention update aside <vX.Y.Z>         rename the files not tracked here that have the name of one the release adds
+                                          to <name>.mine (asked first: Claude does), so go can put the release's in
   altention update apply <vX.Y.Z>         take the copy Claude merged (go makes it under #setup's folder when your
                                           changes meet the release's), after the person agreed
   altention update undo                   back to before the last update (altention/before-vX, update.py marks it)
@@ -163,8 +165,7 @@ def check(fetch=True):
         changed = [l[3:].split(" -> ")[-1] for l in edits.stdout.splitlines() if l.strip()]
         if changed:
             return found("edits", files=changed, why="還沒 commit 的修改：%s" % "、".join(changed[:10]), **base)
-        added = set(lines(repo.git("diff", "--name-only", "--diff-filter=A", head, up, timeout=60)))
-        loose = [f for f in lines(repo.git("ls-files", "--others", "--exclude-standard", timeout=60)) if f in added]
+        loose = in_the_way(repo, head, up)
         if loose:
             return found("untracked", files=loose, why="沒追蹤的檔跟新版要加的檔同名：%s" % "、".join(loose[:10]), **base)
         if repo.git("rev-list", "--count", head, "--not", up, timeout=20).stdout.strip() in ("", "0"):
@@ -182,6 +183,10 @@ def check(fetch=True):
         if code:
             return found("conflict", files=stuck, commits=subjects, why=why, **base)
         return found("commits", commits=subjects, **base)
+
+
+def in_the_way(repo, head, up):
+    return update.in_the_way(repo, head, up)  # one copy, update.py's (it checks before a move of its own too)
 
 
 PLAIN = {  # one line for the 🆕 card (manager 2026-10-20: plain words; the rest under 看要做什麼)
@@ -327,7 +332,8 @@ def ask_text(f, version, step=None, said=""):
 NEXT = {  # for Claude, by kind: the subcommands that take it on (U3; U4 adds the merged copy's apply)
     "edits": "先問使用者一次要不要把修改保留下來再更新（決定 4）；同意就 `altention update save %(v)s`，"
              "再 `altention update go %(v)s`。不同意就不動。",
-    "untracked": "問使用者那個檔要改名、移走還是不要了；處理好再 `altention update go %(v)s`。",
+    "untracked": "先問使用者一次，同意就 `altention update aside %(v)s`（把那幾個檔改名成 <名字>.mine，內容不動），"
+                 "再 `altention update go %(v)s`。不要那個檔、或想放別的地方，照使用者說的做。",
     "conflict": "使用者自己改過的地方跟新版改到同一段：先講清楚兩邊各改了什麼，問過再合。合併用的副本在上面寫的資料夾"
                 "（rebase 停在衝突上），在那裡用 Edit 把每個衝突的檔合好、拿掉 <<<<<<< ======= >>>>>>> 標記，給使用者看過、"
                 "同意後跑 `altention update apply %(v)s`；它說還有下一段就再合、再跑。沒有副本（上面沒寫）就先跑 "
@@ -744,6 +750,49 @@ def close_older(card_id, tag):
     os.replace(path + ".tmp", path)
 
 
+def aside(version):
+    """altention update aside <v>: the files not tracked here that have the name of one `version` adds (the check's
+    "untracked", nothing else) renamed to <name>.mine beside them, <name>.mine.2 and on when that is taken (never
+    over anything, nor onto a name the release adds), so go can put the release's in (C-66, manager 2026-10-20;
+    asked first: Claude does). Their contents are not touched."""
+    repo = sync.Repo(engine())
+    with git_lock(repo) as lock:
+        if lock.fd is None:
+            print("引擎現在正在做別的事，等一下再試；你的檔都沒動。")
+            return 1
+        repo.lock_fd = lock.fd
+        head = repo.git("rev-parse", "HEAD", timeout=20).stdout.strip()
+        up = repo.git("rev-parse", "-q", "--verify", "%s^{commit}" % version, timeout=20).stdout.strip()
+        if not up:  # not fetched here yet (the 🆕 came from another round): fetched now, nothing else
+            repo.git("fetch", "-q", "--tags")
+            up = repo.git("rev-parse", "-q", "--verify", "%s^{commit}" % version, timeout=20).stdout.strip()
+        if not head or not up:
+            print("讀不到 %s（或這台的版本），什麼都沒動。先跑 altention update check。" % version)
+            return 1
+        loose = in_the_way(repo, head, up)
+        if not loose:
+            print("沒有擋住 %s 的同名檔，不用做。" % version)
+            return 0
+        added = set(lines(repo.git("ls-tree", "-r", "--name-only", up, timeout=60)))
+        eng, moved = engine(), []
+        for rel in loose:
+            src = os.path.join(eng, rel)
+            n, new = 1, rel + ".mine"
+            while os.path.lexists(os.path.join(eng, new)) or new in added:
+                n += 1
+                new = "%s.mine.%d" % (rel, n)
+            try:
+                os.rename(src, os.path.join(eng, new))  # a name nothing has (looked at just above, under the lock)
+            except OSError as e:
+                print("%s 改不了名（%s）；%s" % (rel, e, ("已經改好的：%s。" % "、".join("%s → %s" % m for m in moved)) if moved
+                                                 else "什麼都沒動。"))
+                return 1
+            moved.append((rel, new))
+    print("已經把擋住新版的檔改名了，內容都沒動：%s。接著更新：altention update go %s"
+          % ("、".join("%s → %s" % m for m in moved), version))
+    return 0
+
+
 def save(version):
     """altention update save <v>: the edits not committed kept as one commit, "local edits before <v>" (owner
     2026-10-19, decision 4: asked once first, by Claude), so go can take them on top of the release. Only files
@@ -1016,6 +1065,8 @@ def main(argv):
         return 0 if f["kind"] in GO_KINDS + ("none",) else 1
     if argv[:1] == ["card"] and len(argv) == 2 and update.RELEASE_TAG.match(argv[1]):
         return new_card(argv[1])
+    if argv[:1] == ["aside"] and len(argv) == 2 and update.RELEASE_TAG.match(argv[1]):
+        return aside(argv[1])
     if argv[:1] == ["save"] and len(argv) == 2 and update.RELEASE_TAG.match(argv[1]):
         return save(argv[1])
     if argv == ["undo"]:

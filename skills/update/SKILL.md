@@ -24,6 +24,7 @@ anything of theirs could be lost, and what they can do now.** Then ask, and act 
   - `<ENGINE>/bin/altention update go <vX.Y.Z>`
   - `<ENGINE>/bin/altention update save <vX.Y.Z>`
   - `<ENGINE>/bin/altention update apply <vX.Y.Z>`
+  - `<ENGINE>/bin/altention update aside <vX.Y.Z>`
   - `<ENGINE>/bin/altention update undo`
   `<ENGINE>` is the path in this folder's `.claude/settings.json` allow rules. Never run `git` yourself, never edit
   the engine's files, a settings file or the crontab: a command outside those rules is checked and may be blocked,
@@ -97,9 +98,10 @@ it.
   Ask: 「先在旁邊合給我看」 (step 3b) or 「先不要更新」 (nothing changes).
 - **`untracked`** (`files` names it):
   「新版本要加一個叫 <名字> 的檔，這台已經有一個同名的檔（不是引擎原本就有的），所以先停下來，沒有動它。你的檔還
-  在，系統照現在的版本繼續跑，沒事。把那個檔改名或移走之後就能更新。」 Moving it is not one of your commands: they
-  do it themselves, or ask the Claude in `#chat` 「把引擎裡的 <名字> 改名成 <名字>.mine」 (it keeps the file). Ask:
-  「我弄好了，再試一次」 (run `check --json` again, back to step 1) or 「先不要更新」 (nothing changes).
+  在，系統照現在的版本繼續跑，沒事。我可以把你的檔改名成 <名字>.mine 留在旁邊，內容不動，再更新。」
+  Ask: 「改名留著，再更新」 (step 3c) or 「先不要更新」 (nothing changes). When they want it somewhere else or do not
+  want it any more, that is not one of your commands: they do it themselves, or ask the Claude in `#chat`; then
+  run `check --json` again (step 1).
 - **`mixed`**:
   「這台有機器人自己退回的版本，也有你改過的地方。哪些要留、哪些可以放掉，程式不猜，要問你，所以先停下來。都還
   在，系統照現在的版本繼續跑，沒事。這要一項一項看，這裡做不了：要處理的話，到 #chat 請 Claude 一項一項帶你選。」
@@ -167,9 +169,21 @@ What it prints:
 - Otherwise it takes the merged version and goes on like step 4 (install, settings, system check): tell them how it
   ended, as step 4 does.
 
+### 3c. Rename their file aside, then update
+
+```bash
+<ENGINE>/bin/altention update aside <vX.Y.Z>
+```
+
+It renames each file in the new version's way to `<name>.mine` beside it (`.mine.2` and on when that is taken);
+nothing is overwritten and the contents stay. It ends 「已經把擋住新版的檔改名了」 with each old → new name: tell
+them where their file is now, in one line, and go to step 4. 「沒有擋住 <vX.Y.Z> 的同名檔」: nothing was in the way
+any more; go to step 4. Anything else it prints means nothing (or only what it lists) was renamed: say it plainly
+and stop.
+
 ## 4. The update itself
 
-When `check` says `clean` or `commits` and they said yes, or after 3a:
+When `check` says `clean` or `commits` and they said yes, or after 3a or 3c:
 
 ```bash
 <ENGINE>/bin/altention update go <vX.Y.Z>

@@ -1231,7 +1231,7 @@ def install_restored(mark, out):
 SETUP_FOLDER = "~/.local/state/altention/setup"  # #setup's working folder (C-48; the bot opens it there)
 # `altention update` subcommands #setup's Claude may run (C-57's U chain, support-3 2026-10-19): one rule each, so
 # that a subcommand added later is not let through by itself. Its update-work/ folder in there is never touched here.
-UPDATE_SUBCOMMANDS = ("check", "go", "save", "apply", "undo")
+UPDATE_SUBCOMMANDS = ("check", "go", "save", "apply", "aside", "undo")  # aside: C-66
 SETUP_SKILLS = ("setup", "update")  # linked into #setup's folder only (.local-only): the setup, and an update handed over
 
 
@@ -1296,9 +1296,11 @@ def update_name():
 
 
 def say_update(text):
-    """One line in #update (core.update_channel); not said is not a failure (the alerts and doctor stay)."""
+    """One line in #update (core.update_channel), as a notice of this machine's like update.py's (altention dc
+    notify): the system speaking, not a card "來自 … 上的 Claude" as altention dc post makes it; not said is not a
+    failure (the alerts and doctor stay)."""
     try:
-        altention("dc", "post", update_name(), text)
+        altention("dc", "notify", "-c", update_name(), text)
     except (OSError, subprocess.SubprocessError):
         pass
 

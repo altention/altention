@@ -1226,7 +1226,7 @@ class Setup(Base):
                 allow = json.load(f)["permissions"]["allow"]
             self.assertEqual(allow[0], "Bash(python3 %s/ops/setup.py:*)" % eng)
             self.assertEqual(allow[1:], ["Bash(%s/bin/altention update %s:*)" % (eng, s)
-                                         for s in ("check", "go", "save", "apply", "undo")])
+                                         for s in ("check", "go", "save", "apply", "aside", "undo")])
             for name in ("setup", "update"):  # S4a: an update handed over is #setup's too
                 self.assertEqual(os.readlink(os.path.join(folder, ".claude", "skills", name)),
                                  os.path.join(eng, "skills", name))

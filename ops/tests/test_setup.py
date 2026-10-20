@@ -483,7 +483,7 @@ class TheUpdateSkill(unittest.TestCase):
                 "沒有 <vX.Y.Z> 的合併副本", "這份副本不能用了", "什麼都還沒換", "沒有換", "這次先不換", "都沒動",
                 "已經回到更新前的版本", "這台設成有新版就自己更新", "更新之後這台的引擎又有變動",
                 "跟要回去的版本改到同一個檔", "沒有更新前的記號", "跑 ./install.sh",
-                "上次換到 vX.Y.Z 之後被中斷了，接著把剩下的做完"]
+                "上次換到 vX.Y.Z 之後被中斷了，接著把剩下的做完", "已經把擋住新版的檔改名了", "沒有擋住 <vX.Y.Z> 的同名檔"]
         for words in said:
             self.assertIn("「%s」" % words, self.text, words)
             for piece in words.replace("<vX.Y.Z>", "%s").replace("vX.Y.Z", "%s").split("…"):
@@ -596,8 +596,10 @@ class Reconcile(Rig):
         if "--move-to" in args:
             self.moved.append((args[2], args[4]))
             self.chans = [(i, n, args[4] if n == args[2] else c) for i, n, c in self.chans]
-        else:
-            self.said.append((args[2], args[3]))
+        elif args[:3] == ("dc", "notify", "-c"):
+            self.said.append((args[3], args[4]))
+        else:  # anything else said in a channel would read as a Claude's card
+            self.said.append(("not a notice", args))
         return subprocess.CompletedProcess(args, 0, "")
 
     def guide(self, out=None):
@@ -621,6 +623,7 @@ class Reconcile(Rig):
         code, out = self.run_("reconcile")
         self.assertEqual(code, 0, out)
         self.assertIn(("update", setup.UPDATE_HELLO), self.said, "#update made, and says what it is first")
+        self.assertEqual([w for w, _ in self.said if w != "update"], [], "every line a notice, none a Claude's card")
         self.assertEqual(self.moved, [("audit", "系統")])
         said = [t for _, t in self.said]
         self.assertLess(said.index(setup.UPDATE_HELLO), [i for i, t in enumerate(said) if t.startswith("📦")][0])
@@ -663,7 +666,7 @@ class Reconcile(Rig):
         self.assertNotIn("ask", self.settings()["setup"])
         self.assertIs(self.status()["asking"], False, "done: no longer asking")
         self.assertFalse([1 for a, i in self.posted if a == ("post",) and "open_chat" in i], "#chat is there already")
-        self.assertIn("✅ 你在 #setup 回答的都設定好了。", [t for _, t in self.said])
+        self.assertIn(("update", "✅ 你在 #setup 回答的都設定好了。"), self.said, "a notice in #update")
         self.assertEqual(json.loads(self.run_("questions", "--json")[1]), [], "no tour asked of an older installation")
 
     def test_turning_the_boards_off(self):

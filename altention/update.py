@@ -49,7 +49,8 @@ too, and an engine detached from its branch, which never updates, says so once. 
 card with the buttons (altention update card, U2), the other machines tell none of their own (U5), and a round that altention update go runs (ALT_UPDATE_CARD)
 pushes no ✅ or ⚠️ of its own: the card says it. Before HEAD moves to a release, a local tag altention/before-vX on
 where it was (never pushed; the newest 3 kept; before-tags.json says where each move went), for altention update
-undo (C-57 U3).
+undo (C-57 U3). A file of the person's, not tracked or ignored, with the name of one the new version adds stops
+the move before it (in_the_way, C-66: git would refuse one and overwrite the other without a word).
 Nothing else here runs install.sh: a skill the new version brings gets its link from the sync's next round (sync.new_skills,
 five minutes after this one); a new cron line or hook waits for install.sh or ops/apply.py, and doctor's
 plugins.would-apply says it meanwhile.
@@ -371,6 +372,19 @@ def taken_back(rnd, tag):
     above = rnd.git("log", "--format=%s", "%s..HEAD" % tag)
     return above.returncode != 0 or any(ROLLBACK_SUBJECT.match(l) or STEP_BACK_SUBJECT.match(l)
                                         for l in above.stdout.splitlines())
+
+
+def in_the_way(rnd, head, up):
+    """The files not tracked here with the name of one `up` adds over `head`: git refuses to overwrite those, and the
+    ones the person ignores (.gitignore, .git/info/exclude) it overwrites without a word (C-66: #code-review-2 of
+    0196526, manager), so both stop a move. `rnd`: anything with git() (a Round, a sync.Repo; altention update
+    check and aside use this one copy)."""
+    def names(*args):
+        r = rnd.git(*args, timeout=60)
+        return [l for l in (r.stdout or "").splitlines() if l.strip()]
+    added = set(names("diff", "--name-only", "--diff-filter=A", head, up))
+    return sorted(set(f for f in names("ls-files", "--others", "--exclude-standard") +
+                      names("ls-files", "--others", "--ignored", "--exclude-standard") if f in added))
 
 
 BEFORE = "altention/before-%s"  # a local tag on HEAD before it moves to a release (C-57 U3), never pushed
@@ -1249,6 +1263,14 @@ def one_round(force_release=False):
                   "（細節：上游 %s 沒通過檢查：%s）" % (up[:12], why))
             return 1
         note = ""
+        loose = in_the_way(rnd, head, up)
+        if loose:  # one of the person's own files, not tracked, would be refused or (ignored) overwritten: not moved
+            names = "（%s）" % "、".join(loose[:5] + (["…"] if len(loose) > 5 else []))
+            SKIPPED.append("沒追蹤或被忽略的檔跟新版要加的檔同名")
+            alert("update", "in-the-way", "你自己的檔%s跟新版要加的檔同名，這次先不更新，現在照舊版跑，你的檔都還在；"
+                  "到 #setup 跟 Claude 說「引擎更新卡住了，幫我處理」。（細節：更新到 %s 前，%s 不在 git 裡（沒追蹤或被忽略），"
+                  "快轉會被拒或把它蓋掉）" % (names, up[:12], "、".join(loose[:10])))
+            return 1
         before = mark_before(rnd, head, None if mode == "branch" else newer[0])
         if rnd.git("merge-base", "--is-ancestor", head, up).returncode == 0:
             r = rnd.git("merge", "--ff-only", "-q", up)

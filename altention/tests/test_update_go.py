@@ -662,7 +662,7 @@ class SafetyNet(GoRig):
             self.release("0.2.0")
             git(self.engine, "checkout", "-q", "--detach", "HEAD")
         for prepare, words, hint in ((edits, "這台有你自己改過的檔（tool.py）", "altention update save v0.2.0"),
-                                     (untracked, "新版本要加的檔案（new.txt），這台已經有同名的檔", "改名、移走"),
+                                     (untracked, "新版本要加的檔案（new.txt），這台已經有同名的檔", "altention update aside v0.2.0"),
                                      (conflict, "你自己改過的地方（tool.py），新版本也改了同一段", "問過再合"),
                                      (mixed, "這台有機器人自己退回的版本", "哪些要留"),
                                      (detached, "這台的引擎停在一個固定的版本上", "回到平常的分支")):
@@ -838,6 +838,86 @@ class Apply(GoRig):
             self.assertEqual(f.read(), "X = 'fixed'\n")
         self.assertEqual(git(self.engine, "log", "-1", "--format=%s").stdout.strip(), "my tool", "taken into it")
         self.assertEqual(git(self.engine, "rev-list", "--count", "v0.2.0..HEAD").stdout.strip(), "1")
+
+
+class Aside(GoRig):
+    """C-66: the files not tracked here with the name of one the release adds, renamed <name>.mine (asked first),
+    never over anything; only those."""
+
+    def aside(self, version="v0.2.0"):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = update_go.main(["aside", version])
+        self.out = out.getvalue()
+        return code
+
+    def read(self, rel):
+        with open(os.path.join(self.engine, rel)) as f:
+            return f.read()
+
+    def test_renamed_then_the_update_goes(self):
+        self.start()
+        self.write(self.engine, "new.txt", "mine\n")
+        self.write(self.engine, "sub/two.txt", "mine too\n")
+        self.write(self.engine, "other.txt", "not in the way\n")
+        self.write(self.up, "new.txt", "the engine's\n")
+        self.write(self.up, "sub/two.txt", "the engine's\n")
+        self.release("0.2.0")
+        self.assertEqual(self.kind()["kind"], "untracked")
+        self.assertEqual(self.aside(), 0, self.out)
+        self.assertIn("new.txt → new.txt.mine", self.out)
+        self.assertEqual((self.read("new.txt.mine"), self.read("sub/two.txt.mine")), ("mine\n", "mine too\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.engine, "new.txt")))
+        self.assertEqual(self.read("other.txt"), "not in the way\n", "only the ones in the way")
+        self.assertEqual(self.kind()["kind"], "clean")
+        self.assertEqual(self.go("v0.2.0"), 0, self.out)
+        self.assertEqual((self.read("new.txt"), self.read("new.txt.mine")), ("the engine's\n", "mine\n"))
+
+    def test_never_over_anything_nor_a_name_the_release_adds(self):
+        self.start()
+        self.write(self.engine, "new.txt", "mine\n")
+        self.write(self.engine, "new.txt.mine", "an older one of mine\n")
+        self.write(self.up, "new.txt", "the engine's\n")
+        self.write(self.up, "new.txt.mine.2", "the engine's, oddly\n")
+        self.release("0.2.0")
+        self.assertEqual(self.aside(), 0, self.out)
+        self.assertEqual(self.read("new.txt.mine"), "an older one of mine\n")
+        self.assertEqual(self.read("new.txt.mine.3"), "mine\n")
+        self.assertFalse(os.path.exists(os.path.join(self.engine, "new.txt.mine.2")))
+
+    def test_an_ignored_file_of_the_same_name_is_in_the_way_too(self):
+        """#code-review-2 of 0196526 (manager): a file the person ignores (.git/info/exclude) with the name of one the
+        release adds was overwritten by the update without a word; now check stops and aside keeps it."""
+        self.start()
+        with open(os.path.join(self.engine, ".git", "info", "exclude"), "a") as f:
+            f.write("mine-ignored.txt\n")
+        self.write(self.engine, "mine-ignored.txt", "mine\n")
+        self.write(self.up, "mine-ignored.txt", "the engine's\n")
+        self.release("0.2.0")
+        f = self.kind()
+        self.assertEqual((f["kind"], f["files"]), ("untracked", ["mine-ignored.txt"]))
+        self.assertEqual(self.go("v0.2.0"), 1, "not taken over it")
+        self.assertEqual(self.read("mine-ignored.txt"), "mine\n")
+        self.assertEqual(self.aside(), 0, self.out)
+        self.assertEqual(self.go("v0.2.0"), 0, self.out)
+        self.assertEqual((self.read("mine-ignored.txt"), self.read("mine-ignored.txt.mine")), ("the engine's\n", "mine\n"))
+
+    def test_nothing_in_the_way_nothing_done(self):
+        self.start()
+        self.write(self.engine, "other.txt", "x\n")
+        self.release("0.2.0")
+        self.assertEqual(self.aside(), 0)
+        self.assertIn("不用做", self.out)
+        self.assertEqual(self.read("other.txt"), "x\n")
+        self.assertEqual(self.aside("v9.9.9"), 1, "a version git does not know: nothing")
+
+    def test_claude_is_told_to_ask_then_aside(self):
+        self.start()
+        self.write(self.engine, "new.txt", "mine\n")
+        self.write(self.up, "new.txt", "the engine's\n")
+        self.release("0.2.0")
+        self.go("v0.2.0", "--card", "update-v0.2.0")
+        self.assertIn("altention update aside v0.2.0", self.cards[-1][3][0]["arg"])
 
 
 class StepTimeout(unittest.TestCase):
