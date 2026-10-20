@@ -343,7 +343,7 @@ class Told(unittest.TestCase):
         self.assertFalse(reused)
         import inspect
         from bot import tmux_bridge
-        source = inspect.getsource(tmux_bridge.TmuxBridge.pump_once)
+        source = inspect.getsource(tmux_bridge.TmuxBridge.pump_round)  # pump_once() times it (C-73)
         self.assertIn("self.read_words()", source)
         self.assertNotIn("await self.read_words()", source)
 

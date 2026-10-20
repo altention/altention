@@ -8,6 +8,7 @@ Claude or a bad deploy misbehaves): !help !status !reset !resume !recap !rename 
 """
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -1221,6 +1222,21 @@ class Bot(discord.Client):
         await self.audit("#%s 指令：%s" % (getattr(ch, "name", "DM"), text[:100]))
 
 
+def discord_warnings(out=None):
+    """discord.py's own warnings into supervisor.out, one line each, its info and debug lines not: a 429 with its
+    route and retry_after ("We are being rate limited…"), a heartbeat blocked, a reconnect. Before C-73 nothing of
+    discord.py was written anywhere (log_handler=None), so whether a post had waited on Discord could not be told."""
+    log = logging.getLogger("discord")
+    if any(getattr(h, "dcbot", False) for h in log.handlers):
+        return
+    h = logging.StreamHandler(out or sys.stdout)
+    h.dcbot = True
+    h.setFormatter(logging.Formatter("[discord] %(asctime)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+    log.addHandler(h)
+    log.setLevel(logging.WARNING)
+    log.propagate = False
+
+
 def main():
     if not config.TOKEN or not config.OWNER_ID:
         sys.exit("缺少設定：請在 %s 填入 DISCORD_TOKEN、OWNER_ID、GUILD_ID" % config.ENV_FILE)
@@ -1230,6 +1246,7 @@ def main():
     tmuxio.configure(socket=config.TMUX_SOCKET, user_tmux=config.USER_TMUX)  # the one place the bot's own server is named
     bot = Bot()
     awaiting.start()  # state/waiting-on-owner.json: as things are now (the bot's state is read), before Discord is reached
+    discord_warnings()
     try:
         bot.run(config.TOKEN, log_handler=None)
     finally:

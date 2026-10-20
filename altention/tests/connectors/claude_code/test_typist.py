@@ -222,6 +222,23 @@ class Checks(unittest.TestCase):
         self.assertEqual(r.notes, [("claude_code.resent", {})])
         self.assertIn(("typed", "the one before"), pane.pressed)
 
+    def test_the_message_before_taken_while_waiting(self):
+        """Its receipt clears memory.entered while the checks wait for it to leave the box (C-73's rehearsal: an
+        AttributeError, and that message lost): no error, the wait ends."""
+        memory = Memory(entered="the one before")
+
+        class Taken(Pane):
+            looks = 0
+
+            async def raw_screen(self):
+                self.looks += 1
+                if self.looks == 2:  # the first look found it in the box; the receipt came before the next
+                    memory.entered = None
+                return await Pane.raw_screen(self)
+        pane = Taken(*[box("❯ the one before")] * 3 + [box("❯ ")])
+        r = run(typist.may_type(pane, memory, typist.Policy()))
+        self.assertTrue(r)
+
     def test_the_agents_list(self):
         listed = samples.agents("list-one-row", "colour-120x50")
         pane = Pane(listed)

@@ -126,6 +126,36 @@ class Submit(unittest.TestCase):
         self.assertLess(log.index(("key", "C-u")), log.index(("typed", "hello")))
         self.assertIn(("key", "Enter"), log[log.index(("typed", "hello")):])
 
+    def test_the_next_message_waits_for_the_receipt_of_this_one(self):
+        """C-73: the channel's lock is held from typing to receipt. It was let go at Enter: the next was typed while
+        this one's receipt came, and that cleared rt.entered under it (a message lost without a word)."""
+        fake = Screens([box("❯ ")], echo=True)
+
+        async def nothing(*a, **k):
+            pass
+
+        def message(text):
+            return type("M", (), {"channel": self.ch, "id": 1, "content": text})()
+
+        async def go():
+            first = asyncio.ensure_future(self.bridge.submit(message("一"), "一"))
+            await asyncio.sleep(0.05)
+            second = asyncio.ensure_future(self.bridge.submit(message("二"), "二"))
+            await asyncio.sleep(0.3)
+            typed = [x for x in fake.log if x[0] == "typed"]
+            rt = self.bridge.rt(self.ch)
+            for p in list(rt.pending):
+                if p.text == "一":
+                    rt.pending.remove(p)
+                    p.got.set()
+            await asyncio.gather(first, second)
+            return typed
+        typed = run(go(), fake, mock.patch.object(self.bridge, "ensure", nothing),
+                    mock.patch.object(self.bridge, "close_panel", nothing), mock.patch.object(tmux_bridge, "SUBMIT_DELAY", 0),
+                    mock.patch.object(tmux_bridge, "RECEIPT_SECS", 0.5))
+        self.assertEqual(typed, [("typed", "一")], "the second is not typed before the first's receipt")
+        self.assertIn(("typed", "二"), fake.log)
+
     def test_an_empty_box_is_typed_into_without_clearing(self):
         log, _ = self.send("hello", [box("❯ ")])
         self.assertNotIn(("key", "C-u"), log)

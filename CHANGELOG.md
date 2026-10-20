@@ -13,6 +13,34 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.3.2 — 2026-10-20
+
+### For people
+
+- **Messages to a Claude are no longer lost when several arrive at once.** When you sent two messages in a row,
+  or several channels sent messages to the same Claude at the same time, one could be lost without a word. Now
+  they go to that Claude one at a time, in order; one that still cannot be handed over is kept aside, and the
+  channel that sent it (else `#audit`) is told.
+- **A Claude posting into its own channel posts plain messages, in order.** They used to show as a card from
+  that channel; now they are ordinary messages (long text split, no mentions), one sender's posts arrive in the
+  order sent, and one post can carry up to 10 files.
+- **When Discord limits how fast a Claude may post, the Claude is told.** When `altention dc post` is held back
+  by Discord's rate limit, it tells the Claude (or script) that posted how long it waits, so the post is not
+  sent a second time; nothing about it is said in the channel.
+
+### For people (zh-TW)
+
+- **同時有好幾則訊息要給同一個 Claude 時，不會再漏掉。** 以前連打兩則，或好幾個頻道同時傳訊息給同一個 Claude，可能有一則不見、也沒有任何提示；現在會照順序一則一則交給它，真的交不出去的會留下來，並告訴傳訊息的那個頻道（沒有的話是 #audit）。
+- **Claude 貼回自己頻道的內容改成一般訊息，照順序出現。** 以前會顯示成一張卡片；現在是一般訊息（太長會分則、不會 @ 人），同一個來源的訊息照送出的順序出現，一則最多可以附 10 個檔案。
+- **Discord 限速時，發文的 Claude 會知道。** Claude 用 `altention dc post` 發文被 Discord 限速時，會告訴它要等多久，它就不會再重送一次；頻道裡不會另外顯示。
+
+### For agents
+
+1. `altention dc post` into your own channel now gives plain messages (no card); they are still never handed
+   back to you. `--file` may be given up to 10 times (8 MB together).
+2. When Discord's rate limit holds a post, `altention dc post` says on stderr how long it waits and then sends
+   it: do not send it again. Only when it says the post did not go, send it again.
+
 ## v0.3.1 — 2026-10-20
 
 ### For people

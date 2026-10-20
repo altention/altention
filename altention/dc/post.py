@@ -5,7 +5,8 @@
   altention dc post "my-project/notifications" "…"                 a channel in a given category (several channels may share a name;
                                                                    a plain name means the one in your own project's category first)
   some-command | altention dc post logs                            the text from stdin (long text is split over several messages)
-  altention dc post reports --file report.md "週報"                attach a file (a long report reads better as one)
+  altention dc post reports --file report.md "週報"                attach a file (a long report reads better as one); --file again
+                                                                   for more, up to 10 (8 MB together), all on the last message
   altention dc post st-0 "我看完專案了，問題是 …"                  the channel has a Claude: it gets the message, knows it came
                                                                    from you and how to answer
   altention dc post cv --attach cv:0                               attach a Claude Code running in this machine's tmux (a tmux target:
@@ -30,6 +31,8 @@
 
 The message is headed with where it comes from ("📨 來自 #st-1"), worked out here: the channel whose Claude
 this is (when run by a session the Discord bot looks after), else "<machine> 上的 Claude（<folder>）".
+A Claude posting into its own channel gets plain messages, no heading: text and pictures, as its own replies.
+One sender's posts to one channel are shown in the order sent.
 A name no channel has is refused (it may have been renamed), unless --create.
 
 Like altention dc notify, it runs dcbot's dcctl on the machine with the `dcbot` role (locally, or over SSH).
@@ -67,7 +70,8 @@ def dcctl_on(m):
     engine = m.get("engine") if isinstance(m.get("engine"), str) and m.get("engine").strip() else "~/altention/engine"
     engine = "~" if engine == "~" else "~/" + quote(engine[2:]) if engine.startswith("~/") else quote(engine)
     return engine + "/dcbot/tools/dcctl"
-MAX_FILE = 8 * 1024 * 1024
+MAX_FILE = 8 * 1024 * 1024  # all of a post's files together
+MAX_FILES = 10              # files on one post (Discord's limit for one message)
 
 
 def this_engine(name):
@@ -112,11 +116,15 @@ def build(argv, stdin_text, env, host, cwd):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
-    args, file_path = list(argv[1:]), None
-    if "--file" in args:
+    args, file_paths = list(argv[1:]), []
+    while "--file" in args:
         i = args.index("--file")
-        file_path = args[i + 1] if i + 1 < len(args) else None
+        if i + 1 >= len(args):
+            sys.exit("altention dc post：--file 要給檔案")
+        file_paths.append(args[i + 1])
         del args[i:i + 2]
+    if len(file_paths) > MAX_FILES:
+        sys.exit("altention dc post：一則最多 %d 個附件（給了 %d 個）" % (MAX_FILES, len(file_paths)))
     attach = None
     if "--attach" in args:
         i = args.index("--attach")
@@ -180,13 +188,19 @@ def build(argv, stdin_text, env, host, cwd):
         post["from_channel"] = env["DCBOT_CHANNEL"]
     elif env.get("TMUX") and env.get("TMUX_PANE"):  # dcctl looks up its channel ("<machine>|socket|%id")
         post["pane"] = "%s|%s|%s" % (host, env["TMUX"].split(",")[0], env["TMUX_PANE"])
-    if file_path:
-        with open(file_path, "rb") as f:
-            data = f.read(MAX_FILE + 1)
-        if len(data) > MAX_FILE:
-            sys.exit("altention dc post：檔案太大（上限 8 MB）")
-        post["file_name"], post["file_b64"] = os.path.basename(file_path), base64.b64encode(data).decode()
-    if not post["text"] and not file_path and not any(k in post for k in ("new_claude", "resume", "history", "move_to")):
+    room, files = MAX_FILE, []
+    for path in file_paths:
+        with open(path, "rb") as f:
+            data = f.read(room + 1)
+        if len(data) > room:
+            sys.exit("altention dc post：檔案太大（全部加起來上限 8 MB）")
+        room -= len(data)
+        files.append({"name": os.path.basename(path), "b64": base64.b64encode(data).decode()})
+    if files:  # the first where a bot before C-73 looks for it (it shows that one at least), the rest beside it
+        post["file_name"], post["file_b64"] = files[0]["name"], files[0]["b64"]
+        if files[1:]:
+            post["more_files"] = files[1:]
+    if not post["text"] and not files and not any(k in post for k in ("new_claude", "resume", "history", "move_to")):
         sys.exit("altention dc post：沒有內容")
     return post
 

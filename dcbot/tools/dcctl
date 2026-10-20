@@ -51,6 +51,9 @@ from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E4
 API = "https://discord.com/api/v10"
 
 
+GAVE_UP = "Discord 限速中（%s），試了 5 次都沒過，等一下再試"  # call()'s last word when the 429s do not end (post: its own)
+
+
 def call(method, path, body=None):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": "Bot " + config.TOKEN, "Content-Type": "application/json",
@@ -64,10 +67,16 @@ def call(method, path, body=None):
             detail = e.read().decode("utf-8", "replace")
             if e.code == 429 and attempt < 4:  # rate limited: Discord says how long to wait
                 try:
-                    time.sleep(min(float(json.loads(detail).get("retry_after", 1)), 30) + 0.1)
-                except ValueError:
-                    time.sleep(2)
+                    wait = min(float(json.loads(detail).get("retry_after", 1)), 30) + 0.1
+                except (ValueError, TypeError, AttributeError):
+                    wait = 2
+                # said, for whoever runs this (a Claude's dc post waits that long; C-73: 50 seconds went by unsaid);
+                # nothing about resending: whether it went is said once it did (or GAVE_UP once it did not)
+                print("Discord 限速中（%s %s），等 %.0f 秒後再試" % (method, path.split("?")[0], wait), file=sys.stderr, flush=True)
+                time.sleep(wait)
                 continue
+            if e.code == 429:
+                sys.exit(GAVE_UP % ("%s %s" % (method, path.split("?")[0])) if "%s" in GAVE_UP else GAVE_UP)
             sys.exit("Discord API 錯誤 %s：%s" % (e.code, detail[:300]))
 
 
@@ -229,13 +238,18 @@ def notify_target(post, chans, sender_category=None):
     return post
 
 
+def named(post):
+    """Does post_target_error() need the channel list for this post: its channel given by name?"""
+    if post.get("attach") or post.get("new_claude") or post.get("open_chat") or post.get("open_setup"):
+        return False  # the bot makes the channel (open_chat, open_setup: ops/setup.py's)
+    return not str(post.get("channel") or "").strip().lstrip("#").isdigit()  # an ID: the bot checks it (may be a thread)
+
+
 def post_target_error(post, sender_category=None, chans=None):
     """Why a post's channel cannot be found (None if it can, or the post makes it / does not need one)."""
-    if post.get("attach") or post.get("new_claude") or post.get("open_chat") or post.get("open_setup"):
-        return None  # the bot makes the channel (open_chat, open_setup: ops/setup.py's)
+    if not named(post):
+        return None
     ref = str(post.get("channel") or "").strip().lstrip("#")
-    if ref.isdigit():
-        return None  # an ID: the bot checks it (it may be a thread)
     found, why = resolve(ref, chans if chans is not None else channels(), 0, sender_category)
     if found is not None or ((post.get("create") or post.get("notify") or post.get("card")) and why and why.startswith("找不到")):
         return None
@@ -683,15 +697,26 @@ def main(argv):
         pane = post.pop("pane", None)  # "socket|%id": the sender's tmux pane, if it ran inside one on this machine
         if pane and not post.get("from_channel"):
             post["from_channel"] = sender_channel(pane)
-        sender_cat, chans = None, None
-        if str(post.get("from_channel") or "").isdigit():
-            chans = channels()
+        global GAVE_UP
+        GAVE_UP = "Discord 限速，這則沒有送出，等一下再送"
+        got = []  # the channel list, asked of Discord once at most (C-73: 10 a minute for the whole bot) and only
+                  # when a name is to be resolved: an ID needs none, the sender's category serves names alone
+
+        def listing():
+            if not got:
+                got.append(channels())
+            return got[0]
+
+        def sender_category():
+            if not str(post.get("from_channel") or "").isdigit():
+                return None
+            chans = listing()
             me = next((c for c in chans if str(c["id"]) == str(post["from_channel"])), None)
-            sender_cat = next((c["name"] for c in chans if me and c["id"] == me.get("parent_id")), None)
+            return next((c["name"] for c in chans if me and c["id"] == me.get("parent_id")), None)
         problem, moved = None, None
         if post.get("notify"):  # only notifications need the list here; the reporting path queues even without it
             try:
-                chans = chans if chans is not None else channels()
+                chans, sender_cat = listing(), sender_category()
                 notify_target(post, chans, sender_cat)
                 problem = post_target_error(post, sender_cat, chans)
                 ref = str(post.get("channel") or "").strip().lstrip("#")
@@ -700,8 +725,8 @@ def main(argv):
                         "（找不到頻道 #%s：通知會改送到預設的通知頻道 %s，開頭註明原本要送哪裡）" % (ref, notify_default())
             except (Exception, SystemExit):  # call() exits on an HTTP error (5xx, 429, 401): that counts too
                 post["channel"] = post.get("channel") or notify_default()  # queued as it is: the bot resolves it
-        else:
-            problem = post_target_error(post, sender_cat)
+        elif named(post):  # an ID, or a channel the bot makes: no list needed
+            problem = post_target_error(post, sender_category(), listing())
         if problem:
             sys.exit("altention dc post：" + problem)
         postbox.write(post)

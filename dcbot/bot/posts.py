@@ -3,9 +3,10 @@
 `altention dc post <channel> …` (any machine) runs `dcctl post`, which leaves the post as a file in
 state/posts/. The bot picks it up and does both halves itself, so nothing ever has to tell the bot's own
 Discord messages apart:
-- it posts the text to the channel (long text split over several messages, a file attached if given),
+- it posts the text to the channel (long text split over several messages, up to 10 files attached if given),
   as cards (embeds) headed with where it comes from, "📨 來自 #st-1", in a colour of that sender's own, so they
-  stand apart from the channel's Claude's own replies (Discord groups a bot's messages under one avatar);
+  stand apart from the channel's Claude's own replies (Discord groups a bot's messages under one avatar); a
+  Claude posting into its own channel gets plain messages instead, as its replies (C-73: text and pictures);
 - if the channel has a Claude conversation, the same text, headed the same way plus how to answer, is handed
   to that Claude like a message typed there. A plain channel, a terminal or an archived channel only keeps it.
 A name that matches no channel is an error (dcctl post refuses it, with the closest names), unless the post asks
@@ -30,7 +31,7 @@ import discord
 
 from altention.connectors.claude_code import sessions as cc_sessions
 
-from . import config, files, kinds, layout, messages, postbox, remote
+from . import config, events, files, kinds, layout, messages, postbox, remote
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 
@@ -41,6 +42,7 @@ def default_limit():
     said = messages.loaded.get("talk_limit")
     return LOOP_LIMIT if said is None else said
 CARD = 4000         # characters in one card (Discord allows 4096)
+SLOW_POST = 5       # seconds from the spool to done: more is said in supervisor.out (queued how long, sent how long)
 FROM_POST = 6 * 3600  # a question this long after a post came in is no longer about that post
 
 
@@ -91,6 +93,35 @@ def ambiguous(channels, name, category=None):
     return len([c for c in channels if c.name == name and (not category or where(c) == category)]) > 1
 
 
+def chain_of(post):
+    """Which posts keep their order among themselves: one sender's to one channel (C-73), sender by channel when
+    it has one, else machine and name; the channel as the post names it (a name one time, the ID the next: two)."""
+    sender = post.get("from_channel") or "%s|%s" % (post.get("from_host") or "", post.get("from_name") or "")
+    return (str(sender), str(post.get("channel") or ""))
+
+
+def attached(post):
+    """[(name, bytes)] of a post's files: file_name/file_b64 is the first (what a bot before C-73 still shows),
+    more_files the rest."""
+    out = [(post.get("file_name") or "file.txt", base64.b64decode(post["file_b64"]))] if post.get("file_b64") else []
+    for f in post.get("more_files") or []:
+        out.append((f.get("name") or "file.txt", base64.b64decode(f.get("b64") or "")))
+    return out
+
+
+def as_files(got):
+    """discord.File objects (each can be sent once: made afresh for every send)."""
+    return [discord.File(io.BytesIO(data), name) for name, data in got]
+
+
+def spooled_at(path):
+    """When a spool file was written (its name starts with time.time_ns()), or None."""
+    try:
+        return int(os.path.basename(path or "").split("-")[0]) / 1e9
+    except ValueError:
+        return None
+
+
 def headed(sender, text):
     return "📨 **來自 %s**\n%s" % (sender, text)
 
@@ -121,6 +152,8 @@ class Posts(object):
         self.retrying = False  # a round of retry() is going: the next waits for it
         self.retried = 0  # when state/posts-failed/ was last gone through (0: at the first tick after a start)
         self.from_post = {}  # channel id -> (sender channel id, when): its Claude is working on another's post
+        self.chains = {}  # chain_of(post) -> [(path, post)] still to do, in order: one task works through each
+        self.showing = {}  # id(post) -> asyncio.Event set once the post is on Discord (its handing over may go on)
 
     def owner_spoke(self, channel_id):
         """The owner said something in a channel: the conversations it is part of may go on."""
@@ -292,14 +325,18 @@ class Posts(object):
         text = (post.get("text") or "").strip()
         if post.get("board"):  # one message kept up to date in place, not a conversation
             return await self.board(ch, post["board"], text, post)
+        got = attached(post)
+        if sender_ch is not None and sender_ch.id == ch.id:  # a Claude posting into its own channel (C-73): plain
+            return await self.own(ch, text, got)               # messages, as its replies; never handed back to it
         embeds = cards(sender, text)
         for i, e in enumerate(embeds):
-            file = None
-            if i == len(embeds) - 1 and post.get("file_b64"):
-                file = discord.File(io.BytesIO(base64.b64decode(post["file_b64"])), post.get("file_name") or "file.txt")
-            await ch.send(embed=e, file=file) if file else await ch.send(embed=e)
+            if i == len(embeds) - 1 and got:
+                await ch.send(embed=e, files=as_files(got))
+            else:
+                await ch.send(embed=e)
+        self.shown(post)
         st = self.bot.channels_state.get(str(ch.id)) or {}
-        if not listens(st) or (sender_ch is not None and sender_ch.id == ch.id):
+        if not listens(st):
             return
         if sender_ch is not None:  # Claude to Claude: count, and stop a conversation nobody is watching
             pair = tuple(sorted((ch.id, sender_ch.id)))
@@ -307,7 +344,28 @@ class Posts(object):
             limit = pair_limit(self.bot.channels_state, ch.id, sender_ch.id)
             if limit and self.streak[pair] > limit:
                 return await self.hold(ch, sender, post, limit, sender_ch)
-        await self.give(ch, sender, sender_ch, text, post)
+        try:
+            await self.give(ch, sender, sender_ch, text, post)
+        except Exception as e:
+            raise NotHanded(ch, sender_ch, e)
+
+    async def own(self, ch, text, got):
+        """A post into the sender's own channel: content (split at Discord's 2000), the files on the last message
+        (alone when there is no text), no card. Pings nobody: a card never did, content would."""
+        parts, quiet = split_message(text) if text else [], discord.AllowedMentions.none()
+        if not parts:
+            return await ch.send(files=as_files(got), allowed_mentions=quiet) if got else None
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1 and got:
+                await ch.send(part, files=as_files(got), allowed_mentions=quiet)
+            else:
+                await ch.send(part, allowed_mentions=quiet)
+
+    def shown(self, post):
+        """The post is on Discord: the next of its chain may go (what is left is handing it to a Claude)."""
+        ev = self.showing.get(id(post))
+        if ev is not None:
+            ev.set()
 
     async def move_to(self, post, sender_ch):
         """altention dc post <channel> --move-to <category>: the channel (never made here) into that category, which is
@@ -480,7 +538,8 @@ class Posts(object):
                                % (ch.name, name, BOARD_FAILS, error_code(errors[-1]), ch.name)}, None)
 
     async def give(self, ch, sender, sender_ch, text, post):
-        body = text + ("\n（附件：%s，在 Discord 的這則訊息上）" % post.get("file_name") if post.get("file_b64") else "")
+        names = [name for name, _ in attached(post)]
+        body = text + ("\n（附件：%s，在 Discord 的這則訊息上）" % "、".join(names) if names else "")
         reply_to = sender_ch.id if sender_ch is not None else None
         if sender_ch is not None:
             self.from_post[ch.id] = (sender_ch.id, time.time())
@@ -507,9 +566,10 @@ class Posts(object):
         st.setdefault("asking", {})[ask_id] = [sender_ch.id, msg.id]
         self.bot.save()
         sst = self.bot.channels_state.get(str(sender_ch.id)) or {}
-        if listens(sst) and sst.get("busy"):
-            await self.bot.tmux.submit(Origin(sender_ch), "（機器人通知）#%s 的 Claude 正在等使用者%s，暫時不會回你。不用空等它，"
-                                                          "先做別的或結束這一輪；它回覆時你會收到。" % (ch.name, what))
+        if listens(sst) and sst.get("busy"):  # a task of its own: this runs in the loop of hook events (pump), and
+            asyncio.ensure_future(self.bot.tmux.submit(  # typing waits for that channel's queue and receipt (C-73)
+                Origin(sender_ch), "（機器人通知）#%s 的 Claude 正在等使用者%s，暫時不會回你。不用空等它，"
+                                   "先做別的或結束這一輪；它回覆時你會收到。" % (ch.name, what)))
 
     async def answered(self, ch, ask_id, how):
         """The question asking() announced is settled (answered or cancelled): update the notice."""
@@ -576,18 +636,52 @@ class Posts(object):
 
     async def tick(self):
         """Called from the loop that also reads Claude's hook events. Handing a post over waits for Claude to
-        confirm it arrived, and that confirmation is one of those events: so each post goes on its own."""
+        confirm it arrived, and that confirmation is one of those events: so nothing here waits for a post. One
+        sender's posts to one channel go in the order sent (chain_of: a task of their own works through them);
+        the others' go on meanwhile."""
         for path, post in waiting():
             if path not in self.inflight:
                 self.inflight.add(path)
-                asyncio.ensure_future(self.safely(post, path))
+                key = chain_of(post)
+                if key not in self.chains:
+                    self.chains[key] = []
+                    asyncio.ensure_future(self.chain(key))
+                self.chains[key].append((path, post))
         if time.time() - self.retried > postbox.RETRY_EVERY:
             self.retried = time.time()
             asyncio.ensure_future(self.retry())
 
+    async def chain(self, key):
+        """One sender's posts to one channel shown on Discord one after another (C-73): the next goes once this one
+        is there. Handing them to that channel's Claude is a queue of its own, the channel's (TmuxBridge.submit
+        holds the channel's lock from typing to receipt, for anyone's message): a slow hand-over (a machine that
+        does not answer) holds only that, never what is shown (manager on C-73's rehearsal)."""
+        try:
+            while self.chains.get(key):
+                path, post = self.chains[key].pop(0)
+                ev = self.showing[id(post)] = asyncio.Event()
+                task = asyncio.ensure_future(self.safely(post, path))
+                seen = asyncio.ensure_future(ev.wait())
+                try:
+                    await asyncio.wait({task, seen}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    seen.cancel()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.chains.pop(key, None)  # (nothing awaited since the last check: no post was added in between)
+
     async def safely(self, post, path=None):
+        began = time.time()
         try:
             await self.handle(post)
+        except NotHanded as e:  # shown, but handing it to the channel's Claude broke: kept aside, and said (C-73)
+            traceback.print_exc()
+            if path:
+                events.set_aside(path, os.path.dirname(path))
+                self.inflight.discard(path)
+            await self.not_handed(post, e)
+            return
         except Undelivered as e:  # a notification that could be shown nowhere: kept, tried again (retry)
             try:
                 postbox.fail(path, e.post)
@@ -604,9 +698,34 @@ class Posts(object):
                 except Exception:  # not even kept: its spool file stays, as above
                     traceback.print_exc()
                     return
+        finally:
+            self.shown(post)
+            self.showing.pop(id(post), None)
+            self.slow(post, path, began)
         if path:  # removed only once handled: a restart in between delivers it again rather than losing it
             done(path)
             self.inflight.discard(path)
+
+    async def not_handed(self, post, e):
+        """Where the post came from (else #audit): it is on Discord, its Claude never got it."""
+        text = "⚠️ 這則沒交到 #%s 的 Claude（%s）：訊息在 Discord 上，但它沒收到；內容留在機器人的 state/posts-bad/。" % (
+            e.ch.name, error_code(e.cause))
+        try:
+            if e.sender_ch is not None and e.sender_ch.id != e.ch.id:
+                await e.sender_ch.send(text, silent=True)
+            else:
+                await self.bot.audit("%s：%s" % (post.get("from_name") or "altention dc post", text))
+        except Exception:
+            traceback.print_exc()
+
+    def slow(self, post, path, began):
+        """One line in supervisor.out for a post that took more than SLOW_POST from the spool to done: how long it
+        waited (behind its chain, or for the loop) and how long it took itself (C-73; quiet otherwise)."""
+        at, now = spooled_at(path), time.time()
+        if at is None or now - at <= SLOW_POST:
+            return
+        print("[posts] #%s%s：%.1f 秒（排隊 %.1f、處理 %.1f）" % (post.get("channel"), "（看板）" if post.get("board") else "",
+                                                       now - at, began - at, now - began), flush=True)
 
     async def retry(self):
         """The notifications in state/posts-failed/ once more (at the bot's start, then every RETRY_EVERY): shown
@@ -646,6 +765,13 @@ def error_code(e):
         text = str(getattr(e, "text", "") or "")[:200]
         return "HTTP %d%s%s" % (status, "，錯誤碼 %d" % code if code else "", "：" + text if text else "")
     return "%s: %s" % (type(e).__name__, str(e)[:200]) if str(e) else type(e).__name__
+
+
+class NotHanded(Exception):
+    """A post shown in `ch` whose handing over to that channel's Claude raised `cause`."""
+    def __init__(self, ch, sender_ch, cause):
+        Exception.__init__(self, "post not handed over: %r" % (cause,))
+        self.ch, self.sender_ch, self.cause = ch, sender_ch, cause
 
 
 class Undelivered(Exception):

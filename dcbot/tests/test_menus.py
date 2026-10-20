@@ -80,6 +80,33 @@ class Pressed(unittest.TestCase):
                 self.mock.patch.object(self.bridge.host, "audit", self.mock.AsyncMock(), create=True):
             self.asyncio.run(self.menus.act(Click(), token, what))
 
+    def test_a_press_waits_while_a_message_is_being_typed(self):
+        """C-73: the channel's lock is its queue for everything typed into the pane; a button's key waits for it."""
+        token = self.post()
+        test, real_sleep = self, self.asyncio.sleep
+
+        class Response(object):
+            async def defer(self):
+                pass
+
+        class Click(object):
+            channel = self.ch
+            response = Response()
+        self.views = [self.first, self.first]
+
+        async def go():
+            lock = self.bridge.rt(self.ch).lock
+            await lock.acquire()  # submit() typing a message, its receipt not come yet
+            task = self.asyncio.ensure_future(self.menus.act(Click(), token, "1"))
+            await real_sleep(0.05)
+            test.assertEqual(test.pressed, [], "not between the message's typing and its receipt")
+            lock.release()
+            await task
+        with self.screens(), self.mock.patch.object(self.bridge.host, "audit", self.mock.AsyncMock(), create=True), \
+                self.mock.patch.object(menus.asyncio, "sleep", lambda s: real_sleep(0)):
+            self.asyncio.run(go())
+        self.assertEqual(self.pressed, ["1"])
+
     def test_the_same_dialog_still_there_gets_the_key(self):
         token = self.post()
         self.press(token, "1", [self.first, self.first])

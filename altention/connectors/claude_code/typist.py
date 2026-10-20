@@ -294,13 +294,14 @@ async def may_type(pane, memory, policy, r=None):
         if view is None:
             return r
         state = screen.pane_state(view)
-    if state == "box" and memory.entered and screen.bot_typed(view, memory.entered, screen.paste_marks(memory.entered)):
+    entered = memory.entered  # as it is now: its receipt may clear it while this waits (C-73)
+    if state == "box" and entered and screen.bot_typed(view, entered, screen.paste_marks(entered)):
         # the message before this one, its Enter just pressed and not yet taken (two sent one after the other)
         for _ in range(GONE_LOOKS):
             await asyncio.sleep(BOX_PAUSE)
             view = await pane.raw_screen()
-            if not screen.bot_typed(view, memory.entered, screen.paste_marks(memory.entered)):
-                break
+            if not memory.entered or not screen.bot_typed(view, entered, screen.paste_marks(entered)):
+                break  # gone from the box, or taken (its receipt came)
         else:
             if policy.others_type or not await resend(pane, memory, r, policy):
                 r.refuse("claude_code.previous_entered" if policy.others_type else "claude_code.previous_not_resent")

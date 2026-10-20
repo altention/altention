@@ -50,6 +50,7 @@ RESEND_FIRST, RESEND_MAX = 30, 600  # a refusal a machine did not take: sent aga
 WATCH_SECS = 8           # between the looks of watch_busy() at a running turn
 WATCH_SAY_SECS = 120     # a turn's machine silent for this long: the channel is told, once
 WATCH_SILENT_SECS = 60   # between the looks from then on
+SLOW_ROUND = 2           # seconds: a pump round longer than this is said in supervisor.out, with its slow parts (C-73)
 # Slash commands that do harm when typed from Discord: refused outright, or sent only after a button press. Which
 # commands, and what kind of harm, the connector says (commands.REFUSED, commands.CONFIRM: a code for each); the words
 # for each harm are here. A code with no words here (a connector ahead of the bot) is shown as it is.
@@ -690,6 +691,10 @@ class TmuxBridge(object):
             text = "%s\n%s" % (note, text)
         p = Pending(message, text)
         slash = text.startswith("/")  # handled by Claude Code itself; most of them do not start a turn
+        # One message at a time per channel, typing to receipt (C-73): the lock is the channel's queue for whatever
+        # is typed into it (the owner's messages, posts handed over, the retry button). It used to be let go once
+        # Enter was pressed: the next one typed while this one's receipt came, which cleared rt.entered under
+        # it (the AttributeError in may_type, #code-review-2 on C-73: that message was lost without a word).
         async with rt.lock:
             try:
                 await self.ensure(ch, st, rt)
@@ -724,49 +729,49 @@ class TmuxBridge(object):
             lost = self.stream_lost(st)  # its stream down as it went in: a receipt can only come late
             st["last_active"] = time.time()
             self.host.save()
-        if slash:
-            await asyncio.sleep(3)
-            if not st.get("busy"):
-                # the panel goes to the channel itself, buttons and later edits alike; the "/" menu only hears where
-                st["own_panel"] = await self.panel_open(name)  # kept with the channel: a restart of the bot keeps the claim
-                self.host.save()
-                if st["own_panel"] and await self.menus.show_panel(
-                        ch, name, lambda body, view=None: ch.send(body, view=view), text.split()[0]):
-                    if out:
-                        await out("▶️ `%s` 的面板貼在頻道裡，用按鈕操作。" % text.split()[0])
-                    return
-                hint = "\n-# 面板還開著：用 `!key` 操作，或直接發下一則訊息（會自動關掉）" if await self.panel_open(name) else ""
-                await say(fence(await tmuxio.screen(name, 45), 3600) + hint)
-            elif out:
-                await out("▶️ `%s` 已交給 Claude，結果會貼在這個頻道。" % text[:300])
-            elif hasattr(message, "add_reaction"):  # a skill typed as a message: it started a turn
-                try:
-                    await message.add_reaction("👀")
-                except Exception:
-                    pass
-            return
-        if now:
-            asyncio.ensure_future(self.send_now(message, name, p, was_busy))
-        for _ in range(2):
+            if slash:
+                await asyncio.sleep(3)
+                if not st.get("busy"):
+                    # the panel goes to the channel itself, buttons and later edits alike; the "/" menu only hears where
+                    st["own_panel"] = await self.panel_open(name)  # kept with the channel: a restart of the bot keeps the claim
+                    self.host.save()
+                    if st["own_panel"] and await self.menus.show_panel(
+                            ch, name, lambda body, view=None: ch.send(body, view=view), text.split()[0]):
+                        if out:
+                            await out("▶️ `%s` 的面板貼在頻道裡，用按鈕操作。" % text.split()[0])
+                        return
+                    hint = "\n-# 面板還開著：用 `!key` 操作，或直接發下一則訊息（會自動關掉）" if await self.panel_open(name) else ""
+                    await say(fence(await tmuxio.screen(name, 45), 3600) + hint)
+                elif out:
+                    await out("▶️ `%s` 已交給 Claude，結果會貼在這個頻道。" % text[:300])
+                elif hasattr(message, "add_reaction"):  # a skill typed as a message: it started a turn
+                    try:
+                        await message.add_reaction("👀")
+                    except Exception:
+                        pass
+                return
+            if now:
+                asyncio.ensure_future(self.send_now(message, name, p, was_busy))
+            for _ in range(2):
+                if await self.received(p) or st.get("busy"):
+                    return  # busy without a receipt: queued behind a long tool call, the receipt comes later
+                if (lost and isinstance(name, dict)) or await self.enter(name, text, again=True) != "pressed":
+                    break  # an attached pane: no Enter while its events cannot come, nor onto anything but the message
             if await self.received(p) or st.get("busy"):
-                return  # busy without a receipt: queued behind a long tool call, the receipt comes later
-            if (lost and isinstance(name, dict)) or await self.enter(name, text, again=True) != "pressed":
-                break  # an attached pane: no Enter while its events cannot come, nor onto anything but the message
-        if await self.received(p) or st.get("busy"):
-            return
-        if p in rt.pending:
-            rt.pending.remove(p)
-        if lost:  # typed in; only the way back is down (2026-10-07: "may not have gone in" was wrong there)
-            p.late = time.time()  # its receipt may still come: then it is ours, not the terminal's (manager)
-            rt.late = (rt.late + [p])[-5:]
-            return await say(messages.unconfirmed("claude_code.stream_down", host=lost))
-        moved = parked(st)
-        if moved:  # typed into the pane, and no word of it from the conversation that was moved out of it
-            moved["unanswered"] = time.time()
-            self.host.save()
-            self.note_parked()
-            return await say(messages.unconfirmed("claude_code.maybe_not_received_moved", screen=fence(await tmuxio.screen(name, 15))))
-        await say(messages.unconfirmed("claude_code.maybe_not_received", screen=fence(await tmuxio.screen(name, 15))))
+                return
+            if p in rt.pending:
+                rt.pending.remove(p)
+            if lost:  # typed in; only the way back is down (2026-10-07: "may not have gone in" was wrong there)
+                p.late = time.time()  # its receipt may still come: then it is ours, not the terminal's (manager)
+                rt.late = (rt.late + [p])[-5:]
+                return await say(messages.unconfirmed("claude_code.stream_down", host=lost))
+            moved = parked(st)
+            if moved:  # typed into the pane, and no word of it from the conversation that was moved out of it
+                moved["unanswered"] = time.time()
+                self.host.save()
+                self.note_parked()
+                return await say(messages.unconfirmed("claude_code.maybe_not_received_moved", screen=fence(await tmuxio.screen(name, 15))))
+            await say(messages.unconfirmed("claude_code.maybe_not_received", screen=fence(await tmuxio.screen(name, 15))))
 
     async def send_now(self, message, name, p=None, was_busy=True):
         """Press send-now (Ctrl+X Ctrl+S) for a message of the bot's that waits in Claude Code's queue. Two things
@@ -1164,7 +1169,26 @@ class TmuxBridge(object):
             await self.host.audit("⚠️ 機器清單讀不出來，機器人先當成只有這台在跑（別台的頻道暫時收不到東西）：%s" % p[1])
 
     async def pump_once(self):
-        """One round of pump(): the waiting hook events, then subagents, dcpost and the hourly chores."""
+        """One round of pump(): the waiting hook events, then subagents, dcpost and the hourly chores. A round
+        longer than SLOW_ROUND is said in supervisor.out with the parts that took the time (C-73): nothing in it
+        may wait on another machine, and this shows it if something does."""
+        began, self.laps = time.time(), []
+        try:
+            await self.pump_round()
+        finally:
+            took = time.time() - began
+            if took > SLOW_ROUND:
+                print("[pump] 一圈 %.1f 秒：%s" % (took, "、".join("%s %.1f" % lap for lap in self.laps) or "（沒有單一段超過 0.2 秒）"),
+                      flush=True)
+
+    def lap(self, what, since):
+        """A part of this round that took 0.2 seconds or more, for pump_once()'s line."""
+        took = time.time() - since
+        if took >= 0.2:
+            self.laps.append((what, took))
+
+    async def pump_round(self):
+        t = time.time()
         if time.time() - getattr(self, "streams_checked", 0) > 60:
             try:
                 self.start_streams()
@@ -1172,6 +1196,7 @@ class TmuxBridge(object):
                 await self.say_config_problem()
             except Exception:
                 traceback.print_exc()
+            self.lap("每分鐘的檢查", t)
         self.held = set()  # channels with an event left in the spool this round (waits())
         for path, ev in events.waiting(SPOOL):
             if ev.get("channel") == "selftest":  # main.Bot.self_test(): the hook works, the spool is read
@@ -1183,7 +1208,7 @@ class TmuxBridge(object):
             if ev.get("channel") in self.held or self.waits(ev):
                 self.held.add(ev.get("channel"))  # left where it is, and every later event of its channel behind it:
                 continue                          # the other channels' go on
-            self.handling = True
+            self.handling, t = True, time.time()
             try:
                 await self.handle(ev)
                 events.done(path)  # only now: a restart halfway through a batch handles the rest again
@@ -1197,21 +1222,29 @@ class TmuxBridge(object):
                     traceback.print_exc()
             finally:
                 self.handling = False
+                self.lap("事件 %s %s" % (ev.get("channel"), ev.get("dc_kind") or ev.get("hook_event_name")), t)
         if self.held and time.time() - self.ticked < 0.45:
             return  # a round come early because an event waits for its row: the rest keeps its own pace
         self.ticked = time.time()
         try:
+            t = time.time()
             await self.release_kept()
+            self.lap("release_kept", t)
             if time.time() - getattr(self, "again_at", 0) > 30:
                 self.again_at = time.time()
                 self.start_resends()  # (only started here: nothing in this round waits on another machine)
+            t = time.time()
             await self.agents.tick()
+            self.lap("子代理", t)
             if getattr(self.host, "posts", None) is not None:
+                t = time.time()
                 await self.host.posts.tick()  # altention dc post: posts to channels, and Claude talking to Claude
+                self.lap("posts", t)
         except Exception:
             traceback.print_exc()
         if time.time() - self.last_reap > 600:
             self.last_reap = time.time()
+            t = time.time()
             try:
                 await self.reap()
                 attachments.prune()
@@ -1219,6 +1252,7 @@ class TmuxBridge(object):
                 self.agents.prune()
             except Exception:
                 traceback.print_exc()
+            self.lap("閒置回收", t)
 
     async def stream(self, host):
         """Forever: the hook events of another machine, over one SSH line, handled like the local ones. The

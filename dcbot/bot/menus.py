@@ -200,6 +200,13 @@ class Menus(object):
         if not alive:
             return await interaction.response.edit_message(view=None)
         await interaction.response.defer()
+        # the channel's queue for whatever is typed into its pane (TmuxBridge.submit holds it from typing to receipt,
+        # C-73): a key or text from a button never goes in between a message's typing and its Enter
+        async with self.bridge.rt(interaction.channel).lock:
+            return await self.press(interaction, token, what, text, m, t)
+
+    async def press(self, interaction, token, what, text, m, t):
+        """act() once the channel's lock is held: read the dialog again, press, show what is there now."""
         if what != "esc" and not what.startswith("k"):
             # A key onto a dialog goes only onto the dialog the buttons were made for: answered at the terminal, timed
             # out, or another question in its place, a number pressed now answers that other one (or lands in the input

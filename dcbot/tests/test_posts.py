@@ -23,13 +23,15 @@ class Chan(object):
         self.id, self.name, self.sent = cid, name, []
         self.fails = None  # an exception each send raises; or a number: that many sends go, then the rest fail
 
-    async def send(self, text=None, view=None, file=None, embed=None, silent=False):
+    async def send(self, text=None, view=None, file=None, embed=None, silent=False, files=None, allowed_mentions=None):
         if isinstance(self.fails, int) and not isinstance(self.fails, bool):
             if len(self.sent) >= self.fails:
                 raise OSError("503 Service Unavailable")
         elif self.fails is not None:
             raise self.fails
         self.sent.append(text if embed is None else "%s\n%s" % (embed.author.name, embed.description))
+        self.how = getattr(self, "how", []) + [{"files": [f.filename for f in files or ([file] if file else [])],
+                                                "mentions": allowed_mentions, "embed": embed is not None}]
         return type("Sent", (), {"id": len(self.sent)})()
 
 
@@ -737,6 +739,175 @@ class Posts(unittest.TestCase):
             self.assertEqual(posts.drain(tmp), [])
 
 
+class OwnChannel(unittest.TestCase):
+    """C-73: a Claude posting into its own channel gets plain messages; files, several, on the last one."""
+    def setUp(self):
+        self.bot = Bot()
+        self.a, self.b = Chan(1, "st-1"), Chan(2, "st-0")
+        self.bot.chans = {1: self.a, 2: self.b}
+        self.bot.guild.text_channels = [self.a, self.b]
+        self.bot.channels_state = {"1": {"tmux": "dc-a"}, "2": {"tmux": "dc-b"}}
+        self.p = posts.Posts(self.bot)
+
+    def post(self, **kw):
+        asyncio.run(self.p.handle(kw))
+
+    @staticmethod
+    def files(*names):
+        import base64
+        got = [{"name": n, "b64": base64.b64encode(n.encode()).decode()} for n in names]
+        post = {"file_name": got[0]["name"], "file_b64": got[0]["b64"]}
+        if got[1:]:
+            post["more_files"] = got[1:]
+        return post
+
+    def test_text_and_pictures_as_plain_messages_pinging_nobody(self):
+        self.post(channel="st-1", text="看圖 <@42> @everyone", from_channel="1", **self.files("a.png", "b.png"))
+        self.assertEqual(self.a.sent, ["看圖 <@42> @everyone"], "no 📨 card")
+        how, = self.a.how
+        self.assertEqual((how["files"], how["embed"]), (["a.png", "b.png"], False))
+        m = how["mentions"]
+        self.assertEqual((m.everyone, m.users, m.roles, m.replied_user), (False, False, False, False))
+        self.assertEqual(self.bot.tmux.given, [], "never handed back to its own Claude")
+
+    def test_long_text_is_split_and_the_files_go_on_the_last(self):
+        self.post(channel="st-1", text="\n".join("line %d %s" % (i, "x" * 60) for i in range(80)), from_channel="1",
+                  **self.files("a.png"))
+        self.assertGreater(len(self.a.sent), 1)
+        self.assertTrue(all(len(t) <= 2000 for t in self.a.sent))
+        self.assertEqual([h["files"] for h in self.a.how], [[]] * (len(self.a.sent) - 1) + [["a.png"]])
+
+    def test_files_alone(self):
+        self.post(channel="st-1", text="", from_channel="1", **self.files("a.png", "b.png", "c.png"))
+        self.assertEqual(self.a.sent, [None])
+        self.assertEqual(self.a.how[0]["files"], ["a.png", "b.png", "c.png"])
+
+    def test_by_id_too(self):
+        self.post(channel="1", text="hi", from_channel="1")
+        self.assertEqual(self.a.sent, ["hi"])
+
+    def test_into_another_channel_still_a_card_with_every_file_and_their_names_for_claude(self):
+        self.post(channel="st-0", text="看圖", from_channel="1", **self.files("a.png", "b.png"))
+        self.assertEqual(self.b.sent, ["📨 來自 #st-1\n看圖"])
+        self.assertEqual(self.b.how[0]["files"], ["a.png", "b.png"])
+        (cid, text), = self.bot.tmux.given
+        self.assertIn("（附件：a.png、b.png，在 Discord 的這則訊息上）", text)
+
+    def test_a_post_of_the_old_shape_one_file(self):
+        import base64
+        self.post(channel="st-0", text="x", from_channel="1", file_name="r.md", file_b64=base64.b64encode(b"#").decode())
+        self.assertEqual(self.b.how[0]["files"], ["r.md"])
+
+
+class Order(unittest.TestCase):
+    """C-73: one sender's posts to one channel are shown in the order sent, each at once: handing them to that
+    channel's Claude never holds them up; posts of others never wait for them."""
+    def setUp(self):
+        from bot import postbox
+        self.spool = tempfile.mkdtemp()
+        self.patch = mock.patch.object(postbox, "SPOOL", self.spool)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.bot = Bot()
+        self.a, self.b, self.c = Chan(1, "st-1"), Chan(2, "st-0"), Chan(3, "st-2")
+        self.bot.chans = {1: self.a, 2: self.b, 3: self.c}
+        self.bot.guild.text_channels = [self.a, self.b, self.c]
+        self.bot.channels_state = {"1": {"tmux": "dc-a"}, "2": {"tmux": "dc-b"}, "3": {"tmux": "dc-c"}}
+        self.p = posts.Posts(self.bot)
+
+    def write(self, **post):
+        from bot import postbox
+        postbox.write(post, self.spool)
+
+    def run_ticks(self, secs):
+        async def go():
+            t0 = time.time()
+            while time.time() - t0 < secs:
+                await self.p.tick()
+                await asyncio.sleep(0.02)
+        asyncio.run(go())
+
+    def test_a_big_picture_first_is_still_shown_first(self):
+        import base64
+        sends = []
+        real = Chan.send
+
+        async def send(ch, text=None, **kw):
+            if kw.get("files"):
+                await asyncio.sleep(0.3)  # the big one uploads slowly
+            sends.append((ch.id, kw["embed"].description if kw.get("embed") else text))
+            return await real(ch, text, **kw)
+        big = base64.b64encode(b"x" * 1000).decode()
+        self.write(channel="st-1", text="一", from_channel="1", file_name="big.png", file_b64=big)
+        self.write(channel="st-1", text="二", from_channel="1")
+        self.write(channel="st-2", text="別人的", from_channel="2")
+        with mock.patch.object(Chan, "send", send):
+            self.run_ticks(0.8)
+        self.assertEqual([t for c, t in sends if c == 1], ["一", "二"])
+        self.assertEqual(sends[0], (3, "別人的"), "another sender's post does not wait behind them")
+        from bot import postbox
+        self.assertEqual(postbox.waiting(self.spool), [])
+        self.assertEqual(self.p.chains, {})
+
+    def test_a_hand_over_that_takes_long_does_not_hold_what_is_shown(self):
+        """Manager on the rehearsal: shown in order, at once; handing over is the channel's own queue."""
+        stuck = asyncio.Event()
+        given = []
+
+        class Stuck(object):
+            async def submit(self, message, text):
+                given.append(text.rsplit("\n", 1)[-1])
+                await stuck.wait()  # ssh to a machine that does not answer
+        self.bot.tmux = Stuck()
+        for t in ("一", "二", "三"):
+            self.write(channel="st-0", text=t, from_channel="1")
+
+        async def go():
+            for _ in range(10):
+                await self.p.tick()
+                await asyncio.sleep(0.02)
+            self.assertEqual(self.b.sent, ["📨 來自 #st-1\n一", "📨 來自 #st-1\n二", "📨 來自 #st-1\n三"])
+            self.assertEqual(given, ["一", "二", "三"], "handed over in the order shown")
+            from bot import postbox
+            self.assertEqual(len(postbox.waiting(self.spool)), 3, "kept in the spool until handed over")
+            stuck.set()
+            await asyncio.sleep(0.05)
+            self.assertEqual(postbox.waiting(self.spool), [])
+        asyncio.run(go())
+
+    def test_a_hand_over_that_breaks_is_kept_aside_and_said_where_it_came_from(self):
+        class Broken(object):
+            async def submit(self, message, text):
+                raise AttributeError("'NoneType' object has no attribute 'replace'")
+        self.bot.tmux = Broken()
+        self.write(channel="st-0", text="一", from_channel="1")
+        self.write(channel="st-0", text="from a script", from_name="cron")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.run_ticks(0.3)
+        from bot import postbox
+        self.assertEqual(postbox.waiting(self.spool), [])
+        self.assertEqual(len(os.listdir(self.spool + "-bad")), 2, "not simply removed")
+        self.assertEqual(self.b.sent, ["📨 來自 #st-1\n一", "📨 來自 cron\nfrom a script"], "shown all the same")
+        said, = self.a.sent
+        self.assertIn("這則沒交到 #st-0 的 Claude（AttributeError", said)
+        self.assertIn("cron：⚠️ 這則沒交到 #st-0 的 Claude", self.bot.audits[0], "no channel of its own: #audit")
+        self.assertEqual(self.p.inflight, set())
+
+    def test_a_slow_post_is_said_once_with_its_parts_a_quick_one_not(self):
+        from bot import postbox
+        out = io.StringIO()
+        old = os.path.join(self.spool, "%020d-1.json" % int((time.time() - 12) * 1e9))
+        new = os.path.join(self.spool, "%020d-1.json" % time.time_ns())
+        for path in (old, new):
+            with open(path, "w") as f:
+                f.write('{"channel": "st-1", "text": "x"}')
+        with contextlib.redirect_stdout(out):
+            asyncio.run(self.p.safely(postbox.waiting(self.spool)[0][1], old))
+            asyncio.run(self.p.safely({"channel": "st-1", "text": "y"}, new))
+        line, = out.getvalue().strip().splitlines()
+        self.assertRegex(line, r"^\[posts\] #st-1：1\d\.\d 秒（排隊 1\d\.\d、處理 0\.\d）$")
+
+
 class Dcctl(unittest.TestCase):
     def test_dcctl_post_runs_with_the_system_python(self):
         """dcctl is run by /usr/bin/python3 (no discord module): what `post` needs must import without it."""
@@ -813,6 +984,27 @@ class Dcpost(unittest.TestCase):
             f.flush()
             p = dcpost.build(["reports", "--file", f.name, "weekly"], "", {}, "h", "/x")
             self.assertEqual((p["text"], p["file_name"]), ("weekly", os.path.basename(f.name)))
+        with tempfile.TemporaryDirectory() as tmp:
+            names = []
+            for i in range(11):
+                names.append(os.path.join(tmp, "p%d.png" % i))
+                with open(names[-1], "wb") as f:
+                    f.write(b"%d" % i)
+            p = dcpost.build(["reports", "--file", names[0], "--file", names[1], "--file", names[2], "圖"], "", {}, "h", "/x")
+            self.assertEqual((p["text"], p["file_name"], [f["name"] for f in p["more_files"]]), ("圖", "p0.png", ["p1.png", "p2.png"]))
+            argv = ["reports"] + [w for n in names[:10] for w in ("--file", n)]
+            self.assertEqual(len(dcpost.build(argv, "", {}, "h", "/x")["more_files"]), 9, "ten is allowed")
+            with self.assertRaises(SystemExit) as e:
+                dcpost.build(argv + ["--file", names[10]], "", {}, "h", "/x")
+            self.assertIn("最多 10 個", str(e.exception.code))
+            with mock.patch.object(dcpost, "MAX_FILE", 3):  # together, not each
+                dcpost.build(["reports", "--file", names[0], "--file", names[1]], "", {}, "h", "/x")
+                with self.assertRaises(SystemExit) as e:
+                    dcpost.build(["reports", "--file", names[0], "--file", names[1], "--file", names[2], "--file", names[3]], "", {}, "h", "/x")
+                self.assertIn("全部加起來", str(e.exception.code))
+            with self.assertRaises(SystemExit):
+                dcpost.build(["reports", "x", "--file"], "", {}, "h", "/x")
+            self.assertNotIn("more_files", dcpost.build(["reports", "--file", names[0]], "", {}, "h", "/x"), "one file: the old shape")
         p = dcpost.build(["行程", "--board", "本週", "- 週一"], "", {}, "h", "/x")
         self.assertEqual((p["board"], p["text"]), ("本週", "- 週一"))
 
@@ -1093,6 +1285,124 @@ class PostWithoutTheChannelList(unittest.TestCase):
                 written, asked = self.run_post(post)
                 self.assertEqual(len(written), 1, (how, post))
                 self.assertTrue(written[0]["channel"])
+
+
+class FewerListCalls(unittest.TestCase):
+    """C-73: Discord gives the whole bot 10 channel lists a minute; dcctl post asks at most once, and a 429 is said
+    in words the sending Claude reads, not slept through unsaid."""
+
+    def load(self):
+        import importlib.machinery
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "dcctl")
+        loader = importlib.machinery.SourceFileLoader("dcctl_f", path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("dcctl_f", loader))
+        loader.exec_module(mod)
+        return mod
+
+    def asked(self, post):
+        import json
+        import sys
+        from bot import postbox
+        mod, asked, written = self.load(), [], []
+        chans = [{"id": "10", "type": 4, "name": "日常", "parent_id": None},
+                 {"id": "11", "type": 0, "name": "st-1", "parent_id": "10"},
+                 {"id": "12", "type": 0, "name": "notes", "parent_id": "10"}]
+        with mock.patch.object(mod, "channels", lambda: (asked.append(1), chans)[1]), \
+                mock.patch.object(postbox, "write", written.append), mock.patch.object(postbox, "heartbeat_age", return_value=1), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps(post))), mock.patch("sys.stdout", io.StringIO()):
+            mod.main(["post"])
+        self.assertEqual(len(written), 1)
+        return len(asked)
+
+    def test_once_for_a_name_never_for_an_id(self):
+        self.assertEqual(self.asked({"channel": "notes", "text": "x", "from_channel": "11"}), 1, "it was twice")
+        self.assertEqual(self.asked({"channel": "notes", "text": "x"}), 1)
+        self.assertEqual(self.asked({"channel": "12", "text": "x", "from_channel": "11"}), 0, "an ID from a channel: none")
+        self.assertEqual(self.asked({"channel": "11", "text": "own", "from_channel": "11"}), 0)
+        self.assertEqual(self.asked({"channel": "notes", "text": "x", "notify": True, "from_channel": "11"}), 1)
+        self.assertEqual(self.asked({"channel": "日常/新的", "text": "x", "create": True, "from_channel": "11"}), 1)
+
+    def test_a_429_is_said_and_waited_for(self):
+        import json
+        import urllib.error
+        mod = self.load()
+        tries = []
+
+        class Answer(object):
+            def __init__(self, body):
+                self.body = body
+
+            def read(self):
+                return self.body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(req, timeout=None):
+            tries.append(req.get_method())
+            if len(tries) == 1:
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {},
+                                             io.BytesIO(json.dumps({"retry_after": 0.01}).encode()))
+            return Answer(b"[]")
+        err = io.StringIO()
+        with mock.patch.object(mod.urllib.request, "urlopen", urlopen), mock.patch.object(mod.time, "sleep", lambda s: None), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(mod.call("GET", "/guilds/5/channels"), [])
+            tries.clear()
+            mod.call("GET", "/guilds/5/channels")
+        first, second = err.getvalue().splitlines()
+        self.assertEqual(first, "Discord 限速中（GET /guilds/5/channels），等 0 秒後再試", "nothing said of resending yet")
+        self.assertEqual(second, first)
+
+    def test_429s_that_do_not_end_say_it_did_not_go(self):
+        import json
+        import sys
+        import urllib.error
+        from bot import postbox
+        mod, written = self.load(), []
+
+        def urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(b'{"retry_after": 0.01}'))
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(mod.urllib.request, "urlopen", urlopen), mock.patch.object(mod.time, "sleep", lambda s: None), \
+                mock.patch.object(postbox, "write", written.append), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"channel": "notes", "text": "x"}))):
+            with self.assertRaises(SystemExit) as e:
+                mod.main(["post"])
+        self.assertEqual(e.exception.code, "Discord 限速，這則沒有送出，等一下再送")
+        self.assertEqual((written, out.getvalue()), ([], ""), "nothing queued, nothing said to have gone")
+        self.assertEqual(len(err.getvalue().splitlines()), 4)
+        self.assertNotIn("不用重送", err.getvalue())
+        with mock.patch.object(mod.urllib.request, "urlopen", urlopen), mock.patch.object(mod.time, "sleep", lambda s: None), \
+                contextlib.redirect_stderr(io.StringIO()):
+            mod.GAVE_UP = self.load().GAVE_UP
+            with self.assertRaises(SystemExit) as e:
+                mod.call("GET", "/guilds/5/channels")
+        self.assertEqual(e.exception.code, "Discord 限速中（GET /guilds/5/channels），試了 5 次都沒過，等一下再試")
+
+
+class DiscordWarnings(unittest.TestCase):
+    """C-73: discord.py's warnings (a 429 and its retry_after) reach supervisor.out; its info lines do not."""
+    def test_warnings_only_once_each(self):
+        import logging
+        from bot import main
+        log = logging.getLogger("discord")
+        before = list(log.handlers), log.level, log.propagate
+        out = io.StringIO()
+        try:
+            main.discord_warnings(out)
+            main.discord_warnings(out)  # twice: still one line each
+            logging.getLogger("discord.http").warning("We are being rate limited. %s %s responded with 429. Retrying in %.2f seconds.",
+                                                      "PATCH", "https://discord.com/api/v10/channels/5/messages/6", 2.5)
+            logging.getLogger("discord.client").info("logging in using static token")
+        finally:
+            log.handlers[:], log.level, log.propagate = before[0], before[1], before[2]
+        line, = out.getvalue().splitlines()
+        self.assertRegex(line, r"^\[discord\] \d{4}-\d\d-\d\d \d\d:\d\d:\d\d discord\.http: We are being rate limited\. PATCH .* Retrying in 2\.50 seconds\.$")
 
 
 class KeptAndTriedAgain(unittest.TestCase):
