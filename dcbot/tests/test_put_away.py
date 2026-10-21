@@ -276,7 +276,7 @@ class SameWindow(Window):
             await self.settled()
             shown = []
 
-            async def show(host, ch, st, session_id, path):
+            async def show(host, ch, st, session_id, path, held=None):
                 shown.append((ch.id, session_id, path))
             with mock.patch.object(tmux_bridge.history, "show", show):
                 self.claude.hook("SessionEnd", reason="resume")
@@ -341,7 +341,7 @@ class OwnSession(whole.World, unittest.TestCase):
             await self.settled()
             shown = []
 
-            async def show(host, ch, st, session_id, path):
+            async def show(host, ch, st, session_id, path, held=None):
                 shown.append((ch.id, session_id, path))
             with mock.patch.object(tmux_bridge.history, "show", show):
                 self.claude.hook("SessionEnd", reason="resume")

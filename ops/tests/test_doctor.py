@@ -1984,6 +1984,20 @@ class Records(unittest.TestCase):
         self.assertIsNone(item(), "an engine that does not probe it")
         self.assertNotIn("dcbot.posts-failed", doctor.WATCHED + doctor.WATCHED_WARN)
 
+    def test_posts_whose_handing_over_broke(self):
+        """C-75: a post shown but never handed to its Claude (dcbot/state/posts-bad/) is a warning, with where to look."""
+        def item(**probe):
+            _, recs = self.records({"host-a": healthy(**probe)})
+            return next((r for r in recs if r["id"] == "dcbot.posts-bad"), None)
+        r = item(posts_bad=2)
+        self.assertEqual((r["status"], r["value"]), ("warn", 2))
+        self.assertIn("2 則 altention dc post", r["msg"])
+        self.assertIn("dcbot/state/posts-bad/", r["fix"])
+        self.assertEqual(item(posts_bad=0)["status"], "ok")
+        self.assertEqual(item(posts_bad="many")["status"], "ok", "not a number: as if not probed, said by core.probe-odd")
+        self.assertIsNone(item(), "an engine that does not probe it")
+        self.assertNotIn("dcbot.posts-bad", doctor.WATCHED + doctor.WATCHED_WARN)
+
     def test_update_cards_that_keep_failing(self):
         def item(**probe):
             _, recs = self.records({"host-a": healthy(**probe)})
@@ -2070,6 +2084,18 @@ class CardsFailed(unittest.TestCase):
         o = json.loads(r.stdout.strip().splitlines()[-1])
         return o["posts_failed"], o["cards_failed"]
 
+    def test_posts_bad_counted(self):
+        home = tempfile.mkdtemp(prefix="家 posts-bad ")
+        self.addCleanup(shutil.rmtree, home, True)
+        eng = os.path.join(home, "altention", "engine")
+        folder = os.path.join(eng, "dcbot", "state", "posts-bad")
+        os.makedirs(folder)
+        for name in ("001.json", "002.net.json", "notes.txt"):
+            open(os.path.join(folder, name), "w").close()
+        r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), timeout=120)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["posts_bad"], 2)
+
     def test_counted_apart(self):
         now = time.time()
         card = lambda ago: {"card": {"id": "update-v0.3.0", "text": "⏳"}, "channel": "update", "failed_at": now - ago}
@@ -2101,6 +2127,72 @@ class AsksLeft(unittest.TestCase):
             else:
                 self.assertEqual(rec["msg"], "這版要的設定還沒選：%s" % "、".join(said))
                 self.assertIn("setup.py reconcile", rec["fix"])
+
+
+class DraftLeftovers(unittest.TestCase):
+    """C-61 E1 (#code-review's note, manager 2026-10-20): a draft that still has its cron lines, hooks or data here
+    stopped running here; that is a warn, with what to write to use it. A draft with none is only listed."""
+
+    def test_a_draft_with_lines_hooks_or_data_is_a_warn(self):
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        inst, folder, data = os.path.join(home, "實例"), os.path.join(home, "plugins", "learn"), os.path.join(home, "data", "learn")
+        for d in (inst, folder, data, os.path.join(home, ".claude")):
+            os.makedirs(d)
+        with open(os.path.join(inst, "plugins.json"), "w") as f:
+            json.dump({"format": 1}, f)
+        with open(os.path.join(home, ".claude", "settings.json"), "w") as f:
+            json.dump({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "python3 %s/hook.py" % folder}]}]}}, f)
+        d = {"data": [{"name": "learn", "path": data}, {"name": "gone", "path": os.path.join(home, "沒有")}]}
+        rows = [("core", "/c", {}, "on", ""), ("learn", folder, d, "draft", "草稿"), ("bare", "/b", {}, "draft", "草稿")]
+        cron = ["0 13 * * * x  # altention:learn/practice", "5 * * * * y  # altention:other/z"]
+        with mock.patch.dict(os.environ, {"HOME": home, "ALT_INSTANCE": inst}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch("plancore.read_crontab", return_value=cron):
+            recs = {r["id"]: r for r in doctor.external_records()}
+        self.assertEqual(recs["plugins.drafts"]["status"], "ok")
+        w = recs["plugin.learn.draft"]
+        self.assertEqual(w["status"], "warn")
+        self.assertIn("learn 這個插件在這台沒在跑", w["msg"])
+        self.assertIn("排程 1 行、hook 1 個、資料夾 %s" % data, w["msg"])
+        self.assertIn("source＋version，或 local: true", w["fix"])
+        self.assertNotIn("plugin.bare.draft", recs, "a draft that never ran here is only listed")
+
+    def test_needs_not_in_watch_rounds_and_skill_clash_said(self):
+        folder = tempfile.mkdtemp(prefix="插件 ")
+        self.addCleanup(shutil.rmtree, folder, True)
+        d = {"needs": [{"name": "x", "check": "false"}], "skills": [{"name": "update", "path": "s"}, {"name": "esc", "path": "../.."}]}
+        rows = [("learn", folder, d, "on", "")]
+        with mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            whole = {r["id"]: r for r in doctor.external_records()}
+            from altention import plugin_update
+            with mock.patch.object(plugin_update, "needs_missing", side_effect=AssertionError("ran")):
+                watched = {r["id"]: r for r in doctor.external_records(needs=False)}
+        self.assertEqual(whole["plugin.learn.needs"]["status"], "warn")
+        self.assertNotIn("plugin.learn.needs", watched)
+        self.assertIn("skill update 跟引擎的同名", whole["core.skills-clash"]["msg"])
+        self.assertIn("skill esc 指到插件資料夾外面", whole["core.skills-outside"]["msg"])
+
+    def test_a_setup_item_given_up_on_is_said(self):
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        folder = os.path.join(home, "plugin")
+        os.makedirs(folder)
+        d = {"setup": [{"name": "t1", "run": "false"}]}
+        rows = [("learn", folder, d, "on", "")]
+        from altention import plugin_update
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            plugin_update.run_setup("learn", folder, d, "")
+            self.assertNotIn("plugin.learn.setup", {r["id"] for r in doctor.external_records()})
+            plugin_update.run_setup("learn", folder, d, "")
+            recs = {r["id"]: r for r in doctor.external_records()}
+        self.assertEqual(recs["plugin.learn.setup"]["status"], "warn")
+        self.assertIn("learn 的安裝步驟 t1 失敗 2 次，不再自動重跑；手動跑：python3 ", recs["plugin.learn.setup"]["msg"])
 
 
 class SetupLeft(unittest.TestCase):

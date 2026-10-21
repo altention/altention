@@ -3,7 +3,9 @@ altention dc post --resume / --history).
 
 The whole of it goes into the channel, like the backfill of an attached session (the owner wants it there, long
 ones included: about one message a second, silently, in the background). A conversation the channel has shown
-before (st["shown"]) gets just its last few turns again.
+before (st["shown"], which an attach's backfill counts too) or held before (st["history"]: it went on in this
+channel) gets just its last few turns again (owner's report 2026-10-20: a channel attached, detached and set up anew had its whole
+history posted a second time).
 """
 import asyncio
 import json
@@ -16,20 +18,36 @@ from .util import split_message
 KEEP = 50     # conversations remembered as shown, per channel
 
 
-async def show(bot, ch, st, session_id, path, force=False):
-    """Post the history of `session_id` (transcript `path`) into `ch`. `force`: even if shown before."""
+def mark(st, session_id):
+    """The channel holds the whole history of `session_id` now (posted here, or by an attach's backfill)."""
+    if session_id:
+        st["shown"] = ([s for s in st.get("shown") or [] if s != session_id] + [session_id])[-KEEP:]
+
+
+def seen(st, session_id, held=None):
+    """Has the channel this conversation's history already: shown whole, or held here before (`held`: the channel's
+    conversations as they were before this switch; st["history"] when not given)."""
+    held = st.get("history") or [] if held is None else held
+    return session_id in (st.get("shown") or []) or session_id in held
+
+
+AGAIN = "📜 **接回對話 `%s`**（這個頻道之前貼過它的紀錄，或就是在這裡進行的），目前的最後幾輪：\n\n%s"
+
+
+async def show(bot, ch, st, session_id, path, force=False, held=None):
+    """Post the history of `session_id` (transcript `path`) into `ch`. `force`: even if shown before. `held`: see
+    seen()."""
     if not session_id or not path or not os.path.exists(path):
         return False
     messages = sessions.history_messages(path)
     if not messages:
         return False
-    shown = st.setdefault("shown", [])
-    if session_id in shown and not force:
+    if seen(st, session_id, held) and not force:
         recap = sessions.recap_text(sessions.recap(path))
-        for part in split_message("📜 **接回對話 `%s`**（這個頻道之前貼過它的完整紀錄），目前的最後幾輪：\n\n%s" % (session_id[:8], recap)):
+        for part in split_message(AGAIN % (session_id[:8], recap)):
             await ch.send(part, silent=True)
         return True
-    st["shown"] = ([s for s in shown if s != session_id] + [session_id])[-KEEP:]
+    mark(st, session_id)
     bot.save()
     asyncio.ensure_future(bot.backfill(ch, messages))  # all of it in the channel, as an attach does
     return True
@@ -39,7 +57,7 @@ REMOTE_SECS = 20  # how long another machine is given to read a conversation and
 SEEN_AGAIN = 3    # turns shown of a conversation the channel has shown whole before (as sessions.recap() shows here)
 
 
-async def show_remote(bot, ch, st, host, session_id, path, force=False):
+async def show_remote(bot, ch, st, host, session_id, path, force=False, held=None):
     """show(), for a conversation whose transcript is on another machine (a pane attached there took it up with
     /resume: the event says the file; #issues 31, until stage 3b step 2.4c nothing was posted). Read over there by
     `dcremote history`, worded here exactly as show() and an attach word it: the whole of it the first time, its
@@ -52,7 +70,7 @@ async def show_remote(bot, ch, st, host, session_id, path, force=False):
     if not session_id or not path:
         return False
     try:
-        return await _show_remote(bot, ch, st, host, session_id, path, force, remote)
+        return await _show_remote(bot, ch, st, host, session_id, path, force, remote, held)
     except Exception:  # a task of its own: nobody else would hear of it
         traceback.print_exc()
         return False
@@ -83,7 +101,7 @@ def failed(code, said):
     return "那台不給讀或讀不出來" + detail if code != 0 else None
 
 
-async def _show_remote(bot, ch, st, host, session_id, path, force, remote):
+async def _show_remote(bot, ch, st, host, session_id, path, force, remote, held=None):
     said = []
     code, out = await remote.dcremote(host, "history", path, session_id, timeout=REMOTE_SECS, err=said)
     why = failed(code, said)
@@ -106,13 +124,12 @@ async def _show_remote(bot, ch, st, host, session_id, path, force, remote):
     messages = sessions.backfilled(got) if got else []
     if not messages:
         return False  # the file is gone, or nothing was said in it yet: as show()
-    shown = st.setdefault("shown", [])
-    if session_id in shown and not force:
+    if seen(st, session_id, held) and not force:
         pairs = [(sessions.worded(kind, text), reply) for kind, text, reply, _stamp in got["turns"][-SEEN_AGAIN:]]
-        for part in split_message("📜 **接回對話 `%s`**（這個頻道之前貼過它的完整紀錄），目前的最後幾輪：\n\n%s" % (session_id[:8], sessions.recap_text(pairs))):
+        for part in split_message(AGAIN % (session_id[:8], sessions.recap_text(pairs))):
             await ch.send(part, silent=True)
         return True
-    st["shown"] = ([s for s in shown if s != session_id] + [session_id])[-KEEP:]
+    mark(st, session_id)
     bot.save()
     asyncio.ensure_future(bot.backfill(ch, messages))
     return True

@@ -281,7 +281,8 @@ def changelog(rev, version, said):
 def own_words(version, text, notes):
     """C-57 U8: the update notices quote a release's "### For people (<language>)" part in an installation of that
     language, its English "For people" when it has none. Each language the engine speaks (altention/text.py) whose
-    part `text` (the "## vVERSION" section) lacks, or has without a point, noted: a reminder, not a refusal."""
+    part `text` (the "## vVERSION" section) lacks, or has without a point, noted: a reminder, not a refusal. English
+    (en, en-*) is not asked for: plain "For people" is its part (C-70: once text.py speaks it)."""
     parts, part = {}, None
     for line in text.splitlines():
         if line.startswith("### "):
@@ -289,6 +290,8 @@ def own_words(version, text, notes):
         elif line.startswith("- "):
             parts[part] = parts.get(part, 0) + 1
     for lang in sorted(alt_text.TEXT):
+        if lang.lower().split("-")[0] == "en":
+            continue
         if not parts.get("for people (%s)" % lang.lower()):
             notes.append("%s 的 v%s 沒有「### For people (%s)」這段（或裡面沒有項目）：那個語言的安裝在更新卡片上"
                          "會看到英文的 For people" % (CHANGELOG, version, lang))

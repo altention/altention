@@ -203,7 +203,11 @@ class Menus(object):
         # the channel's queue for whatever is typed into its pane (TmuxBridge.submit holds it from typing to receipt,
         # C-73): a key or text from a button never goes in between a message's typing and its Enter
         async with self.bridge.rt(interaction.channel).lock:
-            return await self.press(interaction, token, what, text, m, t)
+            said = await self.press(interaction, token, what, text, m, t)
+        unsent = getattr(self.bridge, "unsent", None)
+        if unsent is not None:  # the dialog answered: posts it held up may go now (C-74; the box is looked at first)
+            unsent.moved(interaction.channel, st)
+        return said
 
     async def press(self, interaction, token, what, text, m, t):
         """act() once the channel's lock is held: read the dialog again, press, show what is there now."""

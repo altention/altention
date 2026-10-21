@@ -523,6 +523,381 @@ class PathCheck(Base):
             self.assertEqual(f.read(), "-l -i -c echo %s; env\n" % install.PATH_MARK)
 
 
+def git(*args, cwd=None):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "init.defaultBranch=main"]
+                   + list(args), cwd=cwd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class ExternalPlugins(Base):
+    """C-61 E2, core.plugins-external: a declared external plugin cloned at its version from a repo in the throwaway
+    home, its setup[] run once per version, its skill linked, its needs said; nothing else run or touched."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.home, "altention")
+        self.inst = os.path.join(self.home, "實例")
+        os.makedirs(self.inst)  # no machines.json: this machine alone
+        os.makedirs(os.path.join(self.home, ".config", "altention"))
+        with open(os.path.join(self.home, ".config", "altention", "host"), "w") as f:
+            f.write("box\n")
+        self.env2 = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst, "ALT_ROOT": self.root})
+        self.env2.start()
+        self.src = os.path.join(self.home, "來源 learn.git")
+        work = os.path.join(self.home, "work")
+        os.makedirs(os.path.join(work, "skill"))
+        with open(os.path.join(work, "skill", "SKILL.md"), "w") as f:
+            f.write("---\nname: learn-skill\ndescription: \"x\"\n---\n")
+        self.ran = os.path.join(self.home, "ran.txt")
+        for v, word in (("v0.1.0", "one"), ("v0.2.0", "two")):
+            with open(os.path.join(work, "plugin.json"), "w") as f:
+                json.dump({"format": 1, "name": "learn", "title": "L", "description": "d", "machines": "all",
+                           "skills": [{"name": "learn-skill", "path": "skill"}],
+                           "setup": [{"name": "tools", "run": "echo %s >> \"%s\"" % (word, self.ran)},
+                                     {"name": "big", "run": "echo big >> \"%s\"" % self.ran, "lazy": True},
+                                     {"name": "extra", "run": "exit 3", "optional": True},
+                                     {"name": "note", "run": None, "today": "by hand"}],
+                           "needs": [{"name": "chrome", "check": "false", "hint": "裝 Chrome"},
+                                     {"name": "sh", "check": "command -v sh"}]}, f)
+            if v == "v0.1.0":
+                git("init", "-q", work)
+            else:
+                with open(os.path.join(work, "new.md"), "w") as f:
+                    f.write("v0.2.0 adds this\n")
+            git("add", "-A", cwd=work)
+            git("commit", "-q", "-m", v, cwd=work)
+            git("tag", v, cwd=work)
+        git("clone", "-q", "--bare", work, self.src)
+        self.folder = os.path.join(self.root, "plugins", "learn")
+
+    def tearDown(self):
+        self.env2.stop()
+        super().tearDown()
+
+    def declare(self, entry):
+        with open(os.path.join(self.inst, "plugins.json"), "w") as f:
+            json.dump({"format": 1, "plugins": {"learn": entry} if entry is not None else {}}, f)
+
+    def install(self):
+        r, out = self.run_()
+        with redirect_stdout(out):
+            install.external_plugins(r)
+        return out.getvalue()
+
+    def runs(self):
+        with open(self.ran) as f:
+            return f.read().split()
+
+    def at(self):
+        return subprocess.run(["git", "-C", self.folder, "describe", "--tags"], stdout=subprocess.PIPE,
+                              universal_newlines=True).stdout.strip()
+
+    def test_cloned_at_its_version_set_up_once_skill_linked_needs_said(self):
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        out = self.install()
+        self.assertEqual(self.at(), "v0.1.0")
+        self.assertEqual(self.runs(), ["one"], "the lazy one is not run")
+        self.assertIn("changed plugin.learn learn：clone 了", out)
+        self.assertIn("安裝步驟：tools 跑好了", out)
+        self.assertIn("用到時再裝：big", out)
+        self.assertIn("todo plugin.learn learn 的選用安裝步驟沒成功：extra（結束碼 3", out)
+        self.assertIn("todo plugin.learn learn 要用的系統工具這台沒有：chrome：裝 Chrome", out)
+        self.assertNotIn("sh：", out.split("系統工具")[1].split("\n")[0])
+        self.assertIn("changed core.skills 外部插件的 skill 連結：learn-skill", out)
+        self.assertEqual(os.readlink(os.path.join(self.home, ".claude", "skills", "learn-skill")),
+                         os.path.realpath(os.path.join(self.folder, "skill")))
+        self.assertEqual([n for n in os.listdir(os.path.join(self.root, "plugins"))], ["learn"], "nothing left beside it")
+        out = self.install()
+        self.assertEqual(self.runs(), ["one"], "the same version: not run again")
+        self.assertIn("tools 跑過了", out)
+
+    def test_a_new_version_is_checked_out_and_its_setup_runs(self):
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        self.install()
+        self.declare({"source": self.src, "version": "v0.2.0"})
+        out = self.install()
+        self.assertEqual(self.at(), "v0.2.0")
+        self.assertEqual(self.runs(), ["one", "two"])
+        self.assertIn("換到 v0.2.0", out)
+
+    def test_a_folder_not_ours_to_change_is_left_and_said(self):
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        self.install()
+        with open(os.path.join(self.folder, "plugin.json"), "a") as f:
+            f.write(" ")
+        self.declare({"source": self.src, "version": "v0.2.0"})
+        out = self.install()
+        self.assertIn("todo plugin.learn learn：%s 有還沒 commit 的修改：沒有換版本" % self.folder, out)
+        self.assertEqual(self.at(), "v0.1.0")
+        subprocess.run(["git", "-C", self.folder, "checkout", "-q", "--", "plugin.json"], check=True)
+        subprocess.run(["git", "-C", self.folder, "remote", "set-url", "origin", "/somewhere/else.git"], check=True)
+        out = self.install()
+        self.assertIn("origin 是 /somewhere/else.git，不是實例寫的", out)
+        self.assertEqual(self.at(), "v0.1.0")
+
+    def test_not_wanted_here_draft_or_away_nothing_is_cloned(self):
+        for entry, words in (({"source": self.src, "version": "v0.1.0", "disabled_on": ["box"]}, "skip plugin.learn 這台不用"),
+                             (None, "skip core.plugins-external 實例沒有寫外部插件"),
+                             ({"local": True}, "skip plugin.learn 實例寫 local，這台沒有")):
+            self.declare(entry)
+            self.assertIn(words, self.install())
+            self.assertFalse(os.path.exists(self.folder), entry)
+
+    def test_a_clone_that_fails_leaves_nothing(self):
+        self.declare({"source": os.path.join(self.home, "沒有這個.git"), "version": "v0.1.0"})
+        out = self.install()
+        self.assertIn("fail plugin.learn learn：clone", out)
+        self.assertEqual(os.listdir(os.path.join(self.root, "plugins")), [])
+        self.declare({"source": self.src, "version": "v9.9.9"})
+        out = self.install()
+        self.assertIn("fail plugin.learn learn：%s 裡找不到 v9.9.9\n" % self.src, out)
+        self.assertNotIn("fatal", out, "git's own words go to the log only (#code-review-2 of 59cb60c)")
+        self.assertEqual(os.listdir(os.path.join(self.root, "plugins")), [])
+
+    def test_a_file_of_theirs_named_as_one_the_new_version_adds_stops_the_switch(self):
+        """manager 2026-10-20 (#code-review's note 5): C-66's check on a plugin's folder too; ignored counts."""
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        self.install()
+        with open(os.path.join(self.folder, "new.md"), "w") as f:
+            f.write("mine\n")
+        with open(os.path.join(self.folder, ".git", "info", "exclude"), "a") as f:
+            f.write("new.md\n")
+        self.declare({"source": self.src, "version": "v0.2.0"})
+        out = self.install()
+        self.assertIn("跟 v0.2.0 要加的檔同名：new.md；沒有換版本", out)
+        self.assertEqual(self.at(), "v0.1.0")
+        with open(os.path.join(self.folder, "new.md")) as f:
+            self.assertEqual(f.read(), "mine\n")
+
+    def test_past_the_steps_limit_no_new_item_starts(self):
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        from altention import plugin_update
+        with mock.patch.object(plugin_update, "STEP_LIMIT", -1):
+            out = self.install()
+        self.assertFalse(os.path.exists(self.ran), "nothing run")
+        self.assertIn("todo plugin.learn learn 還有 2 項下次再裝", out)
+        self.assertIn("tools、extra", out)
+        out = self.install()
+        self.assertEqual(self.runs(), ["one"], "taken up the next time")
+
+    def test_an_item_gets_only_what_is_left_and_one_cut_runs_next_time(self):
+        """manager 2026-10-20: the step never outlasts the card's time for install; quick items are not held back."""
+        from altention import plugin_update
+        d = {"setup": [{"name": "quick", "run": "true"}, {"name": "slow", "run": "sleep 30 & wait"},
+                       {"name": "after", "run": "true"}]}
+        t0 = time.time()
+        with mock.patch.object(plugin_update, "LAST_START", 1):
+            ran = plugin_update.run_setup("learn", self.home, d, "abc", deadline=time.time() + 3)
+        self.assertLess(time.time() - t0, 10)
+        self.assertEqual([(n, s_) for n, s_, _ in ran], [("quick", "ran"), ("slow", "later"), ("after", "later")])
+        with open(plugin_update.state_path("learn")) as f:
+            self.assertEqual(sorted(json.load(f)["setup"]), ["quick"], "the cut one is not written down")
+
+    def test_a_required_item_failing_stops_the_rest_and_twice_it_is_given_up(self):
+        """manager 2026-10-20 (#code-review-2 of 0c4a843): t1 timing out every time held every install for 15
+        minutes and t5 was never reached."""
+        from altention import plugin_update
+        d = {"setup": [{"name": "t1", "run": "echo try >> \"%s\"; sleep 30" % self.ran},
+                       {"name": "t2", "run": "echo t2 >> \"%s\"" % self.ran}]}
+        with mock.patch.object(plugin_update, "SETUP_TIMEOUT", 1):
+            first = plugin_update.run_setup("learn", self.home, d, "abc")
+            second = plugin_update.run_setup("learn", self.home, d, "abc")
+            t0 = time.time()
+            third = plugin_update.run_setup("learn", self.home, d, "abc")
+        self.assertEqual([(n, s_) for n, s_, _ in first], [("t1", "failed"), ("t2", "blocked")])
+        self.assertEqual(first[1][2], "前一項 t1 沒過，沒跑")
+        self.assertEqual([s_ for _, s_, _ in second], ["failed", "blocked"])
+        self.assertIn("失敗 2 次了，之後不再自動重跑，手動跑：python3 ", second[0][2])
+        self.assertIn("ops/plugins.py setup learn t1", second[0][2])
+        self.assertEqual([s_ for _, s_, _ in third], ["stuck", "blocked"])
+        self.assertLess(time.time() - t0, 1, "no time spent on it the third time")
+        self.assertEqual(self.runs(), ["try", "try"])
+        self.assertEqual(plugin_update.stuck("learn", self.home, d, "abc")[0][0], "t1")
+        self.assertEqual(plugin_update.stuck("learn", self.home, d, "def"), [], "a new version takes it up again")
+        d["setup"][0]["run"] = "echo fixed >> \"%s\"" % self.ran
+        self.assertEqual(plugin_update.stuck("learn", self.home, d, "abc"), [], "so does a new command")
+        ran = plugin_update.run_setup("learn", self.home, d, "abc", only="t1")  # by hand: written down
+        self.assertEqual(ran, [("t1", "ran", "跑好了")])
+        self.assertEqual([s_ for _, s_, _ in plugin_update.run_setup("learn", self.home, d, "abc")], ["same", "ran"])
+
+    def test_with_the_item_limit_as_long_as_the_step_one_stuck_is_still_given_up(self):
+        """#code-review-2 of 0f90704: SETUP_TIMEOUT == STEP_LIMIT (900 both), the step's clock started before the
+        item: it was always cut by the step, "later", never counted, and every install spent the whole step on it."""
+        from altention import plugin_update
+        work = os.path.join(self.home, "work")
+        with open(os.path.join(work, "plugin.json")) as f:
+            d = json.load(f)
+        d["setup"] = [{"name": "t1", "run": "echo try >> \"%s\"; sleep 30" % self.ran}, {"name": "t2", "run": "true"}]
+        with open(os.path.join(work, "plugin.json"), "w") as f:
+            json.dump(d, f)
+        git("commit", "-qam", "slow", cwd=work)
+        git("tag", "v0.4.0", cwd=work)
+        git("push", "-q", self.src, "HEAD:refs/heads/main", "v0.4.0", cwd=work)
+        self.declare({"source": self.src, "version": "v0.4.0"})
+        with mock.patch.multiple(plugin_update, SETUP_TIMEOUT=3, STEP_LIMIT=3, LAST_START=1):  # equal, as the real ones
+            outs = [self.install() for _ in range(2)]
+            t0 = time.time()
+            third = self.install()
+        self.assertIn("fail plugin.learn learn 的安裝步驟失敗：t1", outs[0])
+        self.assertIn("失敗 2 次了，之後不再自動重跑", outs[1])
+        self.assertIn("todo plugin.learn learn 的安裝步驟沒跑：t1（失敗 2 次，不再自動重跑；手動跑：", third)
+        self.assertLess(time.time() - t0, 3, "the third install spends no time on it")
+        self.assertEqual(self.runs(), ["try", "try"])
+        self.assertNotIn("安裝步驟：；", third)
+        self.assertNotIn("安裝步驟：", third.split("plugin.learn learn：")[-1].split("\n")[0], "nothing ran: not written")
+
+    def test_by_hand_through_plugins_py_and_a_lazy_one_too(self):
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        self.install()
+        import plugins as plugins_cli
+        out = io.StringIO()
+        self.assertEqual(plugins_cli.setup_one("learn", "big", out), 0)
+        self.assertIn("big 跑好了", out.getvalue())
+        self.assertEqual(self.runs(), ["one", "big"])
+        out = io.StringIO()
+        self.assertEqual(plugins_cli.setup_one("learn", "nothing", out), 1)
+        self.assertIn("沒有叫 nothing 的安裝步驟（有：tools、big、extra、note）", out.getvalue())
+
+    def test_one_cut_with_half_its_limit_or_more_counts_as_timing_out(self):
+        from altention import plugin_update
+        d = {"setup": [{"name": "quick", "run": "true"}, {"name": "slow", "run": "sleep 30 & wait"}]}
+        with mock.patch.multiple(plugin_update, SETUP_TIMEOUT=4, LAST_START=1):
+            ran = plugin_update.run_setup("learn", self.home, d, "abc", deadline=time.time() + 3)
+        self.assertEqual([(n, s_) for n, s_, _ in ran], [("quick", "ran"), ("slow", "failed")])
+
+    def test_an_item_ending_124_by_itself_is_a_plain_failure(self):
+        """#code-review of 0f90704: 124 alone made it "cut by the step", never given up on."""
+        from altention import plugin_update
+        d = {"setup": [{"name": "quick", "run": "true"}, {"name": "own", "run": "exit 124"}]}
+        ran = plugin_update.run_setup("learn", self.home, d, "abc", deadline=time.time() + 300)
+        self.assertEqual([(n, s_) for n, s_, _ in ran], [("quick", "ran"), ("own", "failed")])
+
+    def test_ctrl_c_takes_the_running_item_with_it(self):
+        """manager 2026-10-20: the item is in a group of its own, so Ctrl-C on install does not reach it."""
+        from altention import plugin_update
+        pidfile = os.path.join(self.home, "pid")
+        real = subprocess.Popen.communicate
+        calls = []
+
+        def interrupted(p, *a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                for _ in range(50):
+                    if os.path.exists(pidfile) and open(pidfile).read().strip():
+                        break
+                    time.sleep(0.1)
+                raise KeyboardInterrupt
+            return real(p, *a, **kw)
+        with mock.patch.object(subprocess.Popen, "communicate", interrupted), self.assertRaises(KeyboardInterrupt):
+            plugin_update.run_setup("learn", self.home, {"setup": [{"name": "dl", "run": "sleep 60 & echo $! > \"%s\"; wait" % pidfile}]}, "abc")
+        pid = int(open(pidfile).read())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the item's download outlived the interrupt")
+
+    def test_each_item_is_written_down_when_it_ends(self):
+        from altention import plugin_update
+        d = {"setup": [{"name": "a", "run": "true"}, {"name": "b", "run": "true"}]}
+        real = plugin_update._run
+        calls = []
+
+        def run(cmd, folder, timeout):
+            calls.append(cmd)
+            if len(calls) == 2:
+                raise KeyboardInterrupt  # killed while b runs
+            return real(cmd, folder, timeout)
+        with mock.patch.object(plugin_update, "_run", run), self.assertRaises(KeyboardInterrupt):
+            plugin_update.run_setup("learn", self.home, d, "abc")
+        ran = plugin_update.run_setup("learn", self.home, d, "abc")
+        self.assertEqual([(n, s_) for n, s_, _ in ran], [("a", "same"), ("b", "ran")])
+
+    def test_a_timeout_kills_what_the_item_started_too(self):
+        from altention import plugin_update
+        t0 = time.time()
+        with mock.patch.object(plugin_update, "SETUP_TIMEOUT", 1):
+            ran = plugin_update.run_setup("learn", self.home, {"setup": [{"name": "dl", "run": "sleep 30 & wait"}]}, "abc")
+        self.assertLess(time.time() - t0, 10, "the group is killed: no wait for the sleep it started")
+        self.assertEqual(ran[0][1], "failed")
+        self.assertIn("已中止", ran[0][2])
+        self.assertNotIn("（0", ran[0][2])
+
+    def test_a_setup_item_that_does_not_end_is_a_fail_and_the_rest_go_on(self):
+        """#code-review of 59cb60c: TimeoutExpired's output is bytes; it raised TypeError and the step stopped."""
+        from altention import plugin_update
+        self.declare({"source": self.src, "version": "v0.1.0"})
+        d = {"setup": [{"name": "slow", "run": "echo downloading; sleep 3", "optional": True},
+                       {"name": "next", "run": "echo next >> \"%s\"" % self.ran}]}
+        with mock.patch.object(plugin_update, "SETUP_TIMEOUT", 1):
+            ran = plugin_update.run_setup("learn", self.home, d, "abc")
+        self.assertEqual([(n, s_) for n, s_, _ in ran], [("slow", "optional-failed"), ("next", "ran")], "an optional one stops nothing")
+        self.assertEqual(ran[0][2].count("downloading"), 1, "said once (#code-review of 0c4a843)")
+        self.assertEqual(self.runs(), ["next"])
+        with open(plugin_update.state_path("learn")) as f:
+            done = json.load(f)["setup"]
+        self.assertEqual((done["slow"]["ok"], done["next"]["ok"]), (False, True), "both written down")
+
+    def test_a_skill_named_as_the_engines_is_not_linked(self):
+        """#code-review-2 of 59cb60c: "update" (local-only, #setup's) was taken by a plugin's skill of that name."""
+        r, out = self.run_()
+        skills = [{"name": n, "path": "skills/%s" % n} for n in ("council", "update", "setup")]
+        rows = [("learn", self.folder, {"skills": skills + [{"name": "esc", "path": "../../.."}]}, "on", "")]
+        for n in ("council", "update", "setup"):
+            os.makedirs(os.path.join(self.folder, "skills", n))
+        with mock.patch.object(install.plugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(install.plugin, "external", return_value=True), redirect_stdout(out):
+            install.skills(r)
+        for n in ("council", "update", "setup"):
+            self.assertIn("skip core.skills-clash 插件 learn 的 skill %s 跟引擎的同名：用引擎的" % n, out.getvalue())
+        self.assertIn("skip core.skills-outside 插件 learn 的 skill esc 指到插件資料夾外面：沒有連", out.getvalue())
+        self.assertEqual(os.readlink(os.path.join(self.home, ".claude", "skills", "council")),
+                         os.path.join(install.ENGINE, "skills", "council"))
+        for n in ("update", "setup", "esc"):
+            self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", n)), n)
+
+    def test_the_install_that_clones_it_says_a_clash_too(self):
+        """#code-review-2 of 0c4a843: core.skills ran before the clone; the first install said nothing of it."""
+        work = os.path.join(self.home, "work")
+        with open(os.path.join(work, "plugin.json")) as f:
+            d = json.load(f)
+        d["skills"] = [{"name": "update", "path": "skill"}, {"name": "esc", "path": "../.."}]
+        with open(os.path.join(work, "plugin.json"), "w") as f:
+            json.dump(d, f)
+        git("commit", "-qam", "clash", cwd=work)
+        git("tag", "v0.3.0", cwd=work)
+        git("push", "-q", self.src, "HEAD:refs/heads/main", "v0.3.0", cwd=work)
+        self.declare({"source": self.src, "version": "v0.3.0"})
+        out = self.install()
+        self.assertIn("skip core.skills-clash 插件 learn 的 skill update 跟引擎的同名", out)
+        self.assertIn("skip core.skills-outside 插件 learn 的 skill esc 指到插件資料夾外面", out)
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", "update")))
+        out = self.install()
+        self.assertNotIn("core.skills-clash", out, "said by core.skills from then on, not here twice")
+
+    def test_a_skill_at_the_top_of_the_plugins_folder_is_linked(self):
+        r, out = self.run_()
+        rows = [("learn", self.folder, {"skills": [{"name": "top-a", "path": ""}, {"name": "top-b", "path": "."}]}, "on", "")]
+        os.makedirs(self.folder)
+        with mock.patch.object(install.plugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(install.plugin, "external", return_value=True), redirect_stdout(out):
+            install.skills(r)
+        for n in ("top-a", "top-b"):
+            self.assertEqual(os.readlink(os.path.join(self.home, ".claude", "skills", n)), os.path.realpath(self.folder), n)
+        self.assertNotIn("outside", out.getvalue())
+
+
+class Interrupted(unittest.TestCase):
+    def test_ctrl_c_is_one_line_and_130(self):
+        out = io.StringIO()
+        with mock.patch.object(install, "main", side_effect=KeyboardInterrupt), redirect_stdout(out):
+            self.assertEqual(install.run_main([]), 130)
+        self.assertEqual(out.getvalue(), "\n安裝被中止了；再跑一次 ./install.sh 會從沒做完的地方接著做\n")
+
+
 class PluginsHere(Base):
     def rows(self):
         return [("core", "/e/altention", {}, "on", ""),

@@ -1,14 +1,15 @@
 ---
 name: update
-description: "An engine update that stopped for a person, handed to #setup's Claude from #update's card (「請 Claude 幫忙」), a person in #setup saying what an update notice told them to (「引擎更新卡住了，幫我處理」, 「引擎停在固定版本了，幫我接回去」), or one asking to go back to before the last update (「引擎回到更新前」): say in plain words what happened, whether anything could be lost and what they can do now, ask, and only then act, with `altention update` and `setup.py` alone. Use it in #setup when the message says to use the update skill, says one of those sentences, or asks to go back. Not for a clean update (the card does that by itself) and not in other channels."
+description: "An engine update that stopped for a person, handed to #setup's Claude from #update's card (「請 Claude 幫忙」), a person in #setup saying what an update notice told them to (「引擎更新卡住了，幫我處理」), or one asking to go back to before the last update (「引擎回到更新前」): say in plain words what happened, whether anything could be lost and what they can do now, ask, and only then act, with `altention update` and `setup.py` alone. Use it in #setup when the message says to use the update skill, says one of those sentences, or asks to go back. Not for a clean update (the card does that by itself) and not in other channels."
 ---
 
 # Helping with an update, in #setup
 
 You are `#setup`'s Claude. Either the bot handed you an engine update that stopped and needs the person (they
 pressed 「請 Claude 幫忙」 on its card in `#update`), or the person writes what an update notice told them to say
-here (「引擎更新卡住了，幫我處理」, 「引擎停在固定版本了，幫我接回去」: nothing is handed then; step 1 finds out what
-stopped it), or the person asks to go back to the version before the last update (step 6). A handed message says what the check found (`預檢（altention update check）：<kind>`), which
+here (「引擎更新卡住了，幫我處理」: nothing is handed then; step 1 finds out what
+stopped it; 「引擎停在固定版本了，幫我接回去」 is for `#chat` now, and a notice from before that sent it here is
+answered as `detached` below), or the person asks to go back to the version before the last update (step 6). A handed message says what the check found (`預檢（altention update check）：<kind>`), which
 release (`要更新到：vX.Y.Z`), sometimes the step it stopped at, the merge copy (`合併用的副本`) and what can be
 done (`可以做的`). A long one is in a file under `update-work/` in this folder (the message gives its path): read
 it first.

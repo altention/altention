@@ -39,7 +39,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)
 sys.path.insert(0, ENGINE)
-from altention import config, plugin, sync  # noqa: E402
+from altention import config, plugin, plugin_update, sync  # noqa: E402
 
 MARK = "ALT-STEP-OK"
 FIRST = ("chatlog", "dcbot")  # installed first, in this order: the others may use the logs repo or the bot's tools
@@ -203,8 +203,12 @@ def skills(r):
     if got["waiting"]:  # C-11: its plugin may be turned off here; not made, and nothing taken away
         r.say("skip", "core.skills-unknown", "不知道這幾個 skill 的插件在這台開不開，先沒建：%s；弄清楚之後再重跑 install.sh" % "；".join(
             "%s（%s）" % (n, got["why"].get(n, "原因不明")) for n in got["waiting"]))
+    for sk, owner in got["clash"]:
+        r.say("skip", "core.skills-clash", "插件 %s 的 skill %s 跟引擎的同名：用引擎的，插件的沒有連" % (owner, sk))
+    for sk, owner in got["outside"]:
+        r.say("skip", "core.skills-outside", "插件 %s 的 skill %s 指到插件資料夾外面：沒有連" % (owner, sk))
     if not got["taken"]:
-        on = [n for n in names if n not in off and n not in got["waiting"]]
+        on = [n for n in names if n not in off and n not in got["waiting"]] + got["external"]
         r.say("changed" if made or removed else "ok", "core.skills", "skill 連結：%s%s" % (
             "、".join(on) or "（沒有）", "；關掉的：%s%s" % ("、".join(sorted(off & set(names))), "（拿掉了 %s）" % "、".join(removed)
                                                          if removed else "") if off & set(names) else ""))
@@ -404,6 +408,98 @@ def ssh(r, inst):
         r.say("fail", "core.ssh", "寫完重讀不對，已經放回原樣（%s）" % ("讀回確認過" if _read(cfg) == before else "請看 %s" % backup))
         return
     r.say("changed", "core.ssh", "~/.ssh/config 引用 %s%s" % (sshc, "（備份：%s）" % backup if before is not None else "（新建，600）"))
+
+
+def external_plugins(r):
+    """C-61 E2: each external plugin the instance declares (plugins.<name>: source and version, or local: true) put
+    in <root>/plugins/<name> at that version where it is wanted (plugin_update.ensure: cloned beside it first, a
+    folder not ours to change only said), then, for the ones on here, its setup[] items (once per version; lazy ones
+    left for first use; an optional one failing is a todo) and the system tools its "needs" look for (said, never
+    installed). One plugin's trouble is said for it; the others go on."""
+    try:
+        settings = config.settings()
+    except Exception as e:
+        r.say("unknown", "core.plugins-external", "實例設定讀不出來（%s）：外部插件一個都沒動" % e)
+        return
+    items = plugin_update.declared(settings)
+    if not items:
+        r.say("skip", "core.plugins-external", "實例沒有寫外部插件")
+        return
+    machine = plugin.this_machine([])
+    deadline = time.time() + plugin_update.STEP_LIMIT  # no new setup item past it (manager 2026-10-20)
+    where = {}
+    for name, entry in items:
+        ident = "plugin.%s" % name
+        if not plugin_update.wanted_here(name, entry, machine):
+            r.say("skip", ident, "這台不用 %s（實例的 plugins.%s 的 on／disabled_on）" % (name, name))
+            continue
+        st, words, version = plugin_update.ensure(name, entry, log=r.note)
+        r.note("%s: %s %s" % (ident, st, words))
+        if st in ("failed", "kept"):
+            r.say("fail" if st == "failed" else "todo", ident, "%s：%s" % (name, words))
+            continue
+        if st == "away":
+            r.say("skip", ident, words)
+            continue
+        where[name] = (st, words, version)
+    rows, _ = plugin.on_this_machine(machine)
+    seen = set()
+    for n, folder, d, w, why in rows:
+        if n not in where or not plugin.external(folder):
+            continue
+        seen.add(n)
+        st, words, version = where[n]
+        ident = "plugin.%s" % n
+        if d is None:
+            r.say("fail", ident, "%s：%s，但 plugin.json 讀不出來：插件沒裝（python3 ops/plugins.py list 會說哪裡不對）" % (n, words))
+            continue
+        if w != "on":
+            r.say("changed" if st in ("made", "moved") else "ok", ident, "%s：%s（這台%s，不跑安裝步驟）" % (
+                n, words, {"off": "不是它跑的機器", "disabled": "關掉了"}.get(w, "不知道要不要跑：%s" % why)))
+            continue
+        ran = plugin_update.run_setup(n, folder, d, version, settings, r.note, deadline)
+        failed = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "failed"]
+        optional = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "optional-failed"]
+        lazy = [i for i, s_, _ in ran if s_ == "lazy"]
+        later = [i for i, s_, _ in ran if s_ == "later"]
+        stuck = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "stuck"]
+        blocked = [i for i, s_, _ in ran if s_ == "blocked"]
+        missing = plugin_update.needs_missing(folder, d, settings)
+        if failed:
+            r.say("fail", ident, "%s 的安裝步驟失敗：%s；完整輸出看 %s" % (n, "；".join(failed), r.log_path))
+        if stuck:
+            r.say("todo", ident, "%s 的安裝步驟沒跑：%s" % (n, "；".join(stuck)))
+        if blocked:
+            r.say("todo" if not failed else "skip", ident, "%s 後面的安裝步驟沒跑（前一項沒過，步驟是照順序寫的）：%s" % (n, "、".join(blocked)))
+        if optional:
+            r.say("todo", ident, "%s 的選用安裝步驟沒成功：%s（其他照常）" % (n, "；".join(optional)))
+        if later:
+            r.say("todo", ident, "%s 還有 %d 項下次再裝（這次的安裝已經跑了 %d 分鐘）：%s；再跑一次 ./install.sh" % (
+                n, len(later), plugin_update.STEP_LIMIT // 60, "、".join(later)))
+        if missing:
+            r.say("todo", ident, "%s 要用的系統工具這台沒有：%s（不會自己裝，照說明裝好再重跑）" % (
+                n, "；".join("%s%s" % (m, "：%s" % h if h else "") for m, h in missing)))
+        if not failed:
+            changed = st in ("made", "moved") or any(s_ == "ran" for _, s_, _ in ran)
+            r.say("changed" if changed else "ok", ident, "%s：%s%s%s" % (
+                n, words, "；安裝步驟：%s" % "、".join("%s %s" % (i, {"ran": "跑好了", "same": "跑過了"}.get(s_, ""))
+                                                    for i, s_, _ in ran if s_ in ("ran", "same"))
+                if any(s_ in ("ran", "same") for _, s_, _ in ran) else "",
+                "；用到時再裝：%s" % "、".join(lazy) if lazy else ""))
+    for n in sorted(set(where) - seen):
+        r.say("fail", "plugin.%s" % n, "%s：%s，但 %s 裡沒有 plugin.json 的 name 叫 %s 的插件" % (
+            n, where[n][1], plugin_update.folder_of(n), n))
+    got = plugin.link_skills(ENGINE, add_only=True)  # a skill of a plugin cloned just now (core.skills ran before)
+    new = [n for n in got["made"] if n in got["external"]]
+    if new:
+        r.say("changed", "core.skills", "外部插件的 skill 連結：%s" % "、".join(new))
+    fresh = set(n for n, (st, _, _) in where.items() if st in ("made", "moved"))  # core.skills did not see these yet
+    for sk, owner in got["clash"]:
+        if owner in fresh:
+            r.say("skip", "core.skills-clash", "插件 %s 的 skill %s 跟引擎的同名：用引擎的，插件的沒有連" % (owner, sk))
+    for sk, owner in got["outside"]:
+        if owner in fresh:
+            r.say("skip", "core.skills-outside", "插件 %s 的 skill %s 指到插件資料夾外面：沒有連" % (owner, sk))
 
 
 def plugins_here(r, holds):
@@ -891,6 +987,7 @@ def install(argv, after_discord=False):
         return r.code()
     st.run("core.needs", needs, r)
     st.run("core.ssh", ssh, r, inst, needs=["core.instance"])
+    st.run("core.plugins-external", external_plugins, r, needs=["core.instance"])
     if inst:
         hold_until_setup(r, holds)
     here = st.run("core.plugins", plugins_here, r, holds, needs=["core.instance"])
@@ -921,5 +1018,18 @@ def done(r, st, what):
                                                 if left else "", "：到 Discord 的 #setup 把設定做完" if setup_pending() else ""))
 
 
+STOPPED = "安裝被中止了；再跑一次 ./install.sh 會從沒做完的地方接著做"
+
+
+def run_main(argv):
+    """main(), with Ctrl-C said in one line, exit status 130 (manager 2026-10-20: a traceback was all it showed; the
+    running setup item stops with it, plugin_update._run)."""
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        print("\n" + STOPPED, flush=True)
+        return 130
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(run_main(sys.argv[1:]))

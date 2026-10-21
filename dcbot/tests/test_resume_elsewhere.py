@@ -150,8 +150,9 @@ class Elsewhere(unittest.TestCase):
                 return 0, json.dumps(hit[0] if hit else None)
             return 0, json.dumps(self.items)
 
-        async def show_remote(the_bot, ch, st, host, sid, path, force=False):
+        async def show_remote(the_bot, ch, st, host, sid, path, force=False, held=None):
             self.shown.append((host, sid, path, force))
+            self.held = held
             return True
 
         async def go():
@@ -180,6 +181,17 @@ class Elsewhere(unittest.TestCase):
             self.assertEqual(self.shown, [("lap", B, said_of(B, 2)["path"], False)], "by the file that machine named")
             self.assertIn(A, json.dumps(self.st), "the one it was on can be taken up again")
             self.assertEqual(self.looked, [])
+
+    def test_quiet_switches_without_posting_its_history(self):
+        """Owner's report 2026-10-20: the channel holds that conversation already; !resume <id> --quiet posts nothing of it."""
+        (text,) = self.ask("!resume %s --quiet" % B[:8])
+        self.assertEqual(text, "已切到對話 `1a2b3c4d`（第二個），沒有貼紀錄。下一則訊息會接回它；原本的對話一樣可以用 `!resume` 換回來。")
+        self.assertEqual((self.st["session_id"], self.shown), (B, []))
+
+    def test_the_channels_own_conversations_before_the_switch_are_told(self):
+        self.st["history"] = [B]
+        self.ask("!resume " + B[:8])
+        self.assertEqual(self.held, [B], "as they were before this switch (the switch itself adds it)")
 
     def test_one_older_than_the_list_shows_is_found_by_its_id(self):
         (text,) = self.ask("!resume " + OLD[:8])

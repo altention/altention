@@ -101,6 +101,18 @@ def git(*args):
     return r.stdout.strip()
 
 
+RELEASE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def version_note():
+    """What is said after the version in "已上線，版本 `abc1234`（…）" and !status (C-76): the release when HEAD is one
+    (a vX.Y.Z tag on it), else HEAD's own subject. It was the last commit that touched dcbot/ (`log -- .`): the
+    release merge or heading on top was not what was said, and a version looked older than it was."""
+    tags = sorted((t for t in git("tag", "--points-at", "HEAD").split() if RELEASE_TAG.match(t)),
+                  key=lambda t: tuple(int(n) for n in t[1:].split(".")))  # v0.3.10 after v0.3.9
+    return tags[-1] if tags else git("log", "-1", "--format=%s", "HEAD")
+
+
 FIND_MIN = 8  # characters of an id's start that name a conversation not in the list (the connector's sessions.find())
 
 
@@ -169,7 +181,7 @@ class Bot(discord.Client):
         req = load_json(RESTART_FLAG, None) if os.path.exists(RESTART_FLAG) else None
         if req is not None:
             os.remove(RESTART_FLAG)
-        msg = "已上線，版本 `%s`（%s）" % (head, git("log", "-1", "--format=%s", "--", "."))
+        msg = "已上線，版本 `%s`（%s）" % (head, version_note())
         if notice:
             msg = "%s\n%s" % (notice, msg)
         if req and req.get("channel"):
@@ -470,8 +482,10 @@ class Bot(discord.Client):
         if getattr(message.channel, "name", None) == config.GUIDE_CHANNEL:
             return  # the manual: not a place to talk
         self.posts.owner_spoke(getattr(message.channel, "parent_id", None) or message.channel.id)
-        if (self.channels_state.get(str(message.channel.id)) or {}).get("archived") and \
-                archive.is_shelf(getattr(message.channel, "category", None)):  # any kind (a record channel keeps `plain`: C-63)
+        if (self.channels_state.get(str(message.channel.id)) or {}).get("archived"):  # any kind (a record channel keeps
+            # `plain`: C-63). The record decides, not the category: a channel set up again whose move out of the
+            # archive Discord refused is used where it is (owner's report 2026-10-20); one moved into an archive
+            # category by hand gets its record at the next start (adopt_all) and is used as it is until then
             return await self.archive.offer(message.channel)
         if (self.channels_state.get(str(message.channel.id)) or {}).get("plain") or \
                 getattr(message.channel, "name", None) in (config.AUDIT_CHANNEL, "notifications"):  # inboxes
@@ -490,9 +504,6 @@ class Bot(discord.Client):
             # a subagent's or workflow's log, not a conversation
             return await message.channel.send("這個討論串是子代理或 workflow 的過程紀錄，這裡的訊息不會送給 Claude。要說話請回到 <#%d>。"
                                               % message.channel.parent_id)
-        if archive.is_shelf(getattr(message.channel, "category", None)) and \
-                getattr(message.channel.category, "name", None) != archive.LEGACY:  # (the old "archive": until C-63's adopt)
-            return await self.archive.offer(message.channel)
         text = message.content.strip()
         if (self.channels_state.get(str(message.channel.id)) or {}).get("kind") == "files":
             if text.split(" ")[0] in BUILTINS:
@@ -854,6 +865,9 @@ class Bot(discord.Client):
             busy.discard(ch.id)
 
     async def resume_now(self, ch, st, ref):
+        words = (ref or "").split()
+        quiet = "--quiet" in words  # switched without posting its history (owner's report 2026-10-20: the channel holds it already)
+        ref = " ".join(w for w in words if w != "--quiet")
         far = sessions.elsewhere(st)
         if far:  # its conversations are in that machine's folder (this machine's folder of the same path, if there
             # is one, holds others: they were listed, and one of them "switched to": #issues 35). Asked of that
@@ -883,19 +897,22 @@ class Bot(discord.Client):
         if s["id"] in taken:
             return "`%s` 正被另一個頻道使用，同一個對話不能同時開兩處。" % s["id"][:8]
         await self.tmux.close(ch)  # one Claude per channel; background work in the old session ends with it
+        held = list(st.get("history") or [])  # the channel's conversations before this switch (history.seen())
         sessions.remember(st, current)
         sessions.remember(st, s["id"])
         st["session_id"] = s["id"]
         self.save()
         try:
-            if far:  # read over there, by the file that machine named (and holds to its own rule again when asked)
-                asyncio.ensure_future(history.show_remote(self, ch, st, far, s["id"], s["path"]))
+            if quiet:
+                pass
+            elif far:  # read over there, by the file that machine named (and holds to its own rule again when asked)
+                asyncio.ensure_future(history.show_remote(self, ch, st, far, s["id"], s["path"], held=held))
             else:
-                await history.show(self, ch, st, s["id"], cc_sessions.transcript(st["cwd"], s["id"]))
+                await history.show(self, ch, st, s["id"], cc_sessions.transcript(st["cwd"], s["id"]), held=held)
         except Exception:
             traceback.print_exc()
-        return "已切到對話 `%s`（%s）。下一則訊息會接回它；原本的對話一樣可以用 `!resume` 換回來。" % (
-            s["id"][:8], s["title"] or " ".join(s["first"].split())[:40])
+        return "已切到對話 `%s`（%s）%s。下一則訊息會接回它；原本的對話一樣可以用 `!resume` 換回來。" % (
+            s["id"][:8], s["title"] or " ".join(s["first"].split())[:40], "，沒有貼紀錄" if quiet else "")
 
     async def attach(self, ch, ref, project=""):
         """`!attach`: list the Claude Code panes in the owner's tmux, or give one its own channel."""
@@ -960,7 +977,9 @@ class Bot(discord.Client):
             new = await guild.create_text_channel(name, category=category, topic=routes.topic(host, pane))
         st = self.chan(new)
         st.pop("cwd_from", None)  # an attached session works where it already is
-        st.pop("archived", None)
+        rec = st.pop("archived", None)
+        if into is not None:  # a channel not set up yet, maybe one in the archive (owner's report 2026-10-20): out of it first
+            await self.archive.leave(new, rec, pane.get("cwd"))
         self.archive.offered.discard(new.id)
         address = {"socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}
         if pane.get("host"):
@@ -987,9 +1006,10 @@ class Bot(discord.Client):
                 got = {}
             if got.get("session_id"):
                 st["session_id"] = got["session_id"]
-                self.save()
                 if not back:
+                    history.mark(st, got["session_id"])  # the channel holds it now (owner's report 2026-10-20: a resume posted it again)
                     self.loop.create_task(self.backfill(new, sessions.backfilled(got)))
+                self.save()
             rec = None
         else:
             rec = cc_sessions.of_pane(pane["id"], pane["session"]) or {"cwd": pane["cwd"]}  # no record: the screen decides
@@ -1006,6 +1026,8 @@ class Bot(discord.Client):
                 for part in split_message("📜 **目前的最後幾輪**\n\n" + sessions.recap_text(sessions.recap(path))):
                     await new.send(part, silent=True)
             else:
+                history.mark(st, sid)  # the channel holds it now (owner's report 2026-10-20)
+                self.save()
                 self.loop.create_task(self.backfill(new, sessions.history_messages(path)))
         return "已接上 `%s`：<#%d>（分類「%s」%s）。" % (routes.window(pane), new.id, project,
                                                    "，沿用之前封存的頻道" if back else "")
@@ -1047,7 +1069,8 @@ class Bot(discord.Client):
         await routes.unbind_any(ch.id, (st.get("pane") or {}).get("host"))
         place = archive.where_from(ch, ch.guild)  # where it was, for 接回 to put it back there (C-63)
         rec = dict(archive.record(st, why), **place)
-        self.channels_state[str(ch.id)] = {"archived": rec, "cwd": st.get("cwd")}  # for 接回
+        self.channels_state[str(ch.id)] = dict(((k, st[k]) for k in archive.KEPT_HISTORY if k in st), archived=rec,
+                                               cwd=st.get("cwd"))  # for 接回; what it has shown and held stays (owner's report 2026-10-20)
         self.save()
         try:
             shelf = await archive.shelf(ch.guild)
@@ -1132,7 +1155,7 @@ class Bot(discord.Client):
             up = int(time.time() - self.started)
             busy = sum(1 for c in self.channels_state.values() if c.get("busy")) + self.active
             info = "版本 `%s`（%s）· 已上線 %d 分鐘 · 進行中 %d 個工作\n這個頻道：模式 `%s`，工作目錄 `%s`，對話 `%s`" % (
-                git("rev-parse", "--short", "HEAD"), git("log", "-1", "--format=%s", "--", "."), up // 60, busy,
+                git("rev-parse", "--short", "HEAD"), version_note(), up // 60, busy,
                 self.mode(st), st["cwd"], st.get("session_id", "（尚未開始）"))
             if remote.problem:
                 info += "\n⚠️ 機器清單讀不出來（%s），先當成只有這台：%s" % (time.strftime("%H:%M", time.localtime(remote.problem[0])), remote.problem[1])
@@ -1185,6 +1208,7 @@ class Bot(discord.Client):
                 await send("找不到資料夾：`%s`" % path)
             else:
                 await self.tmux.close(ch)
+                sessions.remember(st, st.get("session_id"))  # still the channel's own: !resume can take it up again
                 st["cwd"] = path
                 st.pop("session_id", None)  # a session is tied to its directory
                 self.save()

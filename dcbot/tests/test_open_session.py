@@ -199,7 +199,8 @@ class Ensure(Base):
         class Message(object):
             channel, id, content = self.ch, 1, "hello"
         self.go(self.bridge.submit(Message(), "hello"), tmux)
-        self.assertEqual(self.said(), "出錯了：Claude 沒有啟動成功。")
+        self.assertEqual(self.said(), "出錯了：Claude 沒有啟動成功。\n-# 處理好之後按下面的「再送一次」", "C-74: kept, with the button")
+        self.assertEqual([e["text"] for e in self.st["unsent"].values()], ["hello"])
         self.assertEqual(tmux.did("keys"), [])
         self.assertGreaterEqual(self.bridge.host.saves, 1)
 

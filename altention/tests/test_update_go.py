@@ -11,6 +11,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -944,6 +946,51 @@ class StepTimeout(unittest.TestCase):
         else:
             os.kill(child, 9)
             self.fail("the step's own child outlived it")
+
+    def gone(self, pid):
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.1)
+        os.kill(pid, 9)
+        return False
+
+    def test_a_group_of_its_own_in_its_session_goes_too(self):
+        """C-61 E2: install's external-plugin setup items run in a process group of their own (manager 2026-10-20);
+        the card killing install stops them too (the session, as the supervisor kills one)."""
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pidfile = os.path.join(tmp, "child")
+        code = ("import os, subprocess, sys, time\n"
+                "p = subprocess.Popen(['sleep', '60'], preexec_fn=os.setpgrp)\n"
+                "open(sys.argv[1], 'w').write(str(p.pid))\n"
+                "time.sleep(60)\n")
+        with mock.patch.object(update, "ENGINE", tmp), mock.patch.dict(update_go.TIMEOUTS, {"install": 1}):
+            rc, _ = update_go.run([sys.executable, "-c", code, pidfile], "install")
+        self.assertEqual(rc, 124)
+        with open(pidfile) as f:
+            self.assertTrue(self.gone(int(f.read())), "the setup item's group outlived install")
+
+    def test_one_that_left_the_session_holding_the_pipe_is_not_waited_for(self):
+        """support-3: a setsid grandchild keeping stdout open must not hang go."""
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pidfile = os.path.join(tmp, "child")
+        code = ("import os, subprocess, sys, time\n"
+                "p = subprocess.Popen(['sleep', '60'], start_new_session=True)\n"
+                "open(sys.argv[1], 'w').write(str(p.pid))\n"
+                "time.sleep(60)\n")
+        t = time.time()
+        with mock.patch.object(update, "ENGINE", tmp), mock.patch.dict(update_go.TIMEOUTS, {"install": 1}):
+            rc, _ = update_go.run([sys.executable, "-c", code, pidfile], "install")
+        self.assertEqual(rc, 124)
+        self.assertLess(time.time() - t, 20)
+        with open(pidfile) as f:
+            os.kill(int(f.read()), 9)  # out of the session on purpose: ours to clean up here
 
 
 class Others(GoRig):

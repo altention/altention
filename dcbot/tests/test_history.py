@@ -79,3 +79,29 @@ class History(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Seen(unittest.TestCase):
+    """Owner's report 2026-10-20: a conversation the channel has shown whole, or held here before, gets only its last turns again."""
+    def test_mark_and_seen(self):
+        st = {}
+        history.mark(st, "a")
+        history.mark(st, "b")
+        history.mark(st, "a")
+        self.assertEqual(st["shown"], ["b", "a"])
+        self.assertTrue(history.seen(st, "b"))
+        self.assertFalse(history.seen(st, "c"))
+        self.assertTrue(history.seen({"history": ["c"]}, "c"), "held here before")
+        self.assertFalse(history.seen({"history": ["c"]}, "c", held=[]), "as it was before the switch")
+
+    def test_held_before_gets_its_last_turns_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "t.jsonl")
+            transcript(path, 6)
+            ch, bot = Ch(), Bot()
+            st = {"history": ["sid"]}
+            self.assertTrue(asyncio.run(history.show(bot, ch, st, "sid", path, held=["sid"])))
+            self.assertEqual(bot.backfilled, [], "not the whole of it again")
+            self.assertTrue(ch.sent[0].startswith("📜 **接回對話 `sid`**（這個頻道之前貼過它的紀錄，或就是在這裡進行的）"))
+            self.assertTrue(asyncio.run(history.show(bot, ch, {}, "new", path)))
+            self.assertEqual(len(bot.backfilled), 1, "one never held here: the whole of it")

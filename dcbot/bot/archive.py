@@ -32,7 +32,9 @@ PREFIX = "arch"
 SHELF_MAX = 50  # Discord's limit of channels in one category
 LEGACY = "archive"  # the category tools/dcctl archive moved channels into before C-63: archived as well
 KEEP = ("permission", "talk_limit", "talk_free")  # a conversation's own settings, back with it
-STAY = ("boards", "board_fails")  # kept in an archived conversation's state: a board in it is still edited in place
+KEPT_HISTORY = ("shown", "history")  # what a channel has shown and held: kept when it is put away (owner's report 2026-10-20)
+STAY = ("boards", "board_fails") + KEPT_HISTORY  # kept in an archived conversation's state: a board in it is still
+# edited in place; and the conversations it has (a !resume of one of them posts only its last turns)
 NOTE = "📦 原分類：%s · 封存於 %s"
 NONE, UNKNOWN = "（沒有分類）", "（不明）"
 NOTE_RE = re.compile(r"^📦 原分類：(.*?) · 封存於 (\d{4}-\d{2}-\d{2})(?:\n|$)")
@@ -253,6 +255,23 @@ class Archive(object):
         else:
             await ch.edit(category=category)
         return category
+
+    async def leave(self, ch, rec, cwd, fallback=None):
+        """A channel that becomes something again (the setup card, /attach into it, altention dc post --new-claude)
+        while it sits in an archive category: out of it, as unarchive() (where it came from, else by its folder,
+        else no category; never left in the archive: typing there would offer the archive's buttons). The category
+        it ends in, or False when it was not in the archive (owner's report 2026-10-20: set up from the card, it stayed there)."""
+        if not is_shelf(getattr(ch, "category", None)):
+            return False
+        try:
+            return await self.unarchive(ch, rec or {}, cwd, fallback)
+        except Exception:  # Discord refused the move (a full category, no permission): the channel goes on being set up
+            traceback.print_exc()  # where it is, never left half done by the caller (#code-review); moved by hand later
+            try:
+                await ch.send("⚠️ 頻道沒能搬出封存，請手動移到原分類。（頻道照常可以用）")
+            except Exception:
+                traceback.print_exc()
+            return False
 
     def refused(self, ch, st):
         """Why this channel cannot be archived, or None."""

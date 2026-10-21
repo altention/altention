@@ -24,7 +24,7 @@ from altention.connectors.claude_code import launch as cc_launch
 from altention.connectors.claude_code import typist as cc_typing
 
 from . import posts as posts_mod
-from . import agents, ask, attachments, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, startup_ask, tmuxio
+from . import agents, ask, attachments, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, startup_ask, tables, tmuxio, unsent as unsent_mod
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
@@ -414,6 +414,7 @@ class TmuxBridge(object):
             self.asks.on_done = host.posts.answered
         self.agents = agents.Agents(host)
         self.menus = menus.Menus(self)
+        self.unsent = unsent_mod.Unsent(self)  # C-74: what could not be handed over for now, sent again
         self.startup = startup_ask.StartupAsk(self)
         self.streams = {}  # machine -> the SSH process bringing its events
         self.handling = False  # an event is being posted: a restart waits for it (main.Bot.busy_with_work)
@@ -677,6 +678,12 @@ class TmuxBridge(object):
         ch = message.channel
         st, rt = self.host.chan(ch), self.rt(ch)
         say = out or (lambda body: self.say(ch, body))
+        original = text  # what is kept to be sent again (C-74), without the note put in front of it
+
+        async def keep(words, r):  # not sent for now (a temporary code): the notice with a 「再送一次」 button, the words kept
+            if not getattr(message, "quiet", False):  # a post handed again by itself: back in its place, nothing said
+                await self.unsent.offer(ch, st, original, words, message, r.code)
+        keep = None if out else keep  # the "/" menu answers where it was asked, with no button
         if text == "/btw" or text.startswith("/btw "):
             return await self.btw_open(ch, text[4:].strip(), out)
         cmd = cc_commands.command_of(text)  # " /exit" too
@@ -696,16 +703,20 @@ class TmuxBridge(object):
         # Enter was pressed: the next one typed while this one's receipt came, which cleared rt.entered under
         # it (the AttributeError in may_type, #code-review-2 on C-73: that message was lost without a word).
         async with rt.lock:
+            if isinstance(getattr(message, "timing", None), dict):  # a post's (posts.Origin): when its turn came (C-75)
+                message.timing["locked"] = time.time()
             try:
                 await self.ensure(ch, st, rt)
             except BridgeError as e:
                 self.host.save()
-                return await self.told(say, not_opened(rt, e))
+                r = not_opened(rt, e)
+                await self.told(say, r, keep)
+                return r
             name = target(st)
             was_busy = bool(st.get("busy"))  # a turn runs: this message will wait in the queue (send_now)
-            r = await self.checked(say, st, name, rt)
+            r = await self.checked(say, st, name, rt, keep)
             if not r:
-                return  # not sent: note_next stays for the next one
+                return r  # not sent: note_next stays for the next one; the caller sees why (posts, unsent)
             if not slash:
                 rt.pending.append(p)
             else:
@@ -901,7 +912,7 @@ class TmuxBridge(object):
                                 close_panel=lambda: self.close_panel(st, name), receipt_secs=RECEIPT_SECS,
                                 submit_delay=SUBMIT_DELAY, differed=differed, probed=probed)
 
-    async def checked(self, say, st, name, rt):
+    async def checked(self, say, st, name, rt, keep=None):
         """may_type(), and what it came to told. What it noted along the way is said even when it then fails with
         an error (tmux gone in the middle): "sent again" was said the moment the sending again had worked, and a
         message that did go must not go unsaid (manager, on 3f8e783)."""
@@ -914,10 +925,10 @@ class TmuxBridge(object):
                 except Exception:
                     traceback.print_exc()
             raise
-        await self.told(say, r)
+        await self.told(say, r, keep)
         return r
 
-    async def told(self, say, r):
+    async def told(self, say, r, keep=None):
         """Say what a typing check came to (Typing): what it noted along the way, and, when the message was not
         sent, why, in the words messages.py has for its code. True to go on. A note is said once: told() is called
         again for the same Typing when the message fails after the typing (the box was not what was typed, a /btw
@@ -926,7 +937,11 @@ class TmuxBridge(object):
         for code, data in notes:
             await say(messages.note(code, **data))
         if not r:
-            await say(messages.not_sent(r.code, **r.data))
+            words = messages.not_sent(r.code, **r.data)
+            if keep is not None and messages.retry(r.code) == messages.TEMPORARY:
+                await keep(words, r)  # C-74: said with a 「再送一次」 button, and kept (unsent.py)
+            else:
+                await say(words)
         return bool(r)
 
     async def note_paste(self, name, text):  # screen.PASTE_MARK: Claude Code's own mark, numbered
@@ -1053,6 +1068,7 @@ class TmuxBridge(object):
         write_settings()
         await self.read_words()  # the installation's language and own wordings, before the first sentence is said
         await self.remember_pids()
+        self.unsent.kick_all()  # posts held up before the bot went down: looked at again (C-74; a task each)
         self.start_streams()
         for cid, st in list(self.host.channels_state.items()):
             if not (st.get("busy") or st.get("bg")):
@@ -1250,6 +1266,7 @@ class TmuxBridge(object):
                 attachments.prune()
                 ask.prune()
                 self.agents.prune()
+                asyncio.ensure_future(self.unsent.expire())  # (says some where they came from: not waited on here)
             except Exception:
                 traceback.print_exc()
             self.lap("閒置回收", t)
@@ -1378,6 +1395,7 @@ class TmuxBridge(object):
         self.mark_parked(st, ev, what)
         if what in TURN_MOVED:
             st.pop("own_panel", None)  # a turn moved: a dialog on the screen from here on is the turn's, not the bot's
+            self.unsent.moved(ch, st)  # posts held up by a dialog: handed again once the box is back (a task, C-74)
         if what in (cc_hooks.ASK, cc_hooks.PLAN):
             self.fill(rt, ev)
             await self.interim(ch, rt, texts=ev.get("texts"))  # what Claude said before asking goes above the question
@@ -1416,13 +1434,19 @@ class TmuxBridge(object):
             switched = st.get("session_id") != ev["session_id"]
             if switched:
                 sessions.remember(st, st.get("session_id"))  # /clear starts a new session; !resume can go back
+            held = list(st.get("history") or [])  # the channel's own conversations before this one (history.seen())
             st["session_id"] = ev["session_id"]
+            # the conversation goes on in this channel, so it is the channel's own from now: taken up again later
+            # (!resume, dcpost --resume), only its last turns are posted (owner's report 2026-10-20: a channel had all
+            # of it posted again: a conversation begun in the channel was noted only when it left it by !reset or
+            # !resume, and !cwd noted it not at all)
+            sessions.remember(st, ev["session_id"])
             if switched and what == cc_hooks.SESSION_CHANGED and ev.get("dc_why") == "resume":
                 # the history of the conversation taken up, in a task of its own: on this machine read from its
                 # file, on another by that machine's dcremote (nothing of that machine's waits behind it)
                 asyncio.ensure_future(
-                    history.show_remote(self.host, ch, st, ev["host"], ev["session_id"], ev.get("transcript_path")) if ev.get("host")
-                    else history.show(self.host, ch, st, ev["session_id"], ev.get("transcript_path")))
+                    history.show_remote(self.host, ch, st, ev["host"], ev["session_id"], ev.get("transcript_path"), held=held)
+                    if ev.get("host") else history.show(self.host, ch, st, ev["session_id"], ev.get("transcript_path"), held=held))
         self.fill(rt, ev)  # a turn starts: only what is said from here on is relayed
         if what in (cc_hooks.INPUT, cc_hooks.PROGRESS, cc_hooks.PEER_SENT, cc_hooks.TURN_END, cc_hooks.TURN_FAILED) and self.another_turn(rt, ev, what):
             await self.end_turn(st, rt)  # the turn still open here ended with no event (cut short): this is not it
@@ -1478,7 +1502,10 @@ class TmuxBridge(object):
                                  st["context"])
             if turn and time.time() - turn.t0 >= LONG_TURN and config.OWNER_ID:
                 foot = (foot or "-# ") + " · <@%d>" % config.OWNER_ID
-            sent = await self.say(ch, masking.masked(ev.get("last_assistant_message") or "（沒有文字回覆）") + ("\n" + foot if foot else ""))
+            reply = masking.masked(ev.get("last_assistant_message") or "（沒有文字回覆）")
+            if messages.loaded.get("small_tables", True):  # Markdown tables Discord shows as bars: a code block or a list (C-71a)
+                reply = tables.rewrite(reply)[0]
+            sent = await self.say(ch, reply + ("\n" + foot if foot else ""))
             if sent and getattr(self.host, "files", None) is not None:  # 📂 buttons for the files it mentions
                 asyncio.ensure_future(self.host.files.add_links(ch, st, sent[-1], final))
             src = turn.src if turn else rt.where  # no turn begun: a queued message, sent in with no event until its Stop
@@ -1750,6 +1777,8 @@ class TmuxBridge(object):
 
     async def on_interaction(self, interaction):
         """The "再試一次" button under a failure. Returns True if the interaction was ours."""
+        if await self.unsent.on_interaction(interaction):
+            return True
         cid = ((interaction.data or {}).get("custom_id") or "") if interaction.type == discord.InteractionType.component else ""
         if not cid.startswith("retry:"):
             return False

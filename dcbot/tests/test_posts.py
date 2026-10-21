@@ -905,7 +905,45 @@ class Order(unittest.TestCase):
             asyncio.run(self.p.safely(postbox.waiting(self.spool)[0][1], old))
             asyncio.run(self.p.safely({"channel": "st-1", "text": "y"}, new))
         line, = out.getvalue().strip().splitlines()
-        self.assertRegex(line, r"^\[posts\] #st-1：1\d\.\d 秒（排隊 1\d\.\d、處理 0\.\d）$")
+        self.assertRegex(line, r"^\[posts\] #st-1：1\d\.\d 秒（排隊 1\d\.\d、貼出 0\.\d、等前面交付 0\.\d、交付 0\.\d）$")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):  # no Claude there: posted only
+            self.bot.channels_state["1"] = {"plain": True}
+            asyncio.run(self.p.safely({"channel": "st-1", "text": "z"}, old))
+        self.assertRegex(out.getvalue(), r"^\[posts\] #st-1：1\d\.\d 秒（排隊 1\d\.\d、處理 0\.\d）\n$")
+
+    def test_waiting_behind_other_hand_overs_is_said_apart_from_its_own(self):
+        """C-75: the time a post waits in its channel's queue (TmuxBridge.submit puts "locked" in Origin.timing once
+        its turn came) is not its own hand-over's (#code-review-2 on C-73: 處理 grew 10, 15 … 34.8 s)."""
+        class Queued(object):
+            async def submit(self, message, text):
+                await asyncio.sleep(0.3)  # the hand-overs before it
+                message.timing["locked"] = time.time()
+                await asyncio.sleep(0.1)  # its own
+        self.bot.tmux = Queued()
+        path = os.path.join(self.spool, "%020d-1.json" % int((time.time() - 9) * 1e9))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            asyncio.run(self.p.safely({"channel": "st-0", "text": "x", "from_channel": "1"}, path))
+        m = re.match(r"^\[posts\] #st-0：9\.\d 秒（排隊 9\.\d、貼出 0\.0、等前面交付 (0\.\d)、交付 (0\.\d)）$", out.getvalue().strip())
+        self.assertTrue(m, out.getvalue())
+        self.assertEqual((m.group(1), m.group(2)), ("0.3", "0.1"))
+        self.assertEqual(self.p.timing, {}, "nothing kept once done")
+
+    def test_a_chain_that_breaks_lets_its_other_posts_go(self):
+        """C-75: they used to stay taken (inflight) until a restart."""
+        for t in ("一", "二", "三"):
+            self.write(channel="st-0", text=t, from_channel="1")
+        with mock.patch.object(posts.asyncio, "wait", side_effect=RuntimeError("boom")), contextlib.redirect_stderr(io.StringIO()):
+            async def go():
+                await self.p.tick()
+                await asyncio.sleep(0.05)
+            asyncio.run(go())
+        from bot import postbox
+        left = [p for p, _ in postbox.waiting(self.spool)]
+        self.assertEqual(len(left), 2, "the first went (its task began); two left in the spool")
+        self.assertEqual(self.p.inflight & set(left), set(), "not kept taken: the next tick takes them up")
+        self.assertEqual(self.p.chains, {})
 
 
 class Dcctl(unittest.TestCase):
@@ -1285,6 +1323,24 @@ class PostWithoutTheChannelList(unittest.TestCase):
                 written, asked = self.run_post(post)
                 self.assertEqual(len(written), 1, (how, post))
                 self.assertTrue(written[0]["channel"])
+
+
+class TellingTheSender(unittest.TestCase):
+    """C-75: Posts.asking() tells the sending Claude in a task of its own; a failure there is said in its channel."""
+    def test_a_failure_is_said(self):
+        bot = Bot()
+        a = Chan(1, "st-1")
+        bot.chans = {1: a}
+
+        class Broken(object):
+            async def submit(self, message, text):
+                raise OSError("ssh: connect to host far port 22: No route to host")
+        bot.tmux = Broken()
+        with contextlib.redirect_stderr(io.StringIO()):
+            asyncio.run(posts.Posts(bot).tell(a, "（機器人通知）#st-0 的 Claude 正在等使用者回答問題"))
+        said, = a.sent
+        self.assertIn("⚠️ 這個頻道的 Claude 沒收到機器人的通知（OSError: ssh: connect", said)
+        self.assertIn("正在等使用者回答問題", said)
 
 
 class FewerListCalls(unittest.TestCase):

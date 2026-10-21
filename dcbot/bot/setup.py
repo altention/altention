@@ -412,13 +412,27 @@ class Setup(object):
             "💻 終端機" if terminal else "", session, "第一個" if new else "新", "「%s」" % window if window else "",
             routes.short_cwd(cwd), session, "\n之後每則訊息就是一行指令；`/run` 可以從跑過的指令裡挑。" if terminal else ""))
 
+    async def left(self, ch, rec, cwd):
+        """archive.leave() for a channel set up here; what it says (False: it was not in the archive)."""
+        archive = getattr(self.bot, "archive", None)
+        if archive is None:
+            return False
+        try:
+            return await archive.leave(ch, rec, cwd)
+        except Exception:  # (Discord refused the move: set up all the same, said in the log)
+            traceback.print_exc()
+            return False
+
     async def done(self, ch, st, where):
         st["configured"] = True
         self.folder.pop(ch.id, None)
         self.machine.pop(ch.id, None)
         st.pop("cwd_from", None)
-        st.pop("archived", None)  # a channel brought out of the archive by hand no longer stands for its old pane
+        rec = st.pop("archived", None)  # a channel brought out of the archive by hand no longer stands for its old pane
         self.bot.save()
+        out = await self.left(ch, rec, st.get("cwd"))
+        if out is not False:  # it was in the archive: moved back where it came from (owner's report 2026-10-20)
+            where += "\n📦 頻道從封存搬回「%s」。" % (out.name if out is not None else "沒有分類")
         card = self.cards.pop(ch.id, None)
         if card is not None:
             try:

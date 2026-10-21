@@ -147,7 +147,7 @@ class Shown(unittest.TestCase):
         self.assertTrue(self.show())
         self.assertEqual(self.posted, [])
         (text,) = self.said()
-        self.assertTrue(text.startswith("📜 **接回對話 `0f6e1c1e`**（這個頻道之前貼過它的完整紀錄），目前的最後幾輪："), text)
+        self.assertTrue(text.startswith("📜 **接回對話 `0f6e1c1e`**（這個頻道之前貼過它的紀錄，或就是在這裡進行的），目前的最後幾輪："), text)
         self.assertEqual([n for n in range(1, 6) if "問題 %d" % n in text], [3, 4, 5])
         self.assertTrue(self.show(force=True))
         self.assertEqual(len(self.posted), 1, "asked for again by hand: the whole of it")

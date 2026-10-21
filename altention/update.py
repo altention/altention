@@ -1146,7 +1146,9 @@ def ff_cause(said):
 
 def tell_detached(head):
     """Said once per HEAD (detached-told: {head}) that an engine detached from its branch is never updated (C-57: it
-    used to stay silent); told again when HEAD changes. Not out: tried again next round."""
+    used to stay silent); told again when HEAD changes. Not out: tried again next round. It sends them to #chat,
+    whose Claude can take the engine back to its branch (CLAUDE.global.md); #setup's could not and sent them on to
+    #chat (C-69)."""
     path = os.path.join(state_dir(), "detached-told")
     try:
         with open(path) as f:
@@ -1155,7 +1157,7 @@ def tell_detached(head):
     except (OSError, ValueError, AttributeError):
         pass
     if not send("⚠️ 引擎更新：這台的引擎現在停在一個固定的版本上，沒有跟著平常更新的那條線走，所以不會自己更新，也不會通知有新版；"
-                "你的東西都沒動。要恢復：到 #setup 跟 Claude 說「引擎停在固定版本了，幫我接回去」。（細節：detached HEAD %s）" % head[:12]):
+                "你的東西都沒動。要恢復：到 #chat 跟 Claude 說「引擎停在固定版本了，幫我接回去」。（細節：detached HEAD %s）" % head[:12]):
         return
     try:
         os.makedirs(state_dir(), exist_ok=True)

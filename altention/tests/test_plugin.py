@@ -41,6 +41,13 @@ class Check(unittest.TestCase):
                  data=[{"name": "d", "path": "{data}/d", "sync": "none", "private": True}], future_field={"x": 1})
         self.assertIs(plugin.check(d), d)
 
+    def test_lazy_setup_and_needs_c61(self):
+        plugin.check(good(setup=[{"name": "big", "run": "x", "lazy": True, "optional": True}],
+                          needs=[{"name": "chrome", "check": "command -v chrome", "hint": "裝 Chrome"}, {"name": "p", "check": "x"}]))
+        self.bad(good(setup=[{"name": "big", "run": "x", "lazy": "yes"}]), "setup[0].lazy 型別不對")
+        self.bad(good(needs=[{"name": "chrome"}]), "needs[0] 少了 check")
+        self.bad(good(needs={"chrome": "x"}), "needs 要是清單")
+
     def test_what_is_wrong_is_named(self):
         self.bad(good(name=""), "name")
         self.bad(good(name="Project A"), "小寫")
@@ -111,12 +118,46 @@ class Finding(unittest.TestCase):
         write(os.path.join(self.engine, "skills", "council", "plugin.json"), good(name="council"))
         write(os.path.join(self.root, "plugins", "life 生活", "plugin.json"), good(name="life"))
         write(os.path.join(self.inst, "plugins", "mine", "plugin.json"), good(name="mine", machines="one"))
+        write(os.path.join(self.inst, "plugins.json"), {"format": 1, "plugins": {"life": {"local": True}}})
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def found(self):
-        return plugin.discover(self.engine, self.inst, self.root)
+    def found(self, drafts=None):
+        return plugin.discover(self.engine, self.inst, self.root, drafts=drafts)
+
+    def declare(self, entry):
+        write(os.path.join(self.inst, "plugins.json"), {"format": 1, "plugins": {"life": entry} if entry is not None else {}})
+
+    def test_an_external_plugin_the_instance_does_not_declare_is_a_draft(self):
+        """C-61 E1: learn-dev had to rename its plugin.json to keep it from being installed and scheduled."""
+        for entry in (None, {}, {"disabled_on": ["host-b"]}, {"on": "host-a"}):
+            self.declare(entry)
+            drafts = []
+            plugins, problems = self.found(drafts)
+            self.assertEqual([n for n, _, _ in plugins], ["core", "chatlog", "council", "mine"], entry)
+            self.assertEqual([(n, os.path.basename(f)) for n, f, _ in drafts], [("life", "life 生活")], entry)
+            self.assertEqual(problems, [])
+
+    def test_source_and_version_or_local_declare_it(self):
+        for entry in ({"local": True}, {"source": "https://example.org/life.git", "version": "v0.1.0"},
+                      {"source": "git@example.org:a/life.git", "version": "0123abc", "disabled_on": ["host-b"]},
+                      {"source": "https://example.org/life.git"}):  # declared, though unusable: on_this_machine says so
+            self.declare(entry)
+            self.assertIn("life", [n for n, _, _ in self.found()[0]], entry)
+
+    def test_settings_that_cannot_be_read_draft_nothing(self):
+        write(os.path.join(self.inst, "plugins.json"), "{broken")
+        self.assertIn("life", [n for n, _, _ in self.found()[0]])
+        write(os.path.join(self.inst, "plugins.json"), {"format": 1, "plugins": "x"})
+        self.assertIn("life", [n for n, _, _ in self.found()[0]])
+        self.assertIn("life", [n for n, _, _ in plugin.discover(self.engine, "", self.root)[0]])  # no instance
+
+    def test_only_the_external_folder_has_drafts(self):
+        self.declare(None)
+        names = [n for n, _, _ in self.found()[0]]
+        self.assertIn("mine", names)       # the instance's own plugins/
+        self.assertIn("chatlog", names)    # the engine's
 
     def test_all_places_the_core_first(self):
         plugins, problems = self.found()
@@ -139,6 +180,23 @@ class Finding(unittest.TestCase):
         os.symlink(os.path.join(self.root, "plugins", "life 生活"), os.path.join(self.engine, "plugins", "life"))
         names = [n for n, _, _ in self.found()[0]]
         self.assertEqual(names.count("life"), 1)
+
+
+class SourceOf(unittest.TestCase):
+    def test_what_declares_and_what_is_wrong(self):
+        self.assertEqual(plugin.source_of({}), (False, None))
+        self.assertEqual(plugin.source_of({"on": "host-a"}), (False, None))
+        self.assertEqual(plugin.source_of(None), (False, None))
+        self.assertEqual(plugin.source_of({"local": True}), (True, None))
+        self.assertEqual(plugin.source_of({"source": "https://x/y.git", "version": "v1.0.0"}), (True, None))
+        for entry, words in (({"local": "yes"}, "local 只能寫 true"), ({"local": False}, "local 只能寫 true"),
+                             ({"local": True, "source": "https://x/y.git"}, "只能寫一種"),
+                             ({"version": "v1.0.0"}, "source 要寫 git 網址"), ({"source": " ", "version": "v1"}, "source"),
+                             ({"source": "https://x/y.git"}, "version 要寫標籤"),
+                             ({"source": "https://x/y.git", "version": "v1 .0"}, "version")):
+            declared, bad = plugin.source_of(entry)
+            self.assertTrue(declared, entry)
+            self.assertIn(words, bad or "", entry)
 
 
 class TheEnginesOwn(unittest.TestCase):
@@ -295,6 +353,58 @@ class RealConfig(unittest.TestCase):
             self.assertIn(("progress", "unknown", "plugin.json 讀不出來"), [(n, w, r) for n, _, _, w, r in rows])
         finally:
             shutil.rmtree(engine)
+
+
+class ExternalHere(unittest.TestCase):
+    """C-61 E1 through on_this_machine(): an external plugin under a throwaway root, the instance as RealConfig's."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="外部 external ")
+        self.inst = os.path.join(self.tmp, "instance")
+        write(os.path.join(self.inst, "machines.json"), RealConfig.MACHINES)
+        self.root = os.path.join(self.tmp, "altention")
+        write(os.path.join(self.root, "plugins", "learn", "plugin.json"), good(name="learn", machines="one"))
+        write(os.path.join(self.root, "plugins", "latex", "plugin.json"), good(name="display"))
+        self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def settings(self, plugins):
+        write(os.path.join(self.inst, "plugins.json"), {"format": 1, "plugins": plugins})
+        return {"format": 1, "plugins": plugins}
+
+    def rows(self):
+        rows, problems = plugin.on_this_machine("host-a", root=self.root)
+        return {n: (w, r) for n, _, _, w, r in rows}, rows, problems
+
+    def test_undeclared_ones_are_drafts_last_with_the_reason(self):
+        self.settings({"learn": {"source": "https://example.org/learn.git", "version": "v0.1.0"}})
+        here, rows, problems = self.rows()
+        self.assertEqual(here["learn"], ("on", ""))
+        self.assertEqual(here["display"], ("draft", plugin.DRAFT_WHY % "display"))
+        self.assertEqual(rows[-1][0], "display")
+        self.assertEqual(problems, [])
+
+    def test_an_unusable_source_makes_it_unknown_not_a_draft(self):
+        self.settings({"learn": {"source": "https://example.org/learn.git"}, "display": {"local": "yes"}})
+        here, _, _ = self.rows()
+        self.assertEqual(here["learn"][0], "unknown")
+        self.assertIn("plugins.learn 的來源不能用：version 要寫標籤", here["learn"][1])
+        self.assertIn("local 只能寫 true", here["display"][1])
+
+    def test_notes_name_the_folder_and_a_declared_one_not_here(self):
+        settings = self.settings({"display": {"local": True}, "learn": {"local": True},
+                                  "far": {"source": "https://example.org/far.git", "version": "v1.0.0"},
+                                  "progress": {"on": "host-a"}, "odd": {"source": "x"}})
+        _, rows, _ = self.rows()
+        notes = dict(plugin.external_notes(rows, settings, self.root))
+        self.assertEqual(sorted(notes), ["display", "far"])
+        self.assertIn("資料夾叫 latex，plugin.json 的 name 是 display", notes["display"])
+        self.assertIn("plugins/display", notes["display"])
+        self.assertIn("https://example.org/far.git v1.0.0", notes["far"])
+        self.assertIn(os.path.join(self.root, "plugins", "far"), notes["far"])
 
 
 class Expand(unittest.TestCase):

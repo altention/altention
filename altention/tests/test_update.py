@@ -227,6 +227,9 @@ class Moves(Rig):
         self.assertEqual(self.head(), old)
         self.assertEqual(len(self.told), 1, self.told)
         self.assertIn("不會自己更新", self.told[0])
+        self.assertIn("到 #chat 跟 Claude 說「引擎停在固定版本了，幫我接回去」", self.told[0],
+                      "C-69: not #setup, whose Claude could only send them on to #chat")
+        self.assertNotIn("#setup", self.told[0])
         self.assertEqual(self.where, ["update"])
         git(self.engine, "commit", "-q", "--allow-empty", "-m", "elsewhere")  # HEAD changed: said again
         self.round()

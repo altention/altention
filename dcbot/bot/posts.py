@@ -154,6 +154,7 @@ class Posts(object):
         self.from_post = {}  # channel id -> (sender channel id, when): its Claude is working on another's post
         self.chains = {}  # chain_of(post) -> [(path, post)] still to do, in order: one task works through each
         self.showing = {}  # id(post) -> asyncio.Event set once the post is on Discord (its handing over may go on)
+        self.timing = {}  # id(post) -> {"shown", "handing", "locked": when}: for slow()'s line (C-75)
 
     def owner_spoke(self, channel_id):
         """The owner said something in a channel: the conversations it is part of may go on."""
@@ -363,6 +364,9 @@ class Posts(object):
 
     def shown(self, post):
         """The post is on Discord: the next of its chain may go (what is left is handing it to a Claude)."""
+        t = self.timing.get(id(post))
+        if t is not None and "shown" not in t:
+            t["shown"] = time.time()
         ev = self.showing.get(id(post))
         if ev is not None:
             ev.set()
@@ -413,8 +417,8 @@ class Posts(object):
             said = "找不到有 Claude 的頻道 %s。" % ref
         elif st.get("pane") and not st.get("home"):  # an attached pane, here or on another machine: the owner's own
             said = "#%s 接的是 tmux 裡別人開的對話，不能從這裡換對話或貼紀錄。" % ch.name
-        elif post.get("resume"):
-            said = await self.bot.resume(ch, self.bot.chan(ch), post["resume"].strip())
+        elif post.get("resume"):  # --quiet: switched without posting its history, as !resume <id> --quiet
+            said = await self.bot.resume(ch, self.bot.chan(ch), post["resume"].strip() + (" --quiet" if post.get("quiet") else ""))
         elif sessions.elsewhere(st) and st.get("session_id"):
             # a window the bot opened on another machine: the conversation's file is there (#issues 35; until then
             # such a channel was refused as "somebody else's")
@@ -462,8 +466,11 @@ class Posts(object):
                 await ch.edit(topic=topic)
             st = self.bot.chan(ch)
             st.pop("plain", None)
+            rec = st.pop("archived", None)
             st.update({"cwd": folder, "configured": True, "mode": "tmux"})
             self.bot.save()
+            if getattr(self.bot, "archive", None) is not None:  # one taken over in the archive: out of it (owner's report 2026-10-20)
+                await self.bot.archive.leave(ch, rec, folder)
             card = self.bot.setup.cards.pop(ch.id, None) if getattr(self.bot, "setup", None) else None
             if card is not None:
                 try:
@@ -544,7 +551,17 @@ class Posts(object):
         if sender_ch is not None:
             self.from_post[ch.id] = (sender_ch.id, time.time())
         cmd = remote.altention_cmd(files.host_of(self.bot.channels_state.get(str(ch.id)) or {}))
-        await self.bot.tmux.submit(Origin(ch), for_claude(sender, reply_to, body, cmd))
+        t = self.timing.get(id(post))
+        if t is not None:
+            t["handing"] = time.time()
+        origin, text = Origin(ch, t, auto=True, sender=reply_to), for_claude(sender, reply_to, body, cmd)
+        later = getattr(self.bot.tmux, "unsent", None)
+        if later is not None:
+            st = self.bot.channels_state.get(str(ch.id)) or {}
+            if later.waiting_posts(st):  # others held up by a dialog wait to be handed again: behind them (C-74)
+                later.park(self.bot.chan(ch), text, origin)
+                return later.moved(ch, self.bot.chan(ch))
+        await self.bot.tmux.submit(origin, text)
 
     async def asking(self, ch, ask_id, message_id, plan=False):
         """The Claude of `ch` asks the owner something (buttons) while working on another channel's post: that
@@ -567,9 +584,21 @@ class Posts(object):
         self.bot.save()
         sst = self.bot.channels_state.get(str(sender_ch.id)) or {}
         if listens(sst) and sst.get("busy"):  # a task of its own: this runs in the loop of hook events (pump), and
-            asyncio.ensure_future(self.bot.tmux.submit(  # typing waits for that channel's queue and receipt (C-73)
-                Origin(sender_ch), "（機器人通知）#%s 的 Claude 正在等使用者%s，暫時不會回你。不用空等它，"
-                                   "先做別的或結束這一輪；它回覆時你會收到。" % (ch.name, what)))
+            asyncio.ensure_future(self.tell(sender_ch,  # typing waits for that channel's queue and receipt (C-73)
+                                            "（機器人通知）#%s 的 Claude 正在等使用者%s，暫時不會回你。不用空等它，"
+                                            "先做別的或結束這一輪；它回覆時你會收到。" % (ch.name, what)))
+
+    async def tell(self, ch, text):
+        """Hand `text` to the Claude of `ch`, in a task of its own: what breaks is said in the channel (C-75: it was
+        only asyncio's "Task exception was never retrieved")."""
+        try:
+            await self.bot.tmux.submit(Origin(ch), text)
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                await ch.send("⚠️ 這個頻道的 Claude 沒收到機器人的通知（%s）：%s" % (error_code(e), text[:300]), silent=True)
+            except Exception:
+                traceback.print_exc()
 
     async def answered(self, ch, ask_id, how):
         """The question asking() announced is settled (answered or cancelled): update the notice."""
@@ -656,9 +685,11 @@ class Posts(object):
         is there. Handing them to that channel's Claude is a queue of its own, the channel's (TmuxBridge.submit
         holds the channel's lock from typing to receipt, for anyone's message): a slow hand-over (a machine that
         does not answer) holds only that, never what is shown (manager on C-73's rehearsal)."""
+        path, task = None, None
         try:
             while self.chains.get(key):
                 path, post = self.chains[key].pop(0)
+                task = None
                 ev = self.showing[id(post)] = asyncio.Event()
                 task = asyncio.ensure_future(self.safely(post, path))
                 seen = asyncio.ensure_future(ev.wait())
@@ -668,11 +699,16 @@ class Posts(object):
                     seen.cancel()
         except Exception:
             traceback.print_exc()
+            # what this chain still had is let go, for the next tick to take up again rather than kept taken until a
+            # restart (#code-review on C-73); the post being started when it broke too, if its task never began
+            for left, _ in ([(path, None)] if task is None and path else []) + list(self.chains.get(key) or []):
+                self.inflight.discard(left)
         finally:
             self.chains.pop(key, None)  # (nothing awaited since the last check: no post was added in between)
 
     async def safely(self, post, path=None):
         began = time.time()
+        self.timing[id(post)] = {}
         try:
             await self.handle(post)
         except NotHanded as e:  # shown, but handing it to the channel's Claude broke: kept aside, and said (C-73)
@@ -701,7 +737,7 @@ class Posts(object):
         finally:
             self.shown(post)
             self.showing.pop(id(post), None)
-            self.slow(post, path, began)
+            self.slow(post, path, began, self.timing.pop(id(post), None) or {})
         if path:  # removed only once handled: a restart in between delivers it again rather than losing it
             done(path)
             self.inflight.discard(path)
@@ -718,14 +754,21 @@ class Posts(object):
         except Exception:
             traceback.print_exc()
 
-    def slow(self, post, path, began):
-        """One line in supervisor.out for a post that took more than SLOW_POST from the spool to done: how long it
-        waited (behind its chain, or for the loop) and how long it took itself (C-73; quiet otherwise)."""
-        at, now = spooled_at(path), time.time()
+    def slow(self, post, path, began, t=None):
+        """One line in supervisor.out for a post that took more than SLOW_POST from the spool to done (C-73; quiet
+        otherwise): how long it waited in the spool (behind its chain, or for the loop), and then, for one handed
+        to a Claude, apart (C-75): posting it, waiting in that channel's queue behind the hand-overs before it, and
+        its own hand-over; else how long it took itself."""
+        at, now, t = spooled_at(path), time.time(), t or {}
         if at is None or now - at <= SLOW_POST:
             return
-        print("[posts] #%s%s：%.1f 秒（排隊 %.1f、處理 %.1f）" % (post.get("channel"), "（看板）" if post.get("board") else "",
-                                                       now - at, began - at, now - began), flush=True)
+        if "handing" in t:
+            locked = t.get("locked", now)  # never got the lock: it broke before
+            parts = "排隊 %.1f、貼出 %.1f、等前面交付 %.1f、交付 %.1f" % (
+                began - at, t.get("shown", t["handing"]) - began, locked - t["handing"], now - locked)
+        else:
+            parts = "排隊 %.1f、處理 %.1f" % (began - at, now - began)
+        print("[posts] #%s%s：%.1f 秒（%s）" % (post.get("channel"), "（看板）" if post.get("board") else "", now - at, parts), flush=True)
 
     async def retry(self):
         """The notifications in state/posts-failed/ once more (at the bot's start, then every RETRY_EVERY): shown
@@ -782,9 +825,12 @@ class Undelivered(Exception):
 
 
 class Origin(object):
-    """Stands in for a Discord message: a post handed to Claude has no message of its own to react to."""
-    def __init__(self, channel):
-        self.channel = channel
+    """Stands in for a Discord message: a post handed to Claude has no message of its own to react to. `timing`:
+    a dict TmuxBridge.submit puts "locked" in (when it had the channel's queue), for Posts.slow(). `auto`, `sender`:
+    for unsent.py (a post held up by a dialog is handed again by itself; where it came from)."""
+    def __init__(self, channel, timing=None, auto=False, sender=None):
+        self.channel, self.timing = channel, timing
+        self.auto, self.sender = auto, sender  # a post (C-74): handed again by itself when held up; its sender's channel
 
     async def add_reaction(self, emoji):
         pass

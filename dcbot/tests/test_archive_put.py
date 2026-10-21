@@ -382,7 +382,8 @@ class Detach(unittest.TestCase):
         proj = g.cat("proj")
         ch = Ch(g, "mine", proj, "t")
         bot = botmain.Bot.__new__(botmain.Bot)
-        bot.channels_state = {str(ch.id): {"cwd": "/w", "pane": P, "pane_session": "s", "session_id": "sid"}}
+        bot.channels_state = {str(ch.id): {"cwd": "/w", "pane": P, "pane_session": "s", "session_id": "sid",
+                                           "shown": ["sid"], "history": ["old", "sid"]}}
         bot.save = lambda: None
         closed = []
 
@@ -399,6 +400,10 @@ class Detach(unittest.TestCase):
         self.assertEqual(ch.category.name, config.ARCHIVE_CATEGORY)
         self.assertTrue(ch.topic.startswith("📦 原分類：proj"))
         self.assertIn("移到「%s」" % config.ARCHIVE_CATEGORY, text)
+        st = bot.channels_state[str(ch.id)]
+        self.assertEqual((st["shown"], st["history"]), (["sid"], ["old", "sid"]), "what it has shown and held stays")
+        self.assertIn("shown", archive.STAY)
+        self.assertIn("history", archive.STAY)
 
 
 class Adopt(Base):
@@ -553,3 +558,135 @@ class Spool(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Leave(Base):
+    """Owner's report 2026-10-20: a channel that becomes something again while it sits in the archive (the setup card, /attach into it,
+    dcpost --new-claude) is moved out of it: typing in the archive offers the archive's buttons, never Claude."""
+    def shelved(self, rec_from):
+        shelf = run(archive.shelf(self.g))
+        ch = Ch(self.g, "project-a-0", category=shelf)
+        rec = {"why": kinds.DETACHED, "at": time.time(), "topic": "lap · %5"}
+        if rec_from is not None:
+            rec["from"] = rec_from
+        ch.topic = archive.topic_with("lap · %5", rec)
+        return ch, rec
+
+    def test_back_where_it_came_from_its_note_gone(self):
+        cv = self.g.cat("project-a")
+        ch, rec = self.shelved({"id": cv.id, "name": "project-a"})
+        self.assertIs(run(self.arch.leave(ch, rec, "/w")), cv)
+        self.assertEqual((ch.category, ch.topic), (cv, "lap · %5"))
+
+    def test_its_category_gone_by_its_folder_else_no_category(self):
+        ch, rec = self.shelved({"id": 12345, "name": "gone-category"})
+        with mock.patch.object(routes, "project_name", lambda cwd: None):
+            self.assertIsNone(run(self.arch.leave(ch, rec, "/w")))
+        self.assertIsNone(ch.category, "never left in the archive")
+
+    def test_a_move_discord_refuses_is_logged_and_the_caller_goes_on(self):
+        import contextlib
+        import io
+        ch, rec = self.shelved(None)
+
+        async def refused(**kw):
+            raise discord.HTTPException(type("R", (), {"status": 403, "reason": "Forbidden"})(), "Missing Permissions")
+        ch.edit = refused
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIs(run(self.arch.leave(ch, rec, "/w")), False, "#code-review: never raised to attach or new_claude")
+        self.assertEqual(ch.sent, ["⚠️ 頻道沒能搬出封存，請手動移到原分類。（頻道照常可以用）"], "said in the channel (manager)")
+
+    def test_not_in_the_archive_nothing_moves(self):
+        ch = Ch(self.g, "x", category=self.proj)
+        self.assertIs(run(self.arch.leave(ch, None, "/w")), False)
+        self.assertEqual(ch.edits, [])
+
+    def test_set_up_from_the_card_it_comes_out_and_says_so(self):
+        from bot import setup
+        cv = self.g.cat("project-a")
+        ch, rec = self.shelved({"id": cv.id, "name": "project-a"})
+        st = self.bot.chan(ch)
+        st.update({"archived": rec, "home": {"host": "lap", "session": "project-a"}})
+        self.bot.archive = self.arch
+        s = setup.Setup(self.bot)
+        run(s.done(ch, st, "會開在 lap 的 tmux `project-a`"))
+        self.assertIs(ch.category, cv)
+        self.assertNotIn("archived", st)
+        self.assertIn("頻道從封存搬回「project-a」", self.bot.audits[-1])
+        self.assertEqual(self.bot.tmux.started, [ch.id])
+
+
+class AttachInto(Base):
+    """Owner's report 2026-10-20: /attach into a channel not set up yet that sits in the archive moves it out; the history an attach
+    posts is remembered as shown (a !resume of it later posts only its last turns)."""
+    def test_out_of_the_archive_and_its_history_remembered(self):
+        import json
+        from bot import main as botmain, remote as bot_remote
+        cv = self.g.cat("project-a")
+        shelf = run(archive.shelf(self.g))
+        ch = Ch(self.g, "project-a-0", category=shelf)
+        rec = {"why": kinds.DETACHED, "at": time.time(), "topic": "t", "from": {"id": cv.id, "name": "project-a"}}
+        bot = botmain.Bot.__new__(botmain.Bot)
+        bot.channels_state = {str(ch.id): {"archived": rec, "cwd": "/w"}}
+        bot.save = lambda: None
+        bot.archive = archive.Archive(bot)
+        backfills = []
+
+        async def backfill(c, messages):
+            backfills.append(messages)
+        bot.backfill = backfill
+
+        async def bind_any(pane, cid):
+            pass
+
+        async def dcremote(host, *args, **kw):
+            return 0, json.dumps({"session_id": "sid-x", "turns": [["asked", "q", "a", ""]]})
+        pane = {"host": "lap", "socket": "/s", "id": "%1", "pid": "9", "session": "project-a", "window": "w", "cwd": "/w"}
+
+        async def go():
+            bot.loop = asyncio.get_running_loop()
+            await botmain.Bot.attach_one(bot, self.g, pane, "project-a", into=ch)
+            await asyncio.sleep(0)
+        with mock.patch.object(routes, "bind_any", bind_any), mock.patch.object(bot_remote, "dcremote", dcremote):
+            run(go())
+        st = bot.channels_state[str(ch.id)]
+        self.assertIs(ch.category, cv, "out of the archive")
+        self.assertNotIn("archived", st)
+        self.assertEqual(st["shown"], ["sid-x"], "the history posted by the attach is remembered")
+        self.assertEqual(len(backfills), 1)
+
+
+class TypingDecidedByTheRecord(Base):
+    """Owner's report 2026-10-20: what is archived is what has a record, not what sits in an archive category: a
+    channel set up again whose move out Discord refused is used where it is; one with a record is offered the ways
+    back wherever it is."""
+    def typed(self, ch, st):
+        from bot import main as botmain
+        bot = botmain.Bot.__new__(botmain.Bot)
+        bot.channels_state = {str(ch.id): st}
+        offered = []
+
+        async def offer(c):
+            offered.append(c.id)
+        bot.archive = type("A", (), {"offer": staticmethod(offer)})()
+        bot.catchup = type("C", (), {"mark": staticmethod(lambda m: True)})()
+        bot.posts = type("P", (), {"owner_spoke": staticmethod(lambda cid: None)})()
+        self.typed_files = []
+
+        async def typed(c, text):
+            self.typed_files.append(text)
+        bot.files = type("F", (), {"typed": staticmethod(typed)})()
+        owner = type("U", (), {"id": 111, "bot": False})()
+        msg = type("M", (), {"author": owner, "channel": ch, "content": "hello", "mentions": []})()
+        run(botmain.Bot.on_message(bot, msg))
+        return offered
+
+    def test_in_the_archive_category_without_a_record_is_not_offered(self):
+        shelf = run(archive.shelf(self.g))
+        ch = Ch(self.g, "x", category=shelf)
+        self.assertEqual(self.typed(ch, {"kind": "files"}), [], "used where it is")
+        self.assertEqual(self.typed_files, ["hello"], "what it is (a files channel here) gets what was typed")
+
+    def test_a_record_is_offered_wherever_the_channel_is(self):
+        ch = Ch(self.g, "y", category=self.proj)
+        self.assertEqual(self.typed(ch, {"archived": {"why": kinds.DETACHED}}), [ch.id])

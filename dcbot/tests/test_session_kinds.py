@@ -41,10 +41,10 @@ def play(events, shape, host=None):
         st["cwd"] = "/w/proj"
         shown, rows = [], []
 
-        async def show(the_host, c, s, sid, path=None):
+        async def show(the_host, c, s, sid, path=None, held=None):
             shown.append(sid)
 
-        async def show_remote(the_host, c, s, far, sid, path=None):
+        async def show_remote(the_host, c, s, far, sid, path=None, held=None):
             shown.append((far, sid))
         with mock.patch.object(history, "show", show), mock.patch.object(history, "show_remote", show_remote), \
                 mock.patch.object(bridge, "watch", lambda *a, **k: None):

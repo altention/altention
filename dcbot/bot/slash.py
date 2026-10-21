@@ -170,8 +170,10 @@ def setup(bot):
 
     @tree.command(name="resume", description="接回之前的對話（不選就列出最近的對話）", guild=guild)
     @app_commands.describe(conversation="要接回的對話")
-    async def resume(interaction: discord.Interaction, conversation: Optional[str] = None):
-        await builtin(interaction, "!resume " + (conversation or ""), conversation is None)
+    @app_commands.describe(quiet="接回時不貼它的紀錄（這個頻道裡本來就有那段對話時用）")
+    async def resume(interaction: discord.Interaction, conversation: Optional[str] = None, quiet: bool = False):
+        await builtin(interaction, "!resume " + (conversation or "") + (" --quiet" if quiet and conversation else ""),
+                      conversation is None)
 
     @tree.command(name="attach", description="把這台機器 tmux 裡的 Claude Code 接到一個新頻道（不選就列出來）", guild=guild)
     @app_commands.describe(session="要接上的對話", project="（可省略）分類名稱，預設用專案資料夾的名字")

@@ -118,6 +118,15 @@ NOTES = {
     'claude_code.new_conversation':
         '接不回原本的對話（`{session}`），已開始新的對話。',
     'masked': '-# 有 {n} 處像金鑰的字被遮掉了',
+    # C-74 (bot/unsent.py): a message not sent for now, sent again
+    'resend.done': '✅ 已再送一次',
+    'resend.handed': '✅ 對話框關了，已補送',
+    'resend.expired': '這則已經過期或已經送過了，要的話請重打一次。',
+    'resend.still': '-# 再送一次也沒送出，見下一則',
+    'resend.failed': '⚠️ 補交給 #{to} 的 Claude 時出錯（{why}），這則還留著，下次再試：{text}',
+    'resend.recovered': '✅ 剛才補交給 #{to} 的 Claude 出錯的那則，已經交到了：{text}',
+    'resend.press_failed': '⚠️ 再送一次時出錯（{why}），內容還留著，可以再按一次。',
+    'resend.given_up': '⚠️ 這則一直沒能交給 #{to} 的 Claude（{hours} 小時內那個頻道的終端機都不是一般的輸入框），已經放棄：{text}',
 }
 
 GENERAL = "⚠️ 這則**沒有送出**（原因代號 `{code}`{data}）。請用 `/screen` 看一下終端機，處理好之後再重發一次。"
@@ -148,7 +157,7 @@ def about(data):
 # sentences (setting "dcbot.text": {"<group>.<code>": "…"}, the keys as in GROUPS and "cleared.<how>"). Read by
 # load(), never where a sentence is taken: that is the event loop, and the settings file is read from disk, with
 # waits when it is broken (step 2.4b: a broken settings file is not waited for in the event loop).
-loaded = {"lang": alt_text.DEFAULT, "own": {}, "stamp": False, "talk_limit": None}
+loaded = {"lang": alt_text.DEFAULT, "own": {}, "stamp": False, "talk_limit": None, "small_tables": True}
 
 
 def talk_limit_of(said):
@@ -156,11 +165,20 @@ def talk_limit_of(said):
     return said if isinstance(said, int) and not isinstance(said, bool) and said >= 0 else None
 
 
+def small_tables_of(said):
+    """The installation's "dcbot.small_tables" (C-71a: small tables in a reply made readable): true unless it says
+    false; anything but true or false is the default, and one line in the log."""
+    if said is None or isinstance(said, bool):
+        return said is not False
+    print("messages: dcbot.small_tables is %r, not true or false; the default (true) is used" % (said,), flush=True)
+    return True
+
+
 def load():
     """Read what the installation says of the words into memory. Off the event loop (the bridge runs it in a
     thread at start and once a minute); the settings file is read again only when it has changed. Settings that
     cannot be read: the default words, one line in the log, nothing raised. True when it read."""
-    stamp, lang, own, talk = None, alt_text.DEFAULT, {}, None
+    stamp, lang, own, talk, tables = None, alt_text.DEFAULT, {}, None, True
     try:
         inst = alt_text.config.instance_dir()
         path = os.path.join(inst, "plugins.json") if inst else None
@@ -177,11 +195,12 @@ def load():
         said = alt_text.config.setting("dcbot.text")
         own = dict((k, v) for k, v in said.items() if isinstance(k, str) and isinstance(v, str) and v) if isinstance(said, dict) else {}
         talk = talk_limit_of(alt_text.config.setting("dcbot.talk_limit"))  # read here too: off the event loop, once per change
+        tables = small_tables_of(alt_text.config.setting("dcbot.small_tables"))
     except Exception as e:
-        lang, own, talk = alt_text.DEFAULT, {}, None
+        lang, own, talk, tables = alt_text.DEFAULT, {}, None, True
         print("messages: the installation's settings cannot be read (%s: %s); the default words are used" % (type(e).__name__, e),
               flush=True)
-    loaded.update(lang=lang, own=own, stamp=stamp, talk_limit=talk)
+    loaded.update(lang=lang, own=own, stamp=stamp, talk_limit=talk, small_tables=tables)
     return True
 
 

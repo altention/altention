@@ -884,6 +884,15 @@ class Command(Rig):
         self.assertEqual([c.args for c in apply.call_args_list], [(False, []), (False, ["chatlog/sync"]), (True, [])])
 
 
+class Removable(unittest.TestCase):
+    def test_off_disabled_and_drafts_only(self):
+        """C-61 E1: a draft (an external plugin the instance does not declare) asks for nothing, and its marked lines
+        go like an off plugin's; unknown and a plugin.json that could not be read keep theirs."""
+        rows = [(n, "/f/" + n, {} if w != "broken" else None, w if w != "broken" else "unknown", "")
+                for n, w in (("a", "on"), ("b", "off"), ("c", "disabled"), ("d", "draft"), ("e", "unknown"), ("f", "broken"))]
+        self.assertEqual(applycore.removable(rows), {"b", "c", "d"})
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1231,3 +1240,4 @@ class EngineUnderHome(Rig):
             self.assertEqual(len(got), 1, (form, text))
             self.assertEqual(got[0], mine[0], (form, "rewritten in place as asked"))
             os.remove(self.file)
+

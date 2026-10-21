@@ -370,7 +370,9 @@ def board(version, done, now=None, first="✓ 先在旁邊試過了：可以直�
 
 def run(argv, key, env=None):
     """One step's command in the engine folder, in a process group of its own: (exit status, what it printed).
-    Taking longer than TIMEOUTS[key], the whole group is killed (its git clone or pip too, as setup.py's script())."""
+    Taking longer than TIMEOUTS[key], the whole group is killed (its git clone or pip too, as setup.py's script()), and
+    then everything left in its session, as the supervisor does: install's external-plugin setup items run in groups
+    of their own within it (C-61 E2) and stop with it."""
     try:
         p = subprocess.Popen(argv, cwd=engine(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, universal_newlines=True, errors="replace", env=env,
@@ -385,7 +387,14 @@ def run(argv, key, env=None):
             os.killpg(p.pid, signal.SIGKILL)
         except OSError:
             pass
-        p.communicate()
+        try:  # its session's other groups (start_new_session: the session id is its pid)
+            subprocess.run(["pkill", "-KILL", "-s", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):  # no pkill here (a bare container): the group went at least
+            pass
+        try:  # one that left the session (setsid) may still hold the pipe: not waited for
+            p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.stdout.close()
         return 124, "%d 秒沒有結束，已中止" % TIMEOUTS[key]
 
 

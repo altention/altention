@@ -335,9 +335,7 @@ class Boards(Rig):
         with a, b, self.assertRaises(setup.Failed) as e:
             setup.dashboard(io.StringIO())
         self.assertIn("用量看板沒貼上：usage：機器清單讀不出來", str(e.exception))
-        d = self.settings()
-        d.pop("usage", None)  # written before collect.py runs: the next done asks it again
-        self.write(d)
+        self.assertNotIn("channel", self.settings().get("usage", {}), "taken back (C-68): the next done writes it and posts")
         a, b = self.collect("pass", 3)
         with a, b, self.assertRaises(setup.Failed) as e:
             setup.dashboard(io.StringIO())
@@ -669,8 +667,65 @@ class Reconcile(Rig):
         self.assertIn(("update", "✅ 你在 #setup 回答的都設定好了。"), self.said, "a notice in #update")
         self.assertEqual(json.loads(self.run_("questions", "--json")[1]), [], "no tour asked of an older installation")
 
+    def test_done_failing_at_the_usage_board_then_run_again(self):
+        """C-68: the reconcile's questions are taken away only once done got through; a run again after a step
+        failed is the same older installation's: no #guide again, no #chat opened, and the ✅ said."""
+        self.run_("reconcile")
+        for key, value in (("dashboard", "make"), ("plugins.planner", "off"), ("dcbot.default_permission", "manual"),
+                           ("usage.plan", "Pro")):
+            self.answer(key, value)
+        guided = self.guided
+        ok = lambda argv, timeout=1800: subprocess.CompletedProcess(argv, 0, "ok core.done\n")  # noqa: E731
+        with mock.patch.multiple(setup, script=ok, dashboard=mock.Mock(side_effect=setup.Failed("用量看板沒貼上：結束碼 1")),
+                                 secretary=mock.DEFAULT):
+            code, out = self.run_("done")
+        self.assertEqual(code, 2, out)
+        self.assertIn("ask", self.settings()["setup"], "kept: the run again knows it is the reconcile's")
+        self.assertNotIn(("update", "✅ 你在 #setup 回答的都設定好了。"), self.said)
+        with mock.patch.multiple(setup, script=ok, dashboard=mock.DEFAULT, secretary=mock.DEFAULT):
+            code, out = self.run_("done")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.guided, guided, "no #guide posted again")
+        self.assertFalse([1 for a, i in self.posted if a == ("post",) and "open_chat" in i], "no #chat opened")
+        self.assertIn(("update", "✅ 你在 #setup 回答的都設定好了。"), self.said)
+        self.assertNotIn("ask", self.settings()["setup"])
+
     def test_turning_the_boards_off(self):
         self.run_("reconcile")
+        self.answer("dashboard", "off")
+        plugins_ = self.settings()["plugins"]
+        self.assertEqual((plugins_["usage"], plugins_["status"]), ({"disabled_on": ["box"]}, {"disabled_on": ["box"]}))
+
+    def test_one_board_channel_gone_the_other_there(self):
+        """C-67: status.channel on #dashboard (there), usage.channel on a channel deleted: asked of the usage board
+        alone, not "#dashboard 已經不在了"; "off" turns off that board only, "make" leaves #dashboard's setting."""
+        self.chans.append(("105", "dashboard", ""))
+        d = self.settings()
+        d["status"], d["usage"]["channel"] = {"channel": "105"}, "998"
+        self.write(d)
+        self.run_("reconcile")
+        self.assertIn("dashboard", self.status()["left"])
+        asked = self.settings()
+        q = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}["dashboard"]
+        self.assertEqual(q["question"], "用量看板的頻道已經不在了（狀態看板還在 <#105>）。要把用量看板放回看板頻道嗎？")
+        self.assertEqual(q["options"][1]["description"], "只關掉用量看板，狀態看板照舊")
+        self.assertEqual(q["values"], ["make", "off"])
+        self.answer("dashboard", "off")
+        d = self.settings()
+        self.assertEqual(d["plugins"], {"usage": {"disabled_on": ["box"]}}, "the status board stays on")
+        self.assertEqual(d["status"], {"channel": "105"})
+        self.write(asked)  # asked again, answered the other way
+        self.answer("dashboard", "make")
+        d = self.settings()
+        self.assertEqual((d["status"].get("channel"), d["usage"].get("channel")), ("105", None), "the gone one made again by done")
+
+    def test_both_board_channels_gone_is_asked_as_before(self):
+        d = self.settings()
+        d["status"], d["usage"]["channel"] = {"channel": "997"}, "998"
+        self.write(d)
+        self.run_("reconcile")
+        q = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}["dashboard"]
+        self.assertEqual(q["question"], "#dashboard 已經不在了，要重新建一個嗎？")
         self.answer("dashboard", "off")
         plugins_ = self.settings()["plugins"]
         self.assertEqual((plugins_["usage"], plugins_["status"]), ({"disabled_on": ["box"]}, {"disabled_on": ["box"]}))

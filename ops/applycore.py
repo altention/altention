@@ -174,8 +174,9 @@ def retime(raw, new_time):
 
 
 def removable(rows):
-    """Plugins whose marked lines may be removed here: plugin.json read, and plainly off or disabled."""
-    return {n for n, f, d, w, r in rows if d is not None and w in ("off", "disabled")}
+    """Plugins whose marked lines may be removed here: plugin.json read, and plainly off or disabled, or a draft
+    (an external plugin the instance does not declare: C-61 E1)."""
+    return {n for n, f, d, w, r in rows if d is not None and w in ("off", "disabled", "draft")}
 
 
 def auto_time(w, installed, recorded=None):

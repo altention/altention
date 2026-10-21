@@ -20,7 +20,10 @@ BEFORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "samples", "wo
 
 class Words(unittest.TestCase):
     SINCE = {"not_sent.machine_unreachable", "not_sent.machine_unreachable_unopened",  # codes that came after the move (2.6b, #issues 29): no sentence of before
-             "notes.masked"}  # (B-12)
+             "notes.masked",  # (B-12)
+             "notes.resend.done", "notes.resend.handed", "notes.resend.expired", "notes.resend.still",
+             "notes.resend.given_up", "notes.resend.failed", "notes.resend.press_failed",
+             "notes.resend.recovered"}  # (C-74)
 
     def setUp(self):
         with open(BEFORE, encoding="utf-8") as f:

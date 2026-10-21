@@ -13,13 +13,16 @@
                                             # without --write: what would change (nothing is written);
                                             # with --write: plan's result written into this machine's crontab and
                                             # settings.json (ops/applycore.py: markers, missing items; backup first)
+  python3 ops/plugins.py setup <插件> <項目>  # one setup item of an external plugin on here, by hand (C-61 E2: a
+                                            # lazy one, or one given up on after failing twice); written down
   python3 ops/plugins.py report             # 3a.12: what apply --write would change here, as JSON; reads only
   python3 ops/plugins.py backups | restore <時間> # the backups apply made, and putting one back
   python3 ops/plugins.py plan               # what plugin.json asks this machine to have (cron lines, hooks; run it
                                             # from the engine that is installed, not a worktree)
                                             # next to what it has, compared by content (ops/plancore.py)
 
-Placements: on, off (not its machine), disabled (turned off there on purpose), unknown (what decides it could not
+Placements: on, off (not its machine), disabled (turned off there on purpose), draft (an external plugin the
+instance does not declare: C-61 E1), unknown (what decides it could not
 be read; nothing is ever added or removed for an unknown one). Where a plugin runs is plugin.json's and the
 instance's plugins.json (plugins.<name>.on); the machine list's roles only say where the bot runs (dcbot) and which
 machines' panes may be attached (dcattach).
@@ -449,8 +452,10 @@ def schedule_words(it):
 
 def list_all(out=sys.stdout):
     """One line per plugin, in _ordered's order; under each, its "pitch" (what it does for the user, for the install's
-    questions) and the plugins it needs."""
-    plugins, problems = plugin.discover()
+    questions) and the plugins it needs. Drafts (external plugins the instance does not declare, C-61 E1) last, under
+    「草稿」, with what to write to turn one on."""
+    drafts = []
+    plugins, problems = plugin.discover(drafts=drafts)
     try:
         settings = config.settings()
     except Exception as e:
@@ -469,6 +474,18 @@ def list_all(out=sys.stdout):
             if it.get("unknown"):
                 said = said + ["%s（apply 不動 %s/%s 現在的行）" % (it["unknown"], name, it.get("name"))]
         problems = problems + said
+    if drafts:
+        out.write("草稿（實例還沒寫它：不裝、不排程、不問設定）：\n")
+        for name, folder, d in drafts:
+            out.write("  %-8s %s（%s）\n" % (name, d["title"], folder))
+        out.write("  要開：實例 plugins.json 寫 \"plugins\": {\"<名稱>\": {\"source\": \"<git 網址>\", \"version\": \"vX.Y.Z\"}}"
+                  "（只在這台、不 clone 的寫 {\"local\": true}）\n")
+    try:
+        rows = plugin.on_this_machine()[0]
+    except Exception:
+        rows = []
+    for name, words in plugin.external_notes(rows, settings):
+        out.write("提醒：%s：%s\n" % (name, words))
     for p in problems:
         out.write("問題：%s\n" % p)
     return 1 if problems else 0
@@ -667,10 +684,19 @@ def machine_question(names, listed=False):
                                    "description": "用這台自己的名字：照舊名字記的設定不會套到這台，之後要自己重設"}])}
 
 
-def dashboard_question(again=False, gone=False):
+def dashboard_question(again=False, gone=False, only=None):
     """C-57 S3: an installation from before #dashboard (or whose board channel is gone): make it, or turn the boards
     off. Asked, never made unasked: it is one more channel in the main area (owner's decision 7, 2026-10-19).
-    again: they chose to make it before and it was never made: asked as that. gone: it was there and was deleted."""
+    again: they chose to make it before and it was never made: asked as that. gone: it was there and was deleted.
+    only: (the board without a channel, whether its channel was deleted, the board still in place, its channel ID):
+    the boards are in two channels and one is still there (C-67): asked of that one board alone."""
+    if only:
+        lost, deleted, kept, where = only
+        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
+                "question": "%s的頻道%s（%s還在 <#%s>）。要把%s放回看板頻道嗎？" % (
+                    lost, "已經不在了" if deleted else "還沒設定", kept, where, lost),
+                "options": [{"label": "放回去（建議）", "description": "放進 #dashboard（沒有就開一個），看板自己更新"},
+                            {"label": "不要了", "description": "只關掉%s，%s照舊" % (lost, kept)}]}
     if gone:
         return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
                 "question": "#dashboard 已經不在了，要重新建一個嗎？",
@@ -723,12 +749,12 @@ def backup_questions(off=()):
 
 
 def off_here():
-    """The plugins plainly turned off (or placed elsewhere) on this machine; an unknown one counts as on."""
+    """The plugins plainly turned off (or placed elsewhere, or drafts) on this machine; an unknown one counts as on."""
     try:
         rows, _ = plugin.on_this_machine()
     except Exception:
         return set()
-    return {n for n, _, _, w, _ in rows if w in ("off", "disabled")}
+    return {n for n, _, _, w, _ in rows if w in ("off", "disabled", "draft")}
 
 
 def questions_main(as_json, setup=False, out=None, times=False, backup=False):
@@ -785,6 +811,29 @@ def refresh_report(now=None):
         print("套用報告沒有重算（%s: %s）；下一個 15 分鐘會再算" % (type(e).__name__, str(e)[:120]))
 
 
+def setup_one(name, item, out=sys.stdout):
+    """plugins.py setup <plugin> <item>: one setup item of an external plugin on here run by hand (C-61 E2): a lazy
+    one, or one given up on after failing twice (a run that goes through takes it up again by itself)."""
+    from altention import plugin_update
+    rows, _ = plugin.on_this_machine()
+    row = next((r for r in rows if r[0] == name and r[2] is not None and plugin.external(r[1])), None)
+    if row is None:
+        out.write("這台沒有外部插件 %s（python3 ops/plugins.py show 看有哪些）\n" % name)
+        return 1
+    _, folder, d, where, why = row
+    if where != "on":
+        out.write("%s 在這台不是開著的（%s），不跑它的安裝步驟\n" % (name, why or where))
+        return 1
+    if item not in [i.get("name") for i in d.get("setup", [])]:
+        out.write("%s 沒有叫 %s 的安裝步驟（有：%s）\n" % (name, item, "、".join(i.get("name") for i in d.get("setup", []))))
+        return 1
+    version = plugin_update.head(folder) if os.path.isdir(os.path.join(folder, ".git")) else ""
+    ran = plugin_update.run_setup(name, folder, d, version, only=item, log=lambda t: out.write(t.rstrip("\n") + "\n"))
+    for n, st, words in ran:
+        out.write("%s %s：%s\n" % (n, {"ran": "跑好了"}.get(st, "沒過"), words))
+    return 0 if ran and ran[0][1] in ("ran", "record") else 1
+
+
 def main(argv):
     from altention import engine_id
     if (argv[:1] == ["apply"] and "--write" in argv) or argv[:1] == ["restore"]:
@@ -802,6 +851,8 @@ def main(argv):
         return 0
     if argv[:1] == ["list"]:
         return list_all()
+    if argv[:1] == ["setup"] and len(argv) == 3:
+        return setup_one(argv[1], argv[2])
     if argv[:1] == ["questions"] and set(argv[1:]) <= {"--json", "--setup", "--times", "--backup"} \
             and len({"--setup", "--times", "--backup"} & set(argv)) <= 1:
         return questions_main("--json" in argv, "--setup" in argv, times="--times" in argv, backup="--backup" in argv)

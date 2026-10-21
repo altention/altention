@@ -3,7 +3,9 @@
 A plugin is a folder with a plugin.json (DESIGN.md section 6). Where they are looked for:
 - the engine: altention/core.plugin.json (the core itself), <engine>/<folder>/plugin.json, <engine>/skills/*/plugin.json,
   <engine>/plugins/*/plugin.json (built-in plugins, once stage 4 moves them there);
-- external plugins: <root>/plugins/*/plugin.json (~/altention/plugins/my-plugin …);
+- external plugins: <root>/plugins/*/plugin.json (~/altention/plugins/my-plugin …); one counts only when the
+  instance's plugins.json says where it comes from ("source" and "version", or "local": true; C-61 E1): any other
+  is a draft, listed by plugins.py but never installed, scheduled or asked about;
 - local plugins: <instance>/plugins/*/plugin.json.
 
 plugin.json is public, so it holds no personal values; those live in the instance's plugins.json:
@@ -109,7 +111,7 @@ def check(d, path="plugin.json", core=False):
         sys.stderr.write("altention：%s 的格式是 %d，比這版引擎認得的 %d 新；照樣讀，新的欄位會被忽略\n" % (path, fmt, FORMAT))
     for key in ("name", "title", "description"):
         _need(isinstance(d.get(key), str) and d[key].strip(), path, "少了 %s" % key)
-    _need(re.match(r"^[a-z][a-z0-9-]*$", d["name"]) is not None, path, "name 只能用小寫英文、數字和 -")
+    _need(check_name(d["name"]), path, "name 只能用小寫英文、數字和 -")
     _need(d.get("machines", "all") in ("all", "one"), path, "machines 只能是 all 或 one")
     _need((d["name"] == "core") == core, path, "只有引擎的 altention/core.plugin.json 是核心，其他插件不能叫 core"
           if not core else "altention/core.plugin.json 的 name 要是 core")
@@ -131,12 +133,13 @@ def check(d, path="plugin.json", core=False):
         if "every" in w and w.get("offset") not in (None, "machine"):
             every, off = _length(w["every"]), _length(w["offset"])
             _need(every and off is not None and off < every, path, "schedules[%d].when.offset 要比 every 小" % i)
-    for i, s in enumerate(_list_of(d, "setup", path, ["name"], [("optional", bool), ("today", str)])):
+    for i, s in enumerate(_list_of(d, "setup", path, ["name"], [("optional", bool), ("today", str), ("lazy", bool)])):
         _need("run" in s and (s["run"] is None or isinstance(s["run"], str)), path,
               "setup[%d].run 要是指令，或 null（還只是記錄、不能執行）" % i)
     for i, s in enumerate(_list_of(d, "data", path, ["name", "path"], [("private", bool)])):
         _need(s.get("sync", "timer") in SYNC, path, "data[%d].sync 只能是 %s" % (i, "、".join(SYNC)))
     _list_of(d, "skills", path, ["name", "path"])
+    _list_of(d, "needs", path, ["name", "check"], [("hint", str)])  # C-61 E2: system tools, looked for, never installed
     _list_of(d, "requires", path, ["plugin"], [("data", str)])
     for i, c in enumerate(_list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str), ("name_setting", str)])):
         _need(c.get("category", "main") in ("main", "system"), path, "channels[%d].category 只能是 main 或 system" % i)
@@ -162,6 +165,11 @@ def check(d, path="plugin.json", core=False):
     return d
 
 
+def check_name(name):
+    """Whether `name` may name a plugin (and its folder under <root>/plugins)."""
+    return isinstance(name, str) and re.match(r"^[a-z][a-z0-9-]*$", name) is not None
+
+
 def forbidden_run(item):
     """Whether a schedule item (plugin.json or a schedule file) runs the sync or the engine update and is not marked
     "scheduler": false (kept in its own cron line). The scheduler refuses such an item too."""
@@ -181,11 +189,65 @@ def load(path, core=False):
     return check(d, path, core)
 
 
-def discover(engine=None, instance=None, root=None, broken=None):
+EXTERNAL = "plugins"  # <root>/plugins: external plugins (C-61)
+_READ = object()
+
+
+def external(folder, root=None):
+    """Whether `folder` is an external plugin's: right under <root>/plugins (links followed)."""
+    return os.path.dirname(os.path.realpath(folder)) == os.path.realpath(os.path.join(root or config.root(), EXTERNAL))
+
+
+def source_of(entry):
+    """(declared, problem) for an external plugin's instance entry (C-61 E1): declared when it says "source" (with
+    "version") or "local": true; problem, when it says one of them but not usably (then its place is unknown). An
+    entry without either (or none at all) is not declared: a draft."""
+    if not isinstance(entry, dict) or not any(k in entry for k in ("source", "version", "local")):
+        return False, None
+    if "local" in entry:
+        if entry["local"] is not True:
+            return True, "local 只能寫 true（不 clone、只在有這個資料夾的機器算數）"
+        if "source" in entry or "version" in entry:
+            return True, "local 和 source、version 只能寫一種"
+        return True, None
+    if not (isinstance(entry.get("source"), str) and entry["source"].strip()):
+        return True, "source 要寫 git 網址（寫了 version 就要有 source）"
+    version = entry.get("version")
+    if not (isinstance(version, str) and version.strip()) or any(c.isspace() for c in version):
+        return True, "version 要寫標籤（vX.Y.Z）或 commit"
+    return True, None
+
+
+def _instance_settings(instance):
+    """The settings of `instance` (as candidates() takes it: None the configured one, "" none) for telling drafts:
+    None when they cannot be told (no instance, or its plugins.json unreadable), {} without a plugins.json."""
+    if instance is None:
+        try:
+            return config.settings()
+        except Exception:
+            return None
+    if not instance:
+        return None
+    path = os.path.join(instance, "plugins.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def discover(engine=None, instance=None, root=None, broken=None, drafts=None, settings=_READ):
     """([(name, folder, plugin.json as a dict)], [problem]) for every plugin found. A bad file is a problem, not
     an exception; two plugins of the same name: the first found is kept (engine before external before local).
     `broken`, a list if given, receives (name, folder) of each file that could not be read (named after its folder;
-    "core" for the core's)."""
+    "core" for the core's). An external plugin the instance's settings (`settings`, read from `instance` when not
+    given) do not declare is a draft: left out, and put in `drafts` as (name, folder, dict) when that is a list.
+    Settings that cannot be read draft nothing (each plugin's place is unknown then, placement())."""
+    if settings is _READ:
+        settings = _instance_settings(instance)
     plugins, problems, names = [], [], {}
     core_file = os.path.realpath(os.path.join(engine or ENGINE, "altention", "core.plugin.json"))
     for path in candidates(engine, instance, root):
@@ -197,6 +259,13 @@ def discover(engine=None, instance=None, root=None, broken=None):
                 folder = os.path.dirname(os.path.realpath(path))
                 broken.append(("core" if os.path.realpath(path) == core_file else os.path.basename(folder), folder))
             continue
+        folder = os.path.dirname(os.path.realpath(path))
+        if settings is not None and external(folder, root):
+            entry = instance_entry(d["name"], settings)
+            if entry is not None and not source_of(entry)[0]:
+                if drafts is not None:
+                    drafts.append((d["name"], folder, d))
+                continue
         if d["name"] in names:
             problems.append("%s：名稱 %s 跟 %s 重複，略過這一份" % (path, d["name"], names[d["name"]]))
             continue
@@ -445,7 +514,9 @@ def this_machine(problems):
 
 def on_this_machine(machine=None, engine=None, root=None):
     """([(name, folder, dict or None, placement, reason)], [problem]) for every plugin, with where it stands on
-    `machine` (default: this one). Anything unreadable is a problem, the plugins it decides are "unknown" with the
+    `machine` (default: this one); an external plugin the instance does not declare is listed last, as "draft"
+    (C-61 E1: never installed or scheduled, and its marked lines are taken away like an off one's), one whose
+    source is written unusably as "unknown". Anything unreadable is a problem, the plugins it decides are "unknown" with the
     reason, and a plugin.json that cannot be read is listed as unknown with dict None. Never raises for a broken
     setting or machine list."""
     problems = []
@@ -470,15 +541,43 @@ def on_this_machine(machine=None, engine=None, root=None):
         bot = known = None
         problems.append("機器清單讀不出來（%s）：只在一台跑的插件當成「不知道」，不增不刪" % e)
     machine = machine or this_machine(problems)
-    broken = []
-    plugins, found = discover(engine, inst or "", root, broken)
+    broken, drafts = [], []
+    plugins, found = discover(engine, inst or "", root, broken, drafts, settings)
     problems += found
     out = []
     for n, f, d in plugins:
+        _, bad = source_of(instance_entry(n, settings)) if settings is not None and external(f, root) else (True, None)
+        if bad:
+            out.append((n, f, d, "unknown", "實例設定裡 plugins.%s 的來源不能用：%s" % (n, bad)))
+            continue
         where = placement(n, d, machine, settings, bot, known)
         out.append((n, f, d, where, why_unknown(n, settings, bot, known, machine) if where == "unknown" else ""))
     out += [(n, f, None, "unknown", "plugin.json 讀不出來") for n, f in broken]
+    out += [(n, f, d, "draft", DRAFT_WHY % n) for n, f, d in drafts]
     return out, problems
+
+
+def external_notes(rows, settings, root=None):
+    """[(name, words)] about the external plugins (C-61 E1): one declared in the instance with no folder here (E2's
+    install clones it), and one whose folder is not named as its plugin.json's "name" (display in plugins/latex)."""
+    out, here = [], set()
+    for n, f, d, where, _ in rows:
+        if d is None or not external(f, root):
+            continue
+        here.add(n)
+        if os.path.basename(os.path.realpath(f)) != n:
+            out.append((n, "資料夾叫 %s，plugin.json 的 name 是 %s：資料夾請改成 plugins/%s（clone 也會放在那裡）"
+                        % (os.path.basename(os.path.realpath(f)), n, n)))
+    block = settings.get("plugins") if isinstance(settings, dict) else None
+    for n, entry in sorted(block.items()) if isinstance(block, dict) else []:
+        if n not in here and source_of(entry) == (True, None):
+            out.append((n, "實例寫了 %s（%s），這台沒有 %s" % (
+                n, "local" if entry.get("local") else "%s %s" % (entry["source"], entry["version"]),
+                os.path.join(root or config.root(), EXTERNAL, n))))
+    return out
+
+
+DRAFT_WHY = "草稿：實例的 plugins.json 還沒寫 plugins.%s 的來源（source 和 version，或 local: true），不裝、不排程、不問設定"
 
 
 def skill_owners(rows, engine=None):
@@ -537,13 +636,21 @@ def link_skills(engine=None, add_only=False):
     made; nothing is taken away or pointed elsewhere (a broken link stays broken). A plugin's skill is neither
     linked nor taken away when that plugin's place here is unknown, as with settings that cannot be read (a
     turned-off plugin must not get its skill back by a comma too many: C-11); a link it already has is still
-    pointed at this engine (install.sh), and a skill no plugin owns (tour) is linked. install.sh does the rest."""
+    pointed at this engine (install.sh), and a skill no plugin owns (tour) is linked. install.sh does the rest.
+    External plugins' skills (C-61 E2: plugin.json "skills", a path in the plugin's folder) the same way: linked
+    while the plugin is on or off here, taken away (only our link to that folder) when it is disabled or a draft,
+    left alone when unknown; "external" lists them, "clash" (skill, plugin) one whose name an engine skill has
+    (any folder under <engine>/skills, the local-only ones of #setup too: an external "update" took #setup's
+    update skill, #code-review-2 of 59cb60c): the engine's stays, the plugin's is not linked; "outside" (skill,
+    plugin) one whose path leaves the plugin's folder: not linked."""
     engine = engine or ENGINE
     home_skills = os.path.expanduser("~/.claude/skills")
     folder = os.path.join(engine, "skills")
     names = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))
                    and not os.path.exists(os.path.join(folder, d, LOCAL_ONLY))) if os.path.isdir(folder) else []
-    out = {"names": names, "off": set(), "made": [], "removed": [], "taken": [], "kept": [], "waiting": [], "why": {}}
+    out = {"names": names, "off": set(), "made": [], "removed": [], "taken": [], "kept": [], "waiting": [], "why": {},
+           "external": [], "clash": [], "outside": []}
+    engine_names = set(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))) if os.path.isdir(folder) else set()
     try:
         rows, _ = on_this_machine(None, engine)
     except Exception as e:
@@ -583,6 +690,40 @@ def link_skills(engine=None, add_only=False):
             os.makedirs(home_skills, exist_ok=True)
             os.symlink(src, link)
             out["made"].append(name)
+    for owner, top, d, where, _ in rows or []:
+        if d is None or not external(top):
+            continue
+        for sk in d.get("skills", []):
+            name, src = sk.get("name"), os.path.realpath(os.path.join(top, sk.get("path", "")))
+            if not isinstance(name, str) or re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", name) is None:
+                continue
+            if src != os.path.realpath(top) and not src.startswith(os.path.realpath(top) + os.sep):  # "" or "." is the folder
+                if where in ("on", "off"):
+                    out["outside"].append((name, owner))
+                continue
+            link = os.path.join(home_skills, name)
+            if where in ("disabled", "draft"):
+                if not add_only and os.path.islink(link) and os.path.realpath(link) == src:
+                    os.remove(link)
+                    out["removed"].append(name)
+                continue
+            if where not in ("on", "off") or not os.path.isdir(src):
+                continue
+            if name in engine_names:
+                out["clash"].append((name, owner))
+                continue
+            out["external"].append(name)
+            if os.path.islink(link):
+                if not add_only and os.path.realpath(link) != src:
+                    os.remove(link)
+                    os.symlink(src, link)
+                    out["made"].append(name)
+            elif os.path.lexists(link):
+                out["taken"].append(link)
+            else:
+                os.makedirs(home_skills, exist_ok=True)
+                os.symlink(src, link)
+                out["made"].append(name)
     return out
 
 

@@ -8,10 +8,73 @@ Each version has these sections:
 - **For people**: what changed, for you to read.
 - **For people (zh-TW)**: the most important of those points in plain Chinese, the ones that matter most first.
   The update notices in `#update` quote it in an installation whose language (`core.language`) is zh-TW, each
-  point cut to its bold lead; a version without it is quoted from For people.
+  point cut to its bold lead; a version without it is quoted from For people. Write each point on one line: the
+  card joins a wrapped line with a space, which shows in the middle of Chinese.
 - **For agents**: what an agent updating an installation to this version needs to know, in plain words (settings to
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
+
+## v0.4.0 — 2026-10-21
+
+### For people
+
+- **A channel set up again after it was archived works again, and taking up an old conversation does not post
+  it twice.** A channel set up from the card (or attached to) while it sat in the archive category stays there no
+  more: it goes back where it came from. Taking up a conversation the channel already shows posts only its last
+  turns (a conversation begun in the channel, or left with `!cwd`, counts too), and `!resume <id> --quiet` (or
+  `/resume` with quiet, or `altention dc post --resume <id> --quiet`) posts none of it.
+- **A message that could not be handed to a Claude can be sent again.** When the terminal shows a dialog (or
+  your half-typed text, or its machine cannot be reached), the "not sent" note now has a 「再送一次」 button that
+  sends the words again once you have dealt with it. Messages another Claude sent with `altention dc post` are
+  handed over by themselves, in order, once the terminal is back to its input box.
+- **Small tables in a Claude's reply can be read on Discord.** Discord shows a Markdown table as rows of `|` and
+  dashes. Now a small table (up to 5 columns and 20 rows) in a Claude's final reply is rewritten before it is
+  posted: one of plain letters and digits becomes an aligned code block; one with Chinese, or too wide for a phone,
+  becomes a list, one item per row. Bigger tables, and tables inside code blocks, stay as they are. To turn this
+  off, set `"dcbot": {"small_tables": false}` in your instance's `plugins.json`.
+- **#setup and update notices no longer send you the wrong way.** When only the usage board's channel was
+  deleted, #setup said #dashboard was gone and "no" turned off both boards; now it asks about that board alone.
+  Running setup again after the usage board failed to post no longer treats an older installation as a new one.
+  An engine stuck on a fixed version now sends you to #chat, where Claude can put it back, not to #setup.
+- **Plugins from outside the engine are installed on every machine that uses them.** Write in the instance where
+  one comes from (`source` and `version`) and each machine's install puts it in `~/altention/plugins/<name>` at
+  that version, runs the setup steps its `plugin.json` lists (once per version; big ones can wait until first
+  use), links its skills, and says which system tools it needs that the machine lacks (it installs none). A step
+  that fails twice in a row is not run again by itself: install and doctor say how to run it by hand
+  (`python3 ops/plugins.py setup <plugin> <step>`).
+- **A plugin folder the instance does not name is only a draft.** `plugins.py list` shows it, but it is not
+  installed, scheduled or asked about, so a plugin still being written no longer runs by itself. doctor warns
+  when a draft still has schedules, hooks or data on a machine: it has stopped running there.
+- **Nothing of yours in a plugin's folder is overwritten.** A folder with changes not committed, another origin,
+  or a file of yours where the new version adds one is left as it is and said; a plugin's skill named like one of
+  the engine's (`update`, `setup`…) or pointing outside its folder is not linked.
+- **Posts that never reached a Claude are not lost without a word.** When handing a post to a channel's Claude
+  fails, the channel it came from is told, and doctor shows the posts kept aside (`dcbot.posts-bad`), with where
+  to find them and what to do. The bot's "online" line in `#audit` now names the release it runs.
+
+### For people (zh-TW)
+
+- **沒送進去或沒交到 Claude 的訊息不會悄悄不見，可以再送一次。** 終端機開著對話框（或你打到一半、那台連不上）時，「這則沒有送出」下面多一顆「再送一次」按鈕，處理好按下去就重送；別的頻道的 Claude 用 `altention dc post` 傳來的，終端機回到一般輸入框後會照順序自動補交；交給頻道的 Claude 失敗時，會在傳來的頻道說一聲，doctor 也會列出留下來沒交出去的（dcbot.posts-bad），說去哪看、怎麼處理。#audit 的「已上線」也改成寫出正在跑的版本。
+- **Claude 回覆裡的小表格在 Discord 上看得懂了。** 以前表格會變成一堆 `|` 和 `-`；現在正式回覆裡的小表格（最多 5 欄、20 列）貼出前會自動改寫：只有英數字的變成對齊的程式碼區塊，有中文或太寬的變成清單，一列一項。更大的表格和程式碼區塊裡的表格照原樣。不想要的話，在實例的 `plugins.json` 寫 `"dcbot": {"small_tables": false}` 就關掉。
+- **封存過的頻道重新設定後能用了，接回舊對話也不會重貼一次。** 頻道在「封存」分類裡時用設定卡（或 /attach）設定，現在會搬回原本的分類，打字不會再被當成封存頻道；接回這個頻道已經有的對話只貼最後幾輪，在頻道裡自己開始的、用 `!cwd` 離開過的對話也算；`!resume <id> --quiet`（或 `/resume` 勾 quiet）完全不貼，`altention dc post --resume` 也能加 `--quiet`。
+- **#setup 和更新通知不會再帶錯路。** 只有用量看板的頻道被刪時，#setup 以前會說 #dashboard 不在了，選「不要了」還會把兩個看板都關掉，現在只問那一個看板；用量看板貼不上、修好再跑一次設定時，舊安裝不會再被當成新安裝；引擎停在固定版本時，通知改叫你到 #chat 請 Claude 接回去，不再叫你去 #setup。
+- **外部插件會自己裝到每台用它的機器，你在插件資料夾裡的東西不會被蓋掉。** 在實例寫好它從哪來（source 和 version），每台安裝時就會把它放到 ~/altention/plugins/<名稱>、切到那一版、跑 plugin.json 寫的安裝步驟（同一版只跑一次，大的可以等用到再裝）、連上它的 skill，缺什麼系統工具也會說（不會自己裝）；同一步連續失敗兩次就不再自動重跑，install 和 doctor 會告訴你怎麼手動跑。插件資料夾裡有還沒 commit 的修改、origin 不一樣、或你的檔跟新版要加的同名時，照原樣留著並告訴你；插件的 skill 跟引擎的同名（update、setup…）或指到資料夾外面時不會連上。
+- **實例沒寫的插件資料夾只是草稿。** `plugins.py list` 會列出來，但不裝、不排程、也不問設定，還在開發的插件不會自己跑起來；草稿在某台還留著排程、hook 或資料時，doctor 會提醒你它在那台已經停了。
+
+### For agents
+
+1. New setting `dcbot.small_tables` in the instance's `plugins.json` (default `true`): `false` posts the tables in a
+   reply as Claude wrote them. Nothing to do when updating.
+2. External plugins (folders under `~/altention/plugins/`) now count only when the instance's `plugins.json`
+   declares them: `"plugins": {"<name>": {"source": "<git URL>", "version": "vX.Y.Z"}}`, or `{"local": true}` for a
+   folder that is only on the machines that have it and is not cloned. **Before updating an installation that
+   already runs external plugins, write those entries**: otherwise they become drafts, and apply takes away their
+   cron lines and hooks (their data stays). `python3 ops/plugins.py list` shows the drafts last.
+3. After updating, run `./install.sh` on each machine: its new step `core.plugins-external` clones and sets up the
+   declared plugins (a private repository uses the machine's own git login). What each setup step did is kept in
+   `~/.local/state/altention/plugins/<name>.json`; leave it to install and `plugins.py setup`.
+4. `plugin.json` may now say `setup[].lazy` (not run by install) and `needs` (`[{"name", "check", "hint"}]`: a shell
+   command that exits 0 when the tool is there, looked for by install and a whole doctor, never installed).
 
 ## v0.3.2 — 2026-10-20
 

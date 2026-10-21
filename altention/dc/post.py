@@ -17,6 +17,7 @@
                                                                    the text becomes the channel's topic. The bot answers when done
   altention dc post st-0 --resume eb106548                         switch that channel's Claude to an earlier conversation of its folder
                                                                    (as the owner's !resume: by the start of its id) and post its history
+                                                                   (only its last turns when the channel has it already; --quiet: none)
   altention dc post st-0 --history                                 post the history of the conversation the channel is on now
   altention dc post 新頻道 --create "…"                            a channel that does not exist yet is made (a plain one, for records);
                                                                    without --create an unknown name is an error, with the closest names
@@ -141,6 +142,9 @@ def build(argv, stdin_text, env, host, cwd):
     create = "--create" in args
     if create:
         args.remove("--create")
+    quiet = "--quiet" in args  # with --resume: the history is not posted
+    if quiet:
+        args.remove("--quiet")
     history = "--history" in args
     if history:
         args.remove("--history")
@@ -178,6 +182,8 @@ def build(argv, stdin_text, env, host, cwd):
         post["create"] = True
     if resume:
         post["resume"] = resume
+        if quiet:
+            post["quiet"] = True
     if history:
         post["history"] = True
     if new_claude:  # a folder on the bot's machine: expanded there (~ is the same user)

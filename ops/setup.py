@@ -264,6 +264,25 @@ def channel_gone(key, found):
     return any(set_value(config.setting(s)) for s in asked_channels(key, found))
 
 
+BOARD_NAMES = {"usage.channel": "用量看板", "status.channel": "狀態看板"}
+
+
+def boards_lost(found, there=None):
+    """{setting: "unset" or "gone"} of the board channels (status.channel, usage.channel) that have no channel, for
+    the dashboard question (C-67: two settings on two channels, one deleted, was asked as "#dashboard is gone"). None
+    when Discord cannot be read (then asked as before). `there`: the server's channel IDs, when read already."""
+    values = dict((s, config.setting(s)) for s in asked_channels("dashboard", found))
+    lost = dict((s, "unset") for s, v in values.items() if not set_value(v))
+    if len(lost) < len(values):
+        if there is None:
+            try:
+                there = set(r[0] for r in discord_channels())
+            except Failed:
+                return None
+        lost.update((s, "gone") for s, v in values.items() if set_value(v) and str(v) not in there)
+    return lost
+
+
 def set_value(value):
     return isinstance(value, (str, int)) and not isinstance(value, bool) and bool(str(value).strip())
 
@@ -275,6 +294,12 @@ def question_for(key, found=None, answered=None):
         found = plugin.discover()[0]
     answered = answered or {}
     if key == "dashboard":
+        settings, lost = asked_channels(key, found), boards_lost(found)
+        if lost and len(lost) < len(settings):  # one board's channel is still there: only the other is asked about
+            k, how = next(iter(lost.items()))
+            kept = next(s for s in settings if s not in lost)
+            return plugins.dashboard_question(only=(BOARD_NAMES.get(k, k), how == "gone", BOARD_NAMES.get(kept, kept),
+                                                    config.setting(kept)))
         return plugins.dashboard_question(again=answered.get(key) == "make", gone=channel_gone(key, found))
     if key == "usage.plan":
         return plugins.plan_question()
@@ -590,11 +615,13 @@ def answer(key, value, out=None):
     elif key == "dashboard":
         if value not in q["values"]:
             raise Refused("只能是 make（開）或 off（不要）")
-        gone = set(r[0] for r in discord_channels()) if value == "make" else set()
+        there = set(r[0] for r in discord_channels())
+        lost = boards_lost(found, there)
         for k, p in (("usage.channel", "usage"), ("status.channel", "status")):
             if value == "off":
-                turn(d, p, False, machine)
-            elif config.setting(k) and str(config.setting(k)) not in gone:
+                if k in lost or not lost:  # only the boards without a channel (C-67: "off" took the one still there)
+                    turn(d, p, False, machine)
+            elif config.setting(k) and str(config.setting(k)) not in there:
                 drop(d, k)  # a channel that is not there any more: made again by done
     elif key == "install":
         if value not in q["values"]:
@@ -718,6 +745,9 @@ def dashboard(out=None):
         r = script([sys.executable, os.path.join(ENGINE, "usage", "collect.py")])
         if r.returncode != 0:  # by its exit status: its posts print 「已送出到 #…」 and its notes go to stderr (both
             # here, merged), on a board that did go up (Z acceptance of 486fb69: every new install stopped here)
+            d = read_settings()  # taken back: a run again writes it and posts the board (C-68: it waited for the hour)
+            drop(d, "usage.channel")
+            write_settings(d)
             raise Failed("用量看板沒貼上：%s" % (r.stdout.strip()[-300:] or "結束碼 %d" % r.returncode))
         out.write("用量看板貼了\n")
     if "status.channel" in keys:
@@ -881,10 +911,9 @@ def done(out=None):
     missing = backups_missing(answered)
     if missing:
         raise Refused("選了備份但還沒接上：%s（python3 ops/setup.py backup-set …，或那一題改答 later）" % "、".join(missing))
-    asking = "ask" in state
-    if state.get("done") is not True or asking:
-        state["done"] = True
-        state.pop("ask", None)
+    asking = "ask" in state  # the reconcile's questions of an installation set up before: taken away only at the end,
+    if state.get("done") is not True:  # so that a run again after a step failed goes the same way (C-68: it went
+        state["done"] = True           # the new installation's: #guide again, #chat opened, no ✅)
         write_settings(d)
         if setup_state() is None or setup_state().get("done") is not True:
             raise Failed("setup.done 讀回來不是 true")
@@ -901,6 +930,11 @@ def done(out=None):
     if rows.get(SECRETARY) in ("on", "off") and not config.setting("planner.channel"):
         secretary(out)
     if asking:  # an installation set up before: #chat is there; the reconcile's questions are answered
+        d = read_settings()
+        if setup_state(d) is not None:
+            setup_state(d).pop("ask", None)
+            write_settings(d)
+            commit("setup: done (the reconcile's questions)")
         say_update("✅ 你在 #setup 回答的都設定好了。")
         out.write("要你決定的都做好了\n")
         return 0

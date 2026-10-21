@@ -462,6 +462,8 @@ except Exception:
 o["adopted"] = [l for l in sh("git -C %s for-each-ref --format='%%(refname)' refs/altention/adopted/" % shlex.quote(ch)).splitlines() if l]
 bad = os.path.join(H(ENGINE), "dcbot/state/events-bad")
 o["events_bad"] = len([n for n in os.listdir(bad) if n.endswith(".json")]) if os.path.isdir(bad) else 0
+bad = os.path.join(H(ENGINE), "dcbot/state/posts-bad")  # the bot: posts shown whose handing to a Claude broke (C-73)
+o["posts_bad"] = len([n for n in os.listdir(bad) if n.endswith(".json")]) if os.path.isdir(bad) else 0
 o["ownerless"] = rj(os.path.join(H(ENGINE), "dcbot/state/ownerless-sessions.json"))  # the bot: sessions of deleted channels it did not close
 _rt = rj(os.path.join(H(ENGINE), "dcbot/state/routes.json"))  # routes written before a route carried its pane's process
 o["routes_without_pid"] = sorted(str((v if isinstance(v, str) else (v or {}).get("channel")) if isinstance(v, (str, dict)) else "?")
@@ -696,7 +698,7 @@ def tidy(o):
         for key in ("repo", "hook", "own"):
             fix(row, key, lambda v: isinstance(v, bool), where="backup.")
     fix(o.get("sync") or {}, "data", obj, dict, "sync.")
-    for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_failed", "cards_failed", "bot_heartbeat_age", "update_alive_at",
+    for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_bad", "posts_failed", "cards_failed", "bot_heartbeat_age", "update_alive_at",
                 "bot_started_age"):
         fix(o, key, num)
     for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "adopted", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice",
@@ -1463,6 +1465,13 @@ def check(name, m, head, instance_repo=None):
                           "（頭 24 小時每 5 分鐘重試一次）" % n if n else "",
                           "看 %s 上 dcbot/state/posts-failed/ 裡每個檔的 text（通知的內容）和 dcbot/state/supervisor.out 的錯誤；"
                           "Discord 通了它們會自己送出並消失，超過 24 小時的讀完自己移走" % name, n))
+    if "posts_bad" in o and "dcbot" in roles:  # shown, not told: the sender's channel was told at the time (C-75)
+        n = o.get("posts_bad") or 0
+        out.append(record("dcbot.posts-bad", name, "warn" if n else "ok",
+                          "機器人有 %d 則 altention dc post 貼出去了、但交給對方頻道的 Claude 時出錯，那個 Claude 沒收到；"
+                          "內容留在 dcbot/state/posts-bad/" % n if n else "",
+                          "看 %s 上 dcbot/state/posts-bad/ 裡每個檔的 channel（要給哪個頻道）和 text（內容），還要的話請寄件的 Claude "
+                          "再送一次（或自己貼給那個頻道）；錯誤在 dcbot/state/supervisor.out；處理完把檔案移走" % name, n))
     if o.get("cards_failed") and "dcbot" in roles:  # update cards: said once the bot's retries kept failing 15 minutes
         n = o["cards_failed"]  # (a card stuck at ⏳ for hours looks like an update still running; #bot-dev 2026-10-19)
         out.append(record("dcbot.cards-failed", name, "warn",
@@ -1635,8 +1644,9 @@ def privacy_record():
                   % (found["total"], found.get("files", 0)), "跑 tools/privacy-scan HEAD 看明細，把個人的內容搬到實例", found["total"])
 
 
-def collect(names):
-    """Every record: about the list, one machine after another, then about all of them together."""
+def collect(names, watch=False):
+    """Every record: about the list, one machine after another, then about all of them together. watch (--watch's
+    rounds): the external plugins' needs checks are not run (manager 2026-10-20: only a whole doctor and install)."""
     out = []
     try:
         inv = inventory()
@@ -1674,7 +1684,98 @@ def collect(names):
     scan = privacy_record()
     setup = setup_record()
     asks = asks_record()
-    return [r for r in (setup, asks) if r] + out + ([scan] if scan else [])
+    return [r for r in (setup, asks) if r] + external_records(needs=not watch) + out + ([scan] if scan else [])
+
+
+def draft_leftovers(name, folder, d):
+    """What a draft plugin (C-61 E1) still has on this machine: its marked cron lines, hooks naming its folder, and
+    its data folders that are there, in words; [] when none (or they cannot be read: then nothing is claimed)."""
+    import plancore
+    left = []
+    try:
+        lines = plancore.read_crontab()
+        n = len([l for l in lines if plancore.marked(l) == name])
+        if n:
+            left.append("排程 %d 行" % n)
+    except Exception:
+        pass
+    try:
+        _raw, cc = plancore.read_settings_raw()
+        real = os.path.realpath(folder)
+        n = sum(1 for groups in ((cc or {}).get("hooks") or {}).values() for g in groups or []
+                for h in (g.get("hooks") or []) if real in str(h.get("command") or "") or folder in str(h.get("command") or ""))
+        if n:
+            left.append("hook %d 個" % n)
+    except Exception:
+        pass
+    for item in (d or {}).get("data") or []:
+        try:
+            path = altplugin.expand(item["path"], folder)
+        except Exception:
+            continue
+        if os.path.isdir(path):
+            left.append("資料夾 %s" % path)
+    return left
+
+
+def _inside(path, top):
+    return path == top or path.startswith(top + os.sep)
+
+
+def external_records(needs=True):
+    """C-61 E1, this machine's external plugins: the drafts (said, not a problem: one being written stays a draft
+    until the instance declares it), a declared one whose source is unusable, and the notes of
+    altplugin.external_notes (no folder here, a folder not named as the plugin). [] when it cannot be told."""
+    try:
+        from altention import config as altconfig
+        rows, _ = altplugin.on_this_machine()
+        settings = altconfig.settings()
+    except Exception:
+        return []
+    me = altplugin.this_machine([])
+    out = []
+    drafts = [n for n, _f, _d, where, _ in rows if where == "draft"]
+    if drafts:
+        out.append(record("plugins.drafts", me, "ok", "草稿（實例還沒寫，不裝、不排程）：%s" % "、".join(drafts), value=drafts))
+    for n, f, d, where, _ in rows:  # a draft that ran here before (its lines, hooks or data still here): it stopped
+        if where != "draft":
+            continue
+        left = draft_leftovers(n, f, d)
+        if left:
+            out.append(record("plugin.%s.draft" % n, me, "warn", "%s 這個插件在這台沒在跑（實例沒寫它從哪來），但這台還有它的%s"
+                              % (n, "、".join(left)), "要用就在實例 plugins.json 寫 plugins.%s 的 source＋version，或 local: true；"
+                              "不用了，它的排程和 hook 下一次 apply 會拿掉，資料夾留著不刪" % n, left))
+    for n, f, _d, where, why in rows:
+        if where == "unknown" and why.startswith("實例設定裡 plugins.%s 的來源" % n):
+            out.append(record("plugin.%s.source" % n, me, "fail", why, "改實例 plugins.json 的 plugins.%s：source 寫 git 網址、version 寫標籤（vX.Y.Z），或只寫 local: true" % n))
+    for n, words in altplugin.external_notes(rows, settings):
+        out.append(record("plugin.%s.external" % n, me, "warn", words))
+    engine_skills = os.path.join(altplugin.ENGINE, "skills")
+    for n, f, d, where, _ in rows:  # C-61 E2: a skill named as one of the engine's, or out of its folder: not linked
+        if where not in ("on", "off") or d is None or not altplugin.external(f):
+            continue
+        for sk in d.get("skills", []):
+            name = sk.get("name") if isinstance(sk, dict) else None
+            if isinstance(name, str) and os.path.isdir(os.path.join(engine_skills, name)):
+                out.append(record("core.skills-clash", me, "warn", "插件 %s 的 skill %s 跟引擎的同名：用引擎的，插件的沒有連" % (n, name),
+                                  "請插件改 skill 的名字（plugin.json 的 skills[].name）"))
+            elif isinstance(name, str) and not _inside(os.path.realpath(os.path.join(f, sk.get("path", ""))), os.path.realpath(f)):
+                out.append(record("core.skills-outside", me, "warn", "插件 %s 的 skill %s 指到插件資料夾外面：沒有連" % (n, name),
+                                  "請插件把 skills[].path 寫成資料夾裡的路徑"))
+    from altention import plugin_update
+    for n, f, d, where, _ in rows:  # C-61 E2: setup items given up on (failed twice in a row)
+        if where != "on" or d is None or not altplugin.external(f):
+            continue
+        for item, words in plugin_update.stuck(n, f, d, plugin_update.head(f) if os.path.isdir(os.path.join(f, ".git")) else "", settings):
+            out.append(record("plugin.%s.setup" % n, me, "warn", words, "照上面的「手動跑」那行跑，跑好之後就恢復"))
+    for n, f, d, where, _ in rows:  # C-61 E2: the system tools it looks for, on this machine only
+        if not needs or where != "on" or d is None or not d.get("needs") or not altplugin.external(f):
+            continue
+        missing = plugin_update.needs_missing(f, d, settings)
+        out.append(record("plugin.%s.needs" % n, me, "warn" if missing else "ok",
+                          "%s 要用的系統工具這台沒有：%s" % (n, "、".join(m for m, _ in missing)) if missing else "",
+                          "；".join("%s：%s" % (m, h) for m, h in missing if h) or "照插件的 README 裝好"))
+    return out
 
 
 def asks_record():
@@ -1967,7 +2068,7 @@ def main(argv):
     unknown = [f for f in flags if f not in ("--json", "--fix", "--watch")]
     if unknown:
         sys.exit("doctor：不認得 %s（可以用 --json、--fix、--watch）" % " ".join(unknown))
-    records = collect([a for a in argv if not a.startswith("--")])
+    records = collect([a for a in argv if not a.startswith("--")], watch="--watch" in flags)
     if "--watch" in flags:
         return watch(records, whole=not [a for a in argv if not a.startswith("--")])
     print(json.dumps(records, ensure_ascii=False, indent=1) if "--json" in flags else render(records, "--fix" in flags))

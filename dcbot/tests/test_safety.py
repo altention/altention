@@ -156,6 +156,19 @@ class Submit(unittest.TestCase):
         self.assertEqual(typed, [("typed", "一")], "the second is not typed before the first's receipt")
         self.assertIn(("typed", "二"), fake.log)
 
+    def test_a_posts_timing_gets_when_its_turn_came(self):
+        """C-75: posts.Origin carries a dict; submit puts in it when it had the channel's lock."""
+        from bot import posts
+        fake = Screens([box("❯ ")], echo=True)
+
+        async def nothing(*a, **k):
+            pass
+        timing = {}
+        run(self.bridge.submit(posts.Origin(self.ch, timing), "hello"), fake, mock.patch.object(self.bridge, "ensure", nothing),
+            mock.patch.object(self.bridge, "close_panel", nothing), mock.patch.object(tmux_bridge, "SUBMIT_DELAY", 0),
+            mock.patch.object(tmux_bridge, "RECEIPT_SECS", 0.01))
+        self.assertIsInstance(timing.get("locked"), float)
+
     def test_an_empty_box_is_typed_into_without_clearing(self):
         log, _ = self.send("hello", [box("❯ ")])
         self.assertNotIn(("key", "C-u"), log)

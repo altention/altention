@@ -145,6 +145,14 @@ class Publishes(Rig):
                 self.assertEqual(code, 0, out)
                 self.assertEqual("For people (zh-TW)」這段" in out, said, out)
 
+    def test_english_is_not_asked_for_its_own_words(self):
+        """C-70: once altention/text.py speaks English, plain "For people" is its part: no reminder for en."""
+        with mock.patch.dict(release.alt_text.TEXT, {"en": {}, "en-GB": {}}):
+            code, out = self.run_("publish", "0.1.0")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("For people (en", out)
+        self.assertIn("For people (zh-TW)」這段", out, "the others still are")
+
     def test_the_public_main_moved_after_it_was_read_nothing_half_done(self):
         self.assertEqual(self.run_("publish", "0.1.0", "--push")[0], 0)
         self.write("tool.py", "X = 3  %s old place, until after the release\n" % HASH)
