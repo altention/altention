@@ -7,6 +7,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
 from altention import testing as _testing  # noqa: E402
 _testing.guard_home()  # tests never touch the real home (altention/testing.py)
+import copy
 import io
 import json
 import os
@@ -476,6 +477,67 @@ class Settings(Rig):
         self.assertEqual(self.get(), [], "the crontab that was empty")
 
 
+
+class HooksOff(Settings):
+    """C-85 (a): a plugin turned off here (disabled_on) has its hooks taken out of settings.json, exactly as its
+    plugin.json declares them (as SECURITY.md says: turned off, chatlog records nothing more); the person's own hooks,
+    a hook like it with another timeout, and the hooks of the plugins on here stay."""
+    def chatlog(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                               "chatlog", "plugin.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def rows(self, where):
+        return [("chatlog", ENGINE + "/chatlog", self.chatlog(), where, ""),
+                ("other", ENGINE + "/other", {"hooks": [{"event": "Stop", "command": "{plugin}/o.sh"}]}, "on", "")]
+
+    def installed(self, want):
+        """settings.json with every hook of `want` (as apply wrote them), the person's own beside them."""
+        d = copy.deepcopy(self.before)
+        for w in want:
+            entry = {"type": "command", "command": w["text"]}
+            if w["key"][3] is not None:
+                entry["timeout"] = w["key"][3]
+            d.setdefault("hooks", {}).setdefault(w["key"][0], []).append({"hooks": [entry]})
+        return d
+
+    def test_off_here_its_hooks_go_the_rest_stays(self):
+        on, _ = plancore.wanted(self.rows("on"), "host-a", {}, None)
+        hooks = [w for w in on if w["kind"] == "hook"]
+        self.assertEqual(sorted(w["plugin"] for w in hooks), ["chatlog", "chatlog", "other"])
+        before = self.installed(hooks)
+        mine = [w for w in hooks if w["plugin"] == "chatlog"][0]
+        before["hooks"]["Stop"].append({"hooks": [{"type": "command", "command": mine["text"], "timeout": 99}]})  # another timeout
+        raw = json.dumps(before).encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(raw)
+        for where in ("disabled", "off"):
+            with self.subTest(where=where):
+                want, _ = plancore.wanted(self.rows(where), "host-a", {}, None)
+                result = plancore.compare(want, [], plancore.installed_hooks(before, ENGINE))
+                self.assertEqual(sorted((r[0], r[1]["plugin"] if r[1] else None) for r in result if r[0] != "same"),
+                                 [("hook off", "chatlog"), ("hook off", "chatlog"), ("unclaimed", None)])
+        new, actions, added = applycore.new_settings(before, result)
+        self.assertTrue(applycore.write_settings(raw, before, new, added, "b"))
+        with open(self.path) as f:
+            after = json.load(f)
+        left = [(e, h["command"], h.get("timeout")) for e, gs in after["hooks"].items() for g in gs for h in g["hooks"]]
+        self.assertEqual(sorted(left), sorted([("Stop", "other-tool", 5), ("Stop", ENGINE + "/other/o.sh", None),
+                                               ("Stop", mine["text"], 99)]))
+        self.assertNotIn("SessionEnd", after["hooks"], "an event left empty goes")
+        self.assertEqual(sum("chatlog 在這台沒在用" in a for a in actions), 2)
+        want, _ = plancore.wanted(self.rows("on"), "host-a", {}, None)  # turned on again: added back
+        result = plancore.compare(want, [], plancore.installed_hooks(after, ENGINE))
+        self.assertEqual(sorted(r[1]["name"] for r in result if r[0] == "missing" and r[1]["kind"] == "hook"), ["SessionEnd", "Stop"])
+
+    def test_a_plugin_on_here_or_unknown_takes_nothing(self):
+        for where in ("on", "unknown"):
+            want, _ = plancore.wanted(self.rows(where), "host-a", {}, None)
+            self.assertFalse([w for w in want if w["kind"] == "hook off"], where)
+
+    def test_the_report_names_them(self):
+        self.assertEqual(plugins.LABEL["hook off"], "插件在這台關掉了")
+
 class Elsewhere(Rig):
     """A line whose item's own "on" plainly leaves this machine out (the bot's supervisor lines once the bot has moved)
     is removed; when the settings, the bot's machine or the machine list cannot be told, nothing is (manager
@@ -931,6 +993,30 @@ class Overrides(Report):
         found = [l for l in self.get() if l.endswith(("# altention:%s" % marker).encode("utf-8"))]
         self.assertEqual(len(found), 1, (marker, self.get()))
         return found[0]
+
+    def test_chatlog_turned_off_here_its_hooks_and_line_go_and_come_back(self):
+        """C-85 (a): disabled_on this machine, apply takes chatlog's hooks out of settings.json (and its cron line,
+        as before); the other hooks stay; turned on again, both come back."""
+        self.all_as_asked()
+        path = os.path.expanduser("~/.claude/settings.json")
+        def hooks():
+            with open(path) as f:
+                d = json.load(f)
+            return sorted(h["command"] for gs in (d.get("hooks") or {}).values() for g in gs for h in g["hooks"])
+        before = hooks()
+        theirs = [c for c in before if "/chatlog/chatlog.py" in c]
+        self.assertEqual(len(theirs), 2, before)
+        off = self.settings()
+        off["plugins"]["chatlog"] = {"disabled_on": ["host-a"]}
+        code, out = self.apply_with(off)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hooks(), [c for c in before if c not in theirs])
+        self.assertFalse([l for l in self.get() if l.endswith(b"# altention:chatlog/sync")])
+        self.assertIn("chatlog 在這台沒在用", out)
+        code, out = self.apply_with(self.settings())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hooks(), before)
+        self.line("chatlog/sync")
 
     def test_three_plugins_retimed_at_once_only_their_lines_and_only_the_time(self):
         self.all_as_asked()

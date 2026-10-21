@@ -14,6 +14,28 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.4.2 — 2026-10-21
+
+### For people
+
+- **Turning chatlog off now stops it: conversations are no longer recorded or pushed.** A machine in chatlog's
+  `disabled_on` used to keep its hooks in `~/.claude/settings.json` (only its schedule went), so every conversation
+  there was still written down and pushed to your logs repository. Now installing takes chatlog's own two hooks
+  (Stop and SessionEnd) out on such a machine, and puts them back when you turn it on again; the same goes for any
+  plugin turned off on a machine. The 「更新」 button installs on every machine; updated another way, run
+  `./install.sh` there. What was recorded before stays in your logs; hooks of your own are left as they are.
+
+### For people (zh-TW)
+
+- **關掉 chatlog（對話紀錄）之後，對話不再被記錄、推送。** 以前在 chatlog 的 disabled_on 寫了某台之後，只拿掉它的排程，hook 還留在 ~/.claude/settings.json，那台的對話照樣被記下來、推到紀錄 repo。現在安裝時會拿掉 chatlog 自己的兩個 hook（Stop 和 SessionEnd），再打開時會加回來；其他插件在某台關掉也一樣。按「更新」會在每台都跑安裝；用別的方式更新的話，在那台跑 `./install.sh`。之前記下的紀錄留著，你自己加的 hook 不動。
+
+### For agents
+
+1. After updating, `./install.sh` (or `python3 ops/apply.py <machine>`) must run on each machine where a plugin is
+   turned off (`disabled_on`, or a `machines: one` plugin placed elsewhere): until then that plugin's hooks stay
+   in `~/.claude/settings.json` and keep running. The update card's 「更新」 does it on every machine. Only a hook
+   exactly as the plugin declares it (event, matcher, command, timeout) is taken out; others are left.
+
 ## v0.4.1 — 2026-10-21
 
 ### For people

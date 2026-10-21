@@ -307,6 +307,26 @@ def new_settings(settings, result):
             new.setdefault("hooks", {}).setdefault(event, []).append(group)
             added.append(w["text"])
             actions.append("加上 hook：%s/%s" % (w["plugin"], w["name"]))
+        elif status in ("hook twin", "hook off") and w is not None:  # C-61 E5: an external plugin's own hook
+            event, matcher, _, timeout = w["key"]
+            groups = new.get("hooks", {}).get(event, [])
+            for g in groups:  # the very one: its command and its timeout too (#code-review of d719c16)
+                h = next((h for h in g.get("hooks") or [] if h.get("command") == txt and h.get("timeout") == timeout), None) \
+                    if (g.get("matcher") or "") == matcher else None
+                if h is None:
+                    continue
+                added.append(("drop", event, matcher, txt, timeout))
+                g["hooks"].remove(h)
+                if not g["hooks"]:  # a group only this hook was in (apply gives each one a group of its own)
+                    groups.remove(g)
+                    if not groups:
+                        del new["hooks"][event]
+                        if not new["hooks"]:
+                            del new["hooks"]
+                actions.append("拿掉 hook（%s）：%s/%s：%s" % (
+                    "同一個已經裝了，這是多的" if status == "hook twin" else "%s 在這台沒在用（off、關掉或草稿）" % w["plugin"],
+                    w["plugin"], w["name"], txt))
+                break
         elif status == "gone" and w is not None and w["kind"] == "hook":
             actions.append("留著（像是引擎搬家前的 hook，但那個資料夾已經不在；確定是引擎的舊資料夾就加 --moved-from <資料夾> 再跑）：%s" % txt)
         elif status == "unclaimed" and w is None and any(txt == h.get("command") for _, _, h in hook_list(settings)):
@@ -660,13 +680,22 @@ def write_settings(raw_before, before, after, added, backup, raised=()):
         return s
     grew = all(isinstance(after.get(k), int) and not isinstance(after.get(k), bool) and
                (before.get(k) is None or (isinstance(before.get(k), (int, float)) and after[k] > before[k])) for k in raised)
-    def base(s):  # `before` without the hooks meant to be dropped
+    def base(s):  # `before` without the hooks meant to be dropped (and a group, an event left empty by that alone)
         s = copy.deepcopy(s)
-        for event, matcher, command in drops:
-            for g in (s.get("hooks") or {}).get(event, []):
-                h = next((h for h in g.get("hooks") or [] if h.get("command") == command), None)
+        for drop in drops:  # (event, matcher, command[, timeout]): with a timeout, only the hook that has it
+            event, matcher, command = drop[:3]
+            groups = (s.get("hooks") or {}).get(event, [])
+            for g in groups:
+                h = next((h for h in g.get("hooks") or [] if h.get("command") == command and
+                          (len(drop) < 4 or h.get("timeout") == drop[3])), None)
                 if (g.get("matcher") or "") == matcher and h is not None:
                     g["hooks"].remove(h)
+                    if not g["hooks"]:
+                        groups.remove(g)
+                        if not groups:
+                            del s["hooks"][event]
+                            if not s["hooks"]:
+                                del s["hooks"]
                     break
         s = without(s, set(adds))  # as rest(): the same command may already run on another event
         for k in raised:

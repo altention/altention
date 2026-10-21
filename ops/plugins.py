@@ -79,7 +79,8 @@ def show(machine=None, as_json=False, out=sys.stdout):
 
 LABEL = {"same": "一致", "time differs": "時間不同", "paused": "暫停中", "missing": "少了", "extra": "多的",
          "unclaimed": "沒認領", "duplicate": "重複", "short": "不足", "elsewhere": "不在這台", "replaced": "換掉舊的",
-         "moved": "搬家前的舊路徑", "gone": "舊資料夾不在", "turned off": "實例關掉", "held": "設定不能用，不動"}
+         "moved": "搬家前的舊路徑", "gone": "舊資料夾不在", "turned off": "實例關掉", "held": "設定不能用，不動",
+         "hook off": "插件在這台關掉了"}
 
 
 def unlisted(machine):

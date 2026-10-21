@@ -215,6 +215,17 @@ def wanted(rows, machine, settings, bot):
     away. A cron item whose time the instance set carries "override": its time differs is changed without
     --allow-time (applycore.new_crontab)."""
     want, unknown = [], []
+    for name, folder, d, where, reason in rows:  # C-85: a plugin turned off here (disabled_on, or not its machine):
+        if where not in ("off", "disabled") or d is None:  # its hooks, exactly as it declares them, are taken out
+            continue
+        for h in d.get("hooks", []):
+            try:
+                command = plugin.expand(h["command"], folder, settings)
+            except plugin.PluginError:
+                continue  # cannot be written out: nothing to match, nothing taken
+            want.append({"plugin": name, "name": "%s%s" % (h["event"], "（%s）" % h["matcher"] if h.get("matcher") else ""),
+                         "kind": "hook off", "key": (h["event"], h.get("matcher") or "", tuple(words(command)), h.get("timeout")),
+                         "text": command})
 
     def special(kind, name, item):
         want.append({"plugin": name, "name": item.get("name"), "kind": kind, "key": None, "text": ""})
@@ -477,6 +488,8 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
                twice);
     gone       a line or hook that would have been replaced but its old folder is gone and nobody named it
                (`apply --moved-from <folder>`): kept, and said, a folder gone alone saying nothing of whose it was;
+    hook off   a hook exactly as a plugin turned off here declares it (C-85: wanted()'s "hook off" items; its event,
+               matcher, command words and timeout): removed, as cron lines of a plugin off here are;
     turned off a line with our marker naming an item the instance turned off ("enabled": false, C-37), its command
                in this engine or a folder it moved from (in_engine): removed; another engine's line as before;
     held       such a line of an item whose instance override cannot be used: kept byte for byte;
@@ -484,7 +497,8 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
                someone else's as far as apply goes, kept as it is; also any hook nothing asks for (hooks carry
                no marker, so none is ever removed)."""
     special = dict(((w["plugin"], w["name"]), w) for w in want if w["kind"] in ("held", "off"))
-    want = [w for w in want if w["kind"] not in ("held", "off")]
+    hooks_off = dict((w["key"], dict(w, kind="hook")) for w in want if w["kind"] == "hook off")
+    want = [w for w in want if w["kind"] not in ("held", "off", "hook off")]
     result, used_c, used_h, used_p = [], set(), set(), set()
     for w in want:
         pool, used = (cron_have, used_c) if w["kind"] == "cron" else (hook_have, used_h)
@@ -537,7 +551,8 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
             result.append(("unclaimed", None, p[1], ""))
     for i, h in enumerate(hook_have):
         if i not in used_h:
-            result.append(("unclaimed", None, h[1], ""))
+            off = hooks_off.get(h[0])
+            result.append(("hook off", off, h[1], "") if off is not None else ("unclaimed", None, h[1], ""))
     return result
 
 
