@@ -7,11 +7,16 @@ Standard library only, Python 3.8 is enough: tools/dcremote imports it on the ot
   {"op": "raw", "path"}                       the whole file, base64 (images, attachments; up to RAW_MAX bytes)
   {"op": "find", "root", "query", "hidden"}   files and folders under root whose path matches the query, best first
   {"op": "resolve", "cwd", "paths"}           which of these paths (relative to cwd) exist: [[given, absolute, is folder]]
-Every result has "error" when it failed. Secrets are never shown, not even their names (blocked()).
+Every result has "error" when it failed. Secrets are never shown, not even their names (blocked()): nor anything
+under /proc, /sys or /dev (the environment and command line of every process of this user are read there, tokens
+among them; found by a review on 2026-10-21). Files are read only when they are regular files (open_regular()): no
+FIFO, device or socket, which could hang the read or never end.
 """
 import base64
 import fnmatch
+import io
 import os
+import stat
 import subprocess
 
 RAW_MAX = 8 * 1024 * 1024
@@ -22,6 +27,7 @@ IMAGES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 # Folders under home that hold tokens and keys, and file names that usually do
 BLOCKED_DIRS = [".config", ".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings",
                 ".claude/.credentials.json", ".claude.json", ".copilot", ".netrc", ".git-credentials", ".pypirc", ".npmrc"]
+SYSTEM_TREES = ["/proc", "/sys", "/dev"]  # whole trees, the folders themselves too (after realpath)
 BLOCKED_NAMES = [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
                  "*credentials*", "*.keystore", ".netrc", ".git-credentials", "secrets.*", "*token*.json", "*.kdbx",
                  ".*history", ".*_history", ".npmrc", ".pypirc", ".viminfo"]
@@ -42,6 +48,9 @@ def full(path, cwd=None):
 def blocked(path):
     """Is this a secret (or inside a folder of secrets)? Checked on the resolved path, so links do not get round it."""
     real = os.path.realpath(path)
+    for top in SYSTEM_TREES:
+        if real == top or real.startswith(top + os.sep):
+            return True
     h = os.path.realpath(home())
     for d in BLOCKED_DIRS:
         top = os.path.join(h, d)
@@ -51,6 +60,31 @@ def blocked(path):
         if part and any(fnmatch.fnmatch(part.lower(), pat) for pat in BLOCKED_NAMES):
             return True
     return False
+
+
+class NotRegular(OSError):
+    """What open_regular() refuses: not a regular file, or found to be a blocked one once open."""
+
+
+def open_regular(path):
+    """`path` (resolved and checked by blocked() already) opened for reading in binary, or NotRegular / OSError.
+    O_NONBLOCK: a FIFO put there since is opened without waiting for a writer, and then refused by its type;
+    O_NOFOLLOW: nor a link put in place of the file. On Linux the open file's own path (/proc/self/fd) is checked by
+    blocked() again: a folder on the way swapped for a link since the check gets nowhere."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegular("不是一般的檔案")
+        try:
+            there = os.readlink("/proc/self/fd/%d" % fd)
+        except OSError:
+            there = None  # no /proc (macOS): the check before the open stands
+        if there is not None and blocked(there):
+            raise NotRegular("這個檔案不能看")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def git_info(path):
@@ -129,7 +163,7 @@ def kind_of(path):
     if os.path.splitext(path)[1].lower() in IMAGES:
         return "image"
     try:
-        with open(path, "rb") as f:
+        with open_regular(path) as f:
             head = f.read(8192)
     except OSError:
         return "unreadable"
@@ -145,7 +179,7 @@ def read(path, start=1, count=60):
     if os.path.isdir(path):
         return {"error": "這是資料夾", "dir": True, "path": path}
     if not os.path.isfile(path):
-        return {"error": "找不到檔案：%s" % path}
+        return {"error": "找不到檔案：%s" % path if not os.path.exists(path) else "這不是一般的檔案，不能看"}
     size = os.path.getsize(path)
     kind = kind_of(path)
     out = {"path": path, "home": home(), "size": size, "kind": kind}
@@ -153,7 +187,7 @@ def read(path, start=1, count=60):
         return out
     start, lines, total = max(1, int(start or 1)), [], 0
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with io.TextIOWrapper(open_regular(path), encoding="utf-8", errors="replace") as f:
             for total, line in enumerate(f, 1):
                 if start <= total < start + count:
                     lines.append(line.rstrip("\n").rstrip("\r"))
@@ -161,7 +195,7 @@ def read(path, start=1, count=60):
                     total = None  # too big to count all of it
                     break
     except OSError as e:
-        return {"error": "讀不了：%s" % e.strerror}
+        return {"error": "讀不了：%s" % (e.strerror or e)}
     if total is not None and start > max(total, 1):  # past the end: show the last lines instead
         return read(path, max(1, total - count + 1), count)
     out.update({"start": start, "lines": lines, "total": total})
@@ -173,12 +207,18 @@ def raw(path):
     if blocked(path):
         return {"error": "這個檔案不能看（金鑰或 token）"}
     if not os.path.isfile(path):
-        return {"error": "找不到檔案：%s" % path}
+        return {"error": "找不到檔案：%s" % path if not os.path.exists(path) else "這不是一般的檔案，不能看"}
     size = os.path.getsize(path)
     if size > RAW_MAX:
         return {"error": "檔案太大（%s），Discord 傳不了" % human(size), "size": size}
-    with open(path, "rb") as f:
-        return {"path": path, "name": os.path.basename(path), "size": size, "b64": base64.b64encode(f.read()).decode()}
+    try:
+        with open_regular(path) as f:
+            data = f.read(RAW_MAX + 1)
+    except OSError as e:
+        return {"error": "讀不了：%s" % (e.strerror or e)}
+    if len(data) > RAW_MAX:  # grown since it was measured
+        return {"error": "檔案太大，Discord 傳不了", "size": len(data)}
+    return {"path": path, "name": os.path.basename(path), "size": len(data), "b64": base64.b64encode(data).decode()}
 
 
 def candidates(root, hidden=False):

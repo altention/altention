@@ -179,6 +179,114 @@ class Browser(unittest.TestCase):
         asyncio.run(go())
 
 
+def refused(r):
+    """A result that carries nothing of the file (its assertions never print what came back: it may be a token)."""
+    return isinstance(r, dict) and "error" in r and not any(k in r for k in ("b64", "lines", "entries", "matches"))
+
+
+def soon(fn, *args, limit=5):
+    """fn(*args) in a thread, failing the test when it is not back within `limit` seconds (a FIFO read that hangs)."""
+    import threading
+    out = []
+
+    def run():
+        try:
+            out.append((True, fn(*args)))
+        except BaseException as e:
+            out.append((False, e))
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(limit)
+    if t.is_alive():
+        raise AssertionError("did not come back within %s s" % limit)
+    ok, got = out[0]
+    if not ok:
+        raise got
+    return got
+
+
+class SystemTrees(unittest.TestCase):
+    """A review on 2026-10-21: /proc/self/environ was read and sent whole (filecore.raw: 1692 characters of
+    base64, its size said 0): the environment of every process of this user, tokens among them, is there. /proc, /sys
+    and /dev are no place the browser shows, whatever way leads there; and only regular files are read."""
+    LINUX = os.path.exists("/proc/self/environ")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="files trees ")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.fifo = os.path.join(self.dir, "pipe")
+        os.mkfifo(self.fifo)
+        with open(os.path.join(self.dir, "plain.txt"), "w") as f:
+            f.write("fine\n")
+        for name, to in (("env-link", "/proc/self/environ"), ("proc-link", "/proc"), ("zero-link", "/dev/zero"),
+                         ("sys-link", "/sys")):
+            os.symlink(to, os.path.join(self.dir, name))
+
+    def secret_paths(self):
+        paths = ["/dev/zero", "/dev/null", "/dev", self.fifo, os.path.join(self.dir, "zero-link")]
+        if self.LINUX:
+            paths += ["/proc/self/environ", "/proc/%d/environ" % os.getpid(), "/proc/self/cmdline", "/proc/self/maps",
+                      "/proc", "/proc/self", os.path.join(self.dir, "env-link"), os.path.join(self.dir, "proc-link"),
+                      os.path.join(self.dir, "sub", "..", "env-link")]
+        if os.path.isdir("/sys/kernel"):
+            paths += ["/sys", "/sys/kernel", os.path.join(self.dir, "sys-link")]
+        return paths
+
+    def test_every_operation_refuses_them(self):
+        for path in self.secret_paths():
+            for req in ({"op": "read", "path": path}, {"op": "raw", "path": path}, {"op": "list", "path": path},
+                        {"op": "find", "root": path, "query": "e"}):
+                self.assertTrue(refused(soon(filecore.op, req)), "%s %s" % (req["op"], path))
+            self.assertEqual(filecore.op({"op": "resolve", "cwd": self.dir, "paths": [path]})["found"],
+                             [] if path not in (self.fifo,) else filecore.op({"op": "resolve", "cwd": self.dir, "paths": [path]})["found"],
+                             path)
+        self.assertTrue(refused(filecore.op({"op": "raw", "path": "/proc/self/environ"})) or not self.LINUX,
+                        "its size is 0: not taken for an empty file")
+
+    def test_the_folder_listing_leaves_the_links_out(self):
+        names = [e["n"] for e in filecore.op({"op": "list", "path": self.dir, "hidden": True})["entries"]]
+        for n in ("env-link", "proc-link", "zero-link", "sys-link"):
+            self.assertNotIn(n, names)
+        self.assertIn("plain.txt", names)
+        self.assertEqual(base64.b64decode(filecore.op({"op": "raw", "path": os.path.join(self.dir, "plain.txt")})["b64"]), b"fine\n")
+
+    def test_only_regular_files_are_opened(self):
+        """A FIFO or a device swapped in after the checks: open_regular() refuses it without waiting for a writer."""
+        for path in (self.fifo, "/dev/zero"):
+            with self.assertRaises(filecore.NotRegular, msg=path):
+                soon(filecore.open_regular, path)
+        with soon(filecore.open_regular, os.path.join(self.dir, "plain.txt")) as f:
+            self.assertEqual(f.read(), b"fine\n")
+        with mock.patch.object(filecore.os.path, "isfile", lambda p: True), mock.patch.object(filecore.os.path, "getsize", lambda p: 1):
+            self.assertTrue(refused(soon(filecore.raw, self.fifo)), "the check before the open passed: the open's own")
+            self.assertTrue(refused(soon(filecore.raw, "/dev/zero")))
+            self.assertNotIn("lines", soon(filecore.read, self.fifo))
+
+    @unittest.skipUnless(os.path.exists("/proc/self/environ"), "Linux")
+    def test_a_folder_swapped_for_a_link_after_the_check(self):
+        """The open file's own path is checked again (/proc/self/fd): blocked() said yes to a path whose folder is a
+        link to /proc by the time it is opened."""
+        real = os.path.join(self.dir, "d")
+        os.makedirs(real)
+        with open(os.path.join(real, "environ"), "w") as f:
+            f.write("x")
+        swapped = os.path.join(self.dir, "swapped")
+        os.symlink("/proc/self", swapped)
+        with mock.patch.object(filecore, "full", lambda p, cwd=None: os.path.join(swapped, "environ")), \
+                mock.patch.object(filecore, "blocked", side_effect=[False, True]):
+            self.assertTrue(refused(filecore.raw("whatever")))
+
+    def test_another_machine_goes_the_same_way(self):
+        """dcremote files is filecore.op itself (tools/dcremote imports bot.filecore): the same answers."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import json
+        for path in self.secret_paths():
+            for op in ("raw", "read", "list"):
+                r = subprocess.run(["python3", os.path.join(root, "tools", "dcremote"), "files"],
+                                   input=json.dumps({"op": op, "path": path}), stdout=subprocess.PIPE, universal_newlines=True, timeout=20)
+                self.assertTrue(refused(json.loads(r.stdout)), "%s %s" % (op, path))
+
+
 class Remote(unittest.TestCase):
     def test_dcremote_files(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -14,6 +14,22 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.4.1 — 2026-10-21
+
+### For people
+
+- **Security fix: file browsing no longer opens anything under /proc, /sys or /dev, and reads ordinary files only.**
+  Before, a path into these system folders (from `/files` or a 📂 link under a reply) could show the environment of
+  your programs (`/proc/…/environ`), where tokens may be. Everyone on an earlier version should update.
+
+### For people (zh-TW)
+
+- **安全修正：看檔案（/files、📂 連結）不再打開 /proc、/sys、/dev 底下的東西，只讀一般檔案。** 以前透過這些系統資料夾可以看到程式的環境變數（可能有 token）；建議所有人更新。
+
+### For agents
+
+None.
+
 ## v0.4.0 — 2026-10-21
 
 ### For people
