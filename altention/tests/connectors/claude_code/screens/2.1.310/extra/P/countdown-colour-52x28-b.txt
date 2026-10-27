@@ -1,0 +1,28 @@
+
+
+● Rig
+  ⎿  $ cd sub && rm -f ../shots-zoom/*; timeout 1000
+     bash ../zoomtry.sh
+
+────────────────────────────────────────────────────
+ Bash command
+ rig
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ cd sub && rm -f ../shots-zoom/*; timeout 1000 bash
+ ../zoomtry.sh
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on
+ │ statically-unresolvable target: /tmp/claude-1000
+ │ 001/-mnt-nfs-work-someone123-altention-engine/13
+ │ 8759c1-a567-4d16-a9d3-492e907cf770/scratchpad/pc
+ │ /w/cdd-52x28-2417987/hdir/shots-zoom/*
+ ⚠ Claude Code will automatically deny this request
+ in 1:55, to avoid blocking progress on an
+ unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

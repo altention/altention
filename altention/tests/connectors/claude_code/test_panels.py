@@ -158,6 +158,31 @@ class AutoDeny(unittest.TestCase):
         for which in self.SETS:
             self.assertIsNone(panels.auto_deny(samples.screen("permission", which)), which)
 
+    def test_a_narrow_pane_wraps_it_onto_three_rows(self):
+        """2.1.310 at 52 columns (#activity-dev 2026-10-27): the reason in a │ box above, the row wrapped after "request",
+        so its first row has no "in" (the buttons never went out: each second the dialog looked changed)."""
+        from altention.tests.connectors.claude_code import samples
+        a, b = (samples.extra("P", "countdown-colour-52x28-" + w, version="2.1.310") for w in "ab")
+        self.assertIn("deny this request\n in 1:58,", a)
+        self.assertEqual((panels.auto_deny(a), panels.auto_deny(b)), (118, 115))
+        (ea, oa), (eb, ob) = panels.parse_menu(a), panels.parse_menu(b)
+        self.assertEqual((ea, oa), (eb, ob), "the excerpt leaves all three rows out")
+        self.assertEqual(oa, [(1, "Yes"), (2, "No")])
+        self.assertNotIn("unattended session", ea)
+        self.assertIn("│ Dangerous rm operation on", ea, "the reason's box stays")
+        self.assertIsNone(panels.auto_deny(samples.extra("P", "auto-denied-colour-52x28", version="2.1.310")))
+
+    def test_wrapped_at_any_width(self):
+        import textwrap
+        sentence = "⚠ Claude Code will automatically deny this request in 0:56, to avoid blocking progress on an unattended session"
+        for width in range(30, 130):
+            rows = textwrap.wrap(sentence, width)
+            view = "\n".join(["─" * width, " Bash command", " " + "╌" * 20, " rm -rf ~", " " + "╌" * 20, " │ a reason"]
+                             + [" " + r for r in rows] + ["", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "",
+                                                          " Esc to cancel · Tab to amend", ""])
+            self.assertEqual(panels.auto_deny(view), 56, (width, rows))
+            self.assertNotIn("unattended", panels.parse_menu(view)[0], width)
+
     def test_the_screen_reader_wording_and_the_seconds(self):
         def dialog(row):
             return "\n".join(["─" * 40, " Bash command", " " + "╌" * 30, " rm -rf ~", " " + "╌" * 30, row,

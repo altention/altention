@@ -9,5 +9,6 @@
  "tests.test_menus.Pressed.test_a_dialog_counting_down_to_its_own_denial_gets_the_key": "2.1.302 auto-deny countdown: new test (a click on a dialog counting down sends its key); the existing tests' keys are unchanged",
  "tests.test_menus.Pressed.test_a_press_waits_while_a_message_is_being_typed": "C-73: new test (a button's key waits in the channel's queue); the existing tests' keys are unchanged",
  "tests.test_safety.Submit.test_the_next_message_waits_for_the_receipt_of_this_one": "C-73: new test (the channel's lock held from typing to receipt); the existing tests' keys are unchanged",
- "tests.test_safety.Submit.test_a_posts_timing_gets_when_its_turn_came": "C-75: new test (a post's Origin gets when its turn came); the existing tests' keys are unchanged"
+ "tests.test_safety.Submit.test_a_posts_timing_gets_when_its_turn_came": "C-75: new test (a post's Origin gets when its turn came); the existing tests' keys are unchanged",
+ "tests.test_menus.Pressed.test_a_narrow_pane_s_countdown_gets_the_key_too": "v0.4.3 narrow-pane countdown: new test (a click on a dialog whose countdown wraps onto three rows sends its key); the existing tests' keys are unchanged"
 }

@@ -229,6 +229,19 @@ class Pressed(unittest.TestCase):
                 self.press(token, "2", [b, b])
                 self.assertEqual(self.pressed, ["2"])
 
+    def test_a_narrow_pane_s_countdown_gets_the_key_too(self):
+        """#activity-dev 2026-10-27 (Claude Code 2.1.310, 52 columns): the row wraps onto three rows after "request",
+        under a │ box; every click said 「選單已經變了」 (real screens)."""
+        from altention.tests.connectors.claude_code import samples
+        a, b = (samples.extra("P", "countdown-colour-52x28-" + w, version="2.1.310") for w in "ab")
+        self.assertEqual(menus.asked(a), menus.asked(b))
+        self.first = a
+        token = self.post()
+        self.press(token, "2", [b, b])
+        self.assertEqual(self.pressed, ["2"])
+        self.press(self.post(), "1", [samples.extra("P", "auto-denied-colour-52x28", version="2.1.310")])
+        self.assertEqual(self.pressed, ["2"], "run out: nothing more pressed")
+
     def test_the_deadline_is_said_and_after_it_nothing_is_pressed(self):
         import re
         import time

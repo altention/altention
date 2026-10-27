@@ -107,12 +107,15 @@ MENU_RULE = re.compile(r"^[\s─━═╌▔▁-]*$")  # a row of a menu that is
 # Claude Code 2.1.302, auto (or bypass) mode: a call its safety check holds (a dangerous rm) is asked about with a
 # deadline, a warning row that counts down every second: "⚠ Claude Code will automatically deny this request in 1:59,
 # to avoid blocking progress on an unattended session" (its screen-reader mode: "in about 2 minutes"); 80 columns wrap
-# it onto two rows. At 0 the dialog goes and the call is denied. Only rows inside a dialog count, below its full-width
+# it onto two rows, a narrower pane onto more, wrapped anywhere: at 52 columns "…deny this request" / "in 0:56, to avoid
+# blocking progress on an" / "unattended session" (#activity-dev 2026-10-27, its buttons never went out). At 0 the dialog
+# goes and the call is denied. Only rows inside a dialog count, below its full-width
 # top rule and below the command's own dashed rules (a reply above or the command may quote the words; #code-review of
 # ac72a14), and only the whole sentence with a time in it.
 AUTO_DENY = re.compile(r"⚠ Claude Code will automatically deny this request in (?:(\d+):([0-5]\d)|about (\d+) (minute|second)s?), "
                        r"to avoid blocking progress on an unattended session")
-AUTO_DENY_START = re.compile(r"^\s*⚠ Claude Code will automatically deny this request in ")
+AUTO_DENY_START = re.compile(r"^\s*⚠ Claude Code will\b")  # (its first row: where the rest wraps varies with the width)
+AUTO_DENY_ROWS = 5  # rows the sentence may take (128 characters: 5 rows down to about 30 columns)
 DASHED = re.compile(r"^\s*╌{8,}\s*$")  # the rule above and below a permission's command
 DIALOG_RULE = re.compile(r"^\s*(─{20,}|▔{20,})")  # the full-width rule a dialog is drawn under (bot/menus.py's DIALOG_TOP)
 
@@ -125,7 +128,7 @@ def auto_deny_rows(rows):
     for i in range(len(rows) - 1, below - 1, -1):
         if not AUTO_DENY_START.match(rows[i]):
             continue
-        for j in range(i, min(i + 3, len(rows))):
+        for j in range(i, min(i + AUTO_DENY_ROWS, len(rows))):
             m = AUTO_DENY.fullmatch(" ".join(r.strip() for r in rows[i:j + 1]))
             if m:
                 mins, secs, n, unit = m.groups()

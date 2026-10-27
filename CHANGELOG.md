@@ -14,6 +14,23 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.4.3 — 2026-10-27
+
+### For people
+
+- **Permission questions with a countdown can be answered from Discord when the terminal is narrow.** In a narrow
+  pane Claude Code wraps its "will automatically deny this request in 0:56" warning onto three rows; the bot did not
+  recognise it as the countdown, so every second the question looked changed and each button press said
+  「選單已經變了，沒有送出」. Now the warning is recognised however it wraps.
+
+### For people (zh-TW)
+
+- **終端機視窗窄的時候，有倒數的權限選單也能從 Discord 按了。** 視窗窄時，Claude Code 會把「will automatically deny this request in 0:56」那行警告換成三列，機器人沒認出那是倒數，每過一秒就以為選單變了，按任何按鈕都只說「選單已經變了，沒有送出」。現在不管怎麼換行都認得到。
+
+### For agents
+
+None.
+
 ## v0.4.2 — 2026-10-21
 
 ### For people
