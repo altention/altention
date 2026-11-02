@@ -13,6 +13,15 @@
                                             # without --write: what would change (nothing is written);
                                             # with --write: plan's result written into this machine's crontab and
                                             # settings.json (ops/applycore.py: markers, missing items; backup first)
+  python3 ops/plugins.py list --catalog      # also the official list's left-out repositories and why (C-81)
+  python3 ops/plugins.py list --catalog-now  # look at the official list now (at most once every 10 minutes), then list
+  python3 ops/plugins.py add <插件> [vX.Y.Z] [--yes [--hooks-ok]]
+                                            # a plugin from the official list (C-81 K2): without --yes, what it
+                                            # would do on this computer (nothing written); with --yes, written into
+                                            # the instance (source, version), committed and pushed; one with hooks
+                                            # or a rewrite of replies also needs --hooks-ok, asked on its own
+  python3 ops/plugins.py lose <插件>          # what turning it off loses (its plugin.json "lose", what needs it,
+                                            # its schedules, hooks and channels), to say before turning it off (C-85)
   python3 ops/plugins.py setup <插件> <項目>  # one setup item of an external plugin on here, by hand (C-61 E2: a
                                             # lazy one, or one given up on after failing twice); written down
   python3 ops/plugins.py report             # 3a.12: what apply --write would change here, as JSON; reads only
@@ -34,9 +43,10 @@ import re
 import subprocess
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from altention import config, plugin  # noqa: E402
+from altention import config, plugin, text as alt_text  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import applycore  # noqa: E402
 import plancore  # noqa: E402
@@ -69,7 +79,9 @@ def show(machine=None, as_json=False, out=sys.stdout):
     else:
         out.write("== %s\n" % machine)
         for name, _, _, where, reason in rows:
-            out.write("%-8s %-9s%s\n" % (name, where, "  " + reason if reason else ""))
+            words = PLACE_WORDS["blocked_plugin"] if where == "blocked" and not plugin.blocked_by_engine(reason) \
+                else PLACE_WORDS.get(where, "")
+            out.write("%-8s %-9s%s%s\n" % (name, where, words, "：" + reason if reason else ""))
         for p in problems:
             out.write("問題：%s\n" % p)
         for u in unknown:
@@ -80,7 +92,11 @@ def show(machine=None, as_json=False, out=sys.stdout):
 LABEL = {"same": "一致", "time differs": "時間不同", "paused": "暫停中", "missing": "少了", "extra": "多的",
          "unclaimed": "沒認領", "duplicate": "重複", "short": "不足", "elsewhere": "不在這台", "replaced": "換掉舊的",
          "moved": "搬家前的舊路徑", "gone": "舊資料夾不在", "turned off": "實例關掉", "held": "設定不能用，不動",
+         "gated": "等安裝步驟做完",
          "hook off": "插件在這台關掉了"}
+PLACE_WORDS = {"on": "開著", "off": "不在這台跑（放在別台）", "disabled": "在這台刻意關掉（disabled_on）",
+               "draft": "草稿（實例還沒寫）", "blocked": "不啟用（這版引擎沒有它要的介面）",
+               "blocked_plugin": "不啟用（提供它所需介面的插件沒開，或版本不對）", "unknown": "不知道"}  # C-85 (f): one word each, as doctor says them
 
 
 def unlisted(machine):
@@ -128,23 +144,33 @@ def gather():
         raw, cron, paused, want = None, [], [], [w for w in want if w["kind"] != "cron"]
     try:
         text, cc = plancore.read_settings_raw()  # one read: parsed and compared from the same bytes
-        hooks = plancore.installed_hooks(cc, engine)
+        theirs = plancore.external_hooks(rows, settings or {})  # C-61 E5: the external plugins' own hooks
+        hooks = plancore.installed_hooks(cc, engine, theirs)
     except (plancore.Unknown, OSError) as e:  # an unreadable settings.json is not "no hooks"
         problems.append("%s：hook 不比對（不知道）" % e)
-        cc, text, hooks, want = None, None, [], [w for w in want if w["kind"] != "hook"]
+        cc, text, hooks, want, theirs = None, None, [], [w for w in want if w["kind"] != "hook"], {}
     try:
         known = set(config.inventory().get("machines") or {})
     except Exception:
         known = set()
     away = plancore.elsewhere(rows, machine, settings, bot, known)
+    gather.theirs = theirs  # read by compared(): not in the tuple, which every caller unpacks
     return machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away
+
+
+def compared(want, cron, hooks, paused, away, engine, cc, rows, moved_from=()):
+    """plancore.compare with what gather() worked out: the hooks of an engine moved elsewhere, and (C-61 E5) the
+    external plugins' own hooks with the plugins whose hooks go (applycore.removable)."""
+    theirs = getattr(gather, "theirs", {})
+    return plancore.compare(want, cron, hooks, paused, away, engine, plancore.other_hooks(cc, engine, theirs) if cc else (),
+                            moved_from, theirs, applycore.removable(rows))
 
 
 def plan(out=sys.stdout):
     """This machine (plan reads its own crontab and settings): each cron line and hook, same, time differs, paused,
     missing, extra or unclaimed. Exit 1 when anything differs, or something could not be read or placed."""
     machine, rows, problems, want, unknown, lines, cron, paused, text, cc, hooks, engine, away = gather()
-    result = plancore.compare(want, cron, hooks, paused, away, engine, plancore.other_hooks(cc, engine) if cc else ())
+    result = compared(want, cron, hooks, paused, away, engine, cc, rows)
     out.write("== %s 的 plan（只讀，什麼都沒改）\n" % machine)
     counts = {}
     for status, w, text_, note in result:
@@ -157,6 +183,8 @@ def plan(out=sys.stdout):
         out.write("%-4s %s%s\n" % (LABEL[status], what, "  標記：%s" % note if note else ""))
         if status == "time differs" and w and w.get("override"):
             out.write("     （時間是實例設定的 plugins.%s.schedules.%s：apply 會改）\n" % (w["plugin"], w["name"]))
+        if status == "gated":
+            out.write("     %s\n" % alt_text.t("plugin.gated", step=w["step"]))
         if status != "same":
             if w and w["text"]:
                 out.write("     要的：%s\n" % w["text"])
@@ -174,7 +202,7 @@ def plan(out=sys.stdout):
         out.write("不知道 %s：%s（不比對，不會加也不會拿掉）\n" % (name, reason))
     for p in problems:
         out.write("問題：%s\n" % p)
-    differ = sum(v for k, v in counts.items() if k not in ("same", "paused", "unclaimed", "held"))  # on purpose / not ours / unknown
+    differ = sum(v for k, v in counts.items() if k not in ("same", "paused", "unclaimed", "held", "gated"))  # on purpose / not ours / unknown / waiting
     out.write("合計：%s\n" % "、".join("%s %d" % (LABEL[k], v) for k, v in sorted(counts.items())))
     if unlisted(machine):
         verdict = "不知道（這台不在機器清單上；上面列的不比對）"
@@ -213,7 +241,7 @@ def report():
     instance or the machine list not read: most likely this machine not knowing what it is, not a real change."""
     machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away = gather()
     applycore.MACHINE[0] = machine  # apply's folder of this machine: overrides.json is read from there (nothing written)
-    result = plancore.compare(want, cron, hooks, paused, away, engine, plancore.other_hooks(cc, engine) if cc else ())
+    result = compared(want, cron, hooks, paused, away, engine, cc, rows)
     out = {"format": 1, "machine": machine, "engine": _head(engine), "instance": None, "add": [], "remove": [], "retime": [],
            "core": [], "paused": [], "unclaimed": 0, "problems": list(problems), "refuse": None, "gone": [], "kept": []}
     try:
@@ -232,11 +260,18 @@ def report():
         if w and status != "same":
             d["wanted"] = w["text"][:300]
         return d
+    lines_here = set(h[1] for h in cron) | set(p[1] for p in paused)
+    stopped = [(n, f) for n, f, _d, where, _r in rows if n in off and f]
+    out["leftovers"] = []
     for status, w, installed, _note in result:
         if status == "same":
             continue
         if status == "unclaimed":
             out["unclaimed"] += 1
+            owner = next((n for n, f in stopped if installed in lines_here and (
+                plancore.marked(installed) == n or f.rstrip("/") + "/" in installed)), None)
+            if owner:  # C-85 (f): a line of a plugin turned off here that apply leaves (commented out, or the old format)
+                out["leftovers"].append({"plugin": owner, "installed": installed[:300]})
         elif status == "gone":  # an old engine folder gone, not named: kept by apply, said by doctor (plugins.old-engine)
             out["gone"].append(item(status, w, installed))
         elif status == "paused":
@@ -245,8 +280,8 @@ def report():
             out["core"].append(item(status, w, installed))
         elif status in ("missing", "replaced"):  # replaced: the new line in the old one's place
             out["add"].append(item(status, w, installed))
-        elif status == "held":  # an override that cannot be used: in unknown already; its line is never touched
-            continue
+        elif status in ("held", "gated"):  # an override that cannot be used (in unknown already), or waiting for a step
+            continue  # (C-77 G5): its line is never touched
         elif status == "time differs":
             d = item(status, w, installed)
             if applycore.auto_time(w, installed, recorded):
@@ -265,6 +300,7 @@ def report():
         odd_items = odd_items + [("%s/%s" % (n, k), "settings.json 裡的值不是數字") for n, k in plancore.settings_odd(cc, items)]
     out["unknown"] = [[n, r] for n, r in unknown + odd_items]
     out["disabled"] = sorted(n for n, _f, _d, where, _r in rows if where == "disabled")
+    out["blocked"] = sorted([n, r] for n, _f, _d, where, r in rows if where == "blocked")  # C-94: [name, why]
     marked = len([h for h in cron if h[3]])
     out["marked_lines"] = marked
     why = []
@@ -294,6 +330,78 @@ def report():
     return out
 
 
+PLACED = "placements.json"  # C-85 (c): what each plugin was here at the last apply --write, for its channels' notices
+TURNED = {"disabled": "關掉了", "off": "不在這台跑了（放在別台）", "draft": "變成草稿了（實例沒寫它）",
+          "blocked": "停了（這版引擎沒有它要的介面）"}
+
+
+def notify(channel, text):
+    """altention dc notify -c CHANNEL TEXT: shown in the channel, never handed to its Claude; the bot keeps one it
+    cannot post yet. True when it went out; never raises, never waits more than a minute (apply goes on regardless)."""
+    try:
+        r = subprocess.run([os.path.join(plugin.ENGINE, "bin", "altention"), "dc", "notify", "-c", str(channel), text],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def announce(rows, machine, settings, out=sys.stdout):
+    """C-85 (c): a plugin that this apply finds on here and was not at the last one (or the other way) says so once
+    in each channel its plugin.json declares ("channels"[].setting: the channel's ID in the instance), or in the
+    notification channel (@notify) when it has none set, naming this machine; with machines "all", the other machines still running it are named too. The first apply here (nothing
+    noted yet) notes without saying. A plugin whose notice did not go out keeps its old note, so the next apply says
+    it again; nothing here ever fails apply."""
+    path = os.path.join(applycore.state_root(machine), PLACED)
+    try:
+        with open(path, encoding="utf-8") as f:
+            before = json.load(f)
+        before = before if isinstance(before, dict) else None
+    except (OSError, ValueError):
+        before = None
+    now = {n: w for n, _f, _d, w, _r in rows if w in ("on", "off", "disabled", "draft", "blocked")}
+    keep = dict(before or {}, **now)  # one not known this time (unknown) keeps what it was
+    if before is not None:
+        for name, folder, d, where, _r in rows:
+            was = before.get(name)
+            if d is None or name not in now or was is None or (was == "on") == (where == "on"):
+                continue
+            channels = [config.setting(c["setting"]) for c in d.get("channels", []) if isinstance(c, dict) and c.get("setting")]
+            channels = list(dict.fromkeys(str(c) for c in channels if c))
+            title = d.get("title") or name
+            own = bool(channels)  # none to say it in (a rewrite of every channel's replies, say): the notification
+            channels = channels or ["@notify"]  # channel says it, in words without 「這裡」 (L3 off/on run)
+            if where == "on":
+                text = "%s 在 %s 打開了，這裡會再開始更新。" % (title, machine) if own else \
+                    alt_text.t("plugins.notify_on", title=title, machine=machine)
+            else:
+                others = []
+                if d.get("machines", "all") == "all":
+                    try:
+                        others = [m for m in sorted(config.machines()) if m != machine and
+                                  {n: w for n, _f2, _d2, w, _r2 in plugin.on_this_machine(m)[0]}.get(name) == "on"]
+                    except Exception:
+                        others = []
+                turned = TURNED.get(where, "停了")
+                if not own:
+                    text = alt_text.t("plugins.notify_off_others", title=title, machine=machine, turned=turned,
+                                      others="、".join(others)) if others else \
+                        alt_text.t("plugins.notify_off", title=title, machine=machine, turned=turned)
+                else:
+                    text = "%s 在 %s %s，%s" % (title, machine, turned,
+                                              "它在 %s 的部分不會再更新；%s 照常。" % (machine, "、".join(others)) if others
+                                              else "這裡不會再更新。")
+            sent = all([notify(c, text) for c in channels])
+            out.write("- %s：%s（%s）\n" % ("說了" if sent else "沒說出去，下次 apply 再說", text, "、".join(channels)))
+            if not sent:
+                keep[name] = was
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        applycore.private_write(path, json.dumps(keep, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    except Exception as e:
+        out.write("記不下這次各插件的狀態（%s）：下次 apply 會再比一次\n" % e)
+
+
 def apply(write=False, allow_time=(), out=sys.stdout, hold=(), moved_from=()):
     """Without `write`: what would change, nothing written. With it: plan's result written into this machine's crontab
     and settings.json under applycore's rules and guards, each step said on its own (one may be written and the
@@ -301,7 +409,7 @@ def apply(write=False, allow_time=(), out=sys.stdout, hold=(), moved_from=()):
     machine, rows, problems, want, unknown, raw, cron, paused, text, cc, hooks, engine, away = gather()
     applycore.MACHINE[0] = machine
     applycore.clean_if_free()
-    result = plancore.compare(want, cron, hooks, paused, away, engine, plancore.other_hooks(cc, engine) if cc else (), moved_from)
+    result = compared(want, cron, hooks, paused, away, engine, cc, rows, moved_from)
     out.write("== %s 的 apply%s\n" % (machine, "" if write else "（只看，不寫；要寫加 --write）"))
     # --hold: not a byte of these changes, neither added nor marked nor retimed (#code-review-2 2026-10-06), until
     # ops/apply.py finds no other machine runs it or the installer can place the plugin again
@@ -347,6 +455,7 @@ def apply(write=False, allow_time=(), out=sys.stdout, hold=(), moved_from=()):
                     applycore.note_intervals(lines, engine)
             except Exception as e:
                 out.write("記不下間隔（%s）：update.py 和同步照 45 分鐘算\n" % e)
+            announce(rows, machine, settings, out)
         return 0
     if not write:
         return 0
@@ -368,6 +477,8 @@ def apply(write=False, allow_time=(), out=sys.stdout, hold=(), moved_from=()):
                 with applycore.home_lock():
                     wrote_cc = applycore.write_settings(text, cc, new_cc, added, backup, raised)
                 out.write("settings.json：%s\n" % ("寫好了（重讀確認過）" if wrote_cc else "沒有要改的"))
+                if wrote_cc:
+                    applycore.note_hooks_removed(result)
             except (applycore.Refused, OSError) as e:
                 out.write("settings.json：沒寫（%s）\n" % e)
                 if wrote:
@@ -379,6 +490,7 @@ def apply(write=False, allow_time=(), out=sys.stdout, hold=(), moved_from=()):
     except applycore.Refused as e:  # the lock, or the backup
         out.write("沒寫：%s\n" % e)
         return 1
+    announce(rows, machine, settings, out)  # after the lock: a notice may take a while, apply's writes are done
     return 0
 
 
@@ -451,10 +563,211 @@ def schedule_words(it):
     return "%s（%s）" % (text, where)
 
 
-def list_all(out=sys.stdout):
+NOTHING = "不會在這台多做什麼（沒有排程、hook、改寫回覆、skill、安裝指令、資料、頻道、要的系統工具）"
+
+
+def does_here(d):
+    """[plain words]: what plugin.json `d` does on this computer once it is on (E3's added(), from nothing), and the
+    system tools it needs (never installed)."""
+    from altention import plugin_update
+    said = plugin_update.added({}, d)
+    tools = [n.get("name") for n in d.get("needs") or [] if isinstance(n, dict) and n.get("name")]
+    if tools:
+        said.append("要這些系統工具（不會自己裝）：%s" % "、".join(tools))
+    return said
+
+
+def engine_release():
+    """This engine's release (vX.Y.Z), None when it cannot be told."""
+    try:
+        from altention import update
+        return update.release_in(update.Round())[0]
+    except Exception:
+        return None
+
+
+NONE_YET = "目前還沒有可以裝的官方插件"  # the list was read and has none: not a fault
+
+
+def catalog_part(listed, settings, out, left_out=False):
+    """「可以裝的」: the official list's plugins the instance does not name (C-81 K2), each with what it would do here
+    and how to put it on; or why there is no list."""
+    from altention import plugin_update
+    named = set(((settings or {}).get("plugins") or {}).keys()) if isinstance((settings or {}).get("plugins"), dict) else set()
+    if listed is None:
+        out.write("官方插件清單還沒抓到（要連得上 GitHub；python3 ops/plugins.py list --catalog-now 現在抓）\n")
+        return
+    at = float(listed.get("at") or 0)
+    old = int((time.time() - at) // 86400) if at else None
+    rows = [(n, e) for n, e in sorted(listed["plugins"].items()) if n not in named]
+    out.write("可以裝的（官方清單，%s%s；實例還沒寫的才列）：%s\n" % (
+        time.strftime("%m-%d", time.localtime(at)) + " 抓的" if at else "還沒抓完",
+        "，%d 天前的清單" % old if old and old >= 30 else "",
+        "" if rows else "沒有" if listed["plugins"] else NONE_YET))
+    now = engine_release()
+    for n, e in rows:
+        d = e.get("plugin") or {}
+        out.write("  %-8s %-7s %s：%s\n" % (n, e.get("version"), d.get("title", n), d.get("pitch") or d.get("description", "")))
+        said = does_here(d)
+        out.write("    會做的事：%s\n" % ("；".join(said) if said else NOTHING))
+        if not plugin_update._engine_ok(d.get("engine"), now):
+            out.write("    要引擎 %s，這台是 %s：先更新引擎\n" % (d.get("engine"), now))
+        else:
+            out.write("    裝：到 #setup 跟 Claude 說「裝 %s」\n" % n)
+    if left_out:
+        for x in listed.get("left_out") or []:
+            out.write("  沒收：%s %s：%s\n" % (x.get("repo"), x.get("version", ""), x.get("why")))
+
+
+machines_for = plugin.machines_for  # C-77 G3a: moved to the core, where secret_store needs it too
+users_elsewhere = plugin.users_elsewhere
+
+
+def plugin_json_of(name):
+    """An external plugin's plugin.json: its folder's here, else the official list's; None when neither reads."""
+    from altention import catalog, plugin_update
+    try:
+        with open(os.path.join(plugin_update.folder_of(name), "plugin.json"), encoding="utf-8") as f:
+            return plugin.check(json.load(f), "%s/plugin.json" % name)
+    except (OSError, ValueError, plugin.PluginError):
+        pass
+    e = ((catalog.load() or {}).get("plugins") or {}).get(name)
+    return e.get("plugin") if isinstance(e, dict) else None
+
+
+def add(name, version=None, yes=False, hooks_ok=False, out=sys.stdout, again=None, apply_cmd=None):
+    """C-81 K2: put a plugin from the official list on. Without `yes`, what it would do here and the command that
+    puts it on (nothing written); with `yes`, written into the instance as {"source": <its public https address>,
+    "version"}, committed and pushed. A plugin with hooks also needs `hooks_ok` (asked on its own: C-61 decision 4).
+    Refused (1) when it is not on the list, the instance already names it, the version is not one of its tags, its
+    plugin.json there is not usable, or it needs a newer engine. 0 done (or told), 1 refused, 2 a step failed.
+    `again`: the command that puts it on, as the one asking runs it (setup.py plugin-add in #setup); `apply_cmd`:
+    the one that brings another machine in line for it (setup.py plugin-apply, given the plugin and the machine;
+    else ops/apply.py, given the machine). The other machines
+    are never done from here (manager 2026-10-21): they are named, with that command."""
+    from altention import catalog, plugin_update
+    listed = catalog.load()
+    if listed is None:
+        out.write("官方插件清單還沒抓到（要連得上 GitHub）：python3 ops/plugins.py list --catalog-now\n")
+        return 1
+    e = listed["plugins"].get(name)
+    if not e:
+        out.write("官方清單沒有 %s%s\n" % (name, "（清單裡有：%s）" % "、".join(sorted(listed["plugins"])) if listed["plugins"] else "（%s）" % NONE_YET))
+        return 1
+    try:
+        block = config.settings().get("plugins")
+    except Exception as ex:
+        out.write("實例設定讀不出來（%s）\n" % ex)
+        return 2
+    if isinstance(block, dict) and name in block:
+        out.write("實例已經寫了插件 %s：不用裝（要換版本，在 #update 或跟 #setup 說）\n" % name)
+        return 1
+    tag = version or e["version"]
+    if tag != e["version"]:  # another version than the list's newest: it must be one of the tags
+        if not plugin_update._tag_key(version):
+            out.write("版本要寫成 vX.Y.Z，收到 %r\n" % version)
+            return 1
+        try:
+            there = catalog.tags(name)
+        except catalog.Unreached as ex:
+            out.write("連不上 %s（%s）：等一下再試\n" % (e["repo"], ex))
+            return 2
+        if version not in there:
+            out.write("%s 沒有 %s 這一版（有：%s）\n" % (name, version, "、".join(there[:8]) or "沒有"))
+            return 1
+    d = e.get("plugin") or {}
+    if tag != e["version"]:
+        try:
+            got, why = catalog.entry(name, tag)
+        except catalog.Unreached as ex:
+            out.write("連不上 GitHub（%s）：等一下再試\n" % ex)
+            return 2
+        if not got:
+            out.write("%s %s 不能裝：%s\n" % (name, tag, why))
+            return 1
+        d = got["plugin"]
+    now = engine_release()
+    if not plugin_update._engine_ok(d.get("engine"), now):
+        out.write("%s %s 要引擎 %s，這台是 %s：先更新引擎再裝\n" % (name, tag, d.get("engine"), now))
+        return 1
+    hooks = plugin_update.watchers({}, d)  # its hooks and a rewrite of replies: they see the conversations
+    if not yes:
+        said = does_here(d)
+        out.write("官方插件 %s（%s %s）：%s\n" % (d.get("title", name), name, tag, d.get("pitch") or d.get("description", "")))
+        out.write("裝了之後會在用它的機器上：\n" if said else "裝了之後%s\n" % NOTHING)
+        for s in said:
+            out.write("  - %s\n" % s)
+        out.write("用它的機器：%s\n" % ("每一台" if d.get("machines", "all") == "all" else "機器人那台"))
+        if hooks:
+            out.write("它會看到你的對話內容（%s）：這一點要另外問過，同意了才加 --hooks-ok\n" % "、".join(hooks))
+        out.write("要裝：%s %s %s --yes%s\n" % (again or "python3 %s add" % os.path.abspath(__file__), name, tag,
+                                               " --hooks-ok" if hooks else ""))
+        return 0
+    if hooks and not hooks_ok:
+        out.write("%s 會看到你的對話內容（%s），要另外問過使用者，同意了再加 --hooks-ok：沒有裝\n" % (name, "、".join(hooks)))
+        return 1
+    source = re.sub(r"\.git$", "", e["repo"]) + ".git"
+    ok, why = plugin_update.declare(name, source, tag)
+    if not ok:
+        out.write("沒有裝：%s\n" % why)
+        return 1
+    from altention import update_go
+    unpushed = update_go.push_instance()
+    out.write("寫進實例了：plugins.%s = {source: %s, version: %s}%s\n" % (
+        name, source, tag, "" if not unpushed else "（實例還沒推出去：%s；同步下一輪會推）" % unpushed))
+    if again is None:
+        out.write("接著：這台跑 ./install.sh，最後 python3 ops/doctor.py\n")
+    others = users_elsewhere(d)
+    if others:
+        out.write("別台用到它的：%s。它們下一輪更新時會 clone，但排程和 hook 要那台跑 apply 才會裝上；要現在裝：%s\n" % (
+            "、".join(others), "；".join(("%s %s %s" % (apply_cmd, name, m)) if apply_cmd else
+                                        "python3 %s %s" % (os.path.join(plugin.ENGINE, "ops", "apply.py"), m) for m in others)))
+    return 0
+
+
+def lose(name, out=sys.stdout):
+    """C-85 (e): what turning plugin `name` off on a machine loses, in plain words, for Claude to say before asking:
+    its plugin.json "lose", the plugins that need it (they go off with it), its schedules, hooks (they stop: the
+    conversations are no longer seen) and channels (they stop being updated). Its data stays. 1 when there is no
+    such plugin; the core cannot be turned off."""
+    plugins, problems = plugin.discover()
+    found = {n: (f, d) for n, f, d in plugins}
+    if name == "core":
+        out.write("核心不能關。\n")
+        return 1
+    if name not in found:
+        out.write("沒有叫 %s 的插件（有：%s）\n" % (name, "、".join(sorted(n for n in found if n != "core"))))
+        return 1
+    _f, d = found[name]
+    title = d.get("title") or name
+    out.write("關掉%s（%s）會少掉：%s\n" % (title, name, d.get("lose") or "（plugin.json 沒寫）"))
+    users = sorted(found[n][1].get("title") or n for n in found if any(
+        isinstance(x, dict) and x.get("plugin") == name for x in found[n][1].get("requires", [])))
+    if users:
+        out.write("要靠它的也會停：%s\n" % "、".join(users))
+    try:
+        settings = config.settings()
+    except Exception:
+        settings = {}
+    items, _said = plugin.effective_schedules(name, d, settings or {})
+    if items and name != "core":
+        out.write("停掉的排程：%s\n" % "、".join("%s（%s）" % (it.get("name"), schedule_words(it)) for it in items))
+    if d.get("hooks"):
+        out.write("拿掉的 hook：%s（它不再看到 Claude 的對話）\n" % "、".join(
+            "%s%s" % (h.get("event"), "（%s）" % h["matcher"] if h.get("matcher") else "") for h in d["hooks"]))
+    if d.get("channels"):
+        out.write("不再更新的頻道：%s\n" % "、".join("#%s" % c.get("name") for c in d["channels"] if isinstance(c, dict)))
+    out.write("它的資料留著，再打開就接著用。\n")
+    return 0
+
+
+def list_all(out=sys.stdout, left_out=False):
     """One line per plugin, in _ordered's order; under each, its "pitch" (what it does for the user, for the install's
-    questions) and the plugins it needs. Drafts (external plugins the instance does not declare, C-61 E1) last, under
-    「草稿」, with what to write to turn one on."""
+    questions) and the plugins it needs. Drafts (external plugins the instance does not declare, C-61 E1) next, under
+    「草稿」, with what to write to turn one on; last the official list's plugins the instance does not name (C-81),
+    with `left_out` the list's repositories left out and why."""
+    from altention import catalog
+    listed = catalog.load()
     drafts = []
     plugins, problems = plugin.discover(drafts=drafts)
     try:
@@ -478,7 +791,9 @@ def list_all(out=sys.stdout):
     if drafts:
         out.write("草稿（實例還沒寫它：不裝、不排程、不問設定）：\n")
         for name, folder, d in drafts:
-            out.write("  %-8s %s（%s）\n" % (name, d["title"], folder))
+            there = ((listed or {}).get("plugins") or {}).get(name)
+            out.write("  %-8s %s（%s）%s\n" % (name, d["title"], folder,
+                                              "：官方清單有這個插件（%s），寫 source 就能裝" % there["version"] if there else ""))
         out.write("  要開：實例 plugins.json 寫 \"plugins\": {\"<名稱>\": {\"source\": \"<git 網址>\", \"version\": \"vX.Y.Z\"}}"
                   "（只在這台、不 clone 的寫 {\"local\": true}）\n")
     try:
@@ -487,6 +802,15 @@ def list_all(out=sys.stdout):
         rows = []
     for name, words in plugin.external_notes(rows, settings):
         out.write("提醒：%s：%s\n" % (name, words))
+    for name, folder, d, where, why in rows:
+        if where == "blocked":  # C-94
+            out.write(alt_text.t("plugins.list_blocked", plugin=name, why=why) + "\n")
+        elif d is not None and where == "on" and plugin.external(folder) and "uses" not in d:  # on here only (manager)
+            out.write(alt_text.t("plugins.list_no_uses", plugin=name) + "\n")
+    for name, folder, d in _ordered(plugins) + drafts:
+        for where, todo in plugin.retired(d):
+            out.write("提醒：%s 的 plugin.json 還寫著 %s，引擎已經不讀了（%s）\n" % (name, where, todo))
+    catalog_part(listed, settings, out, left_out)
     for p in problems:
         out.write("問題：%s\n" % p)
     return 1 if problems else 0
@@ -737,25 +1061,27 @@ def backup_questions(off=()):
     are offered like the others, with what they hold said plainly (verbatim): "values" are ops/remote.py's names."""
     import remote
     items = [(n, d) for n, p, d in BACKUPS if p is None or p not in off]
+    theirs = [(n, "插件 %s 自己的資料（%s），它寫明是私人的" % (pl, f)) for n, f, _p, pl in remote.plugin_data(private_only=True)]
+    items += theirs  # C-61 E4: the private data of the external plugins on here
     return [
         {"key": "backup", "values": ["now", "later"], "header": "備份", "multiSelect": False,
-         "question": "備份：你的記憶、設定、對話紀錄、進度和秘書的計畫現在都只存在這台電腦，電腦壞了就救不回來。"
-                     "要不要建立 private（不公開）的 repo，大約每 15 分鐘自動備份一次？",
+         "question": "備份：你的記憶、設定、對話紀錄、進度%s現在都只存在這台電腦，電腦壞了就救不回來。"
+                     "要不要建立 private（不公開）的 repo，大約每 15 分鐘自動備份一次？" % ("、秘書的計畫和插件的資料" if theirs else "和秘書的計畫"),
          "options": [{"label": "現在設定（建議）", "description": "我帶你建 private 的 GitHub repo（或用你自己的 git 主機），之後自動備份"},
                      {"label": "之後再說", "description": "先只存在這台；系統檢查會一直提醒還沒有備份"}]},
         {"key": "backup.items", "values": [n for n, _ in items], "header": "備份哪些", "multiSelect": True,
          "question": "要備份哪幾樣？建議全部勾選。每一樣各用一個 private 的 repo。",
-         "options": [{"label": remote.LABELS[n], "description": d} for n, d in items]},
+         "options": [{"label": remote.label(n), "description": d} for n, d in items]},
     ]
 
 
 def off_here():
-    """The plugins plainly turned off (or placed elsewhere, or drafts) on this machine; an unknown one counts as on."""
+    """The plugins plainly turned off (or placed elsewhere, drafts, blocked) on this machine; an unknown one counts as on."""
     try:
         rows, _ = plugin.on_this_machine()
     except Exception:
         return set()
-    return {n for n, _, _, w, _ in rows if w in ("off", "disabled", "draft")}
+    return {n for n, _, _, w, _ in rows if w in ("off", "disabled", "draft", "blocked")}
 
 
 def questions_main(as_json, setup=False, out=None, times=False, backup=False):
@@ -835,7 +1161,7 @@ def setup_one(name, item, out=sys.stdout):
     return 0 if ran and ran[0][1] in ("ran", "record") else 1
 
 
-def main(argv):
+def main(argv, again=None, apply_cmd=None):
     from altention import engine_id
     if (argv[:1] == ["apply"] and "--write" in argv) or argv[:1] == ["restore"]:
         why = engine_id.refusal(plugin.ENGINE, "plugins.py %s" % argv[0])
@@ -850,8 +1176,19 @@ def main(argv):
         json.dump(report(), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
-    if argv[:1] == ["list"]:
-        return list_all()
+    if argv[:1] == ["list"] and set(argv[1:]) <= {"--catalog", "--catalog-now"}:
+        if "--catalog-now" in argv:
+            from altention import catalog
+            state, words = catalog.refresh(force=True)
+            print(words or ("官方插件清單 10 分鐘內看過了，用剛才的" if state == "kept" else "官方插件清單：%s" % state))
+        return list_all(sys.stdout, left_out="--catalog" in argv)
+    if argv[:1] == ["add"] and 2 <= len([a for a in argv if not a.startswith("--")]) <= 3 \
+            and set(a for a in argv if a.startswith("--")) <= {"--yes", "--hooks-ok"} \
+            and ("--hooks-ok" not in argv or "--yes" in argv):
+        rest = [a for a in argv[1:] if not a.startswith("--")]
+        return add(rest[0], rest[1] if len(rest) > 1 else None, "--yes" in argv, "--hooks-ok" in argv, out=sys.stdout, again=again, apply_cmd=apply_cmd)
+    if argv[:1] == ["lose"] and len(argv) == 2:
+        return lose(argv[1], sys.stdout)
     if argv[:1] == ["setup"] and len(argv) == 3:
         return setup_one(argv[1], argv[2])
     if argv[:1] == ["questions"] and set(argv[1:]) <= {"--json", "--setup", "--times", "--backup"} \

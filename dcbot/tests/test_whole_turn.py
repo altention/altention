@@ -27,7 +27,7 @@ from unittest import mock
 
 import bot  # noqa: F401  (first: it puts the engine's folder on the path; the connectors lie beside dcbot/)
 from altention.connectors.claude_code import transcript
-from bot import ask, config, process, remote, tmux_bridge
+from bot import ask, awaiting, config, process, remote, tmux_bridge
 from tests import fakepane
 from tests.test_turn_end import Ch, Host
 from tests.transcript import MODEL, TOKENS, Transcript
@@ -204,7 +204,7 @@ class World(object):
             mock.patch.object(ask, "ASKS", os.path.join(self.tmp, "asks")), mock.patch.object(ask, "ANSWERS", os.path.join(self.tmp, "answers")),
             mock.patch.object(tmux_bridge, "SUBMIT_DELAY", 0), mock.patch.object(tmux_bridge.cc_typing, "CLEAR_PAUSE", 0),
             mock.patch.object(tmux_bridge.cc_typing, "BOX_PAUSE", 0.01), mock.patch.object(tmux_bridge.cc_typing, "PANEL_PAUSE", 0.01), mock.patch.object(tmux_bridge, "RECEIPT_SECS", 3),
-            mock.patch.object(asyncio, "sleep", nap)]
+            mock.patch.object(asyncio, "sleep", nap), mock.patch.object(awaiting, "said", {})]
         os.makedirs(os.path.join(self.bot_root, "state"))
 
     def play(self, turns):
@@ -306,6 +306,7 @@ class World(object):
             self.claude.tool("Bash", {"command": "ls notes", "description": "列出檔案"}, "a.md\nb.md")
             await self.settled()
             self.assertEqual(self.said(), [(">>> " + A, True)], "what was said before the tool call, as a quiet quote")
+            self.assertEqual((self.st["doing"], awaiting.said[str(self.ch.id)]), (A, A), "(C-88) one line of it, for readers")
             self.claude.say(B)
             self.claude.tool("Read", {"file_path": "/w/notes/a.md"}, "# a")
             self.claude.tool("Read", {"file_path": "/w/notes/b.md"}, "# b")
@@ -319,6 +320,8 @@ class World(object):
             self.assertEqual(body, "整理好了：兩個檔都歸到 2026/。")
             self.assertEqual(FOOT.match(foot).group(1, 3), ("Read×2, Bash×1", None), foot)
             self.assertFalse(self.st["busy"])
+            self.assertNotIn("doing", self.st, "not busy: doing nothing")
+            self.assertEqual(awaiting.said[str(self.ch.id)], "整理好了：兩個檔都歸到 2026/。", "the reply's first sentence")
             self.assertEqual((self.st["context"], self.st["bg"]), ([TOKENS, MODEL], 0))
             self.assertEqual(self.bridge.host.audits[-1].split("（")[0], "#c：整理一下 notes 資料夾 → 完成")
             first_end = self.claude.script.size()

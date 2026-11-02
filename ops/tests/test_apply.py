@@ -72,7 +72,7 @@ class RemoteScript(Rig):
     todo = False
     allow = ""
 
-    def engine(self, fail=None, silent=()):
+    def engine(self, fail=None, silent=(), joins=""):
         """`fail` exits 3 (install.sh: 1 with a fail line); `silent` does nothing and gives 0 (a stand-in)."""
         h = os.path.join(self.tmp, "engine 引擎")
         os.makedirs(h)
@@ -92,6 +92,8 @@ class RemoteScript(Rig):
                     if name == fail:
                         f.write("sys.exit(3)\n")
                     elif name == "instance":  # join, then pull: each prints its own mark
+                        if joins:  # instance.py join cloning it just now (C-84)
+                            f.write("if sys.argv[1] == 'join': print('ALT-INSTANCE-JOINED ' + sys.argv[2])\n")
                         f.write("print('ALT-STEP-OK instance-' + sys.argv[1])\n")
                     else:
                         f.write("print(%r)\n" % mark)
@@ -131,6 +133,28 @@ class RemoteScript(Rig):
         self.assertIn("ok core.instance", r.stdout)
         with open(os.path.join(self.home, ".config/altention/host")) as f:
             self.assertEqual(f.read(), "box\n")
+
+    def test_no_instance_repo_in_the_list_still_pulls_the_instance_here(self):
+        """C-84: a list without instance.repo (and no origin to join from) left the machine's instance as it was;
+        now it is pulled all the same (instance.py pull says so when there is none), only the join is left out."""
+        script = apply.SCRIPT.format(engine=apply.config.shell_path(self.engine()), repo="''", name="'box'", instance="''",
+                                     bot_leaves="0", allow=self.allow, take="0", how="--release")
+        r = subprocess.run(["sh", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
+                           env=dict(os.environ, HOME=self.home, CALLS=self.calls))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual([c.split()[:2] for c in self.called()][:3], [["home-pull", "--quiet"], ["instance", "pull"], ["install"]])
+
+    def test_a_join_just_now_reaches_apply_through_the_real_script(self):
+        """#code-review of 0b99680: step() indents what a step prints; the line join prints when it cloned just now
+        is still found, and taken out of what is shown."""
+        r = self.run_script(self.engine(joins="yes"))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("  ALT-INSTANCE-JOINED git@x:i.git", r.stdout, "indented by step()")
+        urls, shown = apply.joined_in(r.stdout)
+        self.assertEqual(urls, ["git@x:i.git"])
+        self.assertNotIn("ALT-INSTANCE-JOINED", shown)
+        self.assertIn("ok core.instance", shown)
+        self.assertEqual(apply.joined_in("  instance：這台已接上 x\n  ok")[0], [], "already joined: no such line")
 
     def test_the_engine_through_update_py_and_its_check(self):
         """C-57 U5: an engine with altention/update.py takes the newest release through it (its syntax and load check),
@@ -377,7 +401,7 @@ class Machines(unittest.TestCase):
     INV = {"machines": {"a": {"ssh": ["A"], "roles": ["chatlog"]}, "b": {"ssh": ["B"], "roles": ["chatlog", "progress", "dcbot"]},
                         "c": {"ssh": ["C"], "roles": ["chatlog"]}}}
 
-    def run_apply(self, args, places=None, held=None, codes=None, after=None):
+    def run_apply(self, args, places=None, held=None, codes=None, after=None, outs=None):
         places = places or {"a": ([row("chatlog", "on"), row("progress", "off", "one")], [], []),
                             "b": ([row("chatlog", "on"), row("progress", "on", "one")], [], []),
                             "c": ([row("chatlog", "on"), row("progress", "off", "one")], [], [])}
@@ -402,7 +426,7 @@ class Machines(unittest.TestCase):
             if "--hold " in script:
                 line = script[script.index("--hold "):].split("\n")[0]
                 ran.append((name, "hold " + " ".join(sorted(re.findall(r"--hold '([^']*)'", line)))))
-            return m["ssh"][0], (codes or {}).get(name, 0), "ok", ""
+            return m["ssh"][0], (codes or {}).get(name, 0), (outs or {}).get(name, "ok"), ""
         out = io.StringIO()
         with mock.patch.object(apply, "inventory", return_value=json.loads(json.dumps(self.INV))), \
                 mock.patch.object(apply.plugins, "placements", side_effect=lambda n: places[n]), \
@@ -412,6 +436,21 @@ class Machines(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             code = apply.main(args)
         return code, out.getvalue(), ran
+
+    def test_a_machine_joined_just_now_is_said_and_noted_for_doctor(self):
+        """C-84 (manager 2026-10-22): apply joining a machine to the instance by itself says so, and doctor is told
+        (apply/joined.json); nobody is asked. instance.py join's line itself is not shown."""
+        path = apply.joined_path()
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        code, out, _ = self.run_apply(["all"], outs={"a": "ok\n  %s git@x:i.git" % apply.JOINED_NOW})  # as step() indents it
+        self.assertIn("  ℹ a 還沒接上實例，已經用 git@x:i.git 接上", out)
+        self.assertNotIn(apply.JOINED_NOW, out)
+        with open(path) as f:
+            d = json.load(f)
+        self.assertEqual((sorted(d), d["a"]["url"]), (["a"], "git@x:i.git"))
+        os.remove(path)
+        self.run_apply(["all", "--dry-run"], outs={"a": "ok\n%s git@x:i.git" % apply.JOINED_NOW})
+        self.assertFalse(os.path.exists(path), "a dry run joins nothing and notes nothing")
 
     def test_the_engine_step_follows_the_instances_core_update(self):
         """#code-review of 49b8896 (manager): core.update branch → update.py's plain round (the branch); notify or
@@ -604,6 +643,38 @@ class Held(unittest.TestCase):
             code = plugins.held(["progress"], out)
         self.assertEqual(code, 2)
         self.assertIn("unknown", json.loads(out.getvalue()))
+
+
+
+
+class JoinFrom(unittest.TestCase):
+    """C-84: the instance another machine joins: the list's instance.repo, else this instance's origin when another
+    machine can reach it (a URL or user@host:path, not a folder of this machine's)."""
+    def setUp(self):
+        self.inst = tempfile.mkdtemp(prefix="實例 ")
+        self.addCleanup(shutil.rmtree, self.inst, True)
+        subprocess.run(["git", "init", "-q", self.inst], check=True)
+        p = mock.patch.object(apply.config, "instance_dir", return_value=self.inst)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def origin(self, url):
+        subprocess.run(["git", "-C", self.inst, "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
+        if url:
+            subprocess.run(["git", "-C", self.inst, "remote", "add", "origin", url], check=True)
+
+    def test_the_list_first_then_a_reachable_origin(self):
+        self.origin("git@example.org:me/instance.git")
+        self.assertEqual(apply.join_from({"instance": {"repo": "https://example.org/x.git"}}), "https://example.org/x.git")
+        self.assertEqual(apply.join_from({}), "git@example.org:me/instance.git")
+        for url in ("https://example.org/me/instance.git", "ssh://git@example.org/me/instance.git"):
+            self.origin(url)
+            self.assertEqual(apply.join_from({"instance": {}}), url)
+        for url in ("/srv/instance.git", "../instance.git", "file:///srv/instance.git", ""):
+            self.origin(url)
+            self.assertEqual(apply.join_from({}), "", url)
+        with mock.patch.object(apply.config, "instance_dir", return_value=None):
+            self.assertEqual(apply.join_from({}), "")
 
 
 if __name__ == "__main__":

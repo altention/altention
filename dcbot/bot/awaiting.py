@@ -1,8 +1,11 @@
 """What waits for the owner, in one file of the bot's state: state/waiting-on-owner.json,
 
-    {"at": when it was written, "waiting": [{"channel", "kind", "since"}, …]}
+    {"at": when it was written, "waiting": [{"channel", "kind", "since", "text"}, …]}
 
-(the list empty when nothing waits). For the board that shows what wants the owner (the status plugin reads it);
+(the list empty when nothing waits). "text" (C-88) is one line of what it waits on: the question asked, for the
+others the first sentence of what Claude last said in that channel (`said`); no key when there is none. It is a
+piece of the conversation that a plugin may take off this machine: masked first, then one line, at most 80
+characters (line()). For the board that shows what wants the owner (the status plugin reads it);
 the bot itself reads it nowhere.
 
 Kinds: "menu" (a dialog or a panel of Claude Code's shown in the channel with buttons: bot/menus.py), "question"
@@ -29,6 +32,7 @@ the bot's log when it begins, and one when it works again.
 """
 import json
 import os
+import re
 import time
 
 from . import config
@@ -38,6 +42,51 @@ menus = None     # the menus shown (Menus.open: token -> {"channel", "since", �
 written = None   # (path, list) as last written: the same again is not written again
 on = False       # the running bot's (start()); until then note() writes nothing
 failing = False  # the last write did not work: said once when it begins, once when it is over
+said = {}        # channel id -> line() of what Claude last said there (tmux_bridge keeps it): a menu's or a plan's text
+LINE_MAX = 80
+SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
+
+
+def line(text, limit=LINE_MAX):
+    """One line of a text of the conversation, for a reader that shows it in a list and may send it off this
+    machine (C-88): keys masked first (bot/masking.py; before anything is cut, so no key is cut in two), then its
+    first sentence (of the first line with words in it outside code blocks: a block not closed runs to the end, a
+    text that is all code has none; leading Markdown marks dropped), control
+    characters as blanks, blanks run together, at most `limit` characters ("…" at the end when cut). None when
+    nothing is left, and for what is not a text."""
+    from . import masking
+    if not isinstance(text, str):
+        return None
+    text = masking.mask(text)[0] or ""
+    first, fence = "", None
+    for raw in text.splitlines():
+        s = raw.strip()
+        if fence is not None:  # inside a code block: code is no sentence (manager on C-88), till its own mark closes it
+            if s.startswith(fence) and not s.strip(fence[0]):
+                fence = None
+            continue
+        if s.startswith(("```", "~~~")):
+            fence = s[:len(s) - len(s.lstrip(s[0]))]  # the mark as long as it was opened with
+            continue
+        s = s.lstrip("#>*-+• \t").strip()
+        if s:
+            first = s
+            break
+    end = SENTENCE_END.search(first)
+    if end:
+        first = first[:end.end()]
+    flat = " ".join("".join(c if c.isprintable() else " " for c in first).split())
+    return (flat[:limit - 1] + "…" if len(flat) > limit else flat) or None
+
+
+def asked(state):
+    """The question a question still waits on: the first one not answered."""
+    qs = state.get("questions") or []
+    answers = state.get("answers") or {}
+    for i, q in enumerate(qs):
+        if str(i) not in answers and isinstance(q, dict):
+            return q.get("question")
+    return None
 
 
 def listed():
@@ -45,8 +94,13 @@ def listed():
     closed and only owed to their machine), oldest first."""
     from . import ask
     out = [{"channel": str(m.get("channel")), "kind": "menu", "since": m.get("since")} for m in list((menus or {}).values())]
-    out += [{"channel": str(s.get("channel")), "kind": "plan" if s.get("kind") == "plan" else "question", "since": s.get("ts")}
+    out += [{"channel": str(s.get("channel")), "kind": "plan" if s.get("kind") == "plan" else "question", "since": s.get("ts"),
+             "text": line(asked(s)) if s.get("kind") != "plan" else None}
             for _, s in ask.waiting()]
+    for w in out:
+        text = w.pop("text", None) or said.get(w["channel"])
+        if text:
+            w["text"] = text
     return sorted(out, key=lambda w: (w["since"] if isinstance(w["since"], (int, float)) else 0, w["channel"], w["kind"]))
 
 

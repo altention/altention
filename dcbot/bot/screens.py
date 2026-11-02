@@ -56,11 +56,12 @@ async def post(bot, ch, t, send):
 
 
 async def show_text(bot, payload):
-    """The owner tapped 📝 on a screen picture: reply with its text."""
+    """The owner tapped 📝 on a screen picture: reply with its text. -> whether it was one."""
     ch = bot.get_channel(payload.channel_id)
     text = ((bot.channels_state.get(str(payload.channel_id)) or {}).get("screens") or {}).get(str(payload.message_id))
     if ch is None or text is None:
-        return
+        return False
     ref = ch.get_partial_message(payload.message_id)
     for i, part in enumerate(fenced(text)):
         await (ch.send(part, reference=ref, mention_author=False) if i == 0 else ch.send(part))
+    return True

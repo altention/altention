@@ -28,6 +28,14 @@
 - **planner**：定時提醒，時間到了傳一句話叫醒某個頻道的對話。
 - **council**：多視角議會 skill，做決定時用。
 
+官方清單裡還有更多插件：altention 組織在 GitHub 上公開、名字是 `plugin-<名稱>`、有發佈版本的 repo。每台機器一天看一次這份清單。
+
+- **看有哪些**：問任何頻道的 Claude 有哪些插件可以裝，或跑 `altention plugins list`。
+- **裝**：在 `#setup` 說「裝 <名稱>」。Claude 會先說它會在你的電腦上做什麼，你答應了才裝；會看到對話內容的插件會另外再問一次。還有事要你做的，它會在那裡一步一步帶你。
+- **關掉、打開**：跟任何頻道的 Claude 說。它會先說會少掉什麼；可以只關某一台。
+
+插件跟 Claude 一樣跑在你的電腦上，沒有隔離，只裝你信任的。
+
 每個插件多久跑一次、幾點跑，可以在實例設定改（`plugins.<插件>.schedules`），也可以只關掉其中一個排程；跟 Claude 說就好。
 
 引擎的 skill 會連結到 `~/.claude/skills`，連結不見了，同步會在 15 分鐘內補回來。不要某個插件的 skill：把那個插件關掉（`disabled_on`）；只刪連結會被補回來。
@@ -55,12 +63,12 @@
 1. 取得引擎：
 
    ```bash
-   git clone https://github.com/q12we34rt5/altention.git ~/altention/engine
+   git clone https://github.com/altention/altention.git ~/altention/engine
    ```
 
-   （用 SSH：`git clone git@github.com:q12we34rt5/altention.git ~/altention/engine`。）
+   （用 SSH：`git clone git@github.com:altention/altention.git ~/altention/engine`。）
 
-   或用從[發佈頁](https://github.com/q12we34rt5/altention/releases)下載的壓縮檔（壓縮檔裝的不會自動更新），`<壓縮檔>` 換成下載的檔名：
+   或用從[發佈頁](https://github.com/altention/altention/releases)下載的壓縮檔（壓縮檔裝的不會自動更新），`<壓縮檔>` 換成下載的檔名：
 
    ```bash
    mkdir -p ~/altention/engine && tar xzf <壓縮檔> -C ~/altention/engine --strip-components=1
@@ -216,7 +224,7 @@ python3 ops/doctor.py          # 系統檢查，每一台
   - 隱私：這個請求不載入你的設定、hook、MCP 和工具，在一個空的暫存資料夾跑，不留對話檔。
   - 安裝指引會問你的方案並寫進去，例如 `"usage": {"plan": ["Pro", 1]}`（或 `["Max 5x", 5]`、`["Max 20x", 20]`；Team、Enterprise 照額度換算成幾個 Pro）。沒寫時看板會寫「方案沒設定」，只顯示百分比，不換算成幾倍 Pro。
   - 怎麼關：設成 `false`，或把 usage 插件關掉。拿掉這一行不算關：沒寫就是打開。
-  - 限制：讀的欄位沒有官方文件，只依 Claude Code 2.1.299 的實測。格式變了時看板會寫「讀不到：格式變了」，不會猜數字；額度用完時可能讀不到。
+  - 限制：讀的欄位沒有官方文件，只依 Claude Code 2.1.299 和 2.1.316 的實測（2.1.316 只給週額度，看板會註明 5 小時那段這次沒有提供）。格式變了時看板會寫「讀不到：格式變了」，不會猜數字；額度用完時可能讀不到。
 
 ## 路線圖
 
@@ -254,7 +262,7 @@ python3 ops/doctor.py          # 系統檢查，每一台
 
 ## 參與
 
-歡迎開 [issue](https://github.com/q12we34rt5/altention/issues) 和 pull request。送程式之前：
+歡迎開 [issue](https://github.com/altention/altention/issues) 和 pull request。送程式之前：
 
 - 跑機器人部署前會跑的測試：`dcbot/deploy.sh` 裡列了（機器人自己的，加上 `altention`、`chatlog`、`bin`、`ops`、`tools`、`progress`）。共用的程式只用標準函式庫，要能在 Python 3.8 上跑。
 - 跑 `tools/privacy-scan HEAD`：引擎裡不能有機器名、帳號、頻道 ID 或私人網址。個人的值放實例。

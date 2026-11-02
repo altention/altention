@@ -14,6 +14,234 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.5.0 — 2026-11-02
+
+### For people
+
+- **The limits board works again when only the weekly limit comes back.** Claude Code can now report just the week
+  (seen on 2.1.312 and 2.1.316), and the board then said the format had changed and stopped recording the week. It
+  now shows the week, says the 5-hour window was not provided, and keeps recording.
+- **Formulas, tables and diagrams in a reply can be drawn as pictures.** With a plugin that draws them (such as
+  display) on the bot's machine, a Claude's final reply that has formulas, tables or mermaid diagrams is handed to
+  it before it is posted, and comes out as text and pictures in order. When it takes more than a few seconds the
+  channel shows "⏳ 整理排版中…"; when the plugin fails, the reply is posted as before.
+- **A plugin from outside the engine gets its new versions from the update card.** When a plugin's source has a newer
+  release, the card in `#update` says so with that release's points (from the plugin's own CHANGELOG), even when the
+  engine is up to date. 「更新」 moves it on this machine and writes the new version in the instance, and the other
+  machines follow in their next round. A release that would do more on this computer (a new schedule, hook, rewrite of
+  replies, skill, setup step, data or channel), fails its own test, needs a newer engine, or meets changes of yours in
+  the plugin's folder is not moved by the button: 「請 Claude 幫忙」 goes through it with you in `#setup`, and a new hook
+  or rewrite of replies (they see your conversations) is asked about on its own. Saying 「引擎回到更新前」 in `#setup` puts the
+  plugins of the last change back too. A source that does not answer no longer holds up the update: it is given up
+  after about a minute without progress and skipped by later rounds, longer each time (up to 6 hours), until it
+  answers again; doctor says since when.
+- **Official plugins can be found, and put on by saying so in `#setup`.** Once a day each machine looks at the
+  altention organisation on GitHub for its public `plugin-<name>` repositories with a release; `plugins.py list`
+  shows them last, under 「可以裝的」. Say 「裝 <name>」 in `#setup`: Claude first tells you what it would do on your
+  computers (schedules, hooks, a rewrite of replies, skills, the tools it needs), asks once more about anything that
+  sees your conversations, and only then writes it into the instance and installs it here; the other machines that
+  use it are named, and brought in line only when you say so. A plugin new on the list is said once in `#update`;
+  nothing is installed by itself. When GitHub cannot be reached, the list from last time is used. `/tour` has a step for it too.
+- **A plugin's private data can be backed up, and comes back on a new machine.** The backup questions in `#setup`
+  now list the data an external plugin says is private, each in a private repository of its own
+  (`altention-<plugin>-<data>`). Installing on another machine clones it back before the plugin's setup runs.
+- **What a plugin sets to run by itself as Claude works (a hook) is installed once, and taken out when the
+  plugin stops.** Each install used to add one more copy of an external plugin's hook. Now one copy stays, and
+  all of them go when the plugin is turned off on a machine or becomes a draft. Hooks of your own are left alone,
+  even ones that run a file in the plugin's folder; for a week doctor says which hooks were taken out.
+- **The project moved to github.com/altention/altention.** Old links and clones keep working: GitHub sends them to
+  the new address.
+- **A channel attached to a pane stays attached when Claude restarts there.** When Claude Code starts again in the
+  same tmux pane and goes on with the same conversation (`claude --resume`, `claude -c`, or the whole pane
+  respawned), the channel picks it up again by itself: no `/detach` and `/attach` needed. A new conversation started
+  in such a pane is still not followed.
+- **Discord can open a plugin's pages.** A plugin may offer pages that open inside Discord (a Discord Activity).
+  A Claude posts a message with an 「打開」 button for one of them, and pressing it opens that page right there.
+  Pages with anything private on them open for you alone; someone else who presses gets a note only they see.
+  Activities have to be set up first, following that plugin's install steps; until then the button says so.
+- **Before a plugin is turned off you are told what it costs, and its channels say when it stops.** Claude first
+  tells you what you lose (`plugins.py lose <name>`: what it does for you, the plugins that need it, its schedules,
+  hooks and channels; its data stays) and asks. Once it is off on a machine, each channel it posts to (a board, its
+  Claude's channel) gets one line saying on which machine it stopped and, for a plugin on every machine, which go
+  on; turned on again, one more. doctor lists the plugins turned off on purpose, and the lines one turned off left
+  in the crontab that apply never touches (commented out, or the old format); install's summary names what it took
+  out or put back.
+- **With several machines, a setting changed on one now takes effect on the others the next time apply runs
+  there.** Before, they could keep the old instance though apply said all went well.
+- **Posting by a channel's name is held up by Discord's rate limit far less, and channels opened at once no longer
+  make the same category twice.** Each machine reads the server's channel list at most once a minute for every post
+  and notification there; one given a channel's ID reads none.
+- **Tap 📝 on a drawn picture to get what it was drawn from.** When a plugin attaches the source of a picture it drew
+  (a formula's LaTeX, a diagram's mermaid, a chart's code), tapping 📝 on that message makes the bot answer with what
+  it is, which tool made it and the source in a code block (as a file when it is long). Add the 📝 reaction yourself:
+  the bot does not add it. Sources are kept for 30 days, with anything that looks like a key or token masked first.
+- **The bot keeps one short line on what each channel waits on or is doing, for plugins to show in a later
+  release.** It is the question a channel waits for you to answer (or the first sentence of what its Claude last
+  said), and the first sentence of what a busy Claude last said along the way. Each line is masked for anything that
+  looks like a key or token and cut to 80 characters. It is a piece of your conversations, kept on the bot's machine.
+- **A message a script sends with `dcctl send` no longer pings anyone by accident, and is never cut short.** A
+  `<@…>` or `@everyone` in its text now pings no one unless the script adds `--mentions`. A text over 2000
+  characters is not sent at all (before, it was cut to 2000 without a word): use `altention dc post`, which splits
+  long texts. If you wrote scripts of your own that use `dcctl send`, look at them when you update.
+- **A plugin that needs something this engine does not offer is paused on that machine, and you are told why.** Its
+  schedules and hooks stop there, like turning it off, and doctor and the update card say what it needs and how to
+  fix it, usually by updating the engine or the plugin. A plugin that does not say what it needs runs as before.
+- **A plugin that needs more from you, like a tool to install or an account or key on another site, now tells you
+  what is left.** install.sh and doctor say how many things a plugin still needs from you. Say 「幫我裝完 <plugin>」
+  in `#setup`, and Claude checks every item again and tells you what is done, what is left and what comes next. A
+  step this computer cannot check is asked about once, and your answer is kept. Checking installs nothing. Claude
+  then takes you through what is left one thing at a time: once you say yes it installs a tool or does a step the
+  plugin can do by itself, gives you the line to paste for anything that needs administrator rights or another
+  machine, and checks each step before going on. You can stop any time: say 「接著裝 <plugin>」 later and it goes on
+  from what is not done yet. A part of a plugin that needs one of those steps, such as a schedule, waits until the
+  step is done and then runs from then on. A new version that would ask more of you (a new tool, step or key) waits
+  for your yes on the update card.
+- **A key a plugin needs is typed in your own terminal, not in a chat.** When a step asks for a key, `#setup` gives
+  you one line to run in your own terminal. What you paste is not shown, is kept only on this computer (and on the
+  other machines you say yes to), and is never backed up; any Claude that tries to read it is stopped, as with the
+  bot's token.
+- **A key can also be typed into a box in Discord.** When a plugin needs a key, Claude may post a 「填入」 button
+  instead; only you can press it. What you type goes to the bot's machine and is stored as from the terminal; it is
+  not posted in the channel and no Claude sees it. It does pass through Discord, and Discord's box shows what you
+  type: to keep a key off Discord, use the terminal line instead.
+- **A plugin left out of the instance but installed here before is now mentioned by doctor.** One line says it is a
+  draft that does not run here, that its folder and setup record are still there, how to use it again, and what to
+  delete if you do not want it.
+- **A plugin with no channel of its own now says in the notification channel when it is turned off or on.** A plugin
+  that changes every reply, for one, no longer stops or starts on a machine without a word.
+
+### For people (zh-TW)
+
+- **回覆裡的公式、表格、流程圖可以畫成圖，按 📝 看原文。** 機器人那台開著會畫圖的插件（例如 display）時，Claude 正式回覆裡的公式、表格或 mermaid 流程圖，貼出前會交給它畫成圖，跟文字照順序貼出；超過幾秒會先顯示「⏳ 整理排版中…」，插件失敗就照原本的方式貼。畫成的圖按 📝（自己加這個反應），機器人會回它是什麼、用什麼畫的，原文放在程式碼區塊（太長就給檔案）；原文留 30 天，看起來像金鑰或 token 的會先遮掉。
+- **外部插件出新版時，更新卡會告訴你，按「更新」就換好。** 插件的來源有新版時，#update 的卡片會列出它的重點（從插件自己的 CHANGELOG 來），引擎已經是最新的也一樣；按「更新」就在這台換好、把實例裡的版本改掉，別台下一輪自己跟上。新版要在這台多做事（多了排程、hook、改寫回覆、skill、安裝步驟、資料或頻道）、自己的測試沒過、要更新的引擎、或插件資料夾裡有你的修改時，按鈕不會換：按「請 Claude 幫忙」在 #setup 跟你一項項看，新的 hook 或改寫回覆（會看到你的對話內容）會另外再問一次；說「引擎回到更新前」時，最後一次換的插件也會退回去。插件的來源連不上時不會卡住更新：大約一分鐘沒有進展就先放棄，之後幾輪先跳過它、隔得越來越久（最多 6 小時），連得上了再照常，doctor 會說它從什麼時候開始連不上。
+- **官方插件在 #setup 說一聲就能裝。** 每台每天看一次 GitHub 上 altention 組織公開的 `plugin-<名稱>`，`plugins.py list` 最後「可以裝的」會列出來；在 #setup 說「裝 <名稱>」，Claude 先告訴你它會在電腦上做什麼（排程、hook、改寫回覆、skill、要的工具），會看到對話內容的另外再問一次，你同意了才寫進實例、在這台裝好；別台用得到的會列出來，你說好才裝。清單多了新插件，#update 會說一次，不會自己裝；連不上 GitHub 就用上次的清單。還有事要你做的（裝工具、填金鑰），Claude 會一步一步帶你。
+- **外部插件的私人資料可以備份，換電腦時會自己拿回來。** #setup 的備份題目會列出插件寫明是私人的資料，每一樣各用一個 private repo（`altention-<插件>-<資料>`）；在另一台安裝時，會先從備份 clone 回來，再跑插件的安裝步驟。
+- **關掉插件之前會先說會少掉什麼；它的 hook 不會重複裝，關掉就拿掉。** 關之前 Claude 會告訴你少掉什麼（`plugins.py lose <名稱>`：它幫你做的事、要靠它的插件、排程、hook、頻道；資料留著），問過才關；它的頻道會說一句在哪台停了，再打開也說一句。hook 跑幾次安裝都只留一份，插件在某台關掉或變成草稿時也會拿掉；你自己加的不動，一週內 doctor 會說拿掉了哪些。
+- **只拿到週額度時，額度看板也讀得到了。** Claude Code 現在可能只回報週額度（2.1.312、2.1.316 看過），看板之前會說「格式變了」，週用量也停止記錄；現在照常顯示週額度並繼續記錄，5 小時那段註明這次沒有提供。
+
+### For agents
+
+1. Plugins may declare `rewrite` in plugin.json: `command` (with `{python}`, `{plugin}` and the bot's
+   `{out}`), `timeout` (seconds, at most 60), `when` (a regex). Input and output are described in
+   `dcbot/bot/rewrite.py`. Nothing to do when updating.
+2. An external plugin's new versions are the tags in its source. The card quotes each one's own `CHANGELOG.md`, in
+   the sections this file uses. Its `plugin.json` may now say `engine` (`">=X.Y.Z"`: the engine it needs) and
+   `test` (a command run in a copy of the new version; it is taken only when the command exits 0).
+3. `altention update plugin <name> <vX.Y.Z>` moves one plugin, on the bot's machine, and writes the instance; the
+   other machines follow in their update round. `#setup`'s Claude runs it after asking the person (the update
+   skill's step 7). Each plugin's source is mirrored in `~/.local/state/altention/plugin-src/`, with the backoff for
+   sources that do not answer in `unreachable.json` there; leave them to the update rounds.
+4. A plugin's data is backed up as `plugin:<plugin>/<data>` (`python3 ops/remote.py set plugin:<plugin>/<data> <URL>`,
+   or `ops/setup.py backup-set`), and only on a machine where that plugin is on.
+5. After updating, the first apply on each machine takes out the extra copies of an external plugin's hook in
+   `~/.claude/settings.json`, and all of that plugin's hooks where it is off, disabled or a draft. A hook counts as
+   the plugin's only when it is exactly the one its `plugin.json` declares (event, matcher, command and timeout); a
+   hook the person wrote by hand that is exactly the same counts as the plugin's too.
+6. The repository moved to `https://github.com/altention/altention`. `git remote set-url origin
+   https://github.com/altention/altention.git` in the engine may be run but is not needed: GitHub sends the old
+   address to the new one. A plugin's `source` at an old address works the same way.
+7. Plugins may declare Discord Activity pages in plugin.json: `"activity": {"pages": [{"id", "title", "access"}]}`,
+   `access` being `owner` (the default: the owner alone) or `guild` (anyone in the server). `altention dc post
+   <channel> --activity <plugin>/<page> [--arg k=v …] "text"` posts a button that opens one; on a press the bot
+   checks the page's access, writes the intent (user, channel, guild, page, args) to
+   `~/.local/state/altention/activity/<plugin>.json` and opens the Activity. `dcctl app --json` gives a plugin the
+   bot application's ID, the owner's and server's IDs, and whether its Discord Activities are on. The bot needs
+   discord.py 2.6 or newer: its supervisor installs it when it starts the new version (`requirements.txt` changed).
+   Nothing to do when updating.
+8. `ops/release.py` publishes an external plugin too, the way it publishes the engine: `check-plugin <name>`,
+   `publish-plugin <name> <X.Y.Z> [REV] [--push]` (one public commit a release, made from REV's tree in
+   `~/altention/plugins/<name>`, its own repository; the tag goes on that repository's remote too) and
+   `seen-plugin <name> <X.Y.Z>`. Its public repository is `"release": {"plugins": {"<name>": {"repo": "<git URL>"}}}`
+   in the instance's `plugins.json`, the author `release.author`; the privacy scan counts those repositories as
+   public. After `--push` it reads the public repository with no login and says when it cannot (not public yet?).
+   It never makes or renames a repository. Nothing to do when updating.
+9. The official plugin list (`altention/catalog.py`): each machine's update round looks at it once a day (one API
+   request with the last ETag, no token; tags by `git ls-remote`, `plugin.json` and `CHANGELOG.md` from
+   raw.githubusercontent.com) and keeps it in `~/.local/state/altention/catalog.json`; what `#update` was told is in
+   `catalog-told.json` there. `python3 ops/plugins.py list --catalog` also lists the repositories left out and why,
+   `--catalog-now` looks now (at most every 10 minutes). doctor: `plugins.catalog` (no fresh list for 7 days) and
+   `plugin.<name>.catalog` (a plugin taken from the organisation's public repository the list no longer has).
+10. `python3 ops/plugins.py add <name> [vX.Y.Z]` (in `#setup`, `ops/setup.py plugin-add`) says what the plugin would
+   do and writes nothing; with `--yes` it writes `"plugins": {"<name>": {"source": "<its https URL>", "version"}}`
+   into the instance, commits and pushes it (`setup.py` then runs `./install.sh`); one with hooks or a `rewrite`
+   also needs `--hooks-ok`, given only after the person said yes to that question. It never changes an entry the
+   instance already has. `ops/setup.py plugin-apply <plugin> <machine>` brings another machine that plugin runs on
+   in line (`ops/apply.py` there: everything it has not taken yet), for no other plugin or machine.
+11. A plugin's new version that adds a `rewrite` or a skill is now one that does more here (`perms`): the update card
+   no longer takes it with one press, and `#setup`'s Claude asks about a new rewrite on its own, as about a hook.
+12. `python3 ops/plugins.py lose <name>` prints what turning a plugin off loses: say it and ask before writing its
+   `disabled_on`. apply notes each plugin's place per machine
+   (`~/.local/state/altention/apply/<machine>/placements.json`) and, when one goes from on to off, disabled or draft
+   there (or back), posts one line with `altention dc notify` in each channel its `plugin.json` declares; the first
+   apply after updating only notes. doctor: `plugins.disabled`
+   (said in its plain output), and `plugins.would-apply` names a turned-off plugin's lines that apply leaves
+   (`leftovers` in `plugins.py report`). Nothing to do when updating.
+13. `ops/apply.py` now pulls each machine's instance every time, also when the machine list names no
+   `instance.repo` (before, those machines kept their instance as it was, though apply said all went well). A
+   machine that has none yet is joined to the list's `instance.repo`, else to this machine's instance origin when
+   another machine can reach it (a URL or `user@host:path`, not a folder or `file://`); apply then says
+   「<machine> 還沒接上實例，已經用 <origin> 接上」 and doctor says `instance.joined-by-apply` for a week. Nothing to
+   do when updating.
+14. Plugins may post to the reserved targets `@audit` (the bot's own #audit) and `@notify` (the default notification
+   channel): `altention dc post @audit "…"`, `altention dc notify -c @notify "…"`. The bot finds them from its own
+   settings, so a plugin needs neither name and reads no channel list; posts and notifications only. See
+   `docs/plugins/discord.md`. The channel list a name needs is read once a minute per machine and shared
+   (`dcbot/state/channel-list.json`). Nothing to do when updating.
+15. `altention dc post` and `altention dc notify` take `--wait N` (1 to 600 seconds): they end only once the bot has
+   put the message on Discord, exit 0 and print its ID on the last line; 3 means it was still queued when the time
+   was up (it is sent later: do not send it again), 4 that the bot did not show it (why on stderr). Without
+   `--wait`, 0 still means queued only. `dcctl send <channel ID>` reads no channel list (so a thread's ID works too)
+   and prints the message's ID. See `docs/plugins/discord.md`. Nothing to do when updating.
+16. A plugin can attach what a picture was drawn from, shown when the owner taps 📝 on the message:
+   `{"kind", "lang", "tool", "source"}` (source at most 64 KB) in `<file>.source.json` beside a file given to
+   `altention dc post --file`, or in a rewritten reply's message as `"sources": {"<image path>": {…}}`. An older
+   bot ignores both. See `docs/plugins/discord.md`. Nothing to do when updating.
+17. The bot now keeps two more fields: `text` on each thing a channel waits on the owner for, and `doing` on each
+   channel. Each is one line of the conversation (masked, no control characters, at most 80 characters), left out
+   when there is none. The files they are kept in are the bot's own and their format may change: plugins should not
+   read them, but wait for the read-only commands planned for a later release. Nothing to do when updating.
+18. `dcctl send` changed in two ways. Mentions in its text (`<@…>`, `@everyone`, roles) no longer ping anyone:
+   a script that means to ping should add `--mentions`. A text over 2000 characters is no longer cut to 2000 but
+   refused whole, with exit code 4 and 「沒有送出：超過 2000 字」 on stderr: a script that sent long texts this way
+   should use `altention dc post`, which splits them. Look through your own scripts for `dcctl send` when updating.
+19. plugin.json: the engine no longer reads `commands[]` or `requires[].data`. A plugin that still has them loads
+   as before; `python3 ops/plugins.py list` and `ops/release.py check-plugin` remind its author to delete them.
+   `provides`, `secrets[]` and the core's `cron[].why` are reserved: checked, not read. The core's `links[]` is gone
+   (the sync's links are listed in `docs/architecture.md`). Every field and what reads it:
+   `docs/plugins/plugin-json.md`. Plugin authors: delete the two keys; nothing to do when updating.
+20. Plugins now name the engine interfaces they use: plugin.json `"uses": {"<interface>": <version>}`, against
+   `altention/interfaces.json` (`altention dc post`/`read`/`notify`, `dcctl`, `dcremote files`, `rewrite`,
+   `activity.pages`, the plugin.json tokens, part of `altention.config`, and a few transitional ones). A plugin on a
+   machine whose engine does not offer what it uses is blocked there: like turning it off, its schedules, hooks and
+   skills are taken away, and `ops/plugins.py list`, doctor (`plugins.blocked`) and the update card say which
+   interface and how to fix it. A plugin without `uses` runs as before; `plugins.py list` reminds external plugins
+   to add it. `ops/release.py check-plugin` now refuses a plugin that runs or imports engine files no interface
+   lists, or uses an interface its `uses` does not name; transitional ones (the bot's state files, the transcript
+   reader, `dcbot/bot/filecore.py`; see 17) only get a reminder for now and will be refused once the read-only
+   commands that replace them are out. Plugin authors: add `uses` before publishing. Nothing to do when updating.
+   A plugin may also offer interfaces of its own in plugin.json `"interfaces"` (the same shape). They count only on a
+   machine where that plugin is on; a name the engine already has is refused, and when two plugins on a machine
+   offer the same name, the one whose name sorts first counts and the other's does not.
+21. plugin.json can now have `guide[]` (steps the owner takes elsewhere) and more fields in `needs[]` (how to install
+   a tool on each system, its size, what is missing without it): see `docs/plugins/plugin-json.md`. A plugin that
+   uses them should require `"engine": ">=0.5.0"`. Nothing to do when updating.
+22. A plugin's secrets live in `~/.config/altention/secrets/<plugin>/<name>` (folder 700, file 600), set with
+   `altention secret set <plugin> <name>` and covered by the secrets guard. plugin.json's `secrets[]` needs only
+   `name` (and `label`); `path` is retired (`plugins.py list` reminds the author). Nothing to do when updating.
+23. `altention dc post <channel> --secret <plugin>/<name> ["text"]` posts a 「填入」 button for a secret the plugin
+   declares in `secrets[]` (its `label` names the button); only the owner can press it, and what is typed in
+   Discord's box is stored on the bot's machine by `altention secret set … --stdin --via discord`. The value is never
+   posted, logged or handed to a Claude. A name the plugin does not declare is not posted (`--wait`: exit 4). See
+   `docs/plugins/discord.md`. Nothing to do when updating.
+24. plugin.json may say `"offer": {"cost": "...", "when": "install" | "asked"}`; `setup.py offer <plugin>` is the
+   "asked" moment. The answers are the instance's `plugins.json` `"offers"`; leave them to #setup. Nothing to do
+   when updating.
+25. plugin.json `guide[].gate` names the `setup[]` items and `schedules[]` held back while that step's check fails
+   (apply adds no line, the scheduler does not run it, install skips the item; a line already there is kept); once
+   the step passed, they are let go for good. The gates are kept in `~/.local/state/altention/setup/gate/<plugin>.json`,
+   written by every plan. A new version with a new tool to install, a new step, a changed `run` or a new secret counts
+   as perms. Nothing to do when updating.
+
 ## v0.4.3 — 2026-10-27
 
 ### For people

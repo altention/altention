@@ -41,12 +41,60 @@ class Check(unittest.TestCase):
                  data=[{"name": "d", "path": "{data}/d", "sync": "none", "private": True}], future_field={"x": 1})
         self.assertIs(plugin.check(d), d)
 
+    def test_keys_the_engine_no_longer_reads_still_pass_c95(self):
+        d = good(commands=[{"name": "x"}], requires=[{"plugin": "a", "data": 3}], links=[{"name": "l"}])
+        self.assertIs(plugin.check(d), d, "an older plugin keeps working")
+        self.assertEqual([w for w, _ in plugin.retired(d)], ["commands", "requires[].data"])
+        self.assertEqual(plugin.retired(good(requires=[{"plugin": "a"}])), [])
+
+    def test_uses_c94(self):
+        plugin.check(good(uses={"dc.post": 1, "anything": 3}))
+        self.bad(good(uses=["dc.post"]), "uses 要是物件")
+        for v in (0, True, "1", 1.0):
+            self.bad(good(uses={"dc.post": v}), "uses.dc.post 要是 1 以上的整數")
+
+    def test_interfaces_of_its_own(self):
+        plugin.check(good(interfaces={"rig.spend": {"version": 1, "what": "x", "paths": ["bin/x"], "also": []}}))
+        self.bad(good(interfaces=["rig.spend"]), "interfaces 要是物件")
+        self.bad(good(interfaces={"Rig": {"version": 1}}), "interfaces 的名字 Rig")
+        self.bad(good(interfaces={"rig.spend": {"version": 0}}), "interfaces.rig.spend.version 要是 1 以上的整數")
+        self.bad(good(interfaces={"rig.spend": {"version": 1, "paths": "x"}}), "interfaces.rig.spend.paths 要是清單")
+
+    def test_engine_and_test_c61_e3(self):
+        plugin.check(good(engine=">=0.3.0", test="python3 -m unittest"))
+        plugin.check(good(engine=">= v1.2.3"))
+        self.bad(good(engine="0.3"), "engine 要寫成")
+        self.bad(good(test=["x"]), "test 要是指令")
+
     def test_lazy_setup_and_needs_c61(self):
         plugin.check(good(setup=[{"name": "big", "run": "x", "lazy": True, "optional": True}],
                           needs=[{"name": "chrome", "check": "command -v chrome", "hint": "裝 Chrome"}, {"name": "p", "check": "x"}]))
         self.bad(good(setup=[{"name": "big", "run": "x", "lazy": "yes"}]), "setup[0].lazy 型別不對")
         self.bad(good(needs=[{"name": "chrome"}]), "needs[0] 少了 check")
         self.bad(good(needs={"chrome": "x"}), "needs 要是清單")
+
+    def test_rewrite_c71b(self):
+        r = {"command": "{python} \"{plugin}/bin/draw\" - --for-bot -o {out}", "timeout": 30, "when": "^\\s*\\|"}
+        plugin.check(good(rewrite=r))
+        plugin.check(good(rewrite={"command": "x {out}"}))
+        for rewrite, words in (("x", "rewrite 要是物件"), ({"timeout": 3}, "rewrite.command"),
+                               ({"command": "x", "timeout": 61}, "1 到 60"), ({"command": "x", "timeout": True}, "1 到 60"),
+                               ({"command": "x", "when": 3}, "rewrite.when 要是文字"),
+                               ({"command": "x", "when": "(unclosed"}, "不是正確的 regex")):
+            self.bad(good(rewrite=rewrite), words)
+
+    def test_activity_pages_c54a(self):
+        plugin.check(good(activity={"pages": [{"id": "files", "title": "看檔案"}, {"id": "quiz", "access": "guild"},
+                                              {"id": "monitor", "access": "owner", "dir": "web/monitor", "calls": ["x"]}]}))
+        plugin.check(good(activity={}))
+        for activity, words in (("x", "activity 要是物件"), ({"pages": "files"}, "pages 要是清單"),
+                                ({"pages": ["files"]}, "pages[0] 要是物件"), ({"pages": [{"title": "x"}]}, "pages[0].id"),
+                                ({"pages": [{"id": "Files"}]}, "pages[0].id"), ({"pages": [{"id": "a/b"}]}, "pages[0].id"),
+                                ({"pages": [{"id": "a"}, {"id": "a"}]}, "兩頁都叫 a"),
+                                ({"pages": [{"id": "a", "title": 3}]}, "title 要是文字"),
+                                ({"pages": [{"id": "a", "access": "everyone"}]}, "access 要是 owner"),
+                                ({"pages": [{"id": "a", "access": None}]}, "access 要是 owner")):
+            self.bad(good(activity=activity), words)
 
     def test_what_is_wrong_is_named(self):
         self.bad(good(name=""), "name")
@@ -72,7 +120,7 @@ class Check(unittest.TestCase):
     def test_the_sync_and_the_engine_update_never_go_into_the_scheduler(self):
         """DESIGN 8: they must keep running when the time zone, plugins.json or the scheduler's state are broken."""
         for run in ("python3 -m altention.sync", "python3 altention/update.py",
-                    "~/agent-home/bin/home-pull --quiet", "cd x && git pull -q"):
+                    "~/engine/bin/home-pull --quiet", "cd x && git pull -q"):
             item = {"name": "s", "when": {"every": "15m"}, "do": {"run": run}}
             self.bad(good(schedules=[item]), "永遠不進排程器")
             plugin.check(good(schedules=[dict(item, scheduler=False)]))  # kept in its own cron line: allowed
@@ -130,7 +178,7 @@ class Finding(unittest.TestCase):
         write(os.path.join(self.inst, "plugins.json"), {"format": 1, "plugins": {"life": entry} if entry is not None else {}})
 
     def test_an_external_plugin_the_instance_does_not_declare_is_a_draft(self):
-        """C-61 E1: learn-dev had to rename its plugin.json to keep it from being installed and scheduled."""
+        """C-61 E1: a plugin's team had to rename its plugin.json to keep it from being installed and scheduled."""
         for entry in (None, {}, {"disabled_on": ["host-b"]}, {"on": "host-a"}):
             self.declare(entry)
             drafts = []
@@ -204,6 +252,17 @@ class TheEnginesOwn(unittest.TestCase):
         plugins, problems = plugin.discover(plugin.ENGINE, instance="", root=tempfile.gettempdir())
         self.assertEqual(problems, [])
         self.assertEqual([n for n, _, _ in plugins][0], "core")
+        self.assertEqual([(n, plugin.retired(d)) for n, _, d in plugins if plugin.retired(d)], [], "C-95: none left")
+
+    def test_its_interface_list_reads_c94(self):
+        offered = plugin.interfaces()
+        self.assertIn("dc.post", offered)
+        for name, e in offered.items():
+            self.assertTrue(isinstance(e["version"], int) and e["version"] >= 1, name)
+            for path in e.get("paths", []):
+                self.assertTrue(os.path.exists(os.path.join(plugin.ENGINE, path)) or path.startswith("dcbot/state/"), path)
+            for module in e.get("modules", []):
+                self.assertTrue(os.path.isfile(os.path.join(plugin.ENGINE, *module.split(".")) + ".py"), module)
 
 
     def test_every_bundled_plugin_says_what_it_does_for_the_user_in_the_owners_order(self):
@@ -362,8 +421,8 @@ class ExternalHere(unittest.TestCase):
         self.inst = os.path.join(self.tmp, "instance")
         write(os.path.join(self.inst, "machines.json"), RealConfig.MACHINES)
         self.root = os.path.join(self.tmp, "altention")
-        write(os.path.join(self.root, "plugins", "learn", "plugin.json"), good(name="learn", machines="one"))
-        write(os.path.join(self.root, "plugins", "latex", "plugin.json"), good(name="display"))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", machines="one"))
+        write(os.path.join(self.root, "plugins", "sketch", "plugin.json"), good(name="draw"))
         self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst})
         self.env.start()
 
@@ -380,29 +439,128 @@ class ExternalHere(unittest.TestCase):
         return {n: (w, r) for n, _, _, w, r in rows}, rows, problems
 
     def test_undeclared_ones_are_drafts_last_with_the_reason(self):
-        self.settings({"learn": {"source": "https://example.org/learn.git", "version": "v0.1.0"}})
+        self.settings({"demo": {"source": "https://example.org/demo.git", "version": "v0.1.0"}})
         here, rows, problems = self.rows()
-        self.assertEqual(here["learn"], ("on", ""))
-        self.assertEqual(here["display"], ("draft", plugin.DRAFT_WHY % "display"))
-        self.assertEqual(rows[-1][0], "display")
+        self.assertEqual(here["demo"], ("on", ""))
+        self.assertEqual(here["draw"], ("draft", plugin.DRAFT_WHY % "draw"))
+        self.assertEqual(rows[-1][0], "draw")
         self.assertEqual(problems, [])
 
     def test_an_unusable_source_makes_it_unknown_not_a_draft(self):
-        self.settings({"learn": {"source": "https://example.org/learn.git"}, "display": {"local": "yes"}})
+        self.settings({"demo": {"source": "https://example.org/demo.git"}, "draw": {"local": "yes"}})
         here, _, _ = self.rows()
-        self.assertEqual(here["learn"][0], "unknown")
-        self.assertIn("plugins.learn 的來源不能用：version 要寫標籤", here["learn"][1])
-        self.assertIn("local 只能寫 true", here["display"][1])
+        self.assertEqual(here["demo"][0], "unknown")
+        self.assertIn("plugins.demo 的來源不能用：version 要寫標籤", here["demo"][1])
+        self.assertIn("local 只能寫 true", here["draw"][1])
+
+    def test_uses_not_offered_is_blocked_with_why_c94(self):
+        offered = plugin.interfaces()
+        cases = (({"dc.post": offered["dc.post"]["version"]}, "on", ""),
+                 ({"dc.post": 99}, "blocked", "它需要 dc.post v99，這版引擎提供的是 v1"),
+                 ({"no.such": 1, "dc.post": 1}, "blocked", "它需要的介面 no.such，這版引擎沒有"))
+        self.settings({"demo": {"local": True}})
+        for uses, where, words in cases:
+            with self.subTest(uses=uses):
+                write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses=uses))
+                here, _, problems = self.rows()
+                self.assertEqual(here["demo"][0], where)
+                self.assertIn(words, here["demo"][1])
+                if where == "blocked":
+                    self.assertIn("更新引擎", here["demo"][1])
+                self.assertEqual(here["draw"][0], "draft", "a draft stays a draft whatever it uses")
+                self.assertEqual(problems, [])
+
+    def test_older_versions_still_offered_and_an_unreadable_list_is_unknown_c94(self):
+        self.settings({"demo": {"local": True}, "draw": {"local": True}})
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"dc.post": 1}))
+        with mock.patch.object(plugin, "interfaces", return_value={"dc.post": {"version": 2, "also": [1]}}):
+            self.assertEqual(self.rows()[0]["demo"], ("on", ""))
+        with mock.patch.object(plugin, "interfaces", side_effect=plugin.PluginError("x：讀不出來")):
+            here, _, _ = self.rows()
+        self.assertEqual(here["demo"][0], "unknown", "never blocked (so taken away) on a list that cannot be read")
+        self.assertIn("介面清單讀不出來", here["demo"][1])
+        self.assertNotIn("C-9", json.dumps(plugin.interfaces(), ensure_ascii=False), "words shown to authors: no ticket ids")
+        self.assertEqual(here["draw"], ("on", ""), "one without uses does not need the list")
+
+    def test_interfaces_a_plugin_offers_count_where_it_is_on(self):
+        """manager 2026-10-24: a plugin's own "interfaces" join the engine's where it is on; off, its users are blocked
+        with its name; a user of a provider that is itself blocked goes too; a name the engine has is not taken."""
+        offer = {"rig.spend": {"version": 2, "what": "spend", "also": [1]}}
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"), good(name="rigp", interfaces=offer))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"rig.spend": 1}))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        here, _, problems = self.rows()
+        self.assertEqual((here["rigp"][0], here["demo"][0], problems), ("on", "on", []))
+        self.assertEqual(plugin.offered_here("host-a", root=self.root)["rig.spend"]["provider"], "rigp")
+        self.settings({"demo": {"local": True}, "rigp": {"local": True, "disabled_on": ["host-a"]}, "draw": {"local": True}})
+        here, _, _ = self.rows()
+        self.assertEqual(here["demo"][0], "blocked")
+        self.assertIn("rig.spend 由插件 rigp 提供，但 rigp 在這台沒開", here["demo"][1])
+        self.assertIn("在這台打開那個插件", here["demo"][1])
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"rig.spend": 3}))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        why = self.rows()[0]["demo"][1]
+        self.assertIn("它需要 rig.spend v3，rigp 提供的是 v2、v1", why)
+        self.assertIn("把 rigp 更新到有提供這個介面 v3 的版本", why, "rigp is on: not 「打開」")
+        self.assertFalse(plugin.blocked_by_engine(why))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"rig.spend": 1}))
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"),
+              good(name="rigp", interfaces=offer, uses={"dc.post": 99}))
+        here, _, _ = self.rows()
+        self.assertEqual((here["rigp"][0], here["demo"][0]), ("blocked", "blocked"), "blocked offers nothing")
+        self.assertIn("這版引擎沒有它需要的介面", here["rigp"][1])
+        self.assertTrue(plugin.blocked_by_engine(here["rigp"][1]))
+        self.assertFalse(plugin.blocked_by_engine(here["demo"][1]))
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"),
+              good(name="rigp", interfaces={"dc.post": {"version": 1}, "rig.spend": {"version": 1}}))
+        write(os.path.join(self.root, "plugins", "sketch", "plugin.json"),
+              good(name="draw", interfaces={"rig.spend": {"version": 1}}))
+        here, _, problems = self.rows()
+        self.assertEqual(here["demo"][0], "on", "rigp's rig.spend is taken; its dc.post is not")
+        self.assertEqual(problems, ["rigp 的 plugin.json 宣告的介面 dc.post 跟引擎的重名：這個宣告不算，請 rigp 改名",
+                                    "rigp 的 plugin.json 宣告的介面 rig.spend，draw 已經宣告了：rigp 的不算，請其中一個改名"])
+
+    def test_a_provider_whose_place_cannot_be_told_leaves_its_users_unknown(self):
+        """#code-review of 0e39bb6: blocked takes things away, so only a provider plainly not on blocks its users; one
+        unknown (an unusable source), or a plugin.json here that cannot be read, makes them unknown instead."""
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"),
+              good(name="rigp", interfaces={"rig.spend": {"version": 1}}))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"),
+              good(name="demo", uses={"rig.spend": 1, "dc.post": 1}))
+        cases = (({"local": True}, None, "on", ""),
+                 ({"source": 5}, None, "unknown", "由插件 rigp 提供，但不知道 rigp 在這台開不開（實例設定裡 plugins.rigp 的來源不能用"),
+                 ({"source": "https://example.org/rigp.git"}, None, "unknown", "不知道 rigp 在這台開不開"),
+                 ({"local": True}, "{broken", "unknown", "可能是 plugin.json 讀不出來的插件（rigp）提供的"),
+                 ({"local": True, "disabled_on": ["host-a"]}, None, "blocked", "rigp 在這台沒開"))
+        for entry, broken, where, words in cases:
+            with self.subTest(entry=entry, broken=broken):
+                if broken:
+                    write(os.path.join(self.root, "plugins", "rigp", "plugin.json"), broken)
+                self.settings({"demo": {"local": True}, "rigp": entry, "draw": {"local": True}})
+                here, _, _ = self.rows()
+                self.assertEqual(here["demo"][0], where, here["demo"][1])
+                self.assertIn(words, here["demo"][1])
+                if where == "unknown":
+                    self.assertIn("這個插件先照原樣不動", here["demo"][1])
+                if broken:
+                    write(os.path.join(self.root, "plugins", "rigp", "plugin.json"),
+                          good(name="rigp", interfaces={"rig.spend": {"version": 1}}))
+        self.settings({"demo": {"local": True}, "draw": {"local": True}})  # rigp a draft: plainly not run here
+        self.assertIn("rig.spend 由插件 rigp 提供，但 rigp 在這台沒開", self.rows()[0]["demo"][1])
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"dc.post": 99}))
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"), "{broken")
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        self.assertEqual(self.rows()[0]["demo"][0], "blocked", "an engine interface: no plugin.json can offer it")
 
     def test_notes_name_the_folder_and_a_declared_one_not_here(self):
-        settings = self.settings({"display": {"local": True}, "learn": {"local": True},
+        settings = self.settings({"draw": {"local": True}, "demo": {"local": True},
                                   "far": {"source": "https://example.org/far.git", "version": "v1.0.0"},
                                   "progress": {"on": "host-a"}, "odd": {"source": "x"}})
         _, rows, _ = self.rows()
         notes = dict(plugin.external_notes(rows, settings, self.root))
-        self.assertEqual(sorted(notes), ["display", "far"])
-        self.assertIn("資料夾叫 latex，plugin.json 的 name 是 display", notes["display"])
-        self.assertIn("plugins/display", notes["display"])
+        self.assertEqual(sorted(notes), ["draw", "far"])
+        self.assertIn("資料夾叫 sketch，plugin.json 的 name 是 draw", notes["draw"])
+        self.assertIn("plugins/draw", notes["draw"])
         self.assertIn("https://example.org/far.git v1.0.0", notes["far"])
         self.assertIn(os.path.join(self.root, "plugins", "far"), notes["far"])
 

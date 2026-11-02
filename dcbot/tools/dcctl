@@ -16,7 +16,9 @@
                                           stays at the bottom when another one is moved
   dcctl archive CHANNEL                   archive it as /archive does (the bot does it: queued while it is offline)
   dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
-  dcctl send CHANNEL TEXT                 post a message
+  dcctl send CHANNEL TEXT [--mentions]    post a message, straight to Discord (not through the bot); mentions in it
+                                          ping nobody unless --mentions; over 2000 characters is refused (exit 4),
+                                          never cut or split
   dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off)
   dcctl edit CHANNEL MESSAGE_ID           replace the text of a message the bot itself posted with what stdin
                                           holds; over 2000 characters is refused, never cut or split
@@ -27,16 +29,21 @@
                                           the last N messages (default 30), oldest first; each is cut to
                                           K characters (default 600, 0 = whole message)
   dcctl roles                             list roles
+  dcctl app [--json]                      the bot's own application: whether its Discord Activities are on, and the
+                                          IDs a plugin needs (application, owner, server); never the token
   dcctl guide --check                     print the guide as it would be posted (GUIDE.md expanded), touch nothing
   dcctl guide [--note TEXT]               bring the guide channel in line with GUIDE.md (its messages are edited in
                                           place); --note also posts an update notice, keeping the last 5
 
 CHANNEL / CATEGORY may be a name (without #) or an ID; history also takes a thread's ID. Every change is also logged to #audit.
 """
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import secrets
 import sys
 import time
 import urllib.error
@@ -80,8 +87,109 @@ def call(method, path, body=None):
             sys.exit("Discord API 錯誤 %s：%s" % (e.code, detail[:300]))
 
 
-def channels():
-    return call("GET", "/guilds/%d/channels" % config.GUILD_ID)
+EMBEDDED = 1 << 17  # an application flag: its Activities are on (Discord's APPLICATION_FLAGS; measured 2026-10-21: an app
+# with Activities on had flags 2228224, bits 17 and 21; Discord's page calls the flag "currently unavailable publicly")
+
+
+def app_info():
+    """The bot's application, for a plugin (C-54a: a plugin's install check for its Activity, and the IDs it fills in when
+    deployed): {"activities": bool, "app_id", "owner_id", "guild_id"} (IDs as strings). Nothing secret is in it."""
+    app = call("GET", "/applications/@me") or {}
+    return {"activities": bool(int(app.get("flags") or 0) & EMBEDDED), "app_id": str(app.get("id") or ""),
+            "owner_id": str(config.OWNER_ID or ""), "guild_id": str(config.GUILD_ID or "")}
+
+
+LIST_SECS = 60  # how long the server's channel list read from Discord serves every dcctl here (C-87)
+LOCK_SECS = 150  # how long to wait for another dcctl reading it (its 429 waits included) before reading it anyway
+last = {"cached": False, "held": 0}  # did the last channels() come from the file; list_lock() taken how deep
+
+
+def list_file():
+    return os.path.join(config.STATE, "channel-list.json")
+
+
+@contextlib.contextmanager
+def list_lock():
+    """One dcctl at a time reads the list from Discord (or makes a category); the others wait and take what it read.
+    Discord lets the whole bot ask for the list 10 times a minute: every `altention dc post` by a name asked once,
+    and posting together held each other up 30 seconds and more (C-87). Taken again inside, it is already held."""
+    if last["held"]:
+        last["held"] += 1
+        try:
+            yield
+        finally:
+            last["held"] -= 1
+        return
+    os.makedirs(config.STATE, exist_ok=True)
+    with open(os.path.join(config.STATE, "channel-list.lock"), "a") as f:
+        deadline = time.time() + LOCK_SECS
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > deadline:  # one stuck: this one goes on without the lock
+                    f = None
+                    break
+                time.sleep(0.2)
+        last["held"] += 1
+        try:
+            yield
+        finally:
+            last["held"] -= 1
+            if f is not None:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def cached_list():
+    """The list a dcctl read from Discord in the last LIST_SECS, or None."""
+    try:
+        with open(list_file()) as f:
+            got = json.load(f)
+        if got.get("guild") == config.GUILD_ID and 0 <= time.time() - float(got["at"]) < LIST_SECS \
+                and isinstance(got.get("channels"), list):
+            return got["channels"]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+def channels(fresh=False):
+    """The server's channels and categories: as a dcctl here read them in the last minute, or (`fresh`, or none
+    that recent) from Discord. A channel made, renamed or deleted since may be missing or stale in a cached list:
+    where a name or ID is not found in it, it is looked for once more in a fresh one (again())."""
+    with list_lock():
+        got = None if fresh else cached_list()
+        last["cached"] = got is not None
+        if got is None:
+            got = call("GET", "/guilds/%d/channels" % config.GUILD_ID)
+            try:  # (under the lock: no other dcctl writes it meanwhile)
+                tmp = list_file() + ".%d.tmp" % os.getpid()
+                with open(tmp, "w") as f:
+                    json.dump({"at": time.time(), "guild": config.GUILD_ID, "channels": got}, f)
+                os.replace(tmp, list_file())
+            except (OSError, TypeError, ValueError):
+                pass  # read again next time
+        return got
+
+
+def listing_for(ref, kind=None):
+    """channels(), read again from Discord when `ref` (a name, "category/name" or an ID) is not in a cached one: it
+    may be newer than the list."""
+    chans = channels()
+    if str(ref or "").strip() and last["cached"]:
+        found, why = resolve(ref, chans, kind)
+        if found is None and (why is None or why.startswith("找不到")):
+            chans = channels(fresh=True)
+    return chans
+
+
+def forget():
+    """This dcctl changed the server: the next one reads the list from Discord."""
+    try:
+        os.remove(list_file())
+    except OSError:
+        pass
 
 
 def close_names(name, chans, n=5):
@@ -120,11 +228,12 @@ def resolve(ref, chans, kind=None, sender_category=None):
 
 
 def find(ref, kind=None):
+    chans = listing_for(ref, kind)
     if str(ref).isdigit():  # an ID may also be a thread's, which the guild's channel list does not hold
-        for c in channels():
+        for c in chans:
             if str(c["id"]) == str(ref):
                 return c
-    found, why = resolve(ref, channels(), kind)
+    found, why = resolve(ref, chans, kind)
     if found is None:
         sys.exit(why or ("找不到：%s" % ref))
     return found
@@ -238,10 +347,50 @@ def notify_target(post, chans, sender_category=None):
     return post
 
 
+RESERVED = ("@audit", "@notify")  # targets the bot finds from its own settings: its #audit, the default notification channel
+NOT_RESERVED = ("attach", "new_claude", "resume", "history", "move_to", "archive")  # these name a channel to change
+
+
+def reserved(post):
+    """Is the post's channel @audit or @notify (C-87: for a plugin, which knows neither name; no list is read)?"""
+    return str(post.get("channel") or "").strip().lstrip("#") in RESERVED
+
+
+NO_WAIT = ("attach", "new_claude", "resume", "history", "move_to", "archive", "board", "card", "open_chat", "open_setup")
+WAIT_MAX = 600
+QUEUED, NOT_SENT = 3, 4  # --wait's exit codes: still in the queue when the time was up; the bot said it was not shown
+
+
+def wait_for(post, secs, moved=None):
+    """--wait (C-87): the post's receipt, polled until `secs` are up. Shown: its message's ID on the last line, exit
+    0. Not shown (the bot said why): exit NOT_SENT. No receipt in time (the bot is not running, or slow): exit
+    QUEUED; the post stays in the queue and is shown once the bot gets to it."""
+    from bot import postbox
+    deadline = time.time() + max(0.0, min(secs, WAIT_MAX))
+    while True:
+        got = postbox.take_receipt(post["receipt"])
+        if got is not None or time.time() >= deadline:
+            break
+        time.sleep(0.2)
+    if got is None:
+        age = postbox.heartbeat_age()
+        why = "機器人沒在跑（%s）" % ("%d 秒沒有心跳" % age if age is not None else "沒有心跳") if age is None or age > 90 \
+            else "機器人還沒處理到它"
+        print("altention dc post：等了 %g 秒還沒送出：%s。這則還在佇列裡，之後會送出，不用重送" % (secs, why), file=sys.stderr)
+        sys.exit(QUEUED)
+    if not got.get("ok"):
+        print("altention dc post：沒有送出：%s" % (got.get("why") or "不知道原因"), file=sys.stderr)
+        sys.exit(NOT_SENT)
+    print(moved or "已送出到 #%s" % str(post.get("channel", "")).lstrip("#"))
+    print(got.get("message_id") or "")
+
+
 def named(post):
     """Does post_target_error() need the channel list for this post: its channel given by name?"""
     if post.get("attach") or post.get("new_claude") or post.get("open_chat") or post.get("open_setup"):
         return False  # the bot makes the channel (open_chat, open_setup: ops/setup.py's)
+    if reserved(post):
+        return False  # the bot's own: it finds them
     return not str(post.get("channel") or "").strip().lstrip("#").isdigit()  # an ID: the bot checks it (may be a thread)
 
 
@@ -266,7 +415,7 @@ def audit(text):
 def place(ref):
     """(id, how the audit line names it) of a channel by name or ID, or of a thread by its ID (the guild's
     channel list does not hold threads)."""
-    if str(ref).isdigit() and not any(str(c["id"]) == str(ref) for c in channels()):
+    if str(ref).isdigit() and not any(str(c["id"]) == str(ref) for c in listing_for(ref)):
         return str(ref), "討論串 %s" % ref
     c = find(ref)
     return str(c["id"]), "#%s" % c["name"]
@@ -279,6 +428,25 @@ def message_id(ref):
 
 
 EDIT_LIMIT = 2000  # Discord's, counted the way Discord counts: UTF-16 units (most emoji are two)
+SEND_TOO_LONG = 4  # `dcctl send`'s exit code for a text over EDIT_LIMIT (nothing sent)
+
+
+def units(text):
+    """How long Discord takes a text to be: UTF-16 units."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def send_body(words, pings=False):
+    """What `dcctl send CHANNEL TEXT… [--mentions]` posts, from the words after the channel (C-89): the text as it
+    is, never cut (over EDIT_LIMIT: exits with SEND_TOO_LONG and says nothing was sent), and mentions in it ping
+    nobody (`allowed_mentions` with nothing to parse) unless `pings` (--mentions), which leaves them to Discord's own
+    rules as before."""
+    text = " ".join(words)
+    if units(text) > EDIT_LIMIT:
+        print("沒有送出：超過 %d 字（%d 字；不會截斷或拆成幾則，長的請用 altention dc post）" % (EDIT_LIMIT, units(text)),
+              file=sys.stderr)
+        sys.exit(SEND_TOO_LONG)
+    return {"content": text} if pings else {"content": text, "allowed_mentions": {"parse": []}}
 
 
 def edit_text(raw):
@@ -288,7 +456,7 @@ def edit_text(raw):
     text = raw.rstrip("\r\n")
     if not text.strip():
         sys.exit("dcctl edit：stdin 沒有內容，訊息沒有改（不能把訊息改成空的）")
-    n = len(text.encode("utf-16-le")) // 2
+    n = units(text)
     if n > EDIT_LIMIT:
         sys.exit("dcctl edit：新內容有 %d 字，超過一則訊息的上限 %d 字，訊息沒有改（不會自動截斷或拆成幾則）" % (n, EDIT_LIMIT))
     return text
@@ -448,12 +616,14 @@ def guide_plan(mine, chunks, note=None, keep=KEEP_NOTES):
 
 def guide(note=None):
     name = config.GUIDE_CHANNEL
-    ch = next((c for c in channels() if c["name"] == name and c["type"] == 0), None)
+    chans = listing_for(name, 0)
+    ch = next((c for c in chans if c["name"] == name and c["type"] == 0), None)
     if ch is None:  # in the system category when there is one (C-57: a new installation's bot makes both on its first start)
-        system = next((c for c in channels() if c["type"] == 4 and c["name"] == config.SYSTEM_CATEGORY), None)
+        system = next((c for c in chans if c["type"] == 4 and c["name"] == config.SYSTEM_CATEGORY), None)
         ch = call("POST", "/guilds/%d/channels" % config.GUILD_ID,
                   dict({"name": name, "type": 0, "topic": "機器人的使用說明和更新紀錄。這裡不聊天，機器人不會回應這個頻道的訊息。"},
                        **({"parent_id": system["id"]} if system else {})))
+        forget()
         audit("建立頻道 #%s" % name)
     me = call("GET", "/users/@me")["id"]
     mine = [(m["id"], m.get("content") or "") for m in history(ch["id"], 200) if m["author"]["id"] == me]
@@ -597,10 +767,11 @@ def main(argv):
                 continue
             print("%-22s %-28s %s" % (c["id"], ("#" if c["type"] == 0 else "🔊") + c["name"], cats.get(c.get("parent_id"), "")))
     elif cmd == "ensure":
-        if any(c["name"] == args[0] and c["type"] == 0 for c in channels()):
-            print("已存在 #%s" % args[0])
-            return
-        return main(["create"] + args)
+        with list_lock():  # two at once make one (C-80): looked for again in a fresh list, made, before the next looks
+            if any(c["name"] == args[0] and c["type"] == 0 for c in listing_for(args[0], 0)):
+                print("已存在 #%s" % args[0])
+                return
+            return main(["create"] + args)
     elif cmd == "create":
         body = {"name": args[0], "type": 2 if "--voice" in args else 0}
         if opt("--topic"):
@@ -608,15 +779,18 @@ def main(argv):
         if opt("--category"):
             body["parent_id"] = find(opt("--category"), 4)["id"]
         c = call("POST", "/guilds/%d/channels" % config.GUILD_ID, body)
+        forget()
         print("已建立 #%s（%s）" % (c["name"], c["id"]))
         audit("建立頻道 #%s" % c["name"])
     elif cmd == "category":
         c = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": args[0], "type": 4})
+        forget()
         print("已建立分類 %s（%s）" % (c["name"], c["id"]))
         audit("建立分類 %s" % c["name"])
     elif cmd == "rename":
         c = find(args[0])
         call("PATCH", "/channels/%s" % c["id"], {"name": args[1]})
+        forget()
         print("已改名")
         audit("#%s 改名為 #%s" % (c["name"], args[1]))
     elif cmd == "topic":
@@ -634,10 +808,12 @@ def main(argv):
     elif cmd == "move":
         c = find(args[0])
         catname = args[1]
-        cat = next((x for x in channels() if x["type"] == 4 and (x["name"] == catname or str(x["id"]) == catname)), None)
-        if cat is None:
-            cat = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": catname, "type": 4})
-        call("PATCH", "/channels/%s" % c["id"], {"parent_id": cat["id"]})
+        with list_lock():  # a category two moves name is made once (C-80)
+            cat = next((x for x in listing_for(catname, 4) if x["type"] == 4 and (x["name"] == catname or str(x["id"]) == catname)), None)
+            if cat is None:
+                cat = call("POST", "/guilds/%d/channels" % config.GUILD_ID, {"name": catname, "type": 4})
+            call("PATCH", "/channels/%s" % c["id"], {"parent_id": cat["id"]})
+            forget()
         print("已移到 %s" % cat["name"])
         audit("#%s 移到 %s" % (c["name"], cat["name"]))
     elif cmd == "position":
@@ -646,10 +822,11 @@ def main(argv):
             sys.exit("用法：dcctl position <分類或頻道> --above <X> | --below <X> | --top | --bottom")
         try:
             other = opt("--" + how) if how in ("above", "below") and args.index("--" + how) + 1 < len(args) else None
-            payload, names, note = position_plan(channels(), args[0], how, other, config.SYSTEM_CATEGORY)
+            payload, names, note = position_plan(channels(fresh=True), args[0], how, other, config.SYSTEM_CATEGORY)  # every position is sent: never from an older list
         except ValueError as e:
             sys.exit("dcctl position：%s" % e)
         call("PATCH", "/guilds/%d/channels" % config.GUILD_ID, payload)
+        forget()
         print("新的順序：" + " > ".join(names) + ("（%s）" % note if note else ""))
         audit("調整 %s 的位置（%s）：%s" % (args[0], how, " > ".join(names)))
     elif cmd == "delete":
@@ -657,12 +834,17 @@ def main(argv):
             sys.exit("刪除需要使用者在對話中明確同意後，加上 --yes")
         c = find(args[0])
         call("DELETE", "/channels/%s" % c["id"])
+        forget()
         print("已刪除 #%s" % c["name"])
         audit("刪除頻道 #%s" % c["name"])
     elif cmd == "send":
-        c = find(args[0])
-        call("POST", "/channels/%s/messages" % c["id"], {"content": " ".join(args[1:])[:2000]})
-        print("已送出")
+        rest = [a for a in args if a != "--mentions"]
+        if not rest:
+            sys.exit("用法：dcctl send CHANNEL TEXT [--mentions]")
+        body = send_body(rest[1:], pings="--mentions" in args)  # (before the channel is looked for: too long reads no list)
+        cid = str(rest[0]).lstrip("#") if str(rest[0]).lstrip("#").isdigit() else find(rest[0])["id"]  # an ID: no list (C-87)
+        m = call("POST", "/channels/%s/messages" % cid, body) or {}
+        print("已送出\n%s" % m.get("id", ""))  # the message's ID on the last line
     elif cmd == "pin":
         rest = [a for a in args if a != "--unpin"]
         if len(rest) != 2:
@@ -699,12 +881,21 @@ def main(argv):
             post["from_channel"] = sender_channel(pane)
         global GAVE_UP
         GAVE_UP = "Discord 限速，這則沒有送出，等一下再送"
+        wait = post.pop("wait", None)  # altention dc post/notify --wait N (C-87): until the bot says it is on Discord
+        if wait is not None:
+            if any(post.get(k) for k in NO_WAIT):
+                sys.exit("altention dc post：--wait 只用在貼訊息和通知")
+            try:
+                wait = float(wait)
+            except (TypeError, ValueError):
+                sys.exit("altention dc post：--wait 要給秒數")
+            post["receipt"] = secrets.token_hex(8)
         got = []  # the channel list, asked of Discord once at most (C-73: 10 a minute for the whole bot) and only
                   # when a name is to be resolved: an ID needs none, the sender's category serves names alone
 
         def listing():
             if not got:
-                got.append(channels())
+                got.append(listing_for(post.get("channel")))
             return got[0]
 
         def sender_category():
@@ -712,11 +903,20 @@ def main(argv):
                 return None
             chans = listing()
             me = next((c for c in chans if str(c["id"]) == str(post["from_channel"])), None)
+            if me is None and last["cached"]:  # a channel the bot made in the last minute: not in the file yet
+                got[:] = [channels(fresh=True)]  # (#code-review on 649e1c3: its project's #notifications was missed)
+                chans = got[0]
+                me = next((c for c in chans if str(c["id"]) == str(post["from_channel"])), None)
             return next((c["name"] for c in chans if me and c["id"] == me.get("parent_id")), None)
         problem, moved = None, None
-        if post.get("notify"):  # only notifications need the list here; the reporting path queues even without it
+        if reserved(post) and any(post.get(k) for k in NOT_RESERVED):
+            sys.exit("altention dc post：%s 只能用來貼訊息或通知" % str(post["channel"]).lstrip("#"))
+        if post.get("notify") and (reserved(post) or str(post.get("channel") or "").strip().lstrip("#").isdigit()):
+            pass  # an ID or @audit/@notify: no list at all (C-87); the bot posts it there, or, not found, to the default saying so
+        elif post.get("notify"):  # only notifications need the list here; the reporting path queues even without it
             try:
-                chans, sender_cat = listing(), sender_category()
+                sender_cat = sender_category()  # first: it may read the list again
+                chans = listing()
                 notify_target(post, chans, sender_cat)
                 problem = post_target_error(post, sender_cat, chans)
                 ref = str(post.get("channel") or "").strip().lstrip("#")
@@ -730,6 +930,8 @@ def main(argv):
         if problem:
             sys.exit("altention dc post：" + problem)
         postbox.write(post)
+        if wait is not None:
+            return wait_for(post, wait, moved)
         print(moved or "已送出到 #%s" % str(post.get("channel", "")).lstrip("#"))
         age = postbox.heartbeat_age()
         if age is None or age > 90:  # still queued: delivered when the bot is back, nothing to resend
@@ -762,6 +964,13 @@ def main(argv):
             print(guide_text()) if "--check" in args else guide(opt("--note"))
         except GuideError as e:
             sys.exit("dcctl guide：%s" % e)
+    elif cmd == "app":
+        info = app_info()
+        if "--json" in args:
+            print(json.dumps(info))
+        else:
+            print("Activities：%s\napplication %s · 擁有者 %s · 伺服器 %s"
+                  % ("開" if info["activities"] else "沒開", info["app_id"], info["owner_id"], info["guild_id"]))
     elif cmd == "roles":
         for r in call("GET", "/guilds/%d/roles" % config.GUILD_ID):
             print("%-22s %s" % (r["id"], r["name"]))

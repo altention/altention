@@ -21,7 +21,7 @@ import discord
 from altention.connectors.claude_code import sessions as cc_sessions
 from altention.connectors.claude_code import transcript
 
-from . import archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, sessions, setup, slash, terminal, tmuxio
+from . import activity, archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, secretbox, sessions, sources, setup, slash, terminal, tmuxio
 from .claude_bridge import run_turn
 from .tmux_bridge import TmuxBridge, fence
 from . import frames, update_cards, util
@@ -152,6 +152,8 @@ class Bot(discord.Client):
         self.merging = {}   # channel id -> a future: a comment is being put together with the forwards before it
         self.posts = posts.Posts(self)
         self.cards = update_cards.Cards(self)
+        self.launcher = activity.Activity(self)  # the 打開 buttons of plugins' Activity pages (C-54a; discord.Client has an `activity`)
+        self.secrets = secretbox.Secrets(self)  # the 填入 buttons for plugins' secrets (C-77 G3b)
         self.tmux.asks.on_done = self.posts.answered  # a question announced in another channel: update that notice
         self.files = files.Files(self)
         self.catchup = catchup.Catchup(self)
@@ -199,6 +201,7 @@ class Bot(discord.Client):
             if catalog.stale(catalog.load()):
                 self.loop.create_task(self.refresh_catalog())
             self.loop.create_task(self.reconcile())  # what this engine version declares, once it is not the one compared
+            self.loop.create_task(self.launcher.watch())  # whether the Activities are on, known before a press (C-54a)
             if guild:
                 self.loop.create_task(self.adopt_archived(guild))  # channels moved into the archive by hand (C-63)
 
@@ -312,8 +315,9 @@ class Bot(discord.Client):
     def busy_with_work(self):
         """Is something half done that a restart would make happen twice? A post being handed over (dcpost; it
         stays in the spool until done, so a restart redoes it: another --new-claude channel, a message typed
-        twice), or a hook event being posted. A print-mode turn as before."""
-        return self.active > 0 or bool(getattr(self.posts, "inflight", None)) or getattr(self.tmux, "handling", False)
+        twice), or a hook event being posted, or a final reply being laid out. A print-mode turn as before."""
+        return self.active > 0 or bool(getattr(self.posts, "inflight", None)) or getattr(self.tmux, "handling", False) \
+            or bool(getattr(self.tmux, "rewriting", None))  # a reply a plugin is laying out (C-71b)
 
     async def watch_restart(self):
         """deploy.sh drops a flag; restart once nothing is half done (busy_with_work), or after RESTART_WAIT
@@ -332,11 +336,14 @@ class Bot(discord.Client):
 
     async def on_raw_reaction_add(self, payload):
         """📋 on a Claude reply: show the turn behind it in a thread (bot/process.py). 📝 on a /screen picture:
-        its text (bot/screens.py)."""
+        its text (bot/screens.py); on a picture the bot posted with what it was made from: that (bot/sources.py)."""
         if payload.user_id != config.OWNER_ID or str(payload.emoji) not in (process.EMOJI, screens.EMOJI):
             return
         try:
-            await (process.show if str(payload.emoji) == process.EMOJI else screens.show_text)(self, payload)
+            if str(payload.emoji) == process.EMOJI:
+                await process.show(self, payload)
+            elif not await screens.show_text(self, payload):
+                await sources.show(self, payload)
         except Exception:
             traceback.print_exc()
 
@@ -348,6 +355,7 @@ class Bot(discord.Client):
                     or await self.setup.on_interaction(interaction) or await self.archive.on_interaction(interaction) \
                     or await self.terminal.on_interaction(interaction) or await self.posts.on_interaction(interaction) \
                     or await self.files.on_interaction(interaction) or await self.cards.on_interaction(interaction) \
+                    or await self.launcher.on_interaction(interaction) or await self.secrets.on_interaction(interaction) \
                     or await self.tmux.on_interaction(interaction):
                 return
             ref = routes.button_ref((interaction.data or {}).get("custom_id"))

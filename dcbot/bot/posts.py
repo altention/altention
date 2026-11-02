@@ -22,6 +22,7 @@ bot holds the next one and asks. Long discussions on purpose: a channel can rais
 """
 import asyncio
 import base64
+import contextvars
 import io
 import os
 import time
@@ -30,8 +31,9 @@ import traceback
 import discord
 
 from altention.connectors.claude_code import sessions as cc_sessions
+from altention.sources import check as srccheck
 
-from . import config, events, files, kinds, layout, messages, postbox, remote
+from . import config, events, files, kinds, layout, messages, postbox, remote, sources
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 
@@ -93,6 +95,32 @@ def ambiguous(channels, name, category=None):
     return len([c for c in channels if c.name == name and (not category or where(c) == category)]) > 1
 
 
+SENT = contextvars.ContextVar("dcbot_post_sent", default=None)  # what handling one post sent, and why not (C-87)
+
+
+def sent(message):
+    """A message handling the current post put on Discord (for its receipt: altention dc post --wait)."""
+    got = SENT.get()
+    if got is not None and getattr(message, "id", None) is not None:
+        got["messages"].append(message)
+    return message
+
+
+def not_sent(why):
+    """Why the current post was not shown where it was meant to be (for its receipt)."""
+    got = SENT.get()
+    if got is not None:
+        got["why"] = why
+
+
+def receipt_of(got):
+    """The receipt of a post from what handling it sent: the last message's ID and channel, or why there is none."""
+    if got["messages"] and not got.get("why"):
+        last = got["messages"][-1]
+        return {"ok": True, "message_id": str(last.id), "channel_id": str(getattr(getattr(last, "channel", None), "id", "") or "")}
+    return {"ok": False, "why": got.get("why") or "沒有貼出"}
+
+
 def chain_of(post):
     """Which posts keep their order among themselves: one sender's to one channel (C-73), sender by channel when
     it has one, else machine and name; the channel as the post names it (a name one time, the ID the next: two)."""
@@ -107,6 +135,14 @@ def attached(post):
     for f in post.get("more_files") or []:
         out.append((f.get("name") or "file.txt", base64.b64decode(f.get("b64") or "")))
     return out
+
+
+def sources_of(post):
+    """What each of a post's files was made from (C-91: the sidecar altention dc post read), in attached()'s order:
+    altention.sources' object, or None (none, or not one)."""
+    raw = [post.get("file_source")] if post.get("file_b64") else []
+    raw += [f.get("source") if isinstance(f, dict) else None for f in post.get("more_files") or []]
+    return [srccheck(s)[0] if s is not None else None for s in raw]
 
 
 def as_files(got):
@@ -172,6 +208,10 @@ class Posts(object):
         ref = str(ref).strip().lstrip("#")
         if ref.isdigit():
             return self.bot.get_channel(int(ref))
+        if ref == "@audit":  # (C-87) the bot's own #audit, as it found it on starting: renamed since, still it
+            return getattr(self.bot, "audit_ch", None)
+        if ref == "@notify":  # the default notification channel (core.notify_channel), made if it is not there
+            return (await self.notify_channel({}))[0]
         category_name, _, name = ref.rpartition("/")
         name = name.lstrip("#")
         found = pick_channel(guild.text_channels, name, category_name or None,
@@ -224,7 +264,7 @@ class Posts(object):
         parts = split_message(head + body)
         for i, part in enumerate(parts):
             try:
-                await ch.send(part)
+                sent(await ch.send(part))
             except Exception as e:
                 traceback.print_exc()
                 return (body if i == 0 else "\n".join(parts[i:])), "%s: %s" % (type(e).__name__, str(e)[:200])
@@ -289,7 +329,7 @@ class Posts(object):
             rest = left
         if await self.to_audit("⚠️ altention dc notify 的通知送不出去（%s）。來自 %s，內容：\n%s%s"
                                % ("；".join(why), post.get("from_name") or "?", more, rest)):
-            return
+            return not_sent("送不出去（%s），內容寫進了 #audit" % "；".join(why))
         print("[audit] altention dc notify 的通知送不出去（%s），#audit 也寫不進去：留在 state/posts-failed/ 重試" % "；".join(why), flush=True)
         raise Undelivered(dict(post, text=rest, continued=bool(post.get("continued") or more)))
 
@@ -321,20 +361,25 @@ class Posts(object):
             return await self.bot.audit("dcctl archive #%s：%s" % (ch.name, text))
         ch = await self.channel(post.get("channel") or "", sender_ch, create=bool(post.get("create")))
         if ch is None:
+            not_sent("找不到頻道 %s" % post.get("channel"))
             return await self.bot.audit("altention dc post：找不到頻道 %s" % post.get("channel"))
         sender = "#%s" % sender_ch.name if sender_ch is not None else (post.get("from_name") or "別的地方")
         text = (post.get("text") or "").strip()
         if post.get("board"):  # one message kept up to date in place, not a conversation
             return await self.board(ch, post["board"], text, post)
+        if post.get("activity"):  # dcpost --activity: an 打開 button for a plugin's Activity page (C-54a), not a conversation
+            return await self.activity(ch, sender_ch, sender, text, post)
+        if post.get("secret"):  # dcpost --secret: a 填入 button for a plugin's secret (C-77 G3b), not a conversation
+            return await self.secret(ch, sender_ch, sender, text, post)
         got = attached(post)
         if sender_ch is not None and sender_ch.id == ch.id:  # a Claude posting into its own channel (C-73): plain
-            return await self.own(ch, text, got)               # messages, as its replies; never handed back to it
+            return await self.own(ch, text, got, sources_of(post))  # messages, as its replies; never handed back
         embeds = cards(sender, text)
         for i, e in enumerate(embeds):
             if i == len(embeds) - 1 and got:
-                await ch.send(embed=e, files=as_files(got))
+                sources.remember(sent(await ch.send(embed=e, files=as_files(got))), ch.id, sources_of(post), len(got))
             else:
-                await ch.send(embed=e)
+                sent(await ch.send(embed=e))
         self.shown(post)
         st = self.bot.channels_state.get(str(ch.id)) or {}
         if not listens(st):
@@ -350,20 +395,38 @@ class Posts(object):
         except Exception as e:
             raise NotHanded(ch, sender_ch, e)
 
-    async def own(self, ch, text, got):
+    async def own(self, ch, text, got, srcs=()):
         """A post into the sender's own channel: content (split at Discord's 2000), the files on the last message
-        (alone when there is no text), no card. Pings nobody: a card never did, content would."""
+        (alone when there is no text), no card. Pings nobody: a card never did, content would. `srcs`: what the
+        files were made from (sources_of())."""
         parts, quiet = split_message(text) if text else [], discord.AllowedMentions.none()
         if not parts:
-            return await ch.send(files=as_files(got), allowed_mentions=quiet) if got else None
+            if got:
+                sources.remember(sent(await ch.send(files=as_files(got), allowed_mentions=quiet)), ch.id, srcs, len(got))
+            return
         for i, part in enumerate(parts):
             if i == len(parts) - 1 and got:
-                await ch.send(part, files=as_files(got), allowed_mentions=quiet)
+                sources.remember(sent(await ch.send(part, files=as_files(got), allowed_mentions=quiet)), ch.id, srcs,
+                                 len(got))
             else:
-                await ch.send(part, allowed_mentions=quiet)
+                sent(await ch.send(part, allowed_mentions=quiet))
+
+    def receipt(self, post):
+        """altention dc post --wait (C-87): what became of the post, for its dcctl; once, as soon as it is on Discord
+        (shown()) or handling it ended, whichever is first: a post to a Claude's channel is not held until handed."""
+        got = SENT.get()
+        if not post.get("receipt") or got is None or got.get("written"):
+            return
+        got["written"] = True
+        try:
+            postbox.write_receipt(post["receipt"], receipt_of(got))
+        except OSError:
+            traceback.print_exc()
 
     def shown(self, post):
         """The post is on Discord: the next of its chain may go (what is left is handing it to a Claude)."""
+        if SENT.get() is not None and SENT.get()["messages"]:
+            self.receipt(post)
         t = self.timing.get(id(post))
         if t is not None and "shown" not in t:
             t["shown"] = time.time()
@@ -386,6 +449,35 @@ class Posts(object):
         text = (post.get("text") or "").strip()
         await self.bot.audit("#%s 移到分類「%s」（%s）%s" % (ch.name, want, post.get("from_name") or "altention dc post",
                                                        "：" + text if text else ""))
+
+    async def activity(self, ch, sender_ch, sender, text, post):
+        """The text with an 打開 button on its last message (bot/activity.py): plain in the sender's own channel, cards
+        elsewhere. Not
+        posted (no such page on): said in #audit and to the sender's Claude."""
+        embeds = None if sender_ch is not None and sender_ch.id == ch.id else cards(sender, text or "打開 %s" % post.get("activity"))
+        why, message = await self.bot.launcher.post(ch, text, post, embeds)  # (all of it: the button on the last message)
+        self.shown(post)
+        if why is None:
+            sent(message)
+            return
+        not_sent(why)
+        await self.bot.audit("altention dc post --activity %s（%s）：%s" % (post.get("activity"), sender, why))
+        if sender_ch is not None and listens(self.bot.channels_state.get(str(sender_ch.id)) or {}):
+            asyncio.ensure_future(self.tell(sender_ch, "（機器人回覆你的 altention dc post --activity）沒有貼出：%s。" % why))
+
+    async def secret(self, ch, sender_ch, sender, text, post):
+        """The text with a 填入 button on its last message (bot/secretbox.py): plain in the sender's own channel, cards
+        elsewhere. Not posted (a name the plugin does not declare here): said in #audit and to the sender's Claude."""
+        own = sender_ch is not None and sender_ch.id == ch.id
+        why, message = await self.bot.secrets.post(ch, text, post, None if own else (lambda whole: cards(sender, whole)))
+        self.shown(post)
+        if why is None:
+            sent(message)
+            return
+        not_sent(why)
+        await self.bot.audit("altention dc post --secret %s（%s）：%s" % (post.get("secret"), sender, why))
+        if sender_ch is not None and listens(self.bot.channels_state.get(str(sender_ch.id)) or {}):
+            asyncio.ensure_future(self.tell(sender_ch, messages.words("secret", "told", {"why": why})))
 
     async def attach(self, post, sender_ch):
         """Attach the pane a post names (as /attach would, in the category the post names), and tell the sender."""
@@ -709,8 +801,20 @@ class Posts(object):
     async def safely(self, post, path=None):
         began = time.time()
         self.timing[id(post)] = {}
+        got = {"messages": [], "why": None}
+        SENT.set(got)  # (safely runs as a task of its own: this is its own)
         try:
-            await self.handle(post)
+            try:
+                await self.handle(post)
+            except Undelivered:
+                not_sent("哪裡都送不出去（連 #audit 也是），留著稍後再試")
+                raise
+            except Exception as e:
+                if not isinstance(e, NotHanded):  # shown all the same: only handing it to a Claude broke
+                    not_sent("送出時出錯：%s" % (str(e)[:200] or type(e).__name__))
+                raise
+            finally:
+                self.receipt(post)
         except NotHanded as e:  # shown, but handing it to the channel's Claude broke: kept aside, and said (C-73)
             traceback.print_exc()
             if path:

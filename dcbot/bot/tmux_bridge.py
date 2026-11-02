@@ -24,7 +24,7 @@ from altention.connectors.claude_code import launch as cc_launch
 from altention.connectors.claude_code import typist as cc_typing
 
 from . import posts as posts_mod
-from . import agents, ask, attachments, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, startup_ask, tables, tmuxio, unsent as unsent_mod
+from . import agents, ask, attachments, awaiting, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, rewrite, sources, startup_ask, tables, tmuxio, unsent as unsent_mod
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
@@ -173,6 +173,10 @@ WAIT = "wait"  # ownerless(): not to be closed now, and nothing for the owner to
 LATE_ENDS = "turn-ends-late.json"  # in config.STATE: how many turns' ends waited out the limit for their row (note_late())
 UNREACHABLE = "channels-unreachable.json"  # in config.STATE: channels Discord has not handed out for long (note_away())
 UNPLACED_LOG, UNPLACED_MAX = "events-unplaced.log", 200 * 1024  # in config.STATE: let_be()
+UNPLACED_WHY = ("a background process of Claude Code that is not the channel's conversation (its spare process, or a "
+                "conversation typed into the agents list)")
+RESPAWNED_WHY = ("another process in the attached pane than the route has, with another conversation than the channel's "
+                 "(a tmux server started again, or a new conversation in the pane)")
 PARKED = "panes-parked.json"  # in config.STATE: channels whose pane's conversation was moved to a background process (note_parked())
 OWNERLESS = "ownerless-sessions.json"  # in config.STATE: the sessions reap_ownerless() did not close, and why
 
@@ -229,6 +233,16 @@ def unplaced(st, ev):
     its reply was posted before this step, and not posting it would be a step back). Any other id: not the
     channel's, whatever the event is; its start must not become the channel's session."""
     return bool(ev.get("dc_unplaced")) and (not st.get("session_id") or ev.get("session_id") != st.get("session_id"))
+
+
+def stranger(st, ev):
+    """Is this an event the route table's hook sent for a pane whose process is no longer the one the route has
+    ("dc_respawned": the pane's process now, tools/dchook routed()), and that is not the channel's conversation?
+    Claude Code started again in the same pane (respawn-pane; a pane that is Claude itself, with no shell around it)
+    is the channel's when it goes on with the channel's conversation: `--resume <id>` and `-c` keep the id (measured,
+    2.1.306), and the route then follows it (repin()). Any other id is another Claude Code that got the pane's
+    number (a tmux server started again) or a new conversation: as before C-79, nothing of it is the channel's."""
+    return bool(ev.get("dc_respawned")) and (not st.get("session_id") or ev.get("session_id") != st.get("session_id"))
 
 
 CLOSED_KEPT = 5
@@ -415,6 +429,7 @@ class TmuxBridge(object):
         self.agents = agents.Agents(host)
         self.menus = menus.Menus(self)
         self.unsent = unsent_mod.Unsent(self)  # C-74: what could not be handed over for now, sent again
+        self.rewriting = set()  # channel ids whose final reply a plugin is rewriting (C-71b): their events wait
         self.startup = startup_ask.StartupAsk(self)
         self.streams = {}  # machine -> the SSH process bringing its events
         self.handling = False  # an event is being posted: a restart waits for it (main.Bot.busy_with_work)
@@ -1069,6 +1084,8 @@ class TmuxBridge(object):
         await self.read_words()  # the installation's language and own wordings, before the first sentence is said
         await self.remember_pids()
         self.unsent.kick_all()  # posts held up before the bot went down: looked at again (C-74; a task each)
+        await self.read_rewriter()  # which plugin lays replies out (C-71b), before the first reply
+        await self.posted_left()  # a reply that was being laid out when the bot went down: posted as before
         self.start_streams()
         for cid, st in list(self.host.channels_state.items()):
             if not (st.get("busy") or st.get("bg")):
@@ -1103,13 +1120,16 @@ class TmuxBridge(object):
         the call), for at most cc_hooks.HOLD_SECS after its hook ran; and the end of a turn whose reply's row is
         not written yet, for at most cc_hooks.END_HOLD_SECS (step 2.2f). Only for a channel whose conversation the bot
         is reading (a record of that transcript), and only when the words on the way are posted at all. No waiting
-        here: the round goes on with the other channels and comes back."""
+        here: the round goes on with the other channels and comes back. A channel whose final reply a plugin is
+        laying out (C-71b): every event of it waits until that is posted."""
+        if str(ev.get("channel") or "") in self.rewriting:
+            return not self.receipt_meanwhile(ev)
         if ev.get("host"):
             return False
         cid = str(ev.get("channel") or "")
         was = self.host.channels_state.get(cid)
         rt = self.rts.get(cid)
-        if not isinstance(was, dict) or put_away(was) or unplaced(was, ev) or \
+        if not isinstance(was, dict) or put_away(was) or unplaced(was, ev) or stranger(was, ev) or \
                 from_elsewhere(was, getattr(rt, "opening", None), ev, getattr(rt, "closed", None)):
             # Not the channel's own, by the same rules handle() goes by: a channel the bot does not know, one put
             # away, a window that is not the channel's now. It is let go there, with nothing read from its file:
@@ -1209,6 +1229,7 @@ class TmuxBridge(object):
             try:
                 self.start_streams()
                 self.read_words()
+                self.read_rewriter()
                 await self.say_config_problem()
             except Exception:
                 traceback.print_exc()
@@ -1221,7 +1242,7 @@ class TmuxBridge(object):
                 events.done(path)
                 continue
             cc_hooks.normalize(ev)  # what kind of thing it is: from the event alone, before the wait is decided
-            if ev.get("channel") in self.held or self.waits(ev):
+            if (ev.get("channel") in self.held and not self.receipt_meanwhile(ev)) or self.waits(ev):
                 self.held.add(ev.get("channel"))  # left where it is, and every later event of its channel behind it:
                 continue                          # the other channels' go on
             self.handling, t = True, time.time()
@@ -1267,6 +1288,7 @@ class TmuxBridge(object):
                 ask.prune()
                 self.agents.prune()
                 asyncio.ensure_future(self.unsent.expire())  # (says some where they came from: not waited on here)
+                rewrite.prune()
             except Exception:
                 traceback.print_exc()
             self.lap("閒置回收", t)
@@ -1335,6 +1357,31 @@ class TmuxBridge(object):
             finally:
                 self.stream_wake.pop(host, None)
 
+    def repin(self, ch, st, ev, what):
+        """The channel's conversation goes on in a new process in the same pane (stranger() said it is the channel's):
+        the channel and the route table take the pane's process now, so its later events and what the owner types
+        reach it again (C-79; until then the owner had to !detach and !attach). Not on the end of a session: the old
+        process's end may come after the new one's start. The route table on another machine is written by its
+        dcremote, in a task of its own (the round of events waits on no other machine)."""
+        pane, pid = st.get("pane"), str(ev.get("dc_respawned") or "")
+        if not ev.get("dc_respawned") or not isinstance(pane, dict) or str(pane.get("pid") or "") == pid or \
+                what in (cc_hooks.SESSION_ENDED, cc_hooks.SESSION_LEAVING):
+            return
+        print("bridge: channel %s: its conversation goes on in a new process in pane %s (%s → %s); the route follows it"
+              % (ch.id, pane.get("id"), pane.get("pid"), pid), flush=True)
+        pane["pid"] = pid
+        self.host.save()
+        if pane.get("host"):
+            asyncio.ensure_future(self.bind_far(pane, ch.id))
+        else:
+            routes.bind(pane, ch.id)
+
+    async def bind_far(self, pane, cid):
+        try:
+            await routes.bind_any(pane, cid)
+        except Exception:
+            traceback.print_exc()
+
     async def remember_pids(self):
         """Panes attached before process ids were recorded get theirs now (while they are surely the same)."""
         changed = False
@@ -1373,6 +1420,8 @@ class TmuxBridge(object):
             # the channel is not in the cache yet. Nothing is known to be gone: the event is kept, with every later
             # one of its channel behind it, and handled when the channel is there again (release_kept()).
             return self.keep(cid, ev, first=kept)
+        if cid in self.rewriting and not kept and not self.receipt_meanwhile(ev):  # its final reply is being laid out
+            return self.keep(cid, ev, quiet=True)  # (C-71b): this waits behind it
         if cid in self.kept and not kept:
             self.keep(cid, ev)  # behind the ones kept before it: they go first, in the order they came, and no two
             return await self.release(cid)  # of a channel at once (a release under way takes this one too)
@@ -1388,10 +1437,13 @@ class TmuxBridge(object):
             return await self.let_go(ch, ev)
         if unplaced(was, ev):
             return await self.let_be(ev)
+        if stranger(was, ev):
+            return await self.let_be(ev, RESPAWNED_WHY)
         if from_elsewhere(was, getattr(self.rts.get(str(ch.id)), "opening", None), ev, getattr(self.rts.get(str(ch.id)), "closed", None)):
             return await self.let_go(ch, ev, elsewhere=True)
         self.let_go_said.discard(ch.id)
         st, rt = self.host.chan(ch), self.rt(ch)
+        self.repin(ch, st, ev, what)
         self.mark_parked(st, ev, what)
         if what in TURN_MOVED:
             st.pop("own_panel", None)  # a turn moved: a dialog on the screen from here on is the turn's, not the bot's
@@ -1495,6 +1547,7 @@ class TmuxBridge(object):
             st["last_active"] = time.time()
             final = (ev.get("last_assistant_message") or "").strip()
             await self.interim(ch, rt, final, texts=texts)
+            self.said(ch, final)
             rt.last_final = final
             await self.end_turn(st, rt)
             st["context"] = ev.get("context")
@@ -1503,20 +1556,20 @@ class TmuxBridge(object):
             if turn and time.time() - turn.t0 >= LONG_TURN and config.OWNER_ID:
                 foot = (foot or "-# ") + " · <@%d>" % config.OWNER_ID
             reply = masking.masked(ev.get("last_assistant_message") or "（沒有文字回覆）")
-            if messages.loaded.get("small_tables", True):  # Markdown tables Discord shows as bars: a code block or a list (C-71a)
-                reply = tables.rewrite(reply)[0]
-            sent = await self.say(ch, reply + ("\n" + foot if foot else ""))
-            if sent and getattr(self.host, "files", None) is not None:  # 📂 buttons for the files it mentions
-                asyncio.ensure_future(self.host.files.add_links(ch, st, sent[-1], final))
             src = turn.src if turn else rt.where  # no turn begun: a queued message, sent in with no event until its Stop
-            if src and src[0]:  # where this turn begins in the transcript, for 📋. Its end is looked for when asked,
-                # by the turn's id in the file; a Claude Code that sends no prompt_id: the file's size now, as before
-                end = None if ev.get("prompt_id") or ev.get("host") else transcript.size(src[0])
-                if not ev.get("host") or ev.get("prompt_id"):  # another machine's file has no size here: by the id only
-                    process.remember(st, [m.id for m in sent if hasattr(m, "id")], src[0], src[1],
-                                     None if ev.get("host") else end, ev.get("prompt_id"), host=ev.get("host"))
-            await self.host.audit("#%s：%s → 完成%s" % (getattr(ch, "name", "DM"), turn.prompt if turn else "…",
-                                                     "（%s）" % foot[3:] if foot else ""))
+            # where this turn begins in the transcript, for 📋. Its end is looked for when asked, by the turn's id in
+            # the file; a Claude Code that sends no prompt_id: the file's size now, as before (another machine's
+            # file has no size here: by the id only)
+            job = {"final": final, "foot": foot, "src": list(src) if src and src[0] else None, "pid": ev.get("prompt_id"),
+                   "host": ev.get("host"), "prompt": turn.prompt if turn else "…",
+                   "end": None if ev.get("prompt_id") or ev.get("host") or not (src and src[0]) else transcript.size(src[0])}
+            spec = rewrite.wanted(reply)
+            if spec is not None:  # a plugin lays it out (C-71b): in a task of its own; the channel's events wait for it
+                st["rewriting"] = dict(job, reply=reply, at=time.time())
+                self.rewriting.add(str(ch.id))
+                asyncio.ensure_future(self.rewrite_and_post(ch, st, spec))
+            else:
+                await self.post_reply(ch, st, self.plain_reply(reply), job)
         elif what == cc_hooks.TURN_FAILED:  # the API failed (usage limit, overload, …): the turn is over, say why
             turn = rt.turn
             await self.interim(ch, rt, texts=texts)
@@ -1528,7 +1581,141 @@ class TmuxBridge(object):
             await self.menus.resolve(ch)  # the session moved on: an old dialog's buttons would mislead
         self.host.save()
 
-    def keep(self, cid, ev, first=False):
+    def receipt_meanwhile(self, ev):
+        """While a channel's reply is being laid out (C-71b), is this the receipt of a message the bot typed into
+        it (its UserPromptSubmit, matching rt.pending or rt.late)? Handled at once, not held: submit() waits only
+        RECEIPT_SECS for it, and said "maybe not received", then took the late one for the owner's at the terminal
+        (#code-review-2 on f2ee5d3). Handling it posts nothing (👀 on the message); input not the bot's would post
+        "⌨️ 終端機那邊輸入": that waits, with everything else of the channel."""
+        cid = str(ev.get("channel") or "")
+        if cid not in self.rewriting or ev.get("dc_kind") != cc_hooks.INPUT:
+            return False
+        rt = self.rts.get(cid)
+        prompt = ev.get("prompt") or ""
+        return rt is not None and any(events.matches(prompt, p.text) for p in rt.pending + rt.late)
+
+    def plain_reply(self, reply):
+        """The final reply as it goes without a plugin: one message, its small tables rewritten (C-71a)."""
+        if messages.loaded.get("small_tables", True):  # Markdown tables Discord shows as bars: a code block or a list
+            reply = tables.rewrite(reply)[0]
+        return [(reply, [])]
+
+    async def post_reply(self, ch, st, msgs, job):
+        """The final reply posted: `msgs` [(text, [picture paths])] in order, the footer on the last; then its 📂
+        buttons, its record for 📋 and its line in #audit. `job`: what the Stop left for it (final, foot, src, …).
+        A message may have a third item, what each picture was made from (rewrite.read()): kept for 📝 (sources.py)."""
+        foot, sent = job.get("foot"), []
+        for i, (text, pics, *more) in enumerate(msgs):
+            if i == len(msgs) - 1 and foot:
+                text = text + "\n" + foot if text else foot
+            parts = split_message(text) if text else []
+            if not pics:
+                sent += await self.say(ch, "\n".join(parts)) if parts else []
+                continue
+            for part in parts[:-1]:
+                sent += await self.say(ch, part)
+            files = []
+            try:
+                files = [discord.File(p) for p in pics]
+                sent.append(await ch.send(parts[-1] if parts else None, files=files))
+                if more:
+                    sources.remember(sent[-1], ch.id, more[0], len(pics))
+            except Exception:
+                traceback.print_exc()
+                if parts:
+                    sent += await self.say(ch, parts[-1])
+            finally:
+                for f in files:  # (the pictures are dropped next: nothing left open on them)
+                    f.close()
+        if sent and getattr(self.host, "files", None) is not None:  # 📂 buttons for the files it mentions
+            asyncio.ensure_future(self.host.files.add_links(ch, st, sent[-1], job.get("final") or ""))
+        src = job.get("src")
+        if src and (not job.get("host") or job.get("pid")):
+            process.remember(st, [m.id for m in sent if hasattr(m, "id")], src[0], src[1],
+                             None if job.get("host") else job.get("end"), job.get("pid"), host=job.get("host"))
+        await self.host.audit("#%s：%s → 完成%s" % (getattr(ch, "name", "DM"), job.get("prompt") or "…",
+                                                 "（%s）" % foot[3:] if foot else ""))
+        return sent
+
+    async def rewrite_and_post(self, ch, st, spec):
+        """A plugin lays the final reply out (C-71b, rewrite.py), in a task of its own: the round of events does not
+        wait for it. The channel's later events wait meanwhile (waits() leaves this machine's in the spool, handle()
+        keeps another machine's in memory), so nothing of the next turn comes before this reply; other channels go
+        on. Past SHOW_AFTER the channel is told it is being laid out. A failure, a timeout or nothing drawn: the
+        reply goes as before (C-71a). The reply is in the channel's state (`rewriting`) until posted: a restart in
+        the middle posts it as before (posted_left())."""
+        cid, job, shown, token = str(ch.id), st.get("rewriting") or {}, [], None
+
+        async def tell():
+            await asyncio.sleep(rewrite.SHOW_AFTER)
+            try:
+                shown.append(await ch.send("-# ⏳ 整理排版中…", silent=True))
+            except Exception:
+                traceback.print_exc()
+        teller = asyncio.ensure_future(tell())
+        try:
+            def started(pid):  # its process group, kept with the reply: a restart in the middle stops it (posted_left)
+                job.update(pgid=pid, pgid_start=rewrite.started_at(pid))
+                self.host.save()
+            msgs, why, token = await rewrite.run(spec, job.get("reply") or "", started)
+            if msgs is None:
+                print("[rewrite] %s，#%s：照原本的貼法（%s）" % (spec.get("plugin"), getattr(ch, "name", cid), why), flush=True)
+            if msgs is None or rewrite.unchanged(msgs):
+                msgs = self.plain_reply(job.get("reply") or "")
+            teller.cancel()
+            await self.post_reply(ch, st, msgs, job)
+        except Exception:
+            traceback.print_exc()
+            try:
+                await self.post_reply(ch, st, self.plain_reply(job.get("reply") or ""), job)
+            except Exception:
+                traceback.print_exc()
+        finally:
+            teller.cancel()
+            for m in shown:
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+            if token:
+                rewrite.drop(token)
+            st.pop("rewriting", None)
+            self.host.save()
+            turn = getattr(self.rts.get(cid), "turn", None)
+            if turn is not None:  # the next turn's tool calls held meanwhile come all at once now: no "working…"
+                turn.last = time.time()  # message posted for them only to go with its Stop (#code-review-2 on f0f950b)
+            self.rewriting.discard(cid)
+            if cid in self.kept:  # another machine's events kept meanwhile: now, in their order
+                asyncio.ensure_future(self.release(cid))
+
+    async def posted_left(self):
+        """A final reply a plugin was laying out when the bot went down (`rewriting` in a channel's state): posted as
+        it goes without a plugin, at the start (C-71b)."""
+        for cid, st in list(self.host.channels_state.items()):
+            job = st.pop("rewriting", None) if isinstance(st, dict) else None
+            if isinstance(job, dict):
+                rewrite.stop_left(job.get("pgid"), job.get("pgid_start"))  # the plugin left running when the bot died
+            ch = self.host.get_channel(int(cid)) if isinstance(job, dict) and str(cid).isdigit() else None
+            if ch is not None and job.get("reply"):
+                try:
+                    await self.post_reply(ch, st, self.plain_reply(job["reply"]), job)
+                except Exception:
+                    traceback.print_exc()
+        self.host.save()
+
+    def read_rewriter(self):
+        """Which plugin rewrites replies (rewrite.choose()), read in a thread: at start and once a minute."""
+        task = getattr(self, "rewriter_read", None)
+        if task is None or task.done():
+            async def read():
+                try:
+                    await asyncio.get_running_loop().run_in_executor(None, rewrite.choose)
+                except Exception:
+                    traceback.print_exc()
+            self.rewriter_read = task = asyncio.ensure_future(read())
+        return task
+
+    def keep(self, cid, ev, first=False, quiet=False):
         """An event of a channel that is not to be had just now is kept (in memory: a restart drops them, as every
         such event was dropped before step 2.2e), at most KEPT_MAX for a channel (the oldest goes, with a line). Also
         an event that comes while the ones kept are being handled: it goes behind them (`first`: one of those
@@ -1536,7 +1723,7 @@ class TmuxBridge(object):
         rec = self.kept.get(cid)
         if rec is None:
             rec = self.kept[cid] = [time.time(), [], False]
-            if cid not in self.kept_said:
+            if cid not in self.kept_said and not quiet:
                 self.kept_said.add(cid)
                 print("bridge: channel %s is not to be had from Discord just now (not deleted): its events are kept, for %d s at most "
                       "(said once for a channel)" % (cid, KEPT_SECS), flush=True)
@@ -1551,14 +1738,16 @@ class TmuxBridge(object):
         machine's stream, which is another task) goes behind them (handle() sees the channel is being released), so
         nothing overtakes and no two of a channel are handled at once."""
         rec = self.kept.get(cid)
-        if rec is None or rec[2]:
-            return  # nothing kept, or another task is at it
+        if rec is None or rec[2] or cid in self.rewriting:
+            return  # nothing kept, another task is at it, or its reply is being laid out (released once posted)
         rec[2] = True
         done = 0
         try:
             while rec[1]:
                 if self.host.get_channel(int(cid)) is None and cid in self.host.channels_state:
                     return  # away again: the rest stays kept, in its order
+                if cid in self.rewriting:
+                    return  # a Stop among them started a layout: the rest waits for it, in its order
                 ev = rec[1].pop(0)
                 done += 1
                 try:
@@ -1725,11 +1914,12 @@ class TmuxBridge(object):
                 % (getattr(ch, "name", "DM"), said[1]) if elsewhere else
                 "#%s 已卸下，之後它的事件不再處理（那個對話在終端機照常跑；接回或重新 attach 就恢復）" % getattr(ch, "name", "DM"))
 
-    async def let_be(self, ev):
+    async def let_be(self, ev, why=None):
         """An event of a background process that is not the channel's conversation (unplaced()): nothing is posted,
         nothing of the channel's state is touched, nothing is said in #audit (the owner's own conversations in the
         agents list are no fault). A question it asks is left to the terminal's own menu, a plan to its dialog. One
-        line for each such conversation in state/events-unplaced.log, for whoever asks later why nothing was posted."""
+        line for each such conversation in state/events-unplaced.log, for whoever asks later why nothing was posted.
+        `why`: what the line says it is, when it is not that (stranger(): another Claude Code in an attached pane)."""
         what = cc_hooks.normalize(ev, anew=True).get("dc_kind")
         if what in (cc_hooks.ASK, cc_hooks.PLAN) and ev.get("ask_id"):
             await ask.deliver_to(ev.get("host"), ev["ask_id"], {} if what == cc_hooks.PLAN else {"pass": True})
@@ -1744,10 +1934,9 @@ class TmuxBridge(object):
             if os.path.exists(path) and os.path.getsize(path) > UNPLACED_MAX:
                 os.replace(path, path + ".1")
             with open(path, "a", encoding="utf-8") as f:
-                f.write("%s session %s channel %s%s first %s: a background process of Claude Code that is not the channel's conversation "
-                        "(its spare process, or a conversation typed into the agents list); its events are not handled\n"
+                f.write("%s session %s channel %s%s first %s: %s; its events are not handled\n"
                         % (time.strftime("%Y-%m-%d %H:%M:%S"), sid, ev.get("channel"), " host %s" % ev["host"] if ev.get("host") else "",
-                           ev.get("hook_event_name")))
+                           ev.get("hook_event_name"), why or UNPLACED_WHY))
         except OSError:
             traceback.print_exc()
 
@@ -1840,6 +2029,7 @@ class TmuxBridge(object):
 
     async def end_turn(self, st, rt):
         st["busy"] = False
+        st.pop("doing", None)  # (C-88) what a busy channel is doing: not busy, nothing
         turn, rt.turn = rt.turn, None
         if turn and turn.msg is not None:
             try:
@@ -1856,6 +2046,7 @@ class TmuxBridge(object):
         texts = [t for t in texts if t not in (final, rt.last_final)]
         if not texts:
             return
+        self.said(ch, texts[-1], doing=True)
         if rt.turn and rt.turn.msg is not None:  # the "working…" message goes back to the bottom next time
             try:
                 await rt.turn.msg.delete()
@@ -1868,6 +2059,19 @@ class TmuxBridge(object):
                     await ch.send(">>> " + part, silent=True)
                 except Exception:
                     traceback.print_exc()
+
+    def said(self, ch, text, doing=False):
+        """Claude said `text` in the channel (C-88): one line of it (awaiting.line(): masked, first sentence, at most
+        80 characters) is what a menu or a plan there waits on (awaiting.said) and, for what it says along the way
+        (`doing`), what the channel is doing (its state's "doing", written with the rest; end_turn() drops it). These
+        are for readers of the bot's state files, a plugin among them, which may take them off this machine."""
+        one = awaiting.line(text)
+        if one is None:
+            return
+        awaiting.said[str(ch.id)] = one
+        st = (getattr(self.host, "channels_state", None) or {}).get(str(ch.id))
+        if doing and isinstance(st, dict):
+            st["doing"] = one
 
     async def progress(self, ch, turn, line):
         """Keep one "working…" message up to date once a turn has run for a while."""

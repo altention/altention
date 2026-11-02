@@ -186,11 +186,49 @@ class SystemLast(unittest.TestCase):
                 self.assertIsNone(re.search(r"\.create_category\(", f.read()), path)
 
 
+class SlowGuild(Guild):
+    """Discord takes a while to answer: the category is in the guild's list only once it has (as discord.py's)."""
+    async def create_category(self, name):
+        await asyncio.sleep(0.01)
+        return await Guild.create_category(self, name)
+
+
+class OneCategoryAtATime(unittest.TestCase):
+    """C-80: posts to different channels are handled side by side; several naming one new category made one each."""
+    def test_three_at_once_make_one_category(self):
+        g = SlowGuild()
+
+        async def go():
+            return await asyncio.gather(*(layout.category(g, "project-a") for _ in range(3)))
+        got = run(go())
+        self.assertEqual([m for m in g.made if m[0] == "category"], [("category", "project-a")])
+        self.assertTrue(all(c is got[0] for c in got), "all three take the one made")
+
+    def test_two_names_at_once_make_two(self):
+        g = SlowGuild()
+
+        async def go():
+            return await asyncio.gather(layout.category(g, "project-a"), layout.category(g, "project-b"))
+        a, b = run(go())
+        self.assertEqual((a.name, b.name), ("project-a", "project-b"))
+        self.assertEqual(sorted(m[1] for m in g.made), ["project-a", "project-b"])
+
+    def test_a_new_loop_each_run(self):
+        """The lock belongs to one loop: a second asyncio.run (each test, a restart of the loop) gets its own."""
+        for name in ("project-a", "project-b"):
+            g = SlowGuild()
+
+            async def go():
+                return await asyncio.gather(*(layout.category(g, name) for _ in range(2)))
+            run(go())
+            self.assertEqual(g.made, [("category", name)])
+
+
 class NotAProject(unittest.TestCase):
     def test_the_owners_dividers_are_no_project(self):
         for name in ("━━ 日常 ━━", "━━ 專案 ━━", config.ARCHIVE_CATEGORY, config.SYSTEM_CATEGORY, "機器人"):
             self.assertTrue(config.not_a_project(name), name)
-        for name in ("proj", "web-app", "插件：learn", "a ━━ b"):
+        for name in ("proj", "web-app", "插件：demo", "a ━━ b"):
             self.assertFalse(config.not_a_project(name), name)
 
     def test_a_channel_put_under_a_divider_works_in_the_engine(self):

@@ -192,5 +192,5 @@ anything your user can change.
 ## Reporting a vulnerability
 
 Please report security problems privately through GitHub's "Report a vulnerability"
-(<https://github.com/q12we34rt5/altention/security/advisories/new>) rather than in a public issue. Include the version (commit) and the steps to reproduce. We aim to reply
+(<https://github.com/altention/altention/security/advisories/new>) rather than in a public issue. Include the version (commit) and the steps to reproduce. We aim to reply
 within a week.

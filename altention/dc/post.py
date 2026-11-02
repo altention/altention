@@ -6,7 +6,9 @@
                                                                    a plain name means the one in your own project's category first)
   some-command | altention dc post logs                            the text from stdin (long text is split over several messages)
   altention dc post reports --file report.md "週報"                attach a file (a long report reads better as one); --file again
-                                                                   for more, up to 10 (8 MB together), all on the last message
+                                                                   for more, up to 10 (8 MB together), all on the last message;
+                                                                   x.png.source.json beside x.png: what it was made from, given
+                                                                   back when the owner taps 📝 (altention.sources)
   altention dc post st-0 "我看完專案了，問題是 …"                  the channel has a Claude: it gets the message, knows it came
                                                                    from you and how to answer
   altention dc post cv --attach cv:0                               attach a Claude Code running in this machine's tmux (a tmux target:
@@ -23,9 +25,24 @@
                                                                    without --create an unknown name is an error, with the closest names
   altention dc post 100000000000000020 "…"                         a channel by its ID: still right after the channel is renamed
                                                                    (what scripts and cron jobs should use)
+  altention dc post @audit "…"                                     the bot's own #audit (@notify: the default notification channel),
+                                                                   found by the bot itself, for plugins; posts and notifications only
+  altention dc post @notify --wait 30 "…"                          wait until the bot has put it on Discord: exit 0 and the message's ID
+                                                                   on the last line; 3 still queued when the time was up; 4 not shown
+                                                                   (why on stderr); without --wait, 0 means queued
   altention dc post 行程 --board 本週 "…"                          a board: one message kept up to date, edited in place each time
                                                                    (its title on top, with when it was last updated); never handed
                                                                    to a Claude
+  altention dc post st-0 --activity demo/files --arg path=~/r.pdf "報告"
+                                                                   a message with an 「打開」 button that opens that page of a
+                                                                   plugin's Discord Activity (the plugin declares it; an "owner"
+                                                                   page opens for the owner alone); --arg again for more; never
+                                                                   handed to a Claude
+  altention dc post st-0 --secret demo/api-token ["…"]          a message with a 「填入」 button: the owner presses it, types the
+                                                                   plugin's secret into Discord's box, and the core stores it on the
+                                                                   bot's machine (altention secret set; only a name the plugin
+                                                                   declares in secrets[]); the value is never posted or handed to
+                                                                   a Claude
   altention dc post audit --move-to 系統 ["why"]                   move that channel into a category (made if there is none: the
                                                                    bot's system category at the bottom); never makes the channel;
                                                                    said in #audit, with the text when given
@@ -41,6 +58,7 @@ Like altention dc notify, it runs dcbot's dcctl on the machine with the `dcbot` 
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -73,6 +91,8 @@ def dcctl_on(m):
     return engine + "/dcbot/tools/dcctl"
 MAX_FILE = 8 * 1024 * 1024  # all of a post's files together
 MAX_FILES = 10              # files on one post (Discord's limit for one message)
+MAX_ARGS = 2000             # --activity's --arg pairs together, as JSON: kept with the button in the channel's state
+NAME = re.compile(r"^[a-z][a-z0-9-]*$")  # a plugin's or a page's name (altention.plugin.check_name)
 
 
 def this_engine(name):
@@ -83,6 +103,13 @@ def this_engine(name):
         return engine if isinstance(engine, str) and engine.strip() else None
     except Exception:
         return None
+
+
+def file_source(path):
+    """What an attached picture was made from, from its sidecar (altention.sources, C-91): (object, why)."""
+    sys.path.insert(0, HOME_REPO)
+    from altention import sources
+    return sources.sidecar(path)
 
 
 def bot_machine():
@@ -108,6 +135,17 @@ def pane_address(target):
     if r.returncode != 0 or not pane.startswith("%"):
         sys.exit("altention dc post：找不到 tmux 的 %s（%s）" % (target, r.stderr.strip()))
     return {"socket": sock, "pane": pane}
+
+
+def wait_secs(text):
+    """--wait's seconds (1 to 600), or exit saying so."""
+    try:
+        secs = int(text)
+    except (TypeError, ValueError):
+        secs = 0
+    if not 1 <= secs <= 600:
+        sys.exit("altention dc post：--wait 要給 1 到 600 的秒數")
+    return secs
 
 
 def build(argv, stdin_text, env, host, cwd):
@@ -162,6 +200,42 @@ def build(argv, stdin_text, env, host, cwd):
         del args[i:i + 2]
         if not move_to.strip():
             sys.exit("altention dc post：--move-to 要給分類名稱")
+    activity, activity_args = None, {}
+    if "--activity" in args:
+        i = args.index("--activity")
+        activity = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        plugin_name, _, page = activity.partition("/")
+        if not (NAME.match(plugin_name) and NAME.match(page)):
+            sys.exit("altention dc post：--activity 要寫成 <插件>/<頁>（例如 demo/files）")
+    while "--arg" in args:
+        i = args.index("--arg")
+        pair = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        key, eq, value = pair.partition("=")
+        if not eq or not key.strip():
+            sys.exit("altention dc post：--arg 要寫成 名稱=值")
+        activity_args[key.strip()] = value
+    if activity_args and not activity:
+        sys.exit("altention dc post：--arg 只能跟 --activity 一起用")
+    if len(json.dumps(activity_args, ensure_ascii=False)) > MAX_ARGS:
+        sys.exit("altention dc post：--arg 合計太長（上限 %d 字）" % MAX_ARGS)
+    secret = None
+    if "--secret" in args:  # C-77 G3b
+        i = args.index("--secret")
+        secret = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        plugin_name, _, name = secret.partition("/")
+        if not (NAME.match(plugin_name) and NAME.match(name)):
+            sys.exit("altention dc post：--secret 要寫成 <插件>/<名字>（例如 demo/api-token）")
+        if activity:
+            sys.exit("altention dc post：--secret 和 --activity 不能一起用")
+    wait = None
+    if "--wait" in args:  # C-87: until the bot says it is on Discord (exit 0 and the message's ID), or why not
+        i = args.index("--wait")
+        wait = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        wait = wait_secs(wait)
     board = None
     if "--board" in args:
         i = args.index("--board")
@@ -174,8 +248,18 @@ def build(argv, stdin_text, env, host, cwd):
     text = " ".join(args) if args else (stdin_text or "")
     post = {"channel": argv[0].lstrip("#"), "text": text.strip(),
             "from_name": "%s 上的 Claude（%s）" % (host, os.path.basename(cwd.rstrip("/")) or cwd), "from_host": host}
+    if wait is not None:
+        if any((board, attach, resume, history, new_claude, move_to)):
+            sys.exit("altention dc post：--wait 只用在貼訊息和通知")
+        post["wait"] = wait
     if board:
         post["board"] = board
+    if activity:
+        post["activity"], post["args"] = activity, activity_args
+    if secret:
+        if any((board, attach, resume, history, new_claude, move_to)):
+            sys.exit("altention dc post：--secret 只用在貼訊息")
+        post["secret"] = secret
     if move_to:
         post["move_to"] = move_to.strip()
     if create:
@@ -202,11 +286,18 @@ def build(argv, stdin_text, env, host, cwd):
             sys.exit("altention dc post：檔案太大（全部加起來上限 8 MB）")
         room -= len(data)
         files.append({"name": os.path.basename(path), "b64": base64.b64encode(data).decode()})
+        source, why = file_source(path)
+        if source:
+            files[-1]["source"] = source
+        elif why:  # the file goes without: its picture is still worth posting
+            print("altention dc post：%s，這個附件不帶原文" % why, file=sys.stderr)
     if files:  # the first where a bot before C-73 looks for it (it shows that one at least), the rest beside it
         post["file_name"], post["file_b64"] = files[0]["name"], files[0]["b64"]
+        if files[0].get("source"):
+            post["file_source"] = files[0]["source"]
         if files[1:]:
             post["more_files"] = files[1:]
-    if not post["text"] and not files and not any(k in post for k in ("new_claude", "resume", "history", "move_to")):
+    if not post["text"] and not files and not any(k in post for k in ("new_claude", "resume", "history", "move_to", "secret")):
         sys.exit("altention dc post：沒有內容")
     return post
 

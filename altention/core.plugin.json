@@ -141,29 +141,6 @@
    "at_least": 36500
   }
  ],
- "links": [
-  {
-   "name": "global-instructions",
-   "path": "~/.claude/CLAUDE.md",
-   "made_by": "altention.sync compose_global"
-  },
-  {
-   "name": "memory",
-   "path": "~/.claude/projects/<engine>/memory",
-   "to": "{instance}/memory"
-  },
-  {
-   "name": "ssh-aliases",
-   "path": "~/.ssh/config",
-   "include": "{instance}/ssh_config",
-   "when": "more than one machine"
-  },
-  {
-   "name": "engine",
-   "path": "{root}/engine",
-   "to": "{engine}"
-  }
- ],
  "setup": [
   {
    "name": "bot-venv",

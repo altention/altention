@@ -6,6 +6,8 @@ An installation that is not new is left as it is here (moving its channels is th
 the spool's move_to: posts.Posts.move_to). Any category the bot makes later is made with new_category(), which keeps
 the system category last if it was last (an installation whose owner put it elsewhere keeps it there, manager
 2026-10-20)."""
+import asyncio
+
 import discord
 
 from . import config
@@ -48,9 +50,19 @@ async def new_category(guild, name):
     return cat
 
 
+MAKING = {}  # the running loop's lock: one category made at a time, in this bot (a lock belongs to one loop)
+
+
 async def category(guild, name):
-    """The category by that name, made (below the others when it is the system one) when there is none."""
-    return discord.utils.get(guild.categories, name=name) or await new_category(guild, name)
+    """The category by that name, made (below the others when it is the system one) when there is none. Posts to
+    different channels are handled side by side: two of them naming a new category both found none and each made one
+    (C-80: three 「插件：activity」). So looked up again and made under one lock: discord.py puts a category it made
+    in the guild's list as soon as Discord answers, and the second one finds it there."""
+    loop = asyncio.get_running_loop()
+    if MAKING.get("loop") is not loop:
+        MAKING.update(loop=loop, lock=asyncio.Lock())
+    async with MAKING["lock"]:
+        return discord.utils.get(guild.categories, name=name) or await new_category(guild, name)
 
 
 async def channel_in(guild, name, topic, cat):

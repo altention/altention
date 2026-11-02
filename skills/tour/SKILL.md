@@ -1,6 +1,6 @@
 ---
 name: tour
-description: 上手導覽：在 Discord 一步步帶使用者試機器人的主要功能（按鈕提問、📋 看過程、開新頻道、頻道之間傳話、看板、提醒）。使用者打 /tour、說「帶我導覽」「教我怎麼用」，或安裝完成後叫你帶導覽時使用；args 寫了某一項（例如「提醒」）就只帶那一項。
+description: 上手導覽：在 Discord 一步步帶使用者試機器人的主要功能（按鈕提問、📋 看過程、開新頻道、頻道之間傳話、看板、提醒、插件）。使用者打 /tour、說「帶我導覽」「教我怎麼用」，或安裝完成後叫你帶導覽時使用；args 寫了某一項（例如「提醒」）就只帶那一項。
 ---
 
 # The tour
@@ -22,8 +22,8 @@ channels (on a new install, `#tutorial`).
 - The tour back: 「任何頻道打 `/tour` 都能再帶一次；只想看某一項就在 args 寫那一項，例如 `/tour 提醒`。」
 - Only the commands named here. Never delete a channel, a message or a file; never change their settings, except
   the one reminder of step 5, which they ask for themselves.
-- With `args` (`/tour 提醒`): do only the step it names (steps 3 to 6; 「看過程」 is step 2, done as it says for
-  `args`), then the end (step 7), without the opening question. Before steps 4 and 5 and the end, run
+- With `args` (`/tour 提醒`): do only the step it names (steps 3 to 7; 「看過程」 is step 2, done as it says for
+  `args`), then the end (step 8), without the opening question. Before steps 4 and 5 and the end, run
   `altention plugins show` to know what is on (step 1 is where the whole tour learns it).
 
 ## 0. Opening
@@ -58,7 +58,7 @@ End the turn.
 
 With `args` (「看過程」, 「📋」 or the like) this step is the 📋 part alone: reply with one line, 「對我這則回覆按一個
 📋 表情符號，再回我「好了」。」, and end the turn. When they say it is done, say the 📋 sentence below and go to the end
-(step 7). Do not ask what to try.
+(step 8). Do not ask what to try.
 
 In the whole tour, when they say it is done: 「📋 開的討論串裡是這一輪的完整過程：我跑了什麼指令、看到什麼。想知道 Claude 剛剛做了什麼，
 就對它的回覆按 📋。」
@@ -71,7 +71,8 @@ Then ask what to try (AskUserQuestion, **multiSelect**), header 「要試哪些�
 - 「提醒」（只在 `planner` 開著時）
 - 「接上電腦上的 Claude」（要你人在電腦前）
 
-Do the chosen ones in that order (steps 3 to 6), then the end (step 7). Chose none: go to step 7.
+Do the chosen ones in that order (steps 3 to 6), then plugins (step 7) and the end (step 8). Chose none: go to step 7.
+AskUserQuestion takes at most 4 options, so plugins are not on this list: the whole tour always comes to step 7.
 
 ## 3. A new conversation channel, and channels talking to each other
 
@@ -94,7 +95,7 @@ sentence of point 3 in it. Do not suggest deleting the channel: deleting it does
 ## 4. #dashboard
 
 Only when `status` or `usage` is on; asked for with `args` while both are off, say 「看板（status、usage）在這台關著，跟
-Claude 說「打開狀態看板」或「打開用量看板」就會有。」 and go to the end (step 7). Run `altention dc read --map`: no channel holding the boards (`#dashboard` on a
+Claude 說「打開狀態看板」或「打開用量看板」就會有。」 and go to the end (step 8). Run `altention dc read --map`: no channel holding the boards (`#dashboard` on a
 new install), say 「看板頻道還沒設定，裝好後跟 Claude 說「幫我設定看板」就好。」 and go on.
 
 Say: 「打開 #dashboard，從上往下看：上面是用量和圖表，下面是各頻道在做什麼、各機器的狀況、需要注意的事，最下面是
@@ -112,7 +113,7 @@ turned off, say instead how to turn it on: 「打開訂閱額度看板」.)
 ## 5. A reminder
 
 Only when `planner` is on; asked for with `args` while it is off, say 「提醒要靠秘書提醒（planner），它在這台關著；跟
-Claude 說「打開秘書提醒」就能用。」 and go to the end (step 7). Say 「試試設一個提醒：對我說「10 分鐘後提醒我站起來動一動」。」 and end the turn.
+Claude 說「打開秘書提醒」就能用。」 and go to the end (step 8). Say 「試試設一個提醒：對我說「10 分鐘後提醒我站起來動一動」。」 and end the turn.
 
 When they ask for it: set it as the global instructions say for reminders (the item 「使用者要你設提醒」), with this
 channel as its `channel`, and check it with `--check` as they say. Then: 「設好了，10 分鐘內會出現在這個頻道（提醒每 5
@@ -138,7 +139,18 @@ End the turn. When they say it is done: run `altention dc read --map` and point 
 category of its folder's name). 「在那個頻道打字會送進電腦上的那個對話，兩邊同時可用；`/detach` 讓 Discord 不再跟著，
 對話照跑。」
 
-## 7. The end
+## 7. Plugins
+
+Nothing is installed in this step. Run `altention plugins list` (it only reads) and look at its last part, 「可以裝的」. Say, as one short message:
+
+- 「有些功能是插件，要不要裝由你決定。」
+- what can be installed: each plugin of that part with its one line, and 「它要新一點的引擎」 for one that says to update the engine first. That part says 「目前還沒有可以裝的官方插件」: say that sentence. It says 「沒有」: 「現在官方清單裡沒有新的可以裝。」 It says the list has not been fetched: 「官方清單還沒抓到（要連得上 GitHub），之後再看一次就好。」
+- 「要裝的話，到 #setup 跟 Claude 說「裝 <名稱>」。它會先說會在你的電腦上做什麼，你答應了才裝。」 (when nothing can be installed, leave this line for later: 「之後有新的，一樣到 #setup 這樣說。」)
+- 「不要某個功能：跟任何頻道的 Claude 說「關掉 <名稱>」。它會先說會少掉什麼，你答應了才關；之後說「打開 <名稱>」就回來。」
+
+When they ask to install one now: 「到 #setup 說就好，我們這裡先繼續。」 and go on. Do not run `plugins.py add` or turn anything on or off here.
+
+## 8. The end
 
 Say, as one short message:
 

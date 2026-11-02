@@ -2487,3 +2487,54 @@ class CronLog(unittest.TestCase):
         self.assertEqual(mine["watch"]["on"], "bot")
         self.assertIn("cron_update.py", mine["engine-update"]["run"])
         self.assertIn("cron_sync.py", mine["sync"]["run"])
+
+
+class PluginsRound(Rig):
+    """C-61 E3: after the engine, `altention update plugins-round` in a session of its own, its lines in the round's
+    line; stopped whole when it runs past its time; nothing when this is not a whole engine."""
+
+    def tool(self, body):
+        path = os.path.join(self.engine, "bin", "altention")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def setUp(self):
+        super().setUp()
+        del update.SAID[:]
+
+    def test_its_lines_in_the_round(self):
+        self.tool('[ "$1 $2" = "update plugins-round" ] && echo "插件 demo 跟上實例的版本"\n')
+        update.plugins_round(time.time())
+        self.assertEqual(update.SAID, ["插件 demo 跟上實例的版本"])
+
+    def test_an_older_update_go_says_nothing_and_no_engine_tool_runs_nothing(self):
+        self.tool('echo "usage: altention update check"; exit 2\n')
+        update.plugins_round(time.time())
+        self.assertEqual(update.SAID, [])
+        os.remove(os.path.join(self.engine, "bin", "altention"))
+        update.plugins_round(time.time())
+        self.assertEqual(update.SAID, [])
+
+    def test_stopped_whole_past_its_time_and_none_started_too_late(self):
+        mark = os.path.join(self.tmp, "child-pid")
+        self.tool('sh -c \'echo $$ > "%s"; sleep 300\' & sleep 300\n' % mark)
+        update.plugins_round(time.time() - update.PLUGINS_UNTIL + 30)
+        self.assertEqual(update.SAID, ["插件這一輪沒時間看，下一輪再看"])
+        self.assertFalse(os.path.exists(mark), "not started")
+        with mock.patch.object(update, "PLUGINS_UNTIL", 3), mock.patch.object(update, "PLUGINS_LEAST", 1):
+            t = time.time()
+            update.plugins_round(time.time())
+            self.assertLess(time.time() - t, 30)
+        self.assertRegex(update.SAID[-1], r"^插件這一輪 [23] 秒沒做完，已中止，下一輪再看$")
+        with open(mark) as f:
+            pid = int(f.read())
+        time.sleep(0.5)
+        with self.assertRaises(OSError):
+            os.kill(pid, 0)
+
+    def test_the_release_its_card_told(self):
+        self.tool('echo "插件 demo 跟上實例的版本"; [ "$5" = "v0.2.0" ] && echo "ALT-TOLD v0.2.0"\n')
+        self.assertEqual(update.plugins_round(time.time(), "v0.2.0"), {"v0.2.0"})
+        self.assertEqual(update.SAID, ["插件 demo 跟上實例的版本"], "the marker is not the round's words")

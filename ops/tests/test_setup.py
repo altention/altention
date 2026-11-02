@@ -10,7 +10,9 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -390,6 +392,8 @@ class TheSkill(unittest.TestCase):
                 subs.add(line.split()[2])
         for inline in __import__("re").findall(r"`(?:setup\.py )?(answer|status|questions|done|tutorial|backup-set|login-check)\b", text):
             subs.add(inline)
+        for inline in __import__("re").findall(r"`python3 <ENGINE>/ops/setup\.py ([a-z-]+)", text):  # C-77 G2: section 7's
+            subs.add(inline)
         usage = setup.__doc__.split("\n\n")[1]
         for sub in subs:
             self.assertIn("setup.py %s" % sub, usage, sub)
@@ -413,6 +417,17 @@ class UpdateUnfinished(Rig):
         self.assertEqual(self.status()["update_unfinished"]["moved"], False)
         os.remove(update_go.progress_path())
         self.assertIsNone(self.status()["update_unfinished"])
+
+    def test_the_plugins_step_only_with_plugins(self):
+        """C-61 E3: 換插件 is left only where the instance declares a plugin with a source; settings that cannot be
+        read: every step."""
+        from altention import update_go
+        update_go.write_progress({"card": None, "tag": "v1.2.3", "done": ["update", "install"], "at": 1})
+        with mock.patch.object(update_go.plugin_update, "enabled", lambda settings=None: [{"name": "demo"}]):
+            self.assertEqual(self.status()["update_unfinished"]["left"], ["換插件", "補齊頻道和設定", "系統檢查"])
+        with mock.patch.object(update_go.config, "settings", mock.Mock(side_effect=ValueError("壞了"))):
+            self.assertEqual(update_go.steps_left(update_go.read_progress()), ["換插件", "補齊頻道和設定", "系統檢查"])
+        os.remove(update_go.progress_path())
 
 
 class TheUpdateSkill(unittest.TestCase):
@@ -487,6 +502,28 @@ class TheUpdateSkill(unittest.TestCase):
             for piece in words.replace("<vX.Y.Z>", "%s").replace("vX.Y.Z", "%s").split("…"):
                 self.assertIn(piece, src, words)
 
+    def test_the_plugin_step_reads_what_update_plugin_prints(self):
+        """C-61 E3: step 7 tells apart update_go's own words for `update plugin` (support-3's one_plugin, plugin_ask),
+        and covers every kind the card can hand over (PLUGIN_PLAIN)."""
+        from altention import plugin_update, update_go
+        with open(update_go.__file__, encoding="utf-8") as f:
+            src = f.read()
+        with open(plugin_update.__file__, encoding="utf-8") as f:
+            src += f.read()
+        part = self.text[self.text.index("## 7. Plugins"):self.text.index("## Afterwards")]
+        for words in ("已經換到 <vX.Y.Z>", "別台會在下一輪自己跟上", "實例還沒推出去", "已經是 <vX.Y.Z> 了，不用換",
+                      "自己的測試沒過，這次不換", "這次沒換到", "沒換到", "放回", "這要在機器人那台跑",
+                      "它會看到你的對話內容"):  # a hook or a rewrite of replies (manager 2026-10-21)
+            self.assertIn("「%s」" % words, part, words)
+            for piece in words.split("<vX.Y.Z>"):
+                self.assertIn(piece, src, words)
+        self.assertIn("「插件的更新要使用者看過才換」", self.text)
+        self.assertIn("插件的更新要使用者看過才換", src)
+        self.assertIn("「插件」一節", src, "the handed text names this step as the skill says it")
+        for kind in update_go.PLUGIN_PLAIN:
+            self.assertIn("`%s`" % kind, part, kind)
+        self.assertIn("--anyway", part)
+
     def test_which_side_of_a_conflict_is_whose(self):
         """Z trial (manager 2026-10-20): in the copy (a rebase) the HEAD side is the new version's, the other theirs."""
         part = self.text[self.text.index("### 3b."):self.text.index("## 4.")]
@@ -557,9 +594,8 @@ class Script(unittest.TestCase):
             self.fail("the child was left running")
 
 
-class Reconcile(Rig):
-    """C-57 S3: what the version declares next to the instance and the server. Filled in when it needs nobody,
-    asked in #setup when it adds a channel to the main area or spends the subscription; a dry run writes nothing."""
+class ReconcileRig(Rig):
+    """An installation from before #setup, a fake server and fake channel posts, for the reconcile."""
 
     def setUp(self):
         super().setUp()
@@ -608,6 +644,11 @@ class Reconcile(Rig):
         code, out = self.run_("reconcile", "--dry-run", "--json")
         self.assertEqual(code, 0, out)
         return {p["what"]: p["kind"] for p in json.loads(out)}
+
+
+class Reconcile(ReconcileRig):
+    """C-57 S3: what the version declares next to the instance and the server. Filled in when it needs nobody,
+    asked in #setup when it adds a channel to the main area or spends the subscription; a dry run writes nothing."""
 
     def test_dry_run_says_and_writes_nothing(self):
         before = self.settings()
@@ -1149,6 +1190,267 @@ class Restore(unittest.TestCase):
         cfg = os.path.join(self.home, ".config", "altention")
         self.assertEqual(open(os.path.join(cfg, "host")).read(), "box\n", "its own name back")
         self.assertFalse(os.path.exists(os.path.join(cfg, "host.bak")))
+
+
+class PluginSteps(Rig):
+    """C-77 G1: plugin-steps prints the plan from checks run now; plugin-said keeps an answer only for an item that
+    cannot be checked here (its check null, or giving 3 now)."""
+    def setUp(self):
+        super().setUp()
+        self.folder = os.path.join(self.home, "插件 demo")
+        os.makedirs(self.folder)
+        with open(os.path.join(self.folder, "code"), "w") as f:
+            f.write("3")
+        d = {"name": "demo", "needs": [{"name": "tool", "check": "true"}],
+             "guide": [{"id": "far", "title": "到後台", "check": 'exit $(cat "{plugin}/code")', "ask": "後台好了嗎？"},
+                       {"id": "word", "title": "問一句", "check": None, "ask": "好了嗎？"}]}
+        rows = [("demo", self.folder, d, "on", ""), ("off", self.folder, d, "off", "不是它跑的機器")]
+        p = mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, []))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_plan_then_answers_then_done(self):
+        code, out = self.run_("plugin-steps", "demo")
+        self.assertEqual(code, 3, out)
+        self.assertIn("1. ❓ 到後台（far）：要問你：「後台好了嗎？」　← 下一步", out)
+        self.assertIn("✅ tool：有了", out)
+        self.assertEqual(self.run_("plugin-said", "demo", "far", "yes"), (0, "記下了：demo far yes（做好了）\n"))
+        self.assertEqual(self.run_("plugin-said", "demo", "word", "yes")[0], 0)
+        code, out = self.run_("plugin-steps", "demo", "--json")
+        self.assertEqual((code, json.loads(out)["left"]), (0, 0), out)
+
+    def test_said_refused_where_a_check_can_tell(self):
+        with open(os.path.join(self.folder, "code"), "w") as f:
+            f.write("1")
+        code, out = self.run_("plugin-said", "demo", "far", "yes")
+        self.assertEqual(code, 1)
+        self.assertIn("far 這台檢查得到，以檢查結果為準：還沒好", out)
+        code, out = self.run_("plugin-said", "demo", "needs:tool", "yes")
+        self.assertIn("needs:tool 這台檢查得到，以檢查結果為準：已經好了", out)
+        for argv in (("plugin-said", "demo", "nope", "yes"), ("plugin-said", "demo", "word", "maybe"),
+                     ("plugin-steps", "off"), ("plugin-steps", "none")):
+            self.assertEqual(self.run_(*argv)[0], 1, argv)
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "state", "altention", "setup", "guide", "demo.json")))
+
+
+class FinishingAPlugin(Rig):
+    """C-77 G2: plugin-run does a step's "run" and checks it again; plugin-tool installs a tool without sudo only;
+    plugin-steps --all asks the other machines that use the plugin for their own plans (ssh faked)."""
+    def setUp(self):
+        super().setUp()
+        self.folder = os.path.join(self.home, "插件 demo")
+        os.makedirs(self.folder)
+        self.d = {"name": "demo",
+                  "needs": [{"name": "tool", "check": 'test -e "{plugin}/tool"',
+                             "install": {"debian": 'touch "{0}/tool"'.format(self.folder), "macos": 'touch "{0}/tool"'.format(self.folder)}},
+                            {"name": "root", "check": "false", "install": {"debian": "sudo apt install -y root", "macos": "sudo true"}},
+                            {"name": "bare", "check": "false", "hint": "看 README"}],
+                  "guide": [{"id": "deploy", "title": "部署", "run": 'echo deployed; touch "{plugin}/deployed"',
+                             "check": 'test -e "{plugin}/deployed"'},
+                            {"id": "broken", "title": "壞的", "run": "echo nope; exit 5", "check": "false"},
+                            {"id": "far", "title": "到後台", "check": None, "ask": "好了嗎？"}]}
+        rows = [("demo", self.folder, self.d, "on", "")]
+        for p in (mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, [])),
+                  mock.patch("altention.plugin_steps.os_name", return_value="debian")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_run_does_the_step_and_checks_it_again(self):
+        code, out = self.run_("plugin-run", "demo", "deploy")
+        self.assertEqual(code, 0, out)
+        self.assertIn("deploy 跑完了（結束碼 0）：\ndeployed", out)
+        self.assertIn("deploy 檢查過了：好了", out)
+        code, out = self.run_("plugin-run", "demo", "broken")
+        self.assertEqual(code, 2, out)
+        self.assertIn("broken 沒有成功（結束碼 5）", out)
+        for step in ("far", "nope"):
+            code, out = self.run_("plugin-run", "demo", step)
+            self.assertEqual(code, 1, out)
+            self.assertIn("不是插件代做的步驟", out)
+
+    def test_tool_without_sudo_only(self):
+        code, out = self.run_("plugin-tool", "demo", "tool")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "tool 跑完了（結束碼 0）\ntool 檢查過了：好了\n", "printed nothing: one line, no empty one")
+        code, out = self.run_("plugin-tool", "demo", "root")
+        self.assertEqual(code, 1, out)
+        self.assertIn("root 要用 sudo 裝，請使用者在自己的終端機跑：sudo apt install -y root", out)
+        code, out = self.run_("plugin-tool", "demo", "bare")
+        self.assertIn("沒有寫 bare 在這個系統上怎麼裝", out)
+
+    def test_all_asks_the_other_machines(self):
+        here = {"left": 0, "guide": [], "needs": []}
+        seen = []
+
+        def run_on(m, script, timeout=600):
+            seen.append((m["name"], timeout, script))
+            return {"far": ("far", 3, json.dumps({"plugin": "demo", "level": 2, "setup": [], "needs": [
+                {"name": "tool", "state": "todo", "reason": "", "why": "", "size": "", "optional": False, "for": [],
+                 "install": "x", "sudo": False, "hint": "", "ask": ""}], "guide": [], "next": None, "left": 1,
+                "offers": 0, "failing": []}), ""),
+                    "old": ("old", 2, "用法：python3 ops/setup.py status", ""),
+                    "gone": (None, 255, "", "unreachable")}[m["name"]]
+        machines = {n: {"name": n, "ssh": [n]} for n in ("far", "old", "gone")}
+        with mock.patch.object(setup.plugins, "users_elsewhere", return_value=["far", "old", "gone", "nowhere"]), \
+                mock.patch("common.inventory", return_value={"machines": machines}), \
+                mock.patch("common.run_on", run_on), \
+                mock.patch("altention.plugin_steps.plan", return_value=dict(here, plugin="demo", level=1, setup=[],
+                                                                            next=None, offers=0, failing=[])):
+            code, out = self.run_("plugin-steps", "demo", "--all")
+            self.assertEqual(code, 3, out)
+            self.assertIn("far：\ndemo 在這台的安裝計畫（第 2 級：要裝系統工具）", out)
+            self.assertIn("old：那台的引擎還沒有這個檢查，要先更新那台的引擎", out)
+            self.assertIn("gone：連不上，這次查不到（unreachable）", out)
+            self.assertIn("nowhere：機器清單裡沒有這台，查不到", out)
+            code, out = self.run_("plugin-steps", "demo", "--all", "--json")
+        self.assertEqual(json.loads(out)["others"]["far"]["left"], 1)
+        self.assertEqual({t for _, t, _ in seen}, {setup.ELSEWHERE_TIMEOUT})
+        self.assertIn('"plugin-steps", \'demo\', "--json"', seen[0][2])
+
+
+class PluginFinish(Rig):
+    """C-77 G5: plugin-finish runs install.sh once nothing is left, so what the gates held starts."""
+    def setUp(self):
+        super().setUp()
+        self.folder = os.path.join(self.home, "插件 demo")
+        os.makedirs(self.folder)
+        self.d = {"name": "demo", "guide": [{"id": "key", "title": "拿金鑰", "check": 'test -e "{plugin}/done"', "gate": ["tools"]}]}
+        p = mock.patch.object(setup.plugin, "on_this_machine", return_value=([("demo", self.folder, self.d, "on", "")], []))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_refused_while_something_is_left_then_install(self):
+        ran = []
+        with mock.patch.object(setup, "script", lambda argv, timeout=1800: ran.append(argv) or subprocess.CompletedProcess(argv, 0, "ok core.done\n")):
+            code, out = self.run_("plugin-finish", "demo")
+            self.assertEqual(code, 1, out)
+            self.assertIn("demo 還有 1 件事沒做完", out)
+            self.assertEqual(ran, [])
+            open(os.path.join(self.folder, "done"), "w").close()
+            code, out = self.run_("plugin-finish", "demo")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "install.sh：ok core.done\ndemo 要等的都開始了\n")
+        self.assertTrue(ran[0][0].endswith("install.sh"))
+
+
+class SecretSend(Rig):
+    """C-77 G3a: secret-send writes a secret stored here on a machine that uses the plugin, through a script on ssh's
+    stdin (run here for real in another throwaway home); never to another machine, never with nothing stored, never
+    printing the value."""
+    VALUE = "rig-value-0123456789"
+
+    def setUp(self):
+        super().setUp()
+        from altention import secret_store
+        self.ss = secret_store
+        self.d = {"name": "demo", "secrets": [{"name": "rig-token"}]}
+        rows = [("demo", self.home, self.d, "on", "")]
+        self.audit, self.scripts = [], []
+        self.far = tempfile.mkdtemp(prefix="家 far ")
+        self.addCleanup(shutil.rmtree, self.far, True)
+        for p in (mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, [])),
+                  mock.patch.object(secret_store.plugin, "on_this_machine", return_value=(rows, [])),
+                  mock.patch.object(secret_store, "tell_audit", self.audit.append),
+                  mock.patch.object(setup.plugins, "users_elsewhere", return_value=["far"]),
+                  mock.patch("common.inventory", return_value={"machines": {"far": {"ssh": ["far"]}, "lap": {"ssh": ["local"]}}}),
+                  mock.patch("common.run_on", self.run_on)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_on(self, m, script, timeout=600):
+        self.scripts.append((m, timeout, script))
+        r = subprocess.run([sys.executable, "-c", script], env=dict(os.environ, HOME=self.far), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
+        return "far", r.returncode, r.stdout, r.stderr
+
+    def test_sent_600_to_a_machine_that_uses_it(self):
+        self.assertEqual(self.run_("secret-send", "demo", "rig-token", "far")[0], 1, "nothing stored here yet")
+        self.ss.write("demo", "rig-token", self.VALUE)
+        code, out = self.run_("secret-send", "demo", "rig-token", "far")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "rig-token 送到 far 了\n")
+        there = os.path.join(self.far, ".config", "altention", "secrets", "demo", "rig-token")
+        with open(there) as f:
+            self.assertEqual(f.read(), self.VALUE)
+        self.assertEqual(stat.S_IMODE(os.stat(there).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(there)).st_mode), 0o700)
+        self.assertEqual(self.scripts[-1][1], setup.SECRET_SEND_TIMEOUT)
+        self.assertEqual(self.audit, ["🔑 far 存了 demo 的 rig-token（從 box 送過去）"])
+
+    def test_refused_elsewhere_or_undeclared(self):
+        self.ss.write("demo", "rig-token", self.VALUE)
+        for argv, words in ((("demo", "rig-token", "lap"), "lap 不用 demo，不送"), (("demo", "rig-token", "nowhere"), "不用 demo"),
+                            (("demo", "other", "far"), "沒有宣告叫 other"), (("nope", "rig-token", "far"), "找不到 nope")):
+            code, out = self.run_("secret-send", *argv)
+            self.assertEqual(code, 1, (argv, out))
+            self.assertIn(words, out)
+            self.assertNotIn(self.VALUE, out)
+        self.assertEqual(self.scripts, [])
+
+
+OFFERED = {"plugins": {
+    "rig-pdf": {"plugin": {"name": "rig-pdf", "title": "PDF", "pitch": "看 PDF。", "offer": {"when": "install"}}},
+    "rig-two": {"plugin": {"name": "rig-two", "title": "第二個", "pitch": "另一個。", "offer": {"when": "install"}}},
+    "rig-cal": {"plugin": {"name": "rig-cal", "title": "日曆", "pitch": "接日曆。", "offer": {"when": "asked"}}}}}
+
+
+class Offers(ReconcileRig):
+    """C-64, C-77 G4: optional plugins of the official list offered in #setup in fixed words: by setup.py offer
+    (asked); the reconcile asks only an install offer answered 之後再說 (nothing new: owner 10-21), at most three
+    times; 先不要 is never asked again."""
+    def setUp(self):
+        super().setUp()
+        p = mock.patch("altention.offers.catalog.load", return_value=OFFERED)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_reconcile_asks_only_a_later_three_times_at_most(self):
+        self.run_("reconcile")
+        self.assertFalse([k for k in self.settings()["setup"]["ask"] if k.startswith("offer.")], "nothing new is asked")
+        d = self.settings()
+        d["offers"] = {"rig-pdf": {"answer": "later", "at": 1, "times": 1}, "rig-two": {"answer": "later", "at": 1, "times": 1}}
+        self.write(d)
+        self.run_("reconcile")
+        ask = self.settings()["setup"]["ask"]
+        self.assertIn("offer.rig-pdf", ask)
+        self.assertNotIn("offer.rig-cal", ask, "asked only when something asks for it")
+        q = next(q for q in json.loads(self.run_("questions", "--json")[1]) if q["key"] == "offer.rig-pdf")
+        self.assertEqual(q["question"], "PDF：看 PDF。\n需要：不用另外裝東西。要開嗎？")
+        for n in range(2):  # the first later was at setup
+            self.answer("offer.rig-pdf", "later")
+            self.assertNotIn("offer.rig-pdf", self.settings()["setup"]["ask"])
+            self.run_("reconcile")
+            self.assertEqual("offer.rig-pdf" in self.settings()["setup"]["ask"], n < 1, n)
+        self.assertEqual(self.settings()["offers"]["rig-pdf"]["answer"], "no")
+        self.answer("offer.rig-two", "maybe", code=1)
+        code, out = self.run_("answer", "offer.rig-two", "no")
+        self.assertIn("rig-two 之後不會再主動問；要開時到 #setup 說「裝 rig-two」", out)
+        self.run_("reconcile")
+        self.assertNotIn("offer.rig-two", self.settings()["setup"]["ask"])
+
+    def test_offer_asks_in_setup_only_what_may_be_asked(self):
+        self.run_("reconcile")
+        n = len(self.posted)
+        code, out = self.run_("offer", "rig-cal")
+        self.assertEqual((code, out), (0, "rig-cal 會在 #setup 問\n"))
+        self.assertIn("offer.rig-cal", self.settings()["setup"]["ask"])
+        self.assertEqual([json.loads(i) for a, i in self.posted[n:] if a == ("post",)], [{"channel": "setup", "open_setup": True, "text": ""}])
+        code, out = self.run_("answer", "offer.rig-cal", "yes")
+        self.assertIn("好，接著裝 rig-cal", out)
+        for name, words in (("rig-cal", "已經問過了"), ("rig-pdf", "不是官方清單上"), ("nope", "不是官方清單上")):
+            code, out = self.run_("offer", name)
+            self.assertEqual(code, 1, out)
+            self.assertIn(words, out)
+
+
+class OffersAtSetup(Rig):
+    def test_an_install_offer_is_among_the_questions(self):
+        with mock.patch("altention.offers.catalog.load", return_value=OFFERED):
+            keys = [q["key"] for q in json.loads(self.run_("questions", "--json")[1])]
+        self.assertIn("offer.rig-pdf", keys)
+        self.assertIn("offer.rig-two", keys)
+        self.assertNotIn("offer.rig-cal", keys)
+        self.assertLess(keys.index("offer.rig-pdf"), keys.index("backup"))
 
 
 class Usage(Rig):

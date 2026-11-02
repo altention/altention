@@ -35,7 +35,7 @@ class Words(unittest.TestCase):
             for code, row in rows.items():
                 now["%s.%s" % (group, code)] = row[-1] if isinstance(row, tuple) else row
         now.update({"cleared.%s" % how: said for how, said in messages.CLEARED.items()})
-        self.SINCE = self.SINCE | set(key for key in now if key.startswith("far."))  # (2.6f: a group of after the move)
+        self.SINCE = self.SINCE | set(key for key in now if key.startswith(("far.", "secret.")))  # (2.6f, C-77 G3b: groups of after the move)
         self.assertEqual(sorted(set(now) - self.SINCE), sorted(self.before), "a code without its sentence of before, or the other way round")
         self.assertTrue(self.SINCE <= set(now), "a code said to be new is not there")
         for key, said in now.items():

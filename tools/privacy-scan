@@ -76,7 +76,7 @@ def general_rules(public_repos=(), allow_owners=()):
     repos = {r.lower() for r in public_repos}
 
     def owner_ok(m):
-        owner, repo = m.group(1).lower(), (m.group(2) or "").lower()
+        owner, repo = m.group(1).lower(), (m.group(2) or "").lower().rstrip(".")  # the end of a sentence
         if repo.endswith(".git"):
             repo = repo[:-4]
         return owner in owners or (owner + "/" + repo) in repos or bool(PLACEHOLDER.search(m.group(0)))
@@ -140,12 +140,20 @@ def _ssh_config_terms(path, add):
     return True
 
 
-def _remote_terms(url, add, public):
+def _owner_repo(url):
     m = re.search(r"[:/]([A-Za-z0-9][A-Za-z0-9\-]*)/([A-Za-z0-9._\-]+?)(?:\.git)?/?$", url or "")
-    if not m or (m.group(1) + "/" + m.group(2)).lower() in public:
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _remote_terms(url, add, public, public_owners=()):
+    """A remote's owner/name is a private repo's; its owner is an account, unless a public repo has that owner
+    (then it is public anyway: an org named like the project would otherwise be found everywhere)."""
+    got = _owner_repo(url)
+    if not got or (got[0] + "/" + got[1]).lower() in public:
         return
-    add("private-repo", m.group(1) + "/" + m.group(2))
-    add("account", m.group(1))
+    add("private-repo", got[0] + "/" + got[1])
+    if got[0].lower() not in public_owners:
+        add("account", got[0])
 
 
 def build_blacklist(repo, rev, public_repos=(), channels_file=None):
@@ -153,6 +161,7 @@ def build_blacklist(repo, rev, public_repos=(), channels_file=None):
     The dict's "usable" is False when the instance names no machine, account or term of its own."""
     terms, notes, dropped = {}, [], set()
     public = {r.lower() for r in public_repos}
+    public_owners = {r.split("/")[0] for r in public}
 
     def add(rule, term):
         term = (term or "").strip()
@@ -195,13 +204,13 @@ def build_blacklist(repo, rev, public_repos=(), channels_file=None):
     usable = bool(terms) and own_source == "instance" and any(t for t in own.get("terms") or [])
     for d in (config.setting("sync.dirs") or {}).values():
         if isinstance(d, dict):
-            _remote_terms(d.get("remote"), add, public)
+            _remote_terms(d.get("remote"), add, public, public_owners)
     for folder in [repo] + ([inst] if inst else []):
         code, out, _ = _git(folder, "remote", "-v")
         for line in out.decode("utf-8", "replace").splitlines() if code == 0 else []:
             parts = line.split()
             if len(parts) > 1:
-                _remote_terms(parts[1], add, public)
+                _remote_terms(parts[1], add, public, public_owners)
     code, out, _ = _git(repo, "log", "--format=%an%n%ae%n%cn%n%ce", rev)
     allowed_authors = {a.lower() for a in own.get("allow_authors") or []}
     for line in set(out.decode("utf-8", "replace").splitlines()) if code == 0 else []:
@@ -438,6 +447,11 @@ def main(argv=None):
 
     own = config.load("privacy.json")[0] or {}
     public = args.public_repo + list(own.get("public_repos") or [])
+    plugins = config.setting("release.plugins") or {}  # the public repos releases go to are too (ops/release.py)
+    urls = [config.setting("release.repo") or ""] + [p.get("repo") or "" for p in plugins.values() if isinstance(p, dict)] \
+        if isinstance(plugins, dict) else [config.setting("release.repo") or ""]
+    for got in filter(None, (_owner_repo(u) if isinstance(u, str) else None for u in urls)):
+        public.append(got[0] + "/" + got[1])
     owners = args.allow_owner + list(own.get("allow_owners") or [])
     try:
         black, source, notes = build_blacklist(args.repo, args.rev if commit_meta(args.repo, args.rev) else "HEAD",

@@ -24,8 +24,8 @@ def dcctl():
 SYS = "系統"
 
 
-def server():
-    cats = [("1", "機器人", 0), ("2", "proj", 1), ("3", "插件：learn", 2), ("4", "插件：latex", 3), ("5", SYS, 4)]
+def server(fresh=False):
+    cats = [("1", "機器人", 0), ("2", "proj", 1), ("3", "插件：demo", 2), ("4", "插件：sketch", 3), ("5", SYS, 4)]
     chans = [{"id": i, "name": n, "type": 4, "position": p} for i, n, p in cats]
     chans += [{"id": "11", "name": "chat", "type": 0, "position": 0, "parent_id": None},
               {"id": "12", "name": "a", "type": 0, "position": 0, "parent_id": "2"},
@@ -45,13 +45,13 @@ class Plan(unittest.TestCase):
 
     def test_the_owners_two_plugin_categories_above_the_bots(self):
         chans = server()
-        payload, names, note = self.plan("插件：learn", "above", "機器人", chans)
-        self.assertEqual(names, ["插件：learn", "機器人", "proj", "插件：latex", SYS])
+        payload, names, note = self.plan("插件：demo", "above", "機器人", chans)
+        self.assertEqual(names, ["插件：demo", "機器人", "proj", "插件：sketch", SYS])
         self.assertEqual(payload, [{"id": i, "position": n} for n, i in enumerate(["3", "1", "2", "4", "5"])])
         for p in payload:  # as Discord applies it
             next(c for c in chans if c["id"] == p["id"])["position"] = p["position"]
-        _, names, _ = self.plan("插件：latex", "above", "機器人", chans)
-        self.assertEqual(names, ["插件：learn", "插件：latex", "機器人", "proj", SYS])
+        _, names, _ = self.plan("插件：sketch", "above", "機器人", chans)
+        self.assertEqual(names, ["插件：demo", "插件：sketch", "機器人", "proj", SYS])
 
     def test_the_system_category_stays_last_when_another_moves(self):
         _, names, note = self.plan("proj", "bottom")
@@ -70,9 +70,9 @@ class Plan(unittest.TestCase):
             if c["type"] == 4:
                 c["position"] = {"1": 0, "5": 1, "2": 2, "3": 3, "4": 4}[c["id"]]
         _, names, note = self.plan("proj", "bottom", chans=chans)
-        self.assertEqual((names, note), (["機器人", SYS, "插件：learn", "插件：latex", "proj"], ""))
-        _, names, note = self.plan("插件：latex", "above", "機器人", chans=chans)
-        self.assertEqual(names[:2], ["插件：latex", "機器人"])
+        self.assertEqual((names, note), (["機器人", SYS, "插件：demo", "插件：sketch", "proj"], ""))
+        _, names, note = self.plan("插件：sketch", "above", "機器人", chans=chans)
+        self.assertEqual(names[:2], ["插件：sketch", "機器人"])
         self.assertEqual(names.index(SYS), 2, "moves along with the order above it, not to the bottom")
 
     def test_a_channel_among_its_own_category_and_kind(self):
@@ -94,13 +94,13 @@ class Plan(unittest.TestCase):
         payload, names, _ = self.plan("proj/notes", "above", "proj/a", chans)
         self.assertEqual(names, ["notes", "a", "b", "c"])
         self.assertEqual(payload[0]["id"], "21", "the one in proj, not the other notes")
-        _, names, _ = self.plan("插件：learn/todo", "above", "插件：learn/notes", chans)
+        _, names, _ = self.plan("插件：demo/todo", "above", "插件：demo/notes", chans)
         self.assertEqual(names, ["todo", "notes"])
         with self.assertRaises(ValueError) as e:
             self.plan("notes", "top", chans=chans)
         self.assertIn("有 2 個頻道叫 #notes", str(e.exception), "the plain name is not guessed")
         with self.assertRaises(ValueError) as e:
-            self.plan("proj/notes", "above", "插件：learn/todo", chans)
+            self.plan("proj/notes", "above", "插件：demo/todo", chans)
         self.assertIn("不在同一層", str(e.exception))
 
     def test_names_not_guessed(self):
@@ -119,13 +119,13 @@ class Command(unittest.TestCase):
         d = dcctl()
         calls, said = [], []
         with mock.patch.object(d, "channels", server), mock.patch.object(d, "call", lambda m, p, b=None: calls.append((m, p, b))), \
-                mock.patch.object(d, "audit", said.append), mock.patch.object(d.config, "SYSTEM_CATEGORY", SYS), \
+                mock.patch.object(d, "forget", lambda: None), mock.patch.object(d, "audit", said.append), mock.patch.object(d.config, "SYSTEM_CATEGORY", SYS), \
                 mock.patch.object(d.config, "GUILD_ID", 42), mock.patch("builtins.print"):
-            d.main(["position", "插件：learn", "--above", "機器人"])
+            d.main(["position", "插件：demo", "--above", "機器人"])
         (method, path, body), = calls
         self.assertEqual((method, path), ("PATCH", "/guilds/42/channels"))
         self.assertEqual([p["id"] for p in body], ["3", "1", "2", "4", "5"])
-        self.assertIn("插件：learn > 機器人", said[0])
+        self.assertIn("插件：demo > 機器人", said[0])
         for argv in (["position"], ["position", "proj"], ["position", "--top"], ["position", "nope", "--top"]):
             with mock.patch.object(d, "channels", server), mock.patch.object(d, "call", lambda *a: self.fail("called")), \
                     self.assertRaises(SystemExit, msg=argv):

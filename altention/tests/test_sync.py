@@ -286,7 +286,7 @@ class Repos(unittest.TestCase):
 class Links(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp()
-        self.engine = os.path.join(self.home, "agent-home")
+        self.engine = os.path.join(self.home, "engine")
         self.instance = os.path.join(self.home, "altention", "instance")
         write(os.path.join(self.engine, "memory", "MEMORY.md"), "- engine copy\n")
         write(os.path.join(self.engine, "memory", "only-here.md"), "x\n")
@@ -495,7 +495,7 @@ class Stuck(unittest.TestCase):
 
 
 class Adopt(unittest.TestCase):
-    """Stage 2.3b: the engine's knowledge/ once the instance has one."""
+    """The engine's knowledge/ once the instance holds one: a link to it, or a real folder left alone."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -521,37 +521,20 @@ class Adopt(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.tmp)
 
-    def test_uncommitted_edits_go_to_the_instance_and_the_engine_is_put_back(self):
+    def test_a_real_folder_in_the_engine_is_left_as_it_is(self):
         write(os.path.join(self.engine, "knowledge", "坑 gotchas.md"), "edited here\n")
-        write(os.path.join(self.engine, "knowledge", "new note.md"), "new\n")
-        state, twice = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(state, "tracked")
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "new note.md")), "new\n")
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "坑 gotchas.host-a.md")), "edited here\n")
-        self.assertEqual(twice, [os.path.join("knowledge", "坑 gotchas.host-a.md")])
-        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "", "the engine is as committed")
+        said = []
+        self.assertEqual(sync.adopt(self.instance, "knowledge", "host-a", said.append), ("folder", []))
+        self.assertEqual(read(os.path.join(self.engine, "knowledge", "坑 gotchas.md")), "edited here\n")
+        self.assertEqual(read(os.path.join(self.instance, "knowledge", "坑 gotchas.md")), "old\n", "nothing copied over")
+        self.assertFalse(os.path.islink(os.path.join(self.engine, "knowledge")))
+        self.assertEqual(said, [])
 
-    def test_staged_edits_are_put_back_too(self):
-        write(os.path.join(self.engine, "knowledge", "坑 gotchas.md"), "staged here\n")
-        sh(self.engine, "git", "add", "-A")
-        state, twice = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(state, "tracked")
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "坑 gotchas.host-a.md")), "staged here\n")
-        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "", "index and tree as committed")
-        self.assertEqual(sync.adopt(self.instance, "knowledge", "host-a", lambda t: None), ("tracked", []), "once only")
-
-    def test_after_git_drops_it_leftovers_move_and_a_link_stands_there(self):
-        sh(self.engine, "git", "rm", "-rq", "knowledge")
-        sh(self.engine, "git", "commit", "-qm", "gone")
-        write(os.path.join(self.engine, "knowledge", ".DS_Store"), "x")  # a file git never knew stays behind
-        state, _ = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(state, "link")
+    def test_the_path_missing_gets_a_link(self):
+        shutil.rmtree(os.path.join(self.engine, "knowledge"))
+        self.assertEqual(sync.adopt(self.instance, "knowledge", "host-a", lambda t: None), ("link", []))
         self.assertEqual(os.path.realpath(os.path.join(self.engine, "knowledge")),
                          os.path.realpath(os.path.join(self.instance, "knowledge")))
-        self.assertTrue(os.path.exists(os.path.join(self.instance, "knowledge", ".DS_Store")))
-        self.assertFalse(os.path.exists(os.path.join(self.engine, "knowledge.DS_Store")))
-        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "?? knowledge\n",
-                         "only the link (the engine's .gitignore ignores it after 2.3b-2), nothing renamed aside")
 
     def test_no_instance_copy_yet_leaves_the_engine_alone(self):
         shutil.rmtree(os.path.join(self.instance, "knowledge"))
@@ -561,7 +544,7 @@ class Adopt(unittest.TestCase):
 
 
 class AdoptSwitch(Adopt):
-    """Stage 2.3b's fixes: the switch, unpushed commits, files committed after the engine gave the path up."""
+    """The switch: the instance no longer holding it."""
 
     def test_switch_off_takes_our_link_away_and_the_engine_is_used_again(self):
         shutil.rmtree(os.path.join(self.engine, "knowledge"))
@@ -570,92 +553,9 @@ class AdoptSwitch(Adopt):
         self.assertEqual(sync.adopt(self.instance, "knowledge", "host-a", lambda t: None), ("engine", []))
         self.assertFalse(os.path.lexists(os.path.join(self.engine, "knowledge")))
 
-    def test_unpushed_knowledge_commits_go_to_the_instance_and_are_taken_back(self):
-        origin = os.path.join(self.tmp, "origin.git")
-        sh(self.tmp, "git", "init", "-q", "--bare", origin)
-        sh(self.engine, "git", "remote", "add", "origin", origin)
-        sh(self.engine, "git", "push", "-q", "-u", "origin", "HEAD:main")
-        sh(self.engine, "git", "branch", "-q", "-u", "origin/main")
-        write(os.path.join(self.engine, "knowledge", "睡著時寫的 note.md"), "late\n")
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "sync: memory/knowledge @ mac")
-        state, _ = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(state, "tracked")
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "睡著時寫的 note.md")), "late\n")
-        self.assertEqual(sh(self.engine, "git", "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "0")
-        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "")
-
-    def test_unpushed_commits_touching_code_are_left_alone(self):
-        origin = os.path.join(self.tmp, "origin.git")
-        sh(self.tmp, "git", "init", "-q", "--bare", origin)
-        sh(self.engine, "git", "remote", "add", "origin", origin)
-        sh(self.engine, "git", "push", "-q", "-u", "origin", "HEAD:main")
-        sh(self.engine, "git", "branch", "-q", "-u", "origin/main")
-        write(os.path.join(self.engine, "knowledge", "n.md"), "n\n")
-        write(os.path.join(self.engine, "code.py"), "x = 1\n")
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "mixed")
-        sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "n.md")), "n\n", "copied all the same")
-        self.assertEqual(sh(self.engine, "git", "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "1")
-
-    def test_files_committed_after_the_engine_gave_the_path_up_are_handed_over(self):
-        sh(self.engine, "git", "rm", "-rq", "knowledge")
-        write(os.path.join(self.engine, ".gitignore"), "/knowledge\n")
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "2.3b-2")
-        write(os.path.join(self.engine, "knowledge", "晚到 late.md"), "late\n")  # another machine's late commit
-        sh(self.engine, "git", "add", "-f", "knowledge")
-        sh(self.engine, "git", "commit", "-qm", "late")
-        state, _ = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
-        self.assertEqual(state, "link")
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "晚到 late.md")), "late\n")
-        self.assertEqual(sh(self.engine, "git", "ls-files", "knowledge").stdout, "")
-        self.assertIn("handed over", sh(self.engine, "git", "log", "-1", "--format=%s").stdout)
-        self.assertEqual(read(os.path.join(self.engine, "knowledge", "README.md")), "engine readme\n", "README readable")
-        self.assertTrue(os.listdir(os.path.join(self.tmp, "cache", "before-instance")), "the old folder is kept aside")
-        self.assertEqual(sh(self.engine, "git", "status", "--porcelain").stdout, "")
-
 
 class AdoptList(Adopt):
-    """The switch is plugins.json's sync.owns; unpushed commits are taken back only whole, and kept as a ref."""
-
-    def remote(self):
-        origin = os.path.join(self.tmp, "origin.git")
-        sh(self.tmp, "git", "init", "-q", "--bare", origin)
-        sh(self.engine, "git", "remote", "add", "origin", origin)
-        sh(self.engine, "git", "push", "-q", "-u", "origin", "HEAD:main")
-        sh(self.engine, "git", "branch", "-q", "-u", "origin/main")
-
-    def test_a_commit_touching_knowledge_and_docs_is_copied_whole_before_it_goes(self):
-        write(os.path.join(self.engine, "docs", "refactor", "DESIGN.md"), "design\n")
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "design")
-        write(os.path.join(self.instance, "docs", "refactor", "DESIGN.md"), "design\n")
-        self.remote()
-        write(os.path.join(self.engine, "knowledge", "k.md"), "k\n")
-        write(os.path.join(self.engine, "docs", "refactor", "DESIGN.md"), "design, edited\n")
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "docs: both")
-        with mock.patch.object(config, "this_machine", return_value="host-a"):
-            sync.adopt_all(self.instance, lambda t: None)
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "k.md")), "k\n")
-        self.assertEqual(read(os.path.join(self.instance, "docs", "refactor", "DESIGN.host-a.md")), "design, edited\n")
-        self.assertEqual(sh(self.engine, "git", "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "0")
-        refs = sync.adopted_refs(sync.Repo(self.engine))
-        self.assertEqual(len(refs), 1)
-        self.assertEqual(sh(self.engine, "git", "log", "-1", "--format=%s", refs[0]).stdout.strip(), "docs: both")
-
-    def test_a_commit_touching_a_path_the_instance_does_not_hold_stays(self):
-        self.remote()
-        write(os.path.join(self.engine, "knowledge", "k.md"), "k\n")
-        write(os.path.join(self.engine, "memory", "m.md"), "m\n")  # the instance has no memory/ here
-        sh(self.engine, "git", "add", "-A")
-        sh(self.engine, "git", "commit", "-qm", "both")
-        sync.adopt_all(self.instance, lambda t: None)
-        self.assertEqual(read(os.path.join(self.instance, "knowledge", "k.md")), "k\n", "copied all the same")
-        self.assertEqual(sh(self.engine, "git", "rev-list", "--count", "@{u}..HEAD").stdout.strip(), "1")
-        self.assertEqual(sync.adopted_refs(sync.Repo(self.engine)), [])
+    """The switch is plugins.json's sync.owns."""
 
     def test_a_folder_the_list_does_not_name_goes_back_to_the_engine(self):
         sh(self.instance, "git", "init", "-q")
@@ -698,7 +598,6 @@ class HandBackLock(AdoptList):
                 state, _ = sync.adopt(self.instance, "knowledge", "host-a", lambda t: None)
         self.assertEqual(state, "engine")
         self.assertTrue(os.path.isfile(os.path.join(self.instance, "knowledge", "README.md")), "left where it is")
-
 
 
 class EngineNotPushed(unittest.TestCase):

@@ -7,6 +7,7 @@ _testing.guard_home()  # tests never touch the real home (altention/testing.py)
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import plancore  # noqa: E402
@@ -195,6 +196,18 @@ class Render(unittest.TestCase):
         want, unknown = plancore.wanted([("progress", "/p", None, "unknown", "設定讀不出來")], "host-a", None, None)
         self.assertEqual((want, unknown), ([], [("progress", "設定讀不出來")]))
 
+
+
+class ExternalHooksOf(unittest.TestCase):
+    def test_every_external_plugins_declared_hooks_whatever_its_place(self):
+        rows = [("rigd", "/r/plugins/rigd", {"hooks": [{"event": "Stop", "command": "{plugin}/hook.sh"},
+                                                       {"event": "PreToolUse", "matcher": "Bash", "command": "{plugin}/x.sh", "timeout": 5}]}, "draft", ""),
+                ("eng", "/e/eng", {"hooks": [{"event": "Stop", "command": "x"}]}, "on", ""),
+                ("odd", "/r/plugins/odd", {"hooks": [{"event": "Stop", "command": "{plugin}/y.sh"}]}, "unknown", "")]
+        with mock.patch.object(plancore.plugin, "external", side_effect=lambda f, root=None: f.startswith("/r/plugins/")):
+            got = plancore.external_hooks(rows, {})
+        self.assertEqual(got, {("Stop", "", ("/r/plugins/rigd/hook.sh",), None): "rigd",
+                               ("PreToolUse", "Bash", ("/r/plugins/rigd/x.sh",), 5): "rigd"})
 
 if __name__ == "__main__":
     unittest.main()

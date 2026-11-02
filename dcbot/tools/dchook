@@ -118,7 +118,13 @@ def routed(root, where=None):
     table names it ({"socket", "pane"}: the socket as the bot wrote it into the key, which is not always how
     tmux names it in $TMUX: a folder on the way may be a link). The bot compares it with what it remembers of the
     channel's window, and cannot follow another machine's links (#code-review on d64eaee: said as $TMUX has it,
-    every event of a window on such a machine was taken for another window's)."""
+    every event of a window on such a machine was taken for another window's).
+    The pane's process is not the one the route has (the pane's number was given to another pane after its tmux
+    server started again; or Claude Code started again in the same pane: respawn-pane, or a pane that is Claude
+    itself): the channel is said all the same, with the pane's process now in `where["respawned"]`, and the bot
+    takes the event only when it goes on with the channel's conversation (C-79; the bot's stranger()). Without
+    `where`, when the pane's process is not found among this hook's ancestors, or when the process is a window the
+    bot opened for another channel (bot_window(), DCBOT_CHANNEL), no channel, as before."""
     pane, tmux = os.environ.get("TMUX_PANE"), os.environ.get("TMUX")
     if not pane or not tmux:
         return None
@@ -133,13 +139,58 @@ def routed(root, where=None):
     if not channel:
         return None
     chain = ancestors()
+    now = None
     if pid and not any(str(p) == str(pid) for p, _ in chain):
-        return None  # same pane number, but not the pane that was attached (its tmux server restarted)
+        now = pane_process(chain)  # same pane number, but not the process that was attached
+        if now is None or not isinstance(where, dict):
+            return None
+        if os.environ.get("DCBOT_CHANNEL", str(channel)) != str(channel) and bot_window(chain):
+            return None  # a window the bot opened for another channel got the number (its tmux server started again):
+            # its own hook reports it, as before C-79 (#code-review on 4c0a7e2: both stayed silent). Told by the bot's
+            # --settings on its command line, not by DCBOT_CHANNEL alone: a pane of the owner's may have inherited it.
     if nested(chain):
         return None
     if isinstance(where, dict):
         where.update({"socket": str(key).rpartition("|")[0], "pane": pane})
+        if now is not None:
+            where["respawned"] = str(now)
     return channel
+
+
+def bot_window(chain):
+    """Does a process among `chain` run with the bot's own hooks: `--settings <the bot's state>/claude-settings.json`
+    on its command line (a window the bot opened; the bot's own server or the owner's tmux)? The command line is read
+    from /proc on Linux, from ps elsewhere (macOS: split at blanks, so a path with a blank in it is not recognised)."""
+    wanted = set(os.path.realpath(os.path.join(r, "state", "claude-settings.json")) for r in (ROOT, os.environ.get("DCBOT_ROOT")) if r)
+    for pid, _ in chain:
+        args = command_line(pid)
+        if any(a == "--settings" and os.path.realpath(b) in wanted for a, b in zip(args, args[1:])):
+            return True
+    return False
+
+
+def command_line(pid):
+    try:
+        with open("/proc/%d/cmdline" % int(pid), "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except (OSError, ValueError, TypeError):
+        if os.path.exists("/proc/self"):
+            return []
+    try:
+        import subprocess
+        return subprocess.run(["ps", "-o", "command=", "-p", str(int(pid))], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout.split()
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return []
+
+
+def pane_process(chain):
+    """The pane's own process among this hook's ancestors (`chain`, from ancestors()): the one whose parent is the
+    tmux server ("tmux: server" on Linux, "tmux" by ps on macOS). None when there is none."""
+    for (pid, _), (_, above) in zip(chain, chain[1:]):
+        if str(above).startswith("tmux"):
+            return pid
+    return None
 
 
 def routed_session(root, session_id):
@@ -431,13 +482,17 @@ def main():
         return guard()
     root, channel = os.environ.get("DCBOT_ROOT"), os.environ.get("DCBOT_CHANNEL")
     source = came_from()  # for the channel named by the environment: the bot takes the event only from its window
-    routed_pane = None
+    routed_pane = respawned = None
     if "--global" in sys.argv[1:]:
         source = None
         # Only the route table counts here. A session the bot started is never in it (the hooks in its own
         # --settings report for it), and DCBOT_* may be inherited by a tmux server started from such a session.
         named = {}
         root, channel = ROOT, routed(ROOT, named)
+        respawned = named.pop("respawned", None)
+        if respawned and ("--ask" in sys.argv[1:] or "--plan" in sys.argv[1:]):
+            channel = None  # a question waits for its answer: from a process the route does not have (yet), the
+            # terminal's own menu, as before C-79 (its SessionStart came first and moved the route if it is the channel's)
         if channel:
             # The pane the table went by is said too ("dc_pane", with "dc_routed"): for a window the bot opened on
             # another machine, which reports this way, the bot tells by it an event of a window it has closed
@@ -456,7 +511,7 @@ def main():
             sys.stdin = io.StringIO(json.dumps(ev))
     if not root or not channel:
         return  # not a session any channel is waiting for
-    if source and routed(root):
+    if source and routed(root, {}):  # (a pane whose process the route does not have counts: the global hook reports it)
         # A window the bot opened, detached and then attached again with /attach: it still has these hooks (its
         # --settings) and DCBOT_CHANNEL, and now the route table names its pane too, so the global hook reports
         # every event of it. One report is enough, and the table's is the one that follows the pane.
@@ -464,6 +519,8 @@ def main():
     ev = json.load(sys.stdin)
     if routed_pane:
         source, ev["dc_routed"] = routed_pane, True
+        if respawned:
+            ev["dc_respawned"] = respawned  # the pane's process now: the bot's to judge (stranger(), repin())
     if source is None and "--global" not in sys.argv[1:] and os.environ.get("CLAUDE_JOB_DIR"):
         # A background process of Claude Code's daemon that names the channel by DCBOT_CHANNEL: it has the variable,
         # and these hooks, from a window the bot opened, whose conversation was moved to the background (the left

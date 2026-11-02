@@ -131,7 +131,25 @@ NOTES = {
 
 GENERAL = "⚠️ 這則**沒有送出**（原因代號 `{code}`{data}）。請用 `/screen` 看一下終端機，處理好之後再重發一次。"
 GENERAL_NOTE = "ℹ️ `{code}`{data}"
-GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR}
+# C-77 G3b: the 填入 button for a plugin's secret (bot/secretbox.py; #release 10-24)
+SECRET = {
+    "default": "按下面的按鈕，填入 {plugin} 要的 {label}。",
+    "note": "-# 只有擁有者按得動。值會經過 Discord，輸入時看得到字（Discord 的輸入框不會遮）；不想經過 Discord，就在終端機跑 `altention secret set {plugin} {name}`。",
+    "button": "填入 {label}",
+    "box_title": "{label}",
+    "box_field": "{label}（貼上後按送出）",
+    "box_hint": "只存在機器人那台，不會出現在頻道裡；超過 4000 字請用終端機",
+    "owner_only": "只有擁有者能填這個。",
+    "expired": "這顆按鈕已經失效了，請 Claude 再貼一次。",
+    "slow": "沒有存好：存的程式 {secs} 秒沒跑完，不確定有沒有存進去。看 #audit 有沒有「🔑」那一行；沒有就再按一次。",
+    "failed": "沒有存：存的程式出錯了（{why}）。這次的值沒有存下來，可以再按一次。",
+    "exit_code": "結束碼 {code}",
+    "no_value": "沒有收到輸入框的值",
+    "bad_spec": "--secret 要寫成 <插件>/<名字>",
+    "unreadable": "讀不到插件的設定",
+    "told": "（機器人回覆你的 altention dc post --secret）沒有貼出：{why}。",
+}
+GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR, "secret": SECRET}
 
 
 def enter():

@@ -1,6 +1,6 @@
 ---
 name: update
-description: "An engine update that stopped for a person, handed to #setup's Claude from #update's card (「請 Claude 幫忙」), a person in #setup saying what an update notice told them to (「引擎更新卡住了，幫我處理」), or one asking to go back to before the last update (「引擎回到更新前」): say in plain words what happened, whether anything could be lost and what they can do now, ask, and only then act, with `altention update` and `setup.py` alone. Use it in #setup when the message says to use the update skill, says one of those sentences, or asks to go back. Not for a clean update (the card does that by itself) and not in other channels."
+description: "An engine update that stopped for a person, handed to #setup's Claude from #update's card (「請 Claude 幫忙」), a person in #setup saying what an update notice told them to (「引擎更新卡住了，幫我處理」), or one asking to go back to before the last update (「引擎回到更新前」), or a plugin's new version the card hands over (「插件的更新要使用者看過才換」): say in plain words what happened, whether anything could be lost and what they can do now, ask, and only then act, with `altention update` and `setup.py` alone. Use it in #setup when the message says to use the update skill, says one of those sentences, or asks to go back. Not for a clean update (the card does that by itself) and not in other channels."
 ---
 
 # Helping with an update, in #setup
@@ -9,7 +9,8 @@ You are `#setup`'s Claude. Either the bot handed you an engine update that stopp
 pressed 「請 Claude 幫忙」 on its card in `#update`), or the person writes what an update notice told them to say
 here (「引擎更新卡住了，幫我處理」: nothing is handed then; step 1 finds out what
 stopped it; 「引擎停在固定版本了，幫我接回去」 is for `#chat` now, and a notice from before that sent it here is
-answered as `detached` below), or the person asks to go back to the version before the last update (step 6). A handed message says what the check found (`預檢（altention update check）：<kind>`), which
+answered as `detached` below), or the person asks to go back to the version before the last update (step 6), or
+the card hands you plugins whose new version waits for the person (it starts 「插件的更新要使用者看過才換」: step 7). A handed message says what the check found (`預檢（altention update check）：<kind>`), which
 release (`要更新到：vX.Y.Z`), sometimes the step it stopped at, the merge copy (`合併用的副本`) and what can be
 done (`可以做的`). A long one is in a file under `update-work/` in this folder (the message gives its path): read
 it first.
@@ -27,6 +28,7 @@ anything of theirs could be lost, and what they can do now.** Then ask, and act 
   - `<ENGINE>/bin/altention update apply <vX.Y.Z>`
   - `<ENGINE>/bin/altention update aside <vX.Y.Z>`
   - `<ENGINE>/bin/altention update undo`
+  - `<ENGINE>/bin/altention update plugin <名稱> <vX.Y.Z>` (with `--anyway` only as step 7 says)
   `<ENGINE>` is the path in this folder's `.claude/settings.json` allow rules. Never run `git` yourself, never edit
   the engine's files, a settings file or the crontab: a command outside those rules is checked and may be blocked,
   and the engine is theirs. The one place you edit is the merge copy (step 3b), which is in this folder.
@@ -227,6 +229,47 @@ update, that their own edits stay, and that the bot may restart. Ask: 「回到�
   (「引擎改成只通知」); after that, ask here again.
 - 「更新之後這台的引擎又有變動」, 「跟要回去的版本改到同一個檔」 or 「沒有更新前的記號」: nothing moved. Say it
   plainly; for the first two, `#chat`'s Claude can look at it with them.
+
+## 7. Plugins
+
+A plugin (`~/altention/plugins/<名稱>`, from the source the instance names) whose new version the card could not
+take with one press is handed to you, one block per plugin: `插件 <名稱>：<舊> → <新>，檢查是 <kind>：<why>`, a
+line `  多了：…` for each thing the new version does on this computer that the old one did not, and `  可以做的：…`.
+Take them one at a time, in the order given. For each, say in plain words what the new version changes for them,
+whether anything of theirs could be lost (nothing is, until they say yes), and what they can do; then ask.
+
+- **`perms`**: say each 「多了」 line in plain words: a new schedule (when it runs and what it does), a setup
+  command, data it keeps (and whether it is private), a channel, a skill every Claude reads. **A new hook or a
+  rewrite of replies (「改寫回覆」) is asked about on its own**, once more, in these words:
+  「它會看到你的對話內容」, naming the ones it adds (hook／改寫回覆; decision 4). Ask: 「換到新版」 or 「先不要」.
+- **`test`**: the new version's own test did not pass (the lines that failed are below it). Say so, and that the
+  default is to stay. Ask: 「先不要」 (recommended) or 「知道了，還是要換」; only on the second, with `--anyway`.
+- **`engine`**: the new version needs a newer engine. Say so; it is changed after the engine is: the card's
+  「更新」 button, or step 4 with the engine's new version, then come back to this plugin.
+- **`interface`**: the new version names an engine interface (its plugin.json `uses`) this engine does not offer,
+  so it would not run here. Say so, with the interface its line names; update the engine first as for `engine`,
+  and if it still does not fit, stay on the version they have until the plugin has one that fits.
+- **`edits`** or **`origin`**: their own changes are in the plugin's folder (or a file of theirs where the new
+  version adds one), or the folder did not come from where the instance says. Say what that means; do not touch
+  the folder. Keeping or putting away what is there is not one of your commands: they do it, or `#chat`'s Claude.
+- **`broken`** or **`unreachable`**: this version cannot be taken (its settings cannot be read, or it cannot be
+  fetched now). Say so; nothing changes. Try again later, or ask whether the source is written right.
+
+On yes, one plugin at a time (say first that it takes a minute or two):
+
+```bash
+<ENGINE>/bin/altention update plugin <名稱> <vX.Y.Z>
+```
+
+Run it with `run_in_background` as in the rules. What it ends with:
+
+- 「已經換到 <vX.Y.Z>」: done. When it adds 「別台會在下一輪自己跟上」 or 「實例還沒推出去」, say that line too.
+  Going back is step 6 (「引擎回到更新前」 puts the plugins of the last change back too).
+- 「已經是 <vX.Y.Z> 了，不用換」: nothing to do.
+- 「自己的測試沒過，這次不換」: as `test` above; only on 「知道了，還是要換」 run it again with `--anyway` at the end.
+- 「這次沒換到」, 「沒換到」 or 「放回」: nothing of theirs changed (or the plugin went back to where it was); say
+  its reason plainly and stop for this plugin.
+- 「這要在機器人那台跑」: this is not the bot's machine; say so and stop.
 
 ## Afterwards
 

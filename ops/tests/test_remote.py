@@ -365,7 +365,7 @@ class Attach(Base):
         self.assertEqual(remote.origin(self.repo), bare)
 
 
-class SetRemote(Base):
+class SetRemoteRig(Base):
     def setUp(self):
         super().setUp()
         self.inst = os.path.join(self.tmp, "instance")
@@ -394,6 +394,8 @@ class SetRemote(Base):
         with open(os.path.join(self.inst, "plugins.json"), encoding="utf-8") as f:
             return json.load(f)
 
+
+class SetRemote(SetRemoteRig):
     def test_written_down_given_its_origin_hooked_and_pushed(self):
         bare = bare_with(self.tmp, "logs-remote", [])
         self.assertEqual(self.set("logs", bare), 0, self.said)
@@ -453,6 +455,58 @@ class SetRemote(Base):
         self.assertEqual(rows["logs"]["check"]["verdict"], "private")
         self.assertEqual((rows["instance"]["repo"], rows["instance"]["origin"]), (True, ""))
         self.assertFalse(rows["progress"]["repo"])
+
+
+class PluginData(SetRemoteRig):
+    """C-61 E4: an external plugin's data folder (plugin.json "data") backed up the same way, named
+    plugin:<plugin>/<data>, its remote written as sync.dirs.<plugin>/<data>.remote."""
+
+    def setUp(self):
+        super().setUp()
+        self.notes = os.path.join(self.tmp, "data", "demo")
+        write(os.path.join(self.notes, "notes.md"), "mine\n")
+        self.p = mock.patch.object(remote, "plugin_data", return_value=[("plugin:demo/notes", self.notes, True, "demo")])
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+        super().tearDown()
+
+    def test_names(self):
+        self.assertTrue(remote.known("plugin:demo/notes"))
+        self.assertFalse(remote.known("plugin:Demo/notes"))
+        self.assertFalse(remote.known("plugin:demo/a.b"), "a dot would split the setting's path")
+        self.assertEqual(remote.key_for("plugin:demo/notes"), "demo/notes")
+        self.assertEqual(remote.key_for("logs"), "chatlog")
+        self.assertEqual(remote.label("plugin:demo/notes"), "插件 demo 的「notes」")
+        self.assertEqual(remote.folder_of("plugin:demo/notes"), self.notes)
+        self.assertIsNone(remote.folder_of("plugin:other/x"))
+
+    def test_set_makes_it_a_repo_of_its_own_and_writes_it_down(self):
+        bare = bare_with(self.tmp, "demo-remote", [])
+        self.assertEqual(self.set("plugin:demo/notes", bare), 0, self.said)
+        self.assertEqual(self.settings()["sync"]["dirs"]["demo/notes"], {"remote": bare})
+        self.assertTrue(remote.own_repo(self.notes))
+        self.assertEqual(os.stat(self.notes).st_mode & 0o777, 0o700)
+        self.assertEqual(remote.origin(self.notes), bare)
+        self.assertTrue(remote.has_hook(self.notes))
+        self.assertTrue(any("建成 git repo" in t for t in self.said), self.said)
+        with open(os.path.join(self.notes, "notes.md")) as f:
+            self.assertEqual(f.read(), "mine\n", "its content untouched")
+        rows = {r["name"]: r for r in remote.status()}
+        self.assertEqual((rows["plugin:demo/notes"]["private"], rows["plugin:demo/notes"]["setting"]), (True, bare))
+
+    def test_a_plugin_not_on_here_is_refused_before_anything_is_written(self):
+        bare = bare_with(self.tmp, "x-remote", [])
+        self.assertEqual(self.set("plugin:other/x", bare), 1)
+        self.assertNotIn("other/x", self.settings()["sync"]["dirs"])
+        self.assertTrue(any("沒有開著的外部插件" in t for t in self.said), self.said)
+
+    def test_the_command_line_takes_the_name(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(remote.main(["check", "x", "--for", "plugin:Bad/x"]), 2)
+        self.assertIn("plugin:<插件>/<資料名>", out.getvalue())
 
 
 class Hook(Base):

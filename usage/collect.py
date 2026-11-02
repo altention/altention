@@ -154,10 +154,11 @@ def machine_usage(name, m, days=31):
 
 # The subscription's limits come with the answer to one request (K-04; measured on 2.1.299): `claude -p` with
 # stream-json output gives a rate_limit_event whose rate_limit_info.unifiedWindows has five_hour and seven_day, each
-# {utilization: 0..1 (more when over), resetsAt: epoch seconds}. Opening Claude Code alone gives nothing (its statusLine has no
+# {utilization: 0..1 (more when over), resetsAt: epoch seconds}; on 2.1.312 and 2.1.316 seven_day alone, so a window
+# that is not there is skipped and the board says so. Opening Claude Code alone gives nothing (its statusLine has no
 # rate_limits before a request), so each round sends PROMPT on the cheapest model. Nothing of the owner's is loaded
 # (no settings, hooks, MCP servers or tools; an empty folder of its own), and nothing is kept (no transcript).
-# unifiedWindows is not in Claude Code's documentation: this reads it as measured on 2.1.299 (usage/samples/). After
+# unifiedWindows is not in Claude Code's documentation: this reads it as measured on 2.1.299 and 2.1.316 (usage/samples/). After
 # an update, measure again against that sample (REPAIR). Not measured: the answer when a limit is used up (status
 # "rejected"); the request then may fail without the event, and the board says so ("請求失敗…").
 PROMPT = "Reply with the single character 1."
@@ -182,7 +183,8 @@ def reset_text(ts, now, with_date, zone=None):
 
 def limits_from_stream(text, now=None, zone=None):
     """(limits, why) from `claude -p --output-format stream-json` output: limits [[title, percent, reset text]] as
-    the samples keep them, or [] and why not. A shape not as measured is said, never guessed."""
+    the samples keep them, without a window the event does not have, or [] and why not. A window that is there in a
+    shape not as measured, or no window at all, is said, never guessed."""
     now = now or (zone.local(time.time()) if zone else datetime.datetime.now())
     info, failed = None, None
     for line in text.split("\n"):
@@ -209,11 +211,15 @@ def limits_from_stream(text, now=None, zone=None):
         return [], "%s（rate_limit_event 沒有 unifiedWindows）" % CHANGED
     out = []
     for key, title in WINDOWS:
-        w = windows.get(key)
+        if key not in windows:
+            continue
+        w = windows[key]
         u, at = (w.get("utilization"), w.get("resetsAt")) if isinstance(w, dict) else (None, None)
         if not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in (u, at)) or u < 0:
             return [], "%s（unifiedWindows.%s 是 %s）" % (CHANGED, key, json.dumps(w)[:100])
         out.append([title, int(round(u * 100)), reset_text(at, now, key != "five_hour", zone)])
+    if not out:
+        return [], "%s（unifiedWindows 裡沒有 %s）" % (CHANGED, "、".join(key for key, _ in WINDOWS))
     return out, None
 
 
@@ -257,9 +263,12 @@ def limits_board(limits, why=None, off=False):
         return "（這次讀不到用量額度：%s）" % (why or "不知道為什麼")
     names = {"Current session": "這 5 小時", "Current week (all models)": "這週（所有模型）"}
     rows = ["整個 Claude 帳號（包含其他 Linux 帳號和其他裝置），%s" % ("目前方案 %s" % PLAN[0] if PLAN else PLAN_UNSET)]
-    for title, pct, reset in limits:
-        label = names.get(title) or ("這週（%s）" % title.split("(", 1)[-1].rstrip(")") if "(" in title else title)
-        rows.append("- %s：**%d%%**%s" % (label, pct, "　（%s 重置）" % reset if reset else ""))
+    for _, title in WINDOWS:
+        got = next((x for x in limits if x[0] == title), None)
+        if got is None:
+            rows.append("- %s：這次沒有提供" % names[title])
+        else:
+            rows.append("- %s：**%d%%**%s" % (names[title], got[1], "　（%s 重置）" % got[2] if got[2] else ""))
     week = next((p for t, p, _ in limits if t == "Current week (all models)"), None)
     if week is not None and PLAN:
         rows.append("- 這週用量換算：約 Pro 一週額度的 **%.1f 倍**、Max 5x 的 %.1f 倍（照 Max 20x = 20 倍 Pro、Max 5x = 5 倍）"

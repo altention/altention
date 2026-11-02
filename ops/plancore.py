@@ -21,7 +21,7 @@ import re
 import shlex
 import subprocess
 
-from altention import config, plugin
+from altention import config, plugin, plugin_steps
 
 DAYS = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
 NEW_MARK = re.compile(r"#\s*altention:([A-Za-z0-9_-]+)(?:/([A-Za-z0-9_.-]+))?\s*$")  # what apply writes at the end of a line
@@ -215,8 +215,8 @@ def wanted(rows, machine, settings, bot):
     away. A cron item whose time the instance set carries "override": its time differs is changed without
     --allow-time (applycore.new_crontab)."""
     want, unknown = [], []
-    for name, folder, d, where, reason in rows:  # C-85: a plugin turned off here (disabled_on, or not its machine):
-        if where not in ("off", "disabled") or d is None:  # its hooks, exactly as it declares them, are taken out
+    for name, folder, d, where, reason in rows:  # C-85: a plugin turned off here (disabled_on, or not its machine,
+        if where not in ("off", "disabled", "blocked") or d is None:  # or blocked: C-94): its hooks, as declared, go
             continue
         for h in d.get("hooks", []):
             try:
@@ -238,7 +238,11 @@ def wanted(rows, machine, settings, bot):
         items, problems = plugin.effective_schedules(name, d, settings)
         for p in problems:
             unknown.append((p.split("：", 1)[0], "這一筆不用：" + p.split("：", 1)[-1]))
+        gates = plugin_steps.gated(name, d) if name != "core" else {}  # C-77 G5: waits for a step (its line kept if there)
         for s in (items if name != "core" else []):
+            if s.get("name") in gates:
+                want.append({"plugin": name, "name": s["name"], "kind": "gated", "key": None, "text": "", "step": gates[s["name"]]})
+                continue
             if s.get("unknown"):
                 unknown.append(("%s/%s" % (name, s.get("name")), "實例的設定不能用：%s；這一項現在的行不動" % s["unknown"]))
                 special("held", name, s)
@@ -432,20 +436,41 @@ def installed_cron(lines, engine):
     return jobs, paused, unreadable
 
 
-def installed_hooks(settings_json, engine):
+def external_hooks(rows, settings):
+    """{hook key: plugin} of every hook an external plugin here declares (C-61 E5, manager 2026-10-20), expanded as
+    wanted() expands it, whatever its place (on, off, disabled, draft): a hook in settings.json is that plugin's
+    only when it is exactly one of these; one merely pointing into a plugin's folder (the person's own) is not."""
+    out = {}
+    for name, folder, d, where, _ in rows:
+        if d is None or where == "unknown" or not plugin.external(folder):
+            continue
+        for h in d.get("hooks", []):
+            try:
+                command = plugin.expand(h["command"], folder, settings)
+            except (plugin.PluginError, KeyError):
+                continue
+            out[(h["event"], h.get("matcher") or "", tuple(words(command)), h.get("timeout"))] = name
+    return out
+
+
+def installed_hooks(settings_json, engine, theirs=None):
+    """[(key, command)] of the installed hooks that are ours: naming this engine's folder, or exactly a hook an
+    external plugin declares (`theirs`, external_hooks())."""
     out = []
     for event, groups in ((settings_json or {}).get("hooks") or {}).items():
         for g in groups or []:
             for h in g.get("hooks") or []:
                 command = h.get("command") or ""
-                if engine in " ".join(words(command)):
-                    out.append(((event, g.get("matcher") or "", tuple(words(command)), h.get("timeout")), command))
+                key = (event, g.get("matcher") or "", tuple(words(command)), h.get("timeout"))
+                if engine in " ".join(words(command)) or key in (theirs or {}):
+                    out.append((key, command))
     return out
 
 
-def other_hooks(settings_json, engine):
+def other_hooks(settings_json, engine, theirs=None):
     """[(key, command)] of the hooks that do not name this engine's folder, keyed as installed_hooks keys them: the
-    ones an engine moved elsewhere may have left (compare() takes such a hook for an item only by relocated_from)."""
+    ones an engine moved elsewhere may have left (compare() takes such a hook for an item only by relocated_from).
+    An external plugin's own (`theirs`) is not among them."""
     out = []
     for event, groups in ((settings_json or {}).get("hooks") or {}).items():
         for g in groups or []:
@@ -455,12 +480,13 @@ def other_hooks(settings_json, engine):
                     ws = words(command)
                 except ValueError:
                     continue
-                if engine not in " ".join(ws):
-                    out.append(((event, g.get("matcher") or "", tuple(ws), h.get("timeout")), command))
+                key = (event, g.get("matcher") or "", tuple(ws), h.get("timeout"))
+                if engine not in " ".join(ws) and key not in (theirs or {}):
+                    out.append((key, command))
     return out
 
 
-def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hooks=(), moved_from=()):
+def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hooks=(), moved_from=(), theirs=None, off=()):
     """[(status, item or None, installed text, marker)]:
     same       an installed line or hook with the item's content (an old-format line so matched is claimed);
     time differs  the command installed at another time (changed only when named by hand);
@@ -488,17 +514,21 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
                twice);
     gone       a line or hook that would have been replaced but its old folder is gone and nobody named it
                (`apply --moved-from <folder>`): kept, and said, a folder gone alone saying nothing of whose it was;
-    hook off   a hook exactly as a plugin turned off here declares it (C-85: wanted()'s "hook off" items; its event,
-               matcher, command words and timeout): removed, as cron lines of a plugin off here are;
     turned off a line with our marker naming an item the instance turned off ("enabled": false, C-37), its command
                in this engine or a folder it moved from (in_engine): removed; another engine's line as before;
     held       such a line of an item whose instance override cannot be used: kept byte for byte;
+    gated      an item waiting for a plugin's guide[] step (C-77 G5, plugin_steps.gated): not added; a line of it
+               already there kept byte for byte (its item has "step", the step's title; no line: installed "");
     unclaimed  looks like an old one of ours (an old marker, or a file in the engine) but matches nothing exactly:
                someone else's as far as apply goes, kept as it is; also any hook nothing asks for (hooks carry
-               no marker, so none is ever removed)."""
-    special = dict(((w["plugin"], w["name"]), w) for w in want if w["kind"] in ("held", "off"))
+               no marker, so none is ever removed), except an external plugin's own (`theirs`, C-61 E5):
+    hook twin  a second copy of a hook an item has already (the same key): removed, one stays;
+    hook off   an external plugin's own hook (exactly as it declares it) whose plugin is plainly off, disabled or a
+               draft here (`off`, applycore.removable), or a hook exactly as any plugin turned off here (off or
+               disabled: the engine's own too, C-85) declares it (wanted()'s "hook off" items): removed."""
+    special = dict(((w["plugin"], w["name"]), w) for w in want if w["kind"] in ("held", "off", "gated"))
     hooks_off = dict((w["key"], dict(w, kind="hook")) for w in want if w["kind"] == "hook off")
-    want = [w for w in want if w["kind"] not in ("held", "off", "hook off")]
+    want = [w for w in want if w["kind"] not in ("held", "off", "hook off", "gated")]
     result, used_c, used_h, used_p = [], set(), set(), set()
     for w in want:
         pool, used = (cron_have, used_c) if w["kind"] == "cron" else (hook_have, used_h)
@@ -512,10 +542,10 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
             used.add(near)
             result.append(("time differs", w, pool[near][1], pool[near][2]))
             continue
-        off = next((i for i, p in enumerate(paused) if i not in used_p and w["kind"] == "cron" and p[0][1] == w["key"][1]), None)
-        if off is not None:
-            used_p.add(off)
-            result.append(("paused", w, paused[off][1], ""))
+        p_at = next((i for i, p in enumerate(paused) if i not in used_p and w["kind"] == "cron" and p[0][1] == w["key"][1]), None)
+        if p_at is not None:  # (not `off`: that is a parameter, read again for the hooks below)
+            used_p.add(p_at)
+            result.append(("paused", w, paused[p_at][1], ""))
             continue
         result.append(("missing", w, "", ""))
     gone_c = replaced(result, cron_have, used_c, engine, moved_from)
@@ -529,7 +559,7 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
             continue
         held = special.get((h[3], marked_name(h[1]))) if h[3] and engine and in_engine(h[0][1], engine, moved_from) else None
         if held is not None:  # C-37: an item the instance turned off (its line goes), or whose override is unusable (kept)
-            result.append(("turned off" if held["kind"] == "off" else "held", held, h[1], h[2]))
+            result.append(({"off": "turned off", "gated": "gated"}.get(held["kind"], "held"), held, h[1], h[2]))
             continue
         twin = next((w for w in matched if h[0][1] == w["key"][1]), None)
         gone = next((w for w in away if h[3] and h[0] == w["key"] and marked(h[1]) == w["plugin"]), None) or \
@@ -549,10 +579,24 @@ def compare(want, cron_have, hook_have, paused=(), away=(), engine=None, old_hoo
     for i, p in enumerate(paused):
         if i not in used_p:
             result.append(("unclaimed", None, p[1], ""))
+    have_key = dict((w["key"], w) for st, w, _t, _n in result if st == "same" and w is not None and w["kind"] == "hook")
     for i, h in enumerate(hook_have):
-        if i not in used_h:
-            off = hooks_off.get(h[0])
-            result.append(("hook off", off, h[1], "") if off is not None else ("unclaimed", None, h[1], ""))
+        if i in used_h:
+            continue
+        owner = (theirs or {}).get(h[0])
+        declared_off = hooks_off.get(h[0])  # C-85: a plugin turned off here, the engine's own too
+        if owner is not None and h[0] in have_key:
+            result.append(("hook twin", have_key[h[0]], h[1], ""))
+        elif declared_off is not None:
+            result.append(("hook off", declared_off, h[1], ""))
+        elif owner is not None and owner in off:
+            event, matcher = h[0][0], h[0][1]
+            result.append(("hook off", {"plugin": owner, "name": "%s%s" % (event, "（%s）" % matcher if matcher else ""),
+                                        "kind": "hook", "key": h[0], "text": h[1]}, h[1], ""))
+        else:
+            result.append(("unclaimed", None, h[1], ""))
+    shown = {id(r[1]) for r in result if r[0] == "gated"}
+    result += [("gated", w, "", "") for w in special.values() if w["kind"] == "gated" and id(w) not in shown]  # not added yet
     return result
 
 

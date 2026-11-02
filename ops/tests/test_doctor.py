@@ -112,7 +112,7 @@ def healthy(**changes):
          "bot_heartbeat_age": 3, "instance": "/home/alice/我的 實例", "stray_bot": False,
          "this_machine": "host-a", "sync": {"engine": {}, "instance": {}, "links": {"memory": "instance"}},
          "tmp_inodes": 5, "tmp_space": 10, "engine_paths": {"knowledge": "link", "memory": "link", "docs/refactor": "link"},
-         "kept_twice": [], "global_edited": [], "adopted": [], "events_bad": 0, "open_dirs": [],
+         "kept_twice": [], "global_edited": [], "events_bad": 0, "open_dirs": [],
          "skills": ["council", "report", "tour"], "slept": 0.0}
     o.update(changes)
     return o
@@ -123,7 +123,7 @@ class Records(unittest.TestCase):
     FIELDS = {"id", "machine", "status", "msg", "fix"}
     unset = {}  # machine: [(plugin, setting)] as unset_channels says
     off = {}  # machine: {skill} as skills_off says
-    needs = {}  # machine: [(plugin, needed)] as unmet_needs says
+    needs = {}  # machine: [(plugin, needed, its placement)] as unmet_needs says
 
     def run_doctor(self, probes, argv=(), inv=None, scan=None):
         """probes: {machine: probe dict, or None for a machine that cannot be reached}."""
@@ -153,6 +153,20 @@ class Records(unittest.TestCase):
     def records(self, probes, **kw):
         code, text = self.run_doctor(probes, ["--json"], **kw)
         return code, json.loads(text)
+
+    def test_an_engine_path_that_is_a_folder_is_moved_by_hand_one_missing_by_the_sync(self):
+        paths = {"knowledge": "folder", "memory": "missing", "docs/refactor": "link"}
+        code, recs = self.records({"host-a": healthy(engine_paths=paths), "host-b": healthy()})
+        got = {r["id"]: r for r in recs if r["machine"] == "host-a"}
+        folder, missing = got["instance.engine-link.knowledge"], got["instance.engine-link.memory"]
+        self.assertIn("是一般資料夾", folder["msg"])
+        self.assertIn("同步不會動一般資料夾", folder["fix"])
+        self.assertIn("/home/alice/我的 實例/knowledge", folder["fix"], "where its files go")
+        self.assertIn("不要刪", folder["fix"])
+        self.assertIn("不存在", missing["msg"])
+        self.assertIn("就好，它會建連結", missing["fix"])
+        self.assertNotIn("搬過去", missing["fix"])
+        self.assertNotIn("instance.engine-link.docs-refactor", [r["id"] for r in recs if r["status"] != "ok"])
 
     def test_an_engine_from_an_archive_is_no_missing_engine(self):
         code, recs = self.records({"host-a": healthy(code="archive"), "host-b": healthy(code="")})
@@ -701,7 +715,7 @@ class Records(unittest.TestCase):
                "update_skipped": {"since": "x", "why": "鎖"}, "update_blocked": "blocked", "instance_held": {"since": [], "hash": 7},
                "alerts": [["2026", "sync"]], "sync": {"links": "x", "engine": 3, "instance": {"error": 5, "rescued": "x"}},
                "cron_logs": {"sync": 5}, "skills": "council", "unchecked": [1, 2], "fallbacks": {"update": "x", "sync": [1, 2, 3]},
-               "chatlog_big": [["x"]], "chatlog_unsure": "x", "open_dirs": [1], "adopted": {}, "engine_paths": [1],
+               "chatlog_big": [["x"]], "chatlog_unsure": "x", "open_dirs": [1], "engine_paths": [1],
                "tmp_space": "91%", "cleanup_days": "30", "timezone": [], "schedule_record": {"line": True, "round": "x", "future": {}},
                "kept_twice": 1, "global_edited": "x", "events_bad": "3"}
         for key, value in list(odd.items()) + [("now", "noon")]:
@@ -842,6 +856,47 @@ class Records(unittest.TestCase):
         self.assertIn(("host-a", "progress.last-run"), ids)
         self.assertNotIn(("主機 乙", "progress.cron"), ids, "no record for a check that does not apply to the machine")
         self.assertIn((None, "progress.single"), ids)
+
+    def test_turned_off_on_purpose_is_said_in_the_plain_output(self):
+        """C-85 (b): the plugins disabled on a machine are a line of their own, not only in --json; not a problem."""
+        recs = [doctor.record("core.reachable", "host-a", "ok", "", value="A"),
+                doctor.record("plugins.disabled", "host-a", "ok", "", value=["usage"]),
+                doctor.record("plugins.disabled", "主機 乙", "ok", "", value=["demo", "usage"])]
+        text = doctor.render(recs)
+        self.assertIn("刻意停用：usage（host-a）；demo、usage（主機 乙）", text)
+        self.assertTrue(text.endswith("全部正常。"))
+        now = time.time()
+        rep = {"format": 1, "at": now - 60, "add": [], "remove": [], "retime": [], "core": [], "refuse": None,
+               "unknown": [], "problems": [], "disabled": ["usage"]}
+        _, recs = self.records({"host-a": healthy(now=now, apply_report=rep)})
+        self.assertEqual([r["value"] for r in recs if r["id"] == "plugins.disabled"], [["usage"]])
+        self.assertIn("刻意停用：usage（host-a）", doctor.render(recs))
+
+    def test_a_plugin_blocked_on_a_machine_is_a_warning_with_the_fix_c94(self):
+        now = time.time()
+        rep = {"format": 1, "at": now - 60, "add": [], "remove": [], "retime": [], "core": [], "refuse": None,
+               "unknown": [], "problems": [], "disabled": [], "blocked": [["demo", "這版引擎沒有它要的介面（要 dc.post v2）"]]}
+        _, recs = self.records({"host-a": healthy(now=now, apply_report=rep)})
+        found = [r for r in recs if r["id"] == "plugins.blocked"]
+        self.assertEqual([(r["status"], r["value"]) for r in found], [("warn", "demo")])
+        self.assertIn("demo 在 host-a 不啟用：這版引擎沒有它要的介面（要 dc.post v2）", found[0]["msg"])
+        self.assertIn("python3 altention/update.py --release", found[0]["fix"])
+        self.assertIn("plugins.demo.version", found[0]["fix"])
+        for odd in ([["demo"]], "demo", [["demo", ""]]):
+            with self.subTest(odd=odd):
+                self.assertIn("blocked", doctor.report_odd(dict(rep, blocked=odd)))
+        self.assertEqual(doctor.report_odd({k: v for k, v in rep.items() if k != "blocked"}), "", "older reports lack it")
+
+    def test_leftover_lines_of_a_plugin_turned_off_are_said(self):
+        now = 1791500000
+        rep = {"format": 1, "at": now - 300, "add": [], "remove": [], "retime": [], "core": [], "refuse": None,
+               "unknown": [], "problems": [], "disabled": ["usage"],
+               "leftovers": [{"plugin": "usage", "installed": "# 0 * * * * /e/usage/collect.sh # altention:usage/collect"}]}
+        r = doctor.would_apply_record("host-a", rep, now, True, False)
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("關掉的插件在 crontab 還有 apply 不動的舊行（註解掉的，或舊格式）：usage：# 0 * * * * /e/usage", r["msg"])
+        self.assertIn("刻意停用：usage", r["msg"])
+        self.assertEqual(doctor.would_apply_record("host-a", dict(rep, leftovers=[]), now, True, False)["status"], "ok")
 
     def test_the_table_and_the_problems_come_from_the_records(self):
         recs = [doctor.record("core.machine-list", None, "ok", "", value="list"),
@@ -1507,20 +1562,27 @@ class Records(unittest.TestCase):
 
     def test_a_plugin_on_with_what_it_needs_turned_off_is_shown(self):
         """Manager 2026-10-15: progress on and chatlog off is a warn with both ways out; plainly from the settings."""
-        self.needs = {"host-a": [("progress", "chatlog")]}
+        self.needs = {"host-a": [("progress", "chatlog", "disabled")]}
         code, recs = self.records({"host-a": healthy()})
         by = {r["id"]: r for r in recs if r["machine"] == "host-a"}
         self.assertEqual((code, by["progress.needs"]["status"]), (0, "warn"))
         self.assertIn("progress 開著，但它要用的 chatlog 在這台關掉了", by["progress.needs"]["msg"])
         self.assertIn("plugins.chatlog.disabled_on 拿掉 host-a", by["progress.needs"]["fix"])
         self.assertIn("python3 ops/apply.py host-a", by["progress.needs"]["fix"])
+        self.needs = {"host-a": [("progress", "chatlog", "blocked")]}  # C-94: nobody turned it off, so other words
+        _, recs = self.records({"host-a": healthy()})
+        by = {r["id"]: r for r in recs if r["machine"] == "host-a"}
+        self.assertIn("progress 開著，但它需要的 chatlog 在這台沒有啟用（這版引擎沒有 chatlog 需要的介面）", by["progress.needs"]["msg"])
+        self.assertIn("更新這台的引擎", by["progress.needs"]["fix"])
+        self.assertNotIn("disabled_on", by["progress.needs"]["fix"])
         self.needs = {}
         _, recs = self.records({"host-a": healthy()})
         self.assertFalse([r for r in recs if r["id"].endswith(".needs")])
 
     def test_unmet_needs_reads_requires_and_only_a_plain_off(self):
-        progress = {"requires": [{"plugin": "chatlog", "data": "chatlog"}]}
-        for chatlog, progress_at, want in (("disabled", "on", [("progress", "chatlog")]), ("on", "on", []),
+        progress = {"requires": [{"plugin": "chatlog"}]}
+        for chatlog, progress_at, want in (("disabled", "on", [("progress", "chatlog", "disabled")]), ("on", "on", []),
+                                           ("blocked", "on", [("progress", "chatlog", "blocked")]),
                                            ("unknown", "on", []), ("off", "on", []), ("disabled", "off", []),
                                            ("disabled", "disabled", []), (None, "on", [])):
             rows = [("progress", "/e/progress", progress, progress_at, "")]
@@ -2136,44 +2198,208 @@ class DraftLeftovers(unittest.TestCase):
     def test_a_draft_with_lines_hooks_or_data_is_a_warn(self):
         home = tempfile.mkdtemp(prefix="家 ")
         self.addCleanup(shutil.rmtree, home, True)
-        inst, folder, data = os.path.join(home, "實例"), os.path.join(home, "plugins", "learn"), os.path.join(home, "data", "learn")
+        inst, folder, data = os.path.join(home, "實例"), os.path.join(home, "plugins", "demo"), os.path.join(home, "data", "demo")
         for d in (inst, folder, data, os.path.join(home, ".claude")):
             os.makedirs(d)
         with open(os.path.join(inst, "plugins.json"), "w") as f:
             json.dump({"format": 1}, f)
         with open(os.path.join(home, ".claude", "settings.json"), "w") as f:
-            json.dump({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "python3 %s/hook.py" % folder}]}]}}, f)
-        d = {"data": [{"name": "learn", "path": data}, {"name": "gone", "path": os.path.join(home, "沒有")}]}
-        rows = [("core", "/c", {}, "on", ""), ("learn", folder, d, "draft", "草稿"), ("bare", "/b", {}, "draft", "草稿")]
-        cron = ["0 13 * * * x  # altention:learn/practice", "5 * * * * y  # altention:other/z"]
+            json.dump({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "python3 %s/hook.py" % folder}]},
+                                          {"hooks": [{"type": "command", "command": "%s/the-persons-own.sh" % folder}]}]}}, f)
+        d = {"data": [{"name": "demo", "path": data}, {"name": "gone", "path": os.path.join(home, "沒有")}],
+             "hooks": [{"event": "Stop", "command": "python3 {plugin}/hook.py"}]}
+        rows = [("core", "/c", {}, "on", ""), ("demo", folder, d, "draft", "草稿"), ("bare", "/b", {}, "draft", "草稿")]
+        cron = ["0 13 * * * x  # altention:demo/practice", "5 * * * * y  # altention:other/z"]
         with mock.patch.dict(os.environ, {"HOME": home, "ALT_INSTANCE": inst}), \
                 mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
-                mock.patch("plancore.read_crontab", return_value=cron):
+                mock.patch("plancore.read_crontab", return_value=cron), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True):
             recs = {r["id"]: r for r in doctor.external_records()}
         self.assertEqual(recs["plugins.drafts"]["status"], "ok")
-        w = recs["plugin.learn.draft"]
+        w = recs["plugin.demo.draft"]
         self.assertEqual(w["status"], "warn")
-        self.assertIn("learn 這個插件在這台沒在跑", w["msg"])
+        self.assertIn("demo 這個插件在這台沒在跑", w["msg"])
         self.assertIn("排程 1 行、hook 1 個、資料夾 %s" % data, w["msg"])
         self.assertIn("source＋version，或 local: true", w["fix"])
         self.assertNotIn("plugin.bare.draft", recs, "a draft that never ran here is only listed")
+
+    def test_a_draft_installed_here_before_is_said_in_the_plain_output(self):
+        """L3's off/on run: a draft with no lines, hooks or data left but its folder and setup record here was not said
+        at all; now one line in the plain output, as 刻意停用 is. One never installed here is only listed."""
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        inst, folder = os.path.join(home, "實例"), os.path.join(home, "plugins", "rigd")
+        for d in (inst, folder, os.path.join(home, ".claude")):
+            os.makedirs(d)
+        with open(os.path.join(inst, "plugins.json"), "w") as f:
+            json.dump({"format": 1}, f)
+        rows = [("core", "/c", {}, "on", ""), ("rigd", folder, {}, "draft", "草稿"), ("bare", "/b", {}, "draft", "草稿")]
+        with mock.patch.dict(os.environ, {"HOME": home, "ALT_INSTANCE": inst}):
+            from altention import plugin_update
+            state = plugin_update.state_path("rigd")
+            os.makedirs(os.path.dirname(state))
+            with open(state, "w") as f:
+                json.dump({"setup": {}}, f)
+            with mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                    mock.patch("plancore.read_crontab", return_value=[]), \
+                    mock.patch.object(doctor.altplugin, "external", return_value=True):
+                recs = doctor.external_records()
+        said = [r for r in recs if r["id"] == "plugins.draft-left"]
+        self.assertEqual([(r["status"], r["value"]) for r in said], [("ok", "rigd")], "not bare: never installed here")
+        self.assertEqual(said[0]["msg"], "rigd 是草稿（實例沒寫它從哪來），這台不跑它，但它的資料夾 %s 和安裝紀錄還在。"
+                         "要用就在實例 plugins.json 寫回它的來源再跑 install；不用了就刪掉那個資料夾和 %s。" % (folder, state))
+        text = doctor.render([doctor.record("core.reachable", "box", "ok", "", value="A")] + said)
+        self.assertIn(said[0]["msg"], text)
+        self.assertTrue(text.endswith("全部正常。"), "said, not a problem")
+
+    def test_the_hooks_apply_took_out_are_said_for_a_week(self):
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        sys.path.insert(0, os.path.dirname(doctor.__file__))
+        import applycore
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=([], [])), \
+                mock.patch.object(doctor.altplugin, "this_machine", return_value="box"), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            os.makedirs(applycore.state_root("box"))
+            with open(os.path.join(applycore.state_root("box"), applycore.HOOKS_REMOVED), "w") as f:
+                json.dump({"at": time.time(), "hooks": [["rigd", "Stop", "off"], ["rigp", "Stop", "twin"]]}, f)
+            recs = {r["id"]: r for r in doctor.external_records()}
+            with open(os.path.join(applycore.state_root("box"), applycore.HOOKS_REMOVED), "w") as f:
+                json.dump({"at": time.time() - 8 * 86400, "hooks": [["rigd", "Stop", "off"]]}, f)
+            old = {r["id"] for r in doctor.external_records()}
+        r = recs["plugins.hooks-removed"]
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("apply 拿掉了插件的 hook：rigd/Stop（插件沒在跑）、rigp/Stop（多裝的那份）", r["msg"])
+        self.assertNotIn("plugins.hooks-removed", old, "a week later it is not said")
+
+    def test_a_plugin_on_again_after_its_hook_was_taken_out_is_not_said(self):
+        """The note apply wrote when rigd was turned off stays in hooks-removed.json; once rigd is on here again
+        (its hook added back), doctor no longer says its hook was taken out; a twin taken out is still said, and so
+        is a plugin still off, disabled or blocked (manager 2026-10-24)."""
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        sys.path.insert(0, os.path.dirname(doctor.__file__))
+        import applycore
+
+        def said(rows):
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                    mock.patch.object(doctor.altplugin, "this_machine", return_value="box"), \
+                    mock.patch.object(doctor.altplugin, "external", return_value=False), \
+                    mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+                os.makedirs(applycore.state_root("box"), exist_ok=True)
+                with mock.patch.object(applycore, "state_root", return_value=applycore.state_root("box")):
+                    applycore.note_hooks_removed([("hook off", {"plugin": "rigd", "name": "Stop"}, "x", ""),
+                                                  ("hook twin", {"plugin": "rigp", "name": "Stop"}, "x", "")])
+                r = {r["id"]: r for r in doctor.external_records()}.get("plugins.hooks-removed")
+                return r["msg"] if r else ""
+        row = lambda n, w: (n, "/e/" + n, {}, w, "")
+        for where in ("disabled", "off", "blocked", "draft"):
+            self.assertIn("rigd/Stop（插件沒在跑）", said([row("rigd", where), row("rigp", "on")]), where)
+        msg = said([row("rigd", "on"), row("rigp", "on")])
+        self.assertNotIn("rigd", msg, "on again: its hook is back")
+        self.assertIn("rigp/Stop（多裝的那份）", msg)
 
     def test_needs_not_in_watch_rounds_and_skill_clash_said(self):
         folder = tempfile.mkdtemp(prefix="插件 ")
         self.addCleanup(shutil.rmtree, folder, True)
         d = {"needs": [{"name": "x", "check": "false"}], "skills": [{"name": "update", "path": "s"}, {"name": "esc", "path": "../.."}]}
-        rows = [("learn", folder, d, "on", "")]
+        rows = [("demo", folder, d, "on", "")]
         with mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
                 mock.patch.object(doctor.altplugin, "external", return_value=True), \
                 mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
             whole = {r["id"]: r for r in doctor.external_records()}
-            from altention import plugin_update
-            with mock.patch.object(plugin_update, "needs_missing", side_effect=AssertionError("ran")):
+            from altention import plugin_steps
+            with mock.patch.object(plugin_steps, "plan", side_effect=AssertionError("ran")):
                 watched = {r["id"]: r for r in doctor.external_records(needs=False)}
-        self.assertEqual(whole["plugin.learn.needs"]["status"], "warn")
-        self.assertNotIn("plugin.learn.needs", watched)
+        self.assertEqual(whole["plugin.demo.needs"]["status"], "warn")
+        self.assertNotIn("plugin.demo.needs", watched)
         self.assertIn("skill update 跟引擎的同名", whole["core.skills-clash"]["msg"])
         self.assertIn("skill esc 指到插件資料夾外面", whole["core.skills-outside"]["msg"])
+
+    def test_guide_steps_warn_only_on_a_failing_check(self):
+        """C-77 G1 (#code-review of bb05de1): the whole doctor warns about a plugin's guide[] steps only when a check
+        says one is not done, naming it; a step that cannot be checked (null, or 3) and has no answer kept, as for a
+        plugin set up before its guide[] existed, is no warning; ok once every step is done."""
+        folder = tempfile.mkdtemp(prefix="插件 ")
+        self.addCleanup(shutil.rmtree, folder, True)
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        d = {"guide": [{"id": "a", "title": "A", "check": "true"}, {"id": "b", "title": "B", "check": "exit 3"},
+                       {"id": "n", "title": "N", "check": None, "ask": "?"},
+                       {"id": "c", "title": "C", "check": None, "ask": "?", "optional": True}]}
+        rows = [("demo", folder, d, "on", "")]
+        from altention import plugin_steps
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            ids = {x["id"] for x in doctor.external_records()}
+            self.assertNotIn("plugin.demo.guide", ids, "nothing failing, nothing answered: no warning, no ok either")
+            self.assertNotIn("plugin.demo.needs", ids)
+            d["guide"].insert(1, {"id": "f", "title": "F", "check": "echo nope; exit 1"})
+            r = {x["id"]: x for x in doctor.external_records()}["plugin.demo.guide"]
+            self.assertEqual((r["status"], r["msg"], r["value"]), ("warn", "demo 還有 1 件事要你做，下一件：F", "f"))
+            self.assertIn("幫我裝完 demo", r["fix"])
+            del d["guide"][1]
+            plugin_steps.said("demo", "b", "yes")
+            plugin_steps.said("demo", "n", "yes")
+            r = {x["id"]: x for x in doctor.external_records()}["plugin.demo.guide"]
+        self.assertEqual((r["status"], r["msg"]), ("ok", "demo 要你做的事都做好了"))
+
+    def test_an_optional_tool_missing_is_said_without_a_warning(self):
+        """#code-review of 39d1561: doctor as install: an optional tool missing is no warning, said in install's words."""
+        folder = tempfile.mkdtemp(prefix="插件 ")
+        self.addCleanup(shutil.rmtree, folder, True)
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        d = {"needs": [{"name": "pdftool", "check": "false", "optional": True, "for": ["pdf"]}]}
+        rows = [("demo", folder, d, "on", "")]
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            r = {x["id"]: x for x in doctor.external_records()}["plugin.demo.needs"]
+            self.assertEqual((r["status"], r["msg"]), ("ok", "demo 有可選的系統工具這台沒裝：pdftool（少了它：pdf）；要裝就到 #setup 跟 Claude 說「幫我裝完 demo」"))
+            d["needs"].append({"name": "x", "check": "false", "hint": "裝 x"})
+            r = {x["id"]: x for x in doctor.external_records()}["plugin.demo.needs"]
+        self.assertEqual((r["status"], r["msg"]), ("warn", "demo 要用的系統工具這台沒有：x"))
+
+    def test_what_waits_for_a_step_is_said(self):
+        """C-77 G5: the whole doctor says which setup items and schedules wait for a failing step's gate."""
+        folder = tempfile.mkdtemp(prefix="插件 ")
+        self.addCleanup(shutil.rmtree, folder, True)
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        d = {"guide": [{"id": "key", "title": "拿金鑰", "check": "false", "gate": ["tools", "remind"]}]}
+        rows = [("demo", folder, d, "on", "")]
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=True), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            r = {x["id"]: x for x in doctor.external_records()}["plugin.demo.gated"]
+            self.assertEqual((r["status"], r["msg"], r["value"]),
+                             ("warn", "demo 的 remind、tools 要等「拿金鑰」做好才開始", ["remind", "tools"]))
+            d["guide"][0]["check"] = "true"
+            self.assertNotIn("plugin.demo.gated", {x["id"] for x in doctor.external_records()})
+
+    def test_a_source_that_does_not_answer_is_said_since_when(self):
+        home = tempfile.mkdtemp(prefix="家 ")
+        self.addCleanup(shutil.rmtree, home, True)
+        from altention import plugin_update
+        with mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(doctor.altplugin, "on_this_machine", return_value=([], [])), \
+                mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
+            plugin_update._reached("demo", False)
+            recs = {r["id"]: r for r in doctor.external_records()}
+            plugin_update._reached("demo", True)
+            again = {r["id"] for r in doctor.external_records()}
+        r = recs["plugin.demo.source-unreachable"]
+        self.assertEqual(r["status"], "warn")
+        self.assertRegex(r["msg"], r"^demo 的來源連不上，從 \d\d-\d\d \d\d:\d\d 起（連續 1 次）$")
+        self.assertIn("下次", r["fix"])
+        self.assertNotIn("plugin.demo.source-unreachable", again)
 
     def test_a_setup_item_given_up_on_is_said(self):
         home = tempfile.mkdtemp(prefix="家 ")
@@ -2181,18 +2407,31 @@ class DraftLeftovers(unittest.TestCase):
         folder = os.path.join(home, "plugin")
         os.makedirs(folder)
         d = {"setup": [{"name": "t1", "run": "false"}]}
-        rows = [("learn", folder, d, "on", "")]
+        rows = [("demo", folder, d, "on", "")]
         from altention import plugin_update
         with mock.patch.dict(os.environ, {"HOME": home}), \
                 mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
                 mock.patch.object(doctor.altplugin, "external", return_value=True), \
                 mock.patch.object(doctor.altplugin.config, "settings", return_value={}):
-            plugin_update.run_setup("learn", folder, d, "")
-            self.assertNotIn("plugin.learn.setup", {r["id"] for r in doctor.external_records()})
-            plugin_update.run_setup("learn", folder, d, "")
+            plugin_update.run_setup("demo", folder, d, "")
+            self.assertNotIn("plugin.demo.setup", {r["id"] for r in doctor.external_records()})
+            plugin_update.run_setup("demo", folder, d, "")
             recs = {r["id"]: r for r in doctor.external_records()}
-        self.assertEqual(recs["plugin.learn.setup"]["status"], "warn")
-        self.assertIn("learn 的安裝步驟 t1 失敗 2 次，不再自動重跑；手動跑：python3 ", recs["plugin.learn.setup"]["msg"])
+        self.assertEqual(recs["plugin.demo.setup"]["status"], "warn")
+        self.assertIn("demo 的安裝步驟 t1 失敗 2 次，不再自動重跑；手動跑：python3 ", recs["plugin.demo.setup"]["msg"])
+
+
+class PluginBackups(unittest.TestCase):
+    def test_a_plugins_private_data_without_a_backup_is_said(self):
+        """C-61 E4: like the core's parts; data it does not call private, never set, is not asked about."""
+        row = {"name": "plugin:demo/notes", "folder": "/d/demo", "repo": False, "private": True, "setting": ""}
+        mine = lambda o, on: [r for r in doctor.backup_records("box", o, on) if r["id"].startswith("backup.plugin:")]  # noqa: E731
+        recs = mine({"backup": [row]}, {"demo"})
+        self.assertEqual([(r["id"], r["status"]) for r in recs], [("backup.plugin:demo/notes", "warn")])
+        self.assertIn("插件 demo 的「notes」：沒有備份", recs[0]["msg"])
+        self.assertIn("python3 ops/remote.py set plugin:demo/notes", recs[0]["fix"])
+        self.assertEqual(mine({"backup": [dict(row, private=False)]}, {"demo"}), [])
+        self.assertEqual(mine({"backup": [row]}, {"other"}), [], "not on that machine")
 
 
 class SetupLeft(unittest.TestCase):
@@ -2496,6 +2735,71 @@ class SilentSsh(unittest.TestCase):
         reach = [r for r in recs if r["id"] == "core.reachable"]
         self.assertEqual([(r["status"], r["msg"]) for r in reach], [("fail", "連不上（255）")])
 
+
+
+class CatalogRecords(unittest.TestCase):
+    """C-81 K4: doctor on the official plugin list: fetched lately, what it left out, a plugin no longer on it."""
+    def setUp(self):
+        from altention import catalog
+        self.catalog = catalog
+        self.home = tempfile.mkdtemp(prefix="家 catalog ")
+        self.addCleanup(shutil.rmtree, self.home, True)
+        env = mock.patch.dict(os.environ, {"HOME": self.home})
+        env.start()
+        self.addCleanup(env.stop)
+        self.url = lambda n, private="": "git@github.com:%s/plugin-%s%s.git" % (catalog.ORG, n, private)
+
+    def keep(self, at, plugins=("draw",), left_out=()):
+        os.makedirs(os.path.dirname(self.catalog.path()), exist_ok=True)
+        with open(self.catalog.path(), "w") as f:
+            json.dump({"format": 1, "at": at, "tried": at, "left_out": [{"repo": "plugin-%s" % n, "why": "x"} for n in left_out],
+                       "plugins": {n: {"version": "v0.1.0", "plugin": {"name": n}} for n in plugins}}, f)
+
+    def recs(self, settings=None):
+        return {r["id"]: r for r in doctor.catalog_records("box", settings or {})}
+
+    def test_none_fresh_and_stale(self):
+        self.assertEqual(self.recs(), {})
+        self.keep(time.time(), left_out=["bad"])
+        r = self.recs()["plugins.catalog"]
+        self.assertEqual((r["status"], r["value"]), ("ok", ["plugin-bad"]))
+        self.keep(time.time() - 8 * 86400)
+        r = self.recs()["plugins.catalog"]
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("沒有抓到新的了", r["msg"])
+        self.assertIn("--catalog-now", r["fix"])
+
+    def test_a_plugin_the_list_no_longer_has(self):
+        self.keep(time.time(), plugins=("draw",), left_out=["broke"])
+        settings = {"plugins": {"draw": {"source": self.url("draw"), "version": "v0.1.0"},
+                                "gone": {"source": self.url("gone"), "version": "v0.1.0"},
+                                "broke": {"source": self.url("broke"), "version": "v0.1.0"},
+                                "mine": {"source": self.url("mine", "-private"), "version": "v0.1.0"},
+                                "else": {"source": "https://example.org/plugin-else.git", "version": "v0.1.0"},
+                                "loc": {"local": True}}}
+        r = self.recs(settings)
+        self.assertEqual(sorted(k for k in r if k != "plugins.catalog"), ["plugin.gone.catalog"])
+        self.assertEqual(r["plugin.gone.catalog"]["status"], "warn")
+        self.keep(time.time() - 2 * 86400)
+        self.assertNotIn("plugin.gone.catalog", self.recs(settings), "a list from days ago says nothing of that")
+
+
+class JoinedByApply(unittest.TestCase):
+    def test_said_for_a_week(self):
+        """C-84: a machine apply joined to the instance by itself is said by doctor for 7 days."""
+        path = os.path.join(os.path.expanduser("~/.local/state/altention"), "apply", "joined.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        self.assertEqual(doctor.joined_records(), [])
+        now = 1791500000
+        with open(path, "w") as f:
+            json.dump({"far": {"at": now - 3600, "url": "git@x:i.git"}, "old": {"at": now - 8 * 86400, "url": "u"}}, f)
+        recs = doctor.joined_records(now)
+        self.assertEqual([(r["id"], r["machine"], r["status"]) for r in recs], [("instance.joined-by-apply", "far", "warn")])
+        self.assertIn("apply 讓 far 接上了實例（git@x:i.git）", recs[0]["msg"])
+        with open(path, "w") as f:
+            f.write("{")
+        self.assertEqual(doctor.joined_records(now), [])
 
 if __name__ == "__main__":
     unittest.main()

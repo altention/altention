@@ -175,8 +175,8 @@ def retime(raw, new_time):
 
 def removable(rows):
     """Plugins whose marked lines may be removed here: plugin.json read, and plainly off or disabled, or a draft
-    (an external plugin the instance does not declare: C-61 E1)."""
-    return {n for n, f, d, w, r in rows if d is not None and w in ("off", "disabled", "draft")}
+    (an external plugin the instance does not declare: C-61 E1), or blocked (its "uses" not offered: C-94)."""
+    return {n for n, f, d, w, r in rows if d is not None and w in ("off", "disabled", "draft", "blocked")}
 
 
 def auto_time(w, installed, recorded=None):
@@ -324,7 +324,7 @@ def new_settings(settings, result):
                         if not new["hooks"]:
                             del new["hooks"]
                 actions.append("拿掉 hook（%s）：%s/%s：%s" % (
-                    "同一個已經裝了，這是多的" if status == "hook twin" else "%s 在這台沒在用（off、關掉或草稿）" % w["plugin"],
+                    "同一個已經裝了，這是多的" if status == "hook twin" else "%s 在這台沒在跑（刻意關掉、放在別台或還是草稿）" % w["plugin"],
                     w["plugin"], w["name"], txt))
                 break
         elif status == "gone" and w is not None and w["kind"] == "hook":
@@ -507,6 +507,26 @@ def note_intervals(new_lines, engine=None):
             os.remove(tmp)
         except OSError:
             pass
+
+
+HOOKS_REMOVED = "hooks-removed.json"  # C-61 E5: the external plugins' hooks apply took out last, for doctor
+
+
+def note_hooks_removed(result, now=None):
+    """The hooks this apply took out (plancore.compare's "hook twin" and "hook off"), written beside its backups as
+    {"at": seconds, "hooks": [[plugin, name, why]]}; nothing written when there were none. Never raises."""
+    gone = [[w["plugin"], w["name"], "twin" if st == "hook twin" else "off"] for st, w, _t, _n in result
+            if st in ("hook twin", "hook off") and w is not None]
+    if not gone:
+        return
+    path = os.path.join(state_root(), HOOKS_REMOVED)
+    tmp = path + ".tmp-%d" % os.getpid()
+    try:
+        os.makedirs(state_root(), exist_ok=True)
+        private_write(tmp, json.dumps({"at": time.time() if now is None else now, "hooks": gone}, ensure_ascii=False).encode("utf-8"))
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def note_added(plugins, now=None):

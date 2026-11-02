@@ -1,0 +1,28 @@
+{
+ "format": 1,
+ "why": "What a plugin may use, each with a version raised only when it changes in a way that breaks its users. A plugin.json lists what it uses in \"uses\": {\"<name>\": <version>}; one this engine does not offer at that version is not turned on (blocked). \"also\": older versions still offered. \"transitional\": still works, but release.py check-plugin reminds that it goes away (the words say what replaces it). \"paths\" and \"modules\": the files under the engine a plugin may run, read or import for it; \"functions\": the public ones of a module, \"others\": what check-plugin says about the rest.",
+ "interfaces": {
+  "dc.post": {"version": 1, "what": "altention dc post (--file, --wait, --board, --activity, --create; @audit, @notify), and with --file x.png the file x.png.source.json beside it, what the picture was drawn from (altention/sources.py: kind, lang, tool, source). A change to that file's format raises this version."},
+  "dc.read": {"version": 1, "what": "altention dc read"},
+  "dc.notify": {"version": 1, "what": "altention dc notify"},
+  "dcctl": {"version": 1, "what": "dcbot/tools/dcctl app --json, channels, send", "paths": ["dcbot/tools/dcctl"]},
+  "dcremote.files": {"version": 1, "what": "dcbot/tools/dcremote files (JSON in and out)", "paths": ["dcbot/tools/dcremote"]},
+  "rewrite": {"version": 1, "what": "plugin.json \"rewrite\": its input and output (docs/plugins/discord.md)"},
+  "activity.pages": {"version": 1, "what": "plugin.json \"activity\": {\"pages\"} and what the bot writes for a page opened"},
+  "tokens": {"version": 1, "what": "{engine} {plugin} {python} {claude} {instance} {data} {root} {setting:...} in plugin.json, and DCBOT_CHANNEL"},
+  "py.config": {"version": 1, "what": "altention.config: root, instance_dir, settings, setting, machines, this_machine, engine_on, ssh_aliases",
+                "modules": ["altention.config"],
+                "functions": ["root", "instance_dir", "settings", "setting", "machines", "this_machine", "engine_on", "ssh_aliases"],
+                "others": "altention.config 的其他函式不公開，之後可能改名或拿掉"},
+  "state.channels": {"version": 1, "what": "dcbot/state/channels.json, read only", "paths": ["dcbot/state/channels.json"],
+                     "transitional": "之後的版本有正式的唯讀指令後會移除，請改用唯讀指令"},
+  "state.waiting": {"version": 1, "what": "dcbot/state/waiting-on-owner.json, read only", "paths": ["dcbot/state/waiting-on-owner.json"],
+                    "transitional": "之後的版本有正式的唯讀指令後會移除，請改用唯讀指令"},
+  "files.guard": {"version": 1, "what": "dcbot/bot/filecore.py blocked(): whether a path is one never to touch (secrets)",
+                  "paths": ["dcbot/bot/filecore.py"],
+                  "transitional": "之後的版本有正式的唯讀指令後會移除，請改用唯讀指令"},
+  "py.transcript": {"version": 1, "what": "altention.connectors.claude_code.transcript, reading a conversation",
+                    "modules": ["altention.connectors.claude_code.transcript"],
+                    "transitional": "之後的版本有正式的唯讀指令後會移除，請改用唯讀指令"}
+ }
+}

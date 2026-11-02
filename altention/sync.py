@@ -841,38 +841,13 @@ def seen_twice(instance, name):
     return ok
 
 
-def adopted_refs(repo):
-    """Unpushed commits adopt() took back (their content went to the instance), kept as refs for doctor."""
-    r = repo.git("for-each-ref", "--format=%(refname)", "refs/altention/adopted/", timeout=20)
-    return [l for l in r.stdout.splitlines() if l] if r.returncode == 0 else []
-
-
-def unpushed_files(engine):
-    """Files the commits not yet pushed change, and whether those commits touch nothing outside MOVED. ([], True)
-    when there is no upstream or nothing unpushed."""
-    if engine.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=20).returncode != 0:
-        return [], False
-    r = engine.git("diff", "--name-only", "-z", "--no-renames", "@{u}...HEAD", timeout=60)
-    if r.returncode != 0:
-        return [], False
-    files = [f for f in r.stdout.split("\0") if f]
-    only = all(any(f == m or f.startswith(m + "/") for m in MOVED) for f in files)
-    return files, only
-
-
-# COMPAT: 知識等資料夾還在引擎裡的機器（2.3b 的搬移）、和還寫 ~/agent-home/knowledge 的說明；每台的引擎裡都沒有這些資料夾的實體、說明不再用 ~/agent-home/<資料夾> 之後
 def adopt(instance, name, host, say):
     """The engine's `name`, by the switch (owned_by_instance). Call with the engine's lock held. (state, twice):
     - the instance does not hold it: "engine": the engine's folder is the one in use and synced in the engine; a
       link of ours left there (undo-2.3b removed the instance's folder) is taken away, for git to put it back;
     - it does, the engine's path is a link: "link";
     - it does, the engine's path missing: a link is made: "link";
-    - it does, a real folder: everything in it the instance may not have goes there (same name, other content:
-      kept twice): edits not committed (then put back as committed), commits not pushed yet (taken back when they
-      touch nothing else), and, once the engine's .gitignore gives the path up (stage 2.3b), files git still
-      tracks there (a machine that committed them late): their removal is committed here and pushed by the sync.
-      Then, git tracking nothing there, the folder is renamed aside (never deleted) and a link made: "link".
-      While git still tracks it and the engine has not given it up: "tracked"."""
+    - it does, something else stands there (a real folder): it is left as it is: "folder"."""
     inst_dir, eng_dir = os.path.join(instance, name), os.path.join(config.ENGINE, name)
     if not owned_by_instance(instance, name):
         twice = []
@@ -900,57 +875,12 @@ def adopt(instance, name, host, say):
         return "engine", twice
     if os.path.islink(eng_dir):
         return "link", []
-    twice = []
-    if os.path.isdir(eng_dir):
-        engine = Repo(config.ENGINE)
-        st = engine.git("status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", "--", name, timeout=60)
-        if st.returncode != 0:  # not a git repo, or git failed: touch nothing
-            return "tracked", []
-        changed = [e[3:] for e in st.stdout.split("\0") if len(e) > 3]
-        twice += copy_in(changed, config.ENGINE, inst_dir, name, host, say)
-        if changed:
-            engine.git("checkout", "-q", "HEAD", "--", name, timeout=60)  # back as committed, staged edits too
-            engine.git("clean", "-q", "-f", "--", name, timeout=60)  # files git never knew: copied above
-            say("引擎 %s 裡沒提交的修改已併進實例" % name)
-        files, _ = unpushed_files(engine)
-        if any(f.startswith(name + "/") for f in files):
-            held = [m for m in MOVED if owned_by_instance(instance, m)]
-            where = dict((f, next((m for m in held if f.startswith(m + "/")), None)) for f in files)
-            for m in held:  # every held path these commits touch, not only this one
-                mine = [f for f in files if where[f] == m]
-                if mine:
-                    twice += copy_in(mine, config.ENGINE, os.path.join(instance, m), m, host, say)
-            if all(where.values()):  # nothing outside what the instance holds: the commits can go, kept as a ref
-                head = engine.git("rev-parse", "HEAD", timeout=20).stdout.strip()
-                ref = "refs/altention/adopted/%d" % time.time()
-                if head and engine.git("update-ref", ref, head, timeout=20).returncode == 0 and \
-                        engine.git("reset", "-q", "--keep", "@{u}", timeout=120).returncode == 0:
-                    say("引擎裡還沒推的修改（%s）已併進實例，那些 commit 拿掉了，留在 %s" %
-                        ("、".join(sorted(set(where.values()))), ref))
-        if engine.git("check-ignore", "-q", "--no-index", "--", name, timeout=20).returncode == 0:
-            tracked = [f for f in engine.git("ls-files", "-z", "--", name, timeout=60).stdout.split("\0") if f]
-            if tracked:  # committed late, after the engine gave the path up: hand them over
-                twice += copy_in(tracked, config.ENGINE, inst_dir, name, host, say)
-                staged = [f for f in engine.git("diff", "--cached", "--name-only", "-z", timeout=60).stdout.split("\0") if f]
-                if staged:  # someone's staged work: never commit it along; next time
-                    return "tracked", twice
-                engine.git("rm", "-r", "-q", "--cached", "--", name, timeout=60)
-                # not `commit -- name`: with a pathspec git takes the work tree's state, and these files are ignored
-                r = engine.git("commit", "-q", "-m", "sync: %s handed over to the instance @ %s" % (name, host), timeout=60)
-                if r.returncode != 0:
-                    engine.git("reset", "-q", "--", name, timeout=60)
-                    return "tracked", twice
-                say("引擎裡晚到的 %s 檔已併進實例，引擎那邊拿掉" % name)
-        r = engine.git("ls-files", "--", name, timeout=60)
-        if r.returncode != 0 or r.stdout.strip():  # still git's (or git could not say): left as it is
-            return "tracked", twice
-        if os.path.isdir(eng_dir):  # (git clean may have removed it, emptied)
-            twice += merge_into(eng_dir, inst_dir, host, say)  # whatever is left in it goes to the instance first
-            shutil.move(eng_dir, aside_path(name))  # kept, never deleted; out of the engine's tree (no stray `??`)
+    if os.path.lexists(eng_dir):  # nothing of it is moved or deleted
+        return "folder", []
     os.makedirs(os.path.dirname(eng_dir), exist_ok=True)
     os.symlink(inst_dir, eng_dir)
     say("引擎裡的 %s 改成指向實例的連結" % name)
-    return "link", twice
+    return "link", []
 
 
 def _host():

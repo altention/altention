@@ -23,6 +23,29 @@ plugin.json was read and which is plainly "off" (or "disabled") on this machine:
 missing from the list, never for "unknown". Settings of a plugin's own (usage.channel …) stay in the
 instance's top-level sections; {setting:usage.channel} reads them.
 
+A plugin may declare "rewrite" (C-71b): a command the Discord bot hands Claude's final reply to before posting it,
+which gives it back as Discord messages with pictures; its fields and its input and output are in
+dcbot/bot/rewrite.py (check() checks the shape).
+
+A plugin may declare "uses" (C-94): {"<interface>": <version>}, what it needs of the engine, against the engine's
+altention/interfaces.json. One that asks for an interface or a version this engine does not offer is "blocked" here:
+like "disabled", nothing of it is installed or scheduled and what was is taken away, and plugins.py list, doctor and
+the update card say why. A plugin without "uses" is taken as before. When interfaces.json cannot be read, a plugin
+that declares "uses" is "unknown" (nothing added or removed). A plugin may offer interfaces of its own, declared in
+its plugin.json "interfaces" as in interfaces.json (manager 2026-10-24): those of the plugins on here join the
+engine's, so a plugin using one is blocked where its provider is not on; a name the engine or another plugin
+already offers is not taken (a problem said, the rest of that plugin as before).
+
+A plugin may declare "activity" (C-54a): {"pages": [{"id", "title", "access": "owner" | "guild"}, …]}, the pages of a
+Discord Activity it serves. `altention dc post --activity <plugin>/<page>` posts a button that opens one; the bot lets
+only the owner press it for an "owner" page (the default), and writes what was asked for where the plugin reads it
+(dcbot/bot/activity.py). Fields of the plugin's own (where a page's files are, what it may call) are left to it.
+
+What a plugin needs before it is set up (C-77): needs[] (system tools; "install" per system, "why", "size",
+"optional", "for", "ask") and guide[] (steps the person takes outside, each with a check or an ask; a "secret" names
+one of secrets[]), and "offer" (when and at what cost it is offered); check() checks the shape, plugin_steps.py works
+out where a plugin stands.
+
 Compatibility as everywhere in the core: missing fields take defaults, unknown fields are ignored, a newer
 "format" is read with a warning. A plugin.json that cannot be read is reported and skipped; the others still load
 (the bot, hooks and the scheduler must keep running on a broken file; only one-off tools stop on it).
@@ -36,18 +59,25 @@ import shlex
 import shutil
 import sys
 
-from . import config
+from . import config, text
 
 FORMAT = 1
 ENGINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SYNC = ("timer", "on-request", "none")
-CORE_ONLY = ("cron", "settings", "links")  # blocks only the core may declare
+CORE_ONLY = ("cron", "settings")  # blocks only the core may declare
+# Keys the engine no longer reads (C-95): still accepted, so an older plugin keeps working; plugins.py list and
+# release.py check-plugin remind its author to delete them. Each: (where, what to do instead).
+RETIRED = (("commands", "沒有程式讀，刪掉"), ("requires[].data", "只看 plugin，刪掉 data"),
+           ("secrets[].path", "路徑固定在 ~/.config/altention/secrets/<插件>/<名字>，刪掉 path"))  # the last: C-77 G3
 ON_WORDS = ("all", "bot", "one", "sources")  # what a step's "on" may say besides machine names
 # The engine update and the engine/instance sync never go into the scheduler (DESIGN 8): they must keep running when
 # the time zone, plugins.json or the scheduler's state are broken, or a fix pushed to every machine never arrives.
 # (only what is written out: a wrapper script that pulls inside is not seen; the guarantee is the sync's own cron line)
 SYNC_RUN = re.compile(r"altention[./]sync\b|altention[./]update\b|\bhome-pull\b"
                       r"|\bgit\b[^;&|]*\s(pull|fetch)(\s|$)")
+OS_NAMES = ("debian", "fedora", "arch", "macos")  # the keys of needs[].install (C-77)
+OFFER_WHEN = ("install", "asked")  # C-64: at setup, when something asks for it (owner 10-21: a new plugin on the list is not asked about)
+ACCESS = ("owner", "guild")  # who may open an Activity page (C-54a): the owner alone, or anyone in the server
 TOKEN = re.compile(r"\{(engine|plugin|python|claude|instance|data|root|setting:[A-Za-z0-9_.-]+)\}")
 
 
@@ -139,14 +169,40 @@ def check(d, path="plugin.json", core=False):
     for i, s in enumerate(_list_of(d, "data", path, ["name", "path"], [("private", bool)])):
         _need(s.get("sync", "timer") in SYNC, path, "data[%d].sync 只能是 %s" % (i, "、".join(SYNC)))
     _list_of(d, "skills", path, ["name", "path"])
-    _list_of(d, "needs", path, ["name", "check"], [("hint", str)])  # C-61 E2: system tools, looked for, never installed
-    _list_of(d, "requires", path, ["plugin"], [("data", str)])
+    for i, n in enumerate(_list_of(d, "needs", path, ["name", "check"], [  # C-61 E2: system tools, looked for, never installed
+            ("hint", str), ("why", str), ("size", str), ("optional", bool), ("ask", str), ("install", dict), ("for", list)])):
+        _need(all(isinstance(k, str) and isinstance(v, str) for k, v in n.get("install", {}).items()), path,
+              "needs[%d].install 要寫成 {作業系統: 指令}（%s）" % (i, "、".join(OS_NAMES)))
+        _need(all(isinstance(x, str) for x in n.get("for", [])), path, "needs[%d].for 要是文字的清單（少了它不能用的功能）" % i)
+    secrets = d.get("secrets") if isinstance(d.get("secrets"), list) else []
+    secret_names = [s.get("name") for s in secrets if isinstance(s, dict)]
+    ids = []
+    for i, g in enumerate(_list_of(d, "guide", path, ["id", "title"], [  # C-77: steps the user takes outside (plugin_steps)
+            ("why", str), ("url", str), ("do", list), ("ask", str), ("run", str), ("optional", bool), ("secret", dict),
+            ("after", list), ("gate", list)])):
+        _need(check_name(g["id"]) and g["id"] not in ids, path, "guide[%d].id 要是小寫英數和 - 的名字，而且不重複" % i)
+        ids.append(g["id"])
+        _need(g.get("check") is None or isinstance(g["check"], str), path, "guide[%d].check 要是指令，或 null（檢查不了，用 ask 問）" % i)
+        _need(g.get("check") is not None or isinstance(g.get("ask"), str), path, "guide[%d] 的 check 是 null，要寫 ask（問使用者的那一句）" % i)
+        for key in ("do", "after", "gate"):
+            _need(all(isinstance(x, str) for x in g.get(key) or []), path, "guide[%d].%s 要是文字的清單" % (i, key))
+        _need(all(x in ids[:-1] for x in g.get("after") or []), path, "guide[%d].after 只能寫它前面的步驟的 id" % i)
+        sec = g.get("secret")
+        if sec is not None:
+            _need(isinstance(sec.get("name"), str) and isinstance(sec.get("label"), str), path,
+                  "guide[%d].secret 要寫 name 和 label" % i)
+            _need(sec["name"] in secret_names, path, "guide[%d].secret.name（%s）要是 secrets[] 裡的名字" % (i, sec["name"]))
+    if "offer" in d:  # C-64: when and at what cost it is offered; the words are "pitch"; the answers are the instance's
+        o = d["offer"]
+        _need(isinstance(o, dict) and isinstance(o.get("cost", ""), str), path, "offer 要是物件，cost 要是文字")
+        _need(o.get("when", "install") in OFFER_WHEN, path, "offer.when 只能是 %s" % "、".join(OFFER_WHEN))
+    _list_of(d, "requires", path, ["plugin"])
     for i, c in enumerate(_list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str), ("name_setting", str)])):
         _need(c.get("category", "main") in ("main", "system"), path, "channels[%d].category 只能是 main 或 system" % i)
     for i, a in enumerate(_list_of(d, "asks", path, ["key", "question"])):  # C-57 S3: a setting the reconcile asks in #setup
         _need(isinstance(a.get("unless", {}), dict), path, "asks[%d].unless 要是物件（設定 → 那個值就不用問）" % i)
-    _list_of(d, "secrets", path, ["name", "path"])
-    _list_of(d, "commands", path, ["name", "path"], [("desc", str)])
+    for i, s in enumerate(_list_of(d, "secrets", path, ["name"], [("path", str), ("label", str)])):  # C-77 G3: the path is fixed
+        _need(check_name(s["name"]), path, "secrets[%d].name 只能用小寫英文、數字和 -" % i)
     if core:
         for i, c in enumerate(_list_of(d, "cron", path, ["name", ("when", (str, dict)), "run"])):
             w = c["when"]
@@ -156,6 +212,47 @@ def check(d, path="plugin.json", core=False):
                 _need(w.get("offset") in (None, "machine") or _length(w["offset"]) is not None, path,
                       "cron[%d].when.offset 要是 machine 或一段時間" % i)
                 _need("after" not in w or _length(w["after"]) is not None, path, "cron[%d].when.after 要是一段時間" % i)
+    _need(re.match(r"^>=\s*v?[0-9]+\.[0-9]+\.[0-9]+$", str(d.get("engine", ">=0.0.0")).strip()) is not None, path,
+          "engine 要寫成 \">=X.Y.Z\"（這個插件要的引擎版本）")  # C-61 E3
+    _need(isinstance(d.get("test", ""), str), path, "test 要是指令（在新版的副本裡跑，結束碼 0 才換）")  # C-61 E3
+    if "rewrite" in d:  # C-71b: the bot hands Claude's final reply to this command before posting it (dcbot/bot/rewrite.py)
+        r = d["rewrite"]
+        _need(isinstance(r, dict), path, "rewrite 要是物件（command、timeout、when）")
+        _need(isinstance(r.get("command"), str) and r["command"].strip(), path, "rewrite.command 要是指令")
+        t = r.get("timeout", 30)
+        _need(isinstance(t, int) and not isinstance(t, bool) and 0 < t <= 60, path, "rewrite.timeout 要是 1 到 60 的整數（秒）")
+        when = r.get("when", "")
+        _need(isinstance(when, str), path, "rewrite.when 要是文字（regex）")
+        try:
+            re.compile(when)
+        except re.error as e:
+            _need(False, path, "rewrite.when 不是正確的 regex：%s" % e)
+    if "activity" in d:  # C-54a: pages a Discord Activity opens; the bot's 打開 button checks `access` (dcbot/bot/activity.py)
+        a = d["activity"]
+        _need(isinstance(a, dict) and isinstance(a.get("pages", []), list), path, "activity 要是物件，pages 要是清單")
+        ids = []
+        for i, page in enumerate(a.get("pages", [])):
+            _need(isinstance(page, dict), path, "activity.pages[%d] 要是物件" % i)
+            _need(isinstance(page.get("id"), str) and check_name(page["id"]), path,
+                  "activity.pages[%d].id 要是小寫英文字母開頭、只有小寫英數和 - 的名字" % i)
+            _need(page["id"] not in ids, path, "activity.pages 有兩頁都叫 %s" % page["id"])
+            ids.append(page["id"])
+            _need(isinstance(page.get("title", ""), str), path, "activity.pages[%d].title 要是文字" % i)
+            _need(page.get("access", "owner") in ACCESS, path,
+                  "activity.pages[%d].access 要是 owner（只有擁有者）或 guild（伺服器裡的人都能開）" % i)
+    uses = d.get("uses", {})
+    _need(isinstance(uses, dict), path, "uses 要是物件（介面名 → 版本）")
+    for k, v in uses.items():
+        _need(isinstance(v, int) and not isinstance(v, bool) and v >= 1, path, "uses.%s 要是 1 以上的整數（介面的版本）" % k)
+    offers = d.get("interfaces", {})
+    _need(isinstance(offers, dict), path, "interfaces 要是物件（介面名 → {version, what, paths, also}）")
+    for k, e in offers.items():
+        _need(re.match(r"^[a-z][a-z0-9.-]*$", k) is not None, path, "interfaces 的名字 %s 只能用小寫英文、數字、. 和 -" % k)
+        _need(isinstance(e, dict) and isinstance(e.get("version"), int) and not isinstance(e["version"], bool)
+              and e["version"] >= 1, path, "interfaces.%s.version 要是 1 以上的整數" % k)
+        _need(isinstance(e.get("what", ""), str), path, "interfaces.%s.what 要是文字" % k)
+        for key in ("paths", "also"):
+            _need(isinstance(e.get(key, []), list), path, "interfaces.%s.%s 要是清單" % (k, key))
     _need(isinstance(d.get("provides", ""), str), path, "provides 要是文字")
     _need(isinstance(d.get("pitch", ""), str), path, "pitch 要是文字")
     _need(isinstance(d.get("schedule_files_default", ""), str), path, "schedule_files_default 要是路徑")
@@ -163,6 +260,139 @@ def check(d, path="plugin.json", core=False):
     _need(isinstance(d.get("lose", ""), str), path, "lose 要是文字")
     _need(isinstance(d.get("order", 0), int) and not isinstance(d.get("order", 0), bool), path, "order 要是整數")
     return d
+
+
+def retired(d):
+    """The RETIRED keys plugin.json `d` (already checked) still has: [(where, what to do)]."""
+    out = []
+    if "commands" in d:
+        out.append(RETIRED[0])
+    if any(isinstance(r, dict) and "data" in r for r in d.get("requires", [])):
+        out.append(RETIRED[1])
+    if d.get("name") != "core" and any(isinstance(s, dict) and "path" in s for s in d.get("secrets", [])):  # the core's lie elsewhere
+        out.append(RETIRED[2])
+    return out
+
+
+def interfaces(engine=None):
+    """{name: {"version", "also", …}} of altention/interfaces.json (C-94). PluginError when it cannot be read."""
+    path = os.path.join(engine or ENGINE, "altention", "interfaces.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            found = json.load(f)["interfaces"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise PluginError("%s：讀不出來（%s）" % (path, e))
+    if not isinstance(found, dict) or not all(isinstance(e, dict) and isinstance(e.get("version"), int)
+                                              for e in found.values()):
+        raise PluginError("%s：interfaces 的每一項都要有整數的 version" % path)
+    return found
+
+
+def uses_problem(d, offered, elsewhere=None):
+    """Why plugin.json `d` cannot run where `offered` (interfaces(), with what plugins on there offer: those carry
+    "provider") is offered, or "" when it can (or says nothing in "uses"). `elsewhere`: {interface: plugin} offered
+    by a plugin not on there, to name it."""
+    out = []
+    for name, want in sorted((d.get("uses") or {}).items()):
+        have = offered.get(name)
+        if have is None and (elsewhere or {}).get(name):
+            out.append(text.t("plugin.uses_provider_off", name=name, provider=elsewhere[name]))
+        elif have is None:
+            out.append(text.t("plugin.uses_missing", name=name))
+        elif want != have["version"] and want not in (have.get("also") or []):
+            versions = "、v".join(str(v) for v in [have["version"]] + list(have.get("also") or []))
+            out.append(text.t("plugin.uses_version_plugin", name=name, want=want, have=versions, provider=have["provider"])
+                       if have.get("provider") else text.t("plugin.uses_version", name=name, want=want, have=versions))
+    return "；".join(out)
+
+
+def machines_for(name, entry, d):
+    """The machines on the list the plugin of plugin.json `d` runs on, with the instance's `entry` for it: every
+    machine but those turned off ("disabled_on"; "on" when it names some) for "all"; "on", else the bot's, for
+    "one". [] when the machine list cannot be read (doctor says why). (ops/plugins.py's until C-77 G3a)"""
+    from . import plugin_update  # it imports this module
+    try:
+        names = sorted(config.machines())
+        if d.get("machines", "all") == "all":
+            return [m for m in names if plugin_update.wanted_here(name, entry, m)]
+        on = _names(entry.get("on")) or [config.bot_machine()[0]]
+    except config.ConfigError:
+        return []
+    off = _names(entry.get("disabled_on"))
+    return [m for m in on if m and m in names and m not in off]
+
+
+def users_elsewhere(d, name="", entry=None):
+    """machines_for() but this machine: the others to bring in line (add writes no "on" or "disabled_on")."""
+    try:
+        here = config.this_machine()
+    except config.ConfigError:
+        return []
+    return [m for m in machines_for(name, entry or {}, d) if m != here]
+
+
+def blocked_why(d, offered, elsewhere=None):
+    """The reason plugin.json `d` is blocked, or "": the engine's words when it lacks something, the provider's when
+    only plugins not on here are missing."""
+    problem = uses_problem(d, offered, elsewhere)
+    if not problem:
+        return ""
+    failing = [n for n, v in sorted((d.get("uses") or {}).items()) if uses_problem({"uses": {n: v}}, offered)]
+    if not all(n in (elsewhere or {}) or (offered.get(n) or {}).get("provider") for n in failing):
+        return text.t("plugin.blocked", problem=problem)
+    if any(n in (elsewhere or {}) and n not in offered for n in failing):  # a provider plainly not on here
+        return text.t("plugin.blocked_provider", problem=problem)
+    first = failing[0]  # every provider is on: only versions differ (#code-review-2 of 0e39bb6)
+    return text.t("plugin.blocked_provider_version", problem=problem, provider=offered[first]["provider"],
+                  want=d["uses"][first])
+
+
+def blocked_by_engine(why):
+    """Whether a blocked plugin's reason (on_this_machine) is the engine lacking something, rather than a plugin
+    that offers what it uses being off or older: plugins.py show words the two apart."""
+    return why.startswith(text.t("plugin.blocked", problem="\0").split("\0")[0])
+
+
+def provided(rows, core):
+    """({interface: entry with "provider"} offered by the plugins on in `rows`, {interface: plugin} declared by
+    plugins plainly not on (off, disabled, blocked, draft), {interface: (plugin, why)} declared by plugins whose
+    place is unknown, [problem]): a name the engine (`core`) or an earlier plugin (by name) offers is not taken."""
+    on, elsewhere, unsure, problems = {}, {}, {}, []
+    for n, _f, d, where, why in sorted(rows, key=lambda r: r[0]):
+        for name, e in sorted(((d or {}).get("interfaces") or {}).items()):
+            if name in core:
+                problems.append(text.t("plugin.interface_clash_engine", plugin=n, name=name))
+            elif name in on:
+                problems.append(text.t("plugin.interface_clash_plugin", plugin=n, name=name, other=on[name]["provider"]))
+            elif where == "on":
+                on[name] = dict(e, provider=n)
+            elif where == "unknown":
+                unsure.setdefault(name, (n, why))
+            else:
+                elsewhere.setdefault(name, n)
+    return on, elsewhere, unsure, problems
+
+
+def unsure_why(d, offered, core, unsure, broken):
+    """Why plugin.json `d`'s place cannot be told although it is on (#code-review of 0e39bb6), or "": an interface
+    it uses that is missing here is declared by a plugin whose place is unknown, or is not the engine's while some
+    plugin.json here cannot be read (it may be that one's). Taking its things away then would act on a guess."""
+    for name, want in sorted((d.get("uses") or {}).items()):
+        if not uses_problem({"uses": {name: want}}, offered):
+            continue
+        if name in unsure:
+            return text.t("plugin.uses_provider_unknown", name=name, provider=unsure[name][0], why=unsure[name][1])
+        if broken and name not in core:
+            return text.t("plugin.uses_maybe_broken", name=name, plugins="、".join(sorted(broken)))
+    return ""
+
+
+def offered_here(machine=None, engine=None, root=None):
+    """The engine's interfaces with those of the plugins on `machine` (this one). PluginError when the engine's list
+    cannot be read."""
+    core = interfaces(engine)
+    rows, _ = on_this_machine(machine, engine, root)
+    return dict(core, **provided(rows, core)[0])
 
 
 def check_name(name):
@@ -514,7 +744,8 @@ def this_machine(problems):
 
 def on_this_machine(machine=None, engine=None, root=None):
     """([(name, folder, dict or None, placement, reason)], [problem]) for every plugin, with where it stands on
-    `machine` (default: this one); an external plugin the instance does not declare is listed last, as "draft"
+    `machine` (default: this one); a plugin "on" here whose "uses" this engine does not offer is "blocked", the reason
+    saying which (C-94); an external plugin the instance does not declare is listed last, as "draft"
     (C-61 E1: never installed or scheduled, and its marked lines are taken away like an off one's), one whose
     source is written unusably as "unknown". Anything unreadable is a problem, the plugins it decides are "unknown" with the
     reason, and a plugin.json that cannot be read is listed as unknown with dict None. Never raises for a broken
@@ -551,7 +782,35 @@ def on_this_machine(machine=None, engine=None, root=None):
             out.append((n, f, d, "unknown", "實例設定裡 plugins.%s 的來源不能用：%s" % (n, bad)))
             continue
         where = placement(n, d, machine, settings, bot, known)
-        out.append((n, f, d, where, why_unknown(n, settings, bot, known, machine) if where == "unknown" else ""))
+        out.append([n, f, d, where, why_unknown(n, settings, bot, known, machine) if where == "unknown" else ""])
+    users = [r for r in out if r[3] == "on" and r[0] != "core" and r[2].get("uses")]
+    if users:
+        try:
+            core = interfaces(engine)
+        except PluginError as e:
+            core = None
+            for r in users:
+                r[3], r[4] = "unknown", text.t("plugin.interfaces_unreadable", error=e)
+        while core is not None:  # a plugin blocked (or unknown) offers nothing: again until no other one goes with it
+            mine, elsewhere, unsure, clash = provided(out + [(n, f, d, "draft", "") for n, f, d in drafts], core)
+            offered, more = dict(core, **mine), False
+            for r in (r for r in users if r[3] == "on"):
+                why = unsure_why(r[2], offered, core, unsure, [n for n, _f in broken])
+                if why:  # never blocked on a guess: unknown, nothing added or removed
+                    r[3], r[4], more = "unknown", why, True
+                    continue
+                why = blocked_why(r[2], offered, elsewhere)
+                if why:
+                    r[3], r[4], more = "blocked", why, True
+            if not more:
+                problems += clash
+                break
+    else:
+        try:
+            problems += provided(out, interfaces(engine))[3]
+        except PluginError:
+            pass
+    out = [tuple(r) for r in out]
     out += [(n, f, None, "unknown", "plugin.json 讀不出來") for n, f in broken]
     out += [(n, f, d, "draft", DRAFT_WHY % n) for n, f, d in drafts]
     return out, problems
@@ -559,7 +818,7 @@ def on_this_machine(machine=None, engine=None, root=None):
 
 def external_notes(rows, settings, root=None):
     """[(name, words)] about the external plugins (C-61 E1): one declared in the instance with no folder here (E2's
-    install clones it), and one whose folder is not named as its plugin.json's "name" (display in plugins/latex)."""
+    install clones it), and one whose folder is not named as its plugin.json's "name" (for example a plugin named draw in plugins/sketch)."""
     out, here = [], set()
     for n, f, d, where, _ in rows:
         if d is None or not external(f, root):
@@ -597,14 +856,14 @@ def skill_owners(rows, engine=None):
 
 def skills_off(machine=None, engine=None):
     """The skills under <engine>/skills whose plugin is turned off on `machine` (default: this one) on purpose
-    ("disabled": its disabled_on names it). Only what the settings plainly say: unknown is not off (skills_unsure
-    has those). Never raises."""
+    ("disabled": its disabled_on names it), or blocked (its "uses" not offered: C-94). Only what the settings plainly
+    say: unknown is not off (skills_unsure has those). Never raises."""
     try:
         rows, _ = on_this_machine(machine, engine)
     except Exception:
         return set()
     where = dict((r[0], r[3]) for r in rows)
-    return set(sk for sk, owner in skill_owners(rows, engine).items() if where.get(owner) == "disabled")
+    return set(sk for sk, owner in skill_owners(rows, engine).items() if where.get(owner) in ("disabled", "blocked"))
 
 
 def skills_unsure(machine=None, engine=None):
@@ -662,7 +921,7 @@ def link_skills(engine=None, add_only=False):
         where = dict((r[0], r[3]) for r in rows)
         why = dict((r[0], r[4]) for r in rows)
         owners = skill_owners(rows, engine)
-        out["off"] = set(sk for sk, owner in owners.items() if where.get(owner) == "disabled")
+        out["off"] = set(sk for sk, owner in owners.items() if where.get(owner) in ("disabled", "blocked"))
         unsure = set(sk for sk, owner in owners.items() if where.get(owner) == "unknown")
         out["why"] = dict((sk, why.get(owners[sk]) or "原因不明") for sk in unsure)
     for name in names:
@@ -702,7 +961,7 @@ def link_skills(engine=None, add_only=False):
                     out["outside"].append((name, owner))
                 continue
             link = os.path.join(home_skills, name)
-            if where in ("disabled", "draft"):
+            if where in ("disabled", "draft", "blocked"):
                 if not add_only and os.path.islink(link) and os.path.realpath(link) == src:
                     os.remove(link)
                     out["removed"].append(name)

@@ -5,6 +5,7 @@
   altention dc notify -c project-a "實驗 C 結束，結果在 results/c.json"
   altention dc notify -c "project-a/notifications" "…"          a channel in a given category (names can repeat)
   some-command 2>&1 | tail -20 | altention dc notify -c alerts  # message from stdin
+  altention dc notify -c @notify --wait 30 "…"                 wait until it is on Discord (as altention dc post --wait)
 
 Runs dcbot's dcctl on the machine with the `dcbot` role (locally if that's this machine, otherwise
 over SSH using the aliases in the machine list), so no Discord secret is needed here. Default channel:
@@ -92,14 +93,19 @@ def bot_machine():
 def main():
     ap = argparse.ArgumentParser(description="Push a message to Discord")
     ap.add_argument("-c", "--channel", default=os.environ.get("DCNOTIFY_CHANNEL") or "")  # none: the bot's machine decides
+    ap.add_argument("--wait", type=int, default=None)  # C-87: as altention dc post --wait (exit 0 and the ID once shown)
     ap.add_argument("message", nargs="*")
     a = ap.parse_args()
+    if a.wait is not None and not 1 <= a.wait <= 600:
+        sys.exit("altention dc notify：--wait 要給 1 到 600 的秒數")
     text = " ".join(a.message) if a.message else sys.stdin.read()
     text = text.strip()
     if not text:
         sys.exit("altention dc notify：沒有訊息")
     me = socket.gethostname().split(".")[0]
     post = {"text": text, "from_name": me, "notify": True}
+    if a.wait is not None:
+        post["wait"] = a.wait
     if a.channel:
         post["channel"] = a.channel.lstrip("#")
     # who sends it decides which of several same-named channels is meant (its own project's first)
@@ -110,7 +116,7 @@ def main():
     data = json.dumps(post, ensure_ascii=False).encode("utf-8")
     name, m, here = bot_machine()
     if here:
-        r = subprocess.run([local_dcctl(), "post"], input=data, stdout=subprocess.DEVNULL)
+        r = subprocess.run([local_dcctl(), "post"], input=data, stdout=None if a.wait is not None else subprocess.DEVNULL)
         sys.exit(r.returncode)
     for alias in m.get("ssh", []):
         if alias == "local":
@@ -120,6 +126,8 @@ def main():
         if r.returncode != 255:
             if r.returncode != 0:
                 sys.stderr.write((r.stderr or r.stdout).decode("utf-8", "replace"))
+            elif a.wait is not None:  # the message's ID, on the last line
+                sys.stdout.write(r.stdout.decode("utf-8", "replace"))
             sys.exit(r.returncode)
     sys.exit("altention dc notify：連不上 %s" % name)
 

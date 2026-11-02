@@ -1,6 +1,6 @@
 ---
 name: setup
-description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done. Not for changing settings later in other channels."
+description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done; also when they ask there to put on a plugin from the official list (「裝 <插件>」) or to finish one (「幫我裝完 <插件>」, 「接著裝 <插件>」). Not for changing settings later in other channels."
 ---
 
 # Setting up, in #setup
@@ -114,6 +114,9 @@ What `answer` says:
 - `記下了 …`: written and read back. Confirm in one line and go on.
 - `注意：…`: say that sentence to them in plain words (for example that progress needs the conversation records,
   so those were kept on).
+- An `offer.<plugin>` question (header 「可選功能」, an optional plugin of the official list, C-64) is asked as
+  printed like any other. After 「好，開」 (`answer offer.<plugin> yes`), go on with step 6 for that plugin before the
+  next question; 「先不要」 and 「之後再說」 are only written.
 - `沒有寫：…` (exit status 1): the value was refused, and the line says why. Tell them in one plain sentence and ask
   the same question again.
 - `沒做完：…` (exit status 2): something could not be done. Say so plainly, and that their earlier answers are
@@ -148,7 +151,8 @@ python3 <ENGINE>/ops/setup.py login-check
 ```
 
 - **gh logged in**: name the repositories `<account>/altention-<name>` (`altention-instance`, `altention-logs`,
-  `altention-progress`, `altention-planner`) and ask once whether to use these names. Then, for each:
+  `altention-progress`, `altention-planner`; a plugin's data `plugin:<plugin>/<data>` is `altention-<plugin>-<data>`)
+  and ask once whether to use these names. Then, for each:
 
   ```bash
   python3 <ENGINE>/ops/setup.py backup-set <name> --create <account>/altention-<name>
@@ -226,3 +230,75 @@ Ask the tour question that `questions --json` prints now (its only question), as
 
 Last line: 「設定做完了；之後要改設定，在任何頻道跟 Claude 說就好。」 This channel stays; nothing more happens here
 unless they write again.
+
+## 6. A plugin from the official list
+
+When they ask here for a plugin by name (「裝 <插件>」), or choose one from the official list (`plugins.py list`'s
+「可以裝的」, C-81):
+
+1. Run `python3 <ENGINE>/ops/setup.py plugin-add <名稱>`. It writes nothing: it prints what the plugin is, what it
+   would do on their computers (「裝了之後會在用它的機器上」, one line each), which machines, and the command that puts
+   it on. Say each line in plain words; nothing is installed until they say yes. Ask: 「裝」 or 「先不要」.
+2. **When it says 「它會看到你的對話內容（…）」** (its hooks, or a rewrite of every reply), ask once more, on its own,
+   in these words: 「它會看到你的對話內容（<the ones it named>）」. Ask: 「可以」 or 「不要，先不裝」.
+3. On yes, run the command it printed (`… plugin-add <名稱> <vX.Y.Z> --yes`, with `--hooks-ok` only after the second
+   yes), with `run_in_background` (install.sh runs after it: a few minutes). Say what it ends with. When the plugin
+   has things left for them (tools to install, steps elsewhere), go on with step 7 for it.
+4. **Other machines**: when it ends with 「別台用到它的：X、Y」, they get the plugin's folder in their next update round,
+   but its schedules and hooks only once that machine is brought in line. Ask once: 「要不要現在也裝到 X、Y？會把
+   X、Y 所有還沒套用的設定（引擎、其他插件）一起套上。」 (「現在裝」 or 「之後再說」). On yes, for each machine,
+   `python3 <ENGINE>/ops/setup.py plugin-apply <插件> <機器>` (the command it printed; `run_in_background`; it
+   ends with doctor's last lines): say what each did. On no, say they follow by
+   themselves except schedules and hooks, and that 「幫我把 <插件> 裝到 <機器>」 here does it later.
+5. When it refuses (not on the list, already in the instance, needs a newer engine…), say why in plain words and stop.
+
+Never write the instance yourself and never pass `--yes` or `--hooks-ok` before they said yes to that question.
+
+
+## 7. Finishing a plugin's install
+
+When they say 「幫我裝完 <插件>」 (install.sh and doctor send them here) or 「接著裝 <插件>」, or step 6 leaves things to do
+(「把 <插件> 的 <名字> 也放到 <機器>」 alone: step 4.3's question and secret-send, nothing else):
+
+1. **Where it stands.** Run `python3 <ENGINE>/ops/setup.py plugin-steps <插件> --all --json`. It checks every item
+   again now, on this machine (`here`) and on the others that use the plugin (`others`), so it is the truth whatever
+   was said before: never go by what you said earlier in the conversation. An `others` entry with `error`: say that
+   sentence plainly; that machine is looked at again the next time. Run it again after every step below.
+2. **Nothing left** (`left` is 0 everywhere, no `error`): run `python3 <ENGINE>/ops/setup.py plugin-finish <插件>`
+   with `run_in_background` (install.sh again, a few minutes: what waited for the steps starts now), then say
+   「<插件> 要你做的事都做好了。」 and stop.
+3. **System tools**, each machine in turn: the `needs` whose `state` is `todo`. In one message, list them: for each,
+   what it is for (`why`), its `size`, and for an `optional` one what does not work without it (`for`). Then ask
+   once: 「要裝嗎？」 (「裝」 / 「先不要」).
+   - On this machine (`here`), `sudo` false: run `python3 <ENGINE>/ops/setup.py plugin-tool <插件> <name>` with
+     `run_in_background` (it may take minutes) and say how it ended.
+   - `sudo` true, or another machine: never run it. Give `install` in a code block and say
+     「這要在<機器>上用管理員權限裝，請在那台自己的終端機貼上這行，裝好跟我說。」 Then step 1 again.
+   - `install` empty: say its `hint` (or that the plugin's README says how).
+   - 「先不要」: do not ask about these tools again in this conversation; say that what is in `for` will not work.
+   - `state` `ask` (this computer cannot check it): ask its `ask` (「好了」 / 「還沒」), then
+     `python3 <ENGINE>/ops/setup.py plugin-said <插件> needs:<name> yes|no`.
+4. **Steps elsewhere** (`guide`), one at a time, from `next`, the way of step 3 of the questions: one step, then wait.
+   1. Say in one sentence what it is for (`why`), then its link (`url`) and each line of `do` as a numbered list, as
+      written (another language: translated sentence by sentence, nothing left out).
+   2. A step with `run` (the plugin does it itself): say what it will do, ask 「要我現在做嗎？」 (「好，做吧」 / 「先不要」);
+      on yes run `python3 <ENGINE>/ops/setup.py plugin-run <插件> <id>` with `run_in_background` and say how it ended.
+   3. A step with `secret`: the key never goes through this chat. When it is not `stored` on this machine, say
+      「這一步要交一把金鑰，不要貼在這裡：請在你自己的終端機跑下面這行，貼上金鑰後按 Enter（畫面上不會顯示）。存好跟我說。」 and
+      give `altention secret set <插件> <secret.name>` in a code block. You cannot run it for them: it asks in their
+      own terminal. When they say it is stored, step 1 again (`stored`, then the step's check). The plugin runs on
+      other machines too (`others`): ask 「要把這把金鑰也放到 <機器> 嗎？」 (「放」 / 「不用」), and on yes run
+      `python3 <ENGINE>/ops/setup.py secret-send <插件> <secret.name> <機器>`. When they say
+      「把 <插件> 的 <名字> 也放到 <機器>」 (storing a key prints that sentence for the other machines that use it), ask
+      that same question once and send it on 「放」. If they paste a key here anyway, tell them at once to make a new
+      one and cancel that one, and never repeat it.
+   4. `state` `ask` (nothing can check it): ask its `ask` (「好了」 / 「還沒」; an `optional` step: 「要」 / 「不用」), then
+      `python3 <ENGINE>/ops/setup.py plugin-said <插件> <id> yes|no` (「還沒」 writes nothing: wait for them).
+   5. Otherwise (it has a check): when they say it is done, step 1 again. Passed: 「好，這一步好了。」 and the next one.
+      Not passed: say its `reason` in plain words and ask them to look again; do not go on past it.
+5. **Optional ones** (`offers` above 0 once `left` is 0): ask each the same way; 「不用」 is written as no where
+   `plugin-said` takes it (an item nothing can check); for one with a check, nothing is written: just go on.
+6. 「先停」 (or anything meaning stop): say 「做好的都記住了，回來說「接著裝 <插件>」就從還沒好的那一步接著。」 and stop.
+
+Never run an install command or a step's command yourself: only `plugin-tool` and `plugin-run` run them, and only
+after the person said yes to that one.

@@ -36,14 +36,35 @@ import sys
 import tempfile
 import time
 
+GO_LOCK_HELD = "ALT_UPDATE_GO_LOCK"  # update_go.GO_LOCK_HELD: this install.sh was run by go or undo, under its lock
+PARENT_HOLDS = os.environ.pop(GO_LOCK_HELD, None) == "1"  # read and taken out before anything starts: nothing this
+# install starts (core.entry's altention --link, the supervisor and all it starts, a plugin's setup) carries it on
+# and later passes for the holder (#code-review of e73418a, manager 2026-10-20)
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)
 sys.path.insert(0, ENGINE)
-from altention import config, plugin, plugin_update, sync  # noqa: E402
+from altention import config, plugin, plugin_steps, plugin_update, sync, text  # noqa: E402
 
 MARK = "ALT-STEP-OK"
 FIRST = ("chatlog", "dcbot")  # installed first, in this order: the others may use the logs repo or the bot's tools
 CHANGED = re.compile(r"^- (加上|拿掉|標記|改時間|設定|建空)")
+ITEM = re.compile(r"altention:([a-z][a-z0-9-]*/[^\s：（）]+)|(?:^|[（：\s])([a-z][a-z0-9-]*/[^\s：（）/]+)(?=[\s：）]|$)")
+SAID_MOST = 6  # changes named one by one in the summary line; the rest are counted (all of them are in the log)
+
+
+def changes_said(changes):
+    """C-85 (d): apply's change lines in a few words each: 「拿掉 usage/collect」「加上 chatlog/Stop 的 hook」「設定
+    cleanupPeriodDays」, the first SAID_MOST of them, then how many more (the log has every line)."""
+    words = []
+    for x in changes:
+        head = x.splitlines()[0]
+        verb = CHANGED.match(head).group(1)
+        hook = head.startswith(("- 加上 hook", "- 拿掉 hook"))
+        m = ITEM.search(head[len(verb) + 2:])
+        what = (m.group(1) or m.group(2)) if m else head[len(verb) + 2:].split("：")[0].strip()[:40]
+        words.append("%s %s%s" % (verb, what, " 的 hook" if hook else ""))
+    more = len(words) - SAID_MOST
+    return "；".join(words[:SAID_MOST]) + ("；還有 %d 項" % more if more > 0 else "")
 STATUSES = ("ok", "changed", "skip", "todo", "fail", "unknown")
 
 
@@ -425,6 +446,15 @@ def external_plugins(r):
     if not items:
         r.say("skip", "core.plugins-external", "實例沒有寫外部插件")
         return
+    from altention import update_go
+    with update_go.go_lock(parent=PARENT_HOLDS) as held:  # C-61 E3: an update moving plugins meanwhile must not be crossed (#code-review)
+        if not held:
+            r.say("todo", "core.plugins-external", "外部插件：%s（等它做完再跑一次 ./install.sh）" % update_go.BUSY)
+            return
+        _external_plugins(r, settings, items)
+
+
+def _external_plugins(r, settings, items):
     machine = plugin.this_machine([])
     deadline = time.time() + plugin_update.STEP_LIMIT  # no new setup item past it (manager 2026-10-20)
     where = {}
@@ -455,16 +485,20 @@ def external_plugins(r):
             continue
         if w != "on":
             r.say("changed" if st in ("made", "moved") else "ok", ident, "%s：%s（這台%s，不跑安裝步驟）" % (
-                n, words, {"off": "不是它跑的機器", "disabled": "關掉了"}.get(w, "不知道要不要跑：%s" % why)))
+                n, words, {"off": "不是它跑的機器", "disabled": "關掉了"}.get(w, why if w == "blocked" else "不知道要不要跑：%s" % why)))
             continue
-        ran = plugin_update.run_setup(n, folder, d, version, settings, r.note, deadline)
+        plugin_data_back(r, n, folder, d, settings)
+        steps = plugin_steps.plan(n, folder, d, settings) if d.get("needs") or d.get("guide") else None  # C-77: before
+        ran = plugin_update.run_setup(n, folder, d, version, settings, r.note, deadline)  # its setup, for the gates
         failed = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "failed"]
         optional = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "optional-failed"]
         lazy = [i for i, s_, _ in ran if s_ == "lazy"]
         later = [i for i, s_, _ in ran if s_ == "later"]
         stuck = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "stuck"]
         blocked = [i for i, s_, _ in ran if s_ == "blocked"]
-        missing = plugin_update.needs_missing(folder, d, settings)
+        missing = [(x["name"], x["install"] or x["hint"]) for x in steps["needs"]
+                   if x["state"] == "todo" and not x["optional"]] if steps else []  # a check said so (never one it cannot tell)
+        extras = [x for x in steps["needs"] if x["state"] == "todo" and x["optional"]] if steps else []  # said apart, no command
         if failed:
             r.say("fail", ident, "%s 的安裝步驟失敗：%s；完整輸出看 %s" % (n, "；".join(failed), r.log_path))
         if stuck:
@@ -479,6 +513,17 @@ def external_plugins(r):
         if missing:
             r.say("todo", ident, "%s 要用的系統工具這台沒有：%s（不會自己裝，照說明裝好再重跑）" % (
                 n, "；".join("%s%s" % (m, "：%s" % h if h else "") for m, h in missing)))
+        if extras:  # C-77 acceptance: optional tools on a line of their own, without the whole install command; an
+            # "ok" line: nothing the person must do, so no exit status 2 and not in the summary (L3's plug test)
+            r.say("ok", ident, text.t("install.optional_tools", plugin=n, names="、".join(x["name"] for x in extras),
+                                        what="、".join(f for x in extras for f in x["for"]) or "、".join(x["name"] for x in extras)))
+        gated = [i for i, s_, _ in ran if s_ == "gated"]
+        if gated:  # C-77 G5: what its steps' gates held back, with the steps' titles
+            waits = plugin_steps.gated(n, d)
+            r.say("todo", ident, text.t("install.steps_gated", plugin=n, items="、".join(gated),
+                                        steps="」「".join(sorted(set(waits.get(i, "?") for i in gated)))))
+        if steps and steps["failing"]:
+            r.say("todo", ident, text.t("install.steps_left", plugin=n, n=len(steps["failing"])))
         if not failed:
             changed = st in ("made", "moved") or any(s_ == "ran" for _, s_, _ in ran)
             r.say("changed" if changed else "ok", ident, "%s：%s%s%s" % (
@@ -489,10 +534,14 @@ def external_plugins(r):
     for n in sorted(set(where) - seen):
         r.say("fail", "plugin.%s" % n, "%s：%s，但 %s 裡沒有 plugin.json 的 name 叫 %s 的插件" % (
             n, where[n][1], plugin_update.folder_of(n), n))
-    got = plugin.link_skills(ENGINE, add_only=True)  # a skill of a plugin cloned just now (core.skills ran before)
+    # core.skills ran before the plugins moved: a skill of a plugin cloned just now is made here, and one of a plugin
+    # this move put out of use here (a version blocked, say) is taken away now, not at the next install (L3 off/on run)
+    got = plugin.link_skills(ENGINE)
     new = [n for n in got["made"] if n in got["external"]]
     if new:
         r.say("changed", "core.skills", "外部插件的 skill 連結：%s" % "、".join(new))
+    if got["removed"]:
+        r.say("changed", "core.skills", text.t("install.skills_removed", names="、".join(got["removed"])))
     fresh = set(n for n, (st, _, _) in where.items() if st in ("made", "moved"))  # core.skills did not see these yet
     for sk, owner in got["clash"]:
         if owner in fresh:
@@ -500,6 +549,43 @@ def external_plugins(r):
     for sk, owner in got["outside"]:
         if owner in fresh:
             r.say("skip", "core.skills-outside", "插件 %s 的 skill %s 指到插件資料夾外面：沒有連" % (owner, sk))
+
+
+def plugin_data_back(r, n, folder, d, settings):
+    """C-61 E4: plugin `n`'s data folders (plugin.json "data") with a backup set in the instance
+    (sync.dirs.<plugin>/<data>.remote) cloned back where they are not at all, before its setup steps run (they may
+    make the folder, which would then never come back), the way backups() does the core's: checked first, 700, the
+    pre-push hook; a clone refused leaves nothing."""
+    sys.path.insert(0, HERE)
+    import remote
+    for item in d.get("data") or []:
+        name = "plugin:%s/%s" % (n, item.get("name"))
+        if not remote.PLUGIN_NAME.match(name):
+            continue
+        url = config.setting("sync.dirs.%s.remote" % remote.key_for(name))
+        url = url.strip() if isinstance(url, str) else ""
+        if not url:
+            continue
+        try:
+            path = plugin.expand(item["path"], folder, settings)
+        except plugin.PluginError:
+            continue
+        label = remote.label(name)
+        if os.path.lexists(path):
+            r.say("ok", "core.backup", "%s：%s 已經有了，不從備份 clone" % (label, path))
+            continue
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        os.mkdir(path, 0o700)
+        os.chmod(path, 0o700)
+        ok, text = remote.clone(name, url, path)
+        if not ok:
+            shutil.rmtree(path, ignore_errors=True)  # made just now, by this step
+            r.say("todo", "core.backup", "%s：%s。改好實例的 sync.dirs.%s.remote（python3 ops/remote.py set %s <private repo 網址> "
+                  "--replace）再重跑" % (label, text, remote.key_for(name), name))
+            continue
+        hooked, hook = remote.put_hook(path)
+        r.say("changed" if hooked else "todo", "core.backup", "%s從備份 clone 回來：%s → %s（700）%s" % (
+            label, url, path, "" if hooked else "；%s：在這台跑 python3 ops/remote.py hook %s" % (hook, name)))
 
 
 def plugins_here(r, holds):
@@ -617,6 +703,7 @@ def backups(r, on):
             label, said, "" if hooked else "；%s：在這台跑 python3 ops/remote.py hook %s" % (hook, name)))
 
 
+
 def install_plugins(r, found):
     env = dict(os.environ, CHATLOG="0")
     for name, rel in found:
@@ -660,7 +747,8 @@ def write_schedules(r, holds, allow, moved=()):
         r.say("fail", "core.apply", "plugins.py apply 結束碼 0，但沒看到它跑完的記號：可能被別的同名指令頂替了")
         return
     changes = [x for x in lines if CHANGED.match(x)]
-    r.say("changed" if changes else "ok", "core.apply", "排程、hook、設定：%s" % ("改了 %d 項（見 log）" % len(changes) if changes else "沒有要改的"))
+    r.say("changed" if changes else "ok", "core.apply", "排程、hook、設定：%s" % (
+        "改了 %d 項：%s（細節見 log）" % (len(changes), changes_said(changes)) if changes else "沒有要改的"))
     from common import START_CRON, cron_running
     if cron_running() is False:  # WSL, containers: the lines are in, nothing will run them (manager 2026-10-15)
         r.say("todo", "core.cron-service", "cron 服務沒在跑，排程寫進去了也不會跑：%s，再重跑 install.sh" % START_CRON)

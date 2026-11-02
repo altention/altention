@@ -535,13 +535,13 @@ def load(path, host=None):
         if not isinstance(data, list):
             raise ScheduleError("schedules 要是清單")
         if name and data:
-            data = overridden(name, raw)
+            data = overridden(name, raw, path, host)
     out = parse(data, host)
     out["plugin"] = name
     return out
 
 
-def overridden(name, d):
+def overridden(name, d, path=None, machine=None):
     """A plugin.json's schedules as the instance overrides them (plugin.effective_schedules, C-37), as apply writes
     its cron lines: an item turned off has "enabled": false; one whose override cannot be used is left out (plan and
     doctor say why; its line is not touched). Settings that cannot be read: the plugin.json's own, as before (the
@@ -551,7 +551,16 @@ def overridden(name, d):
     except Exception:
         return d["schedules"]
     items, _problems = plugin.effective_schedules(name, d, settings)
-    return [dict((k, v) for k, v in i.items() if k not in ("source", "unknown")) for i in items if not i.get("unknown")]
+    from . import plugin_steps  # C-77 G5: an item waiting for a guide[] step is not run until it was let go,
+    gates = plugin_steps.gated(name, d)  # unless this machine's state has it already (it ran: kept, as cron keeps
+    if gates:  # its line; #code-review of 0e39da8). No state to read (no machine, unreadable): nothing held.
+        try:
+            state = read_state(machine) if path and machine else None
+        except StateUnreadable:
+            state = None
+        gates = {} if state is None else {n: s for n, s in gates.items() if sent_key(path, n) not in state}
+    return [dict((k, v) for k, v in i.items() if k not in ("source", "unknown")) for i in items
+            if not i.get("unknown") and i.get("name") not in gates]
 
 
 def describe(item):

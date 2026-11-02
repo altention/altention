@@ -30,7 +30,7 @@ from common import INSTALL_CRON, START_CRON, engine_raw, inventory, local_head_s
 
 ENGINE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ENGINE_DIR)
-from altention import plugin as altplugin  # noqa: E402
+from altention import plugin as altplugin, text as alt_text  # noqa: E402
 
 PROBE = r'''
 import json, os, shlex, socket, subprocess, sys, fcntl
@@ -459,7 +459,6 @@ try:  # copies of ~/.claude/CLAUDE.md the sync found edited and would not overwr
     o["global_edited"] = sorted(os.listdir(os.path.join(altconfig.instance_dir(), "global-notes-edited")))
 except Exception:
     o["global_edited"] = []
-o["adopted"] = [l for l in sh("git -C %s for-each-ref --format='%%(refname)' refs/altention/adopted/" % shlex.quote(ch)).splitlines() if l]
 bad = os.path.join(H(ENGINE), "dcbot/state/events-bad")
 o["events_bad"] = len([n for n in os.listdir(bad) if n.endswith(".json")]) if os.path.isdir(bad) else 0
 bad = os.path.join(H(ENGINE), "dcbot/state/posts-bad")  # the bot: posts shown whose handing to a Claude broke (C-73)
@@ -701,7 +700,7 @@ def tidy(o):
     for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_bad", "posts_failed", "cards_failed", "bot_heartbeat_age", "update_alive_at",
                 "bot_started_age"):
         fix(o, key, num)
-    for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "adopted", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice",
+    for key in ("skills", "cron_dupes", "chatlog_unsure", "open_dirs", "kept_twice", "global_edited", "routes_without_pid", "usage_errors", "cron_named_twice",
                 "cron_dead"):
         fix(o, key, texts, list)
     fix(o, "skills_expected", texts)
@@ -757,16 +756,16 @@ def plugins_on(name):
 
 
 def unmet_needs(name):
-    """[(plugin, needed)]: plugins on machine `name` whose plugin.json "requires" a plugin turned off there on purpose
-    ("disabled": its disabled_on names the machine), e.g. progress on and chatlog off. Only what the settings plainly
-    say: a placement that cannot be worked out is not taken for off."""
+    """[(plugin, needed, its placement)]: plugins on machine `name` whose plugin.json "requires" a plugin turned off there on purpose
+    ("disabled": its disabled_on names the machine, or blocked: C-94), e.g. progress on and chatlog off. Only what the
+    settings plainly say: a placement that cannot be worked out is not taken for off."""
     try:
         rows, _ = altplugin.on_this_machine(name)
     except Exception:
         return []
     where = {r[0]: r[3] for r in rows}
-    return [(n, x.get("plugin")) for n, _, d, w, _ in rows if w == "on" and d
-            for x in d.get("requires", []) if isinstance(x, dict) and where.get(x.get("plugin")) == "disabled"]
+    return [(n, x.get("plugin"), where[x.get("plugin")]) for n, _, d, w, _ in rows if w == "on" and d
+            for x in d.get("requires", []) if isinstance(x, dict) and where.get(x.get("plugin")) in ("disabled", "blocked")]
 
 
 WITHIN_DEFAULT = 300  # seconds a run may take before its record is written, when its plugin.json says no "within"
@@ -930,9 +929,13 @@ def backup_records(name, o, on):
     loose = []
     for row in o.get("backup") or []:
         n = row.get("name")
-        if n not in BACKED or (BACKED[n] is not None and BACKED[n] not in on):
+        theirs = bool(remote.PLUGIN_NAME.match(n or ""))  # C-61 E4: an external plugin's data
+        plug = n[len("plugin:"):].split("/")[0] if theirs else BACKED.get(n)
+        if (n not in BACKED and not theirs) or (plug is not None and plug not in on):
             continue
-        rid, label, folder, setting = "backup.%s" % n, remote.LABELS[n], row.get("folder") or "?", row.get("setting") or ""
+        rid, label, folder, setting = "backup.%s" % n, remote.label(n), row.get("folder") or "?", row.get("setting") or ""
+        if theirs and not row.get("private") and not setting and not row.get("origin"):
+            continue  # data the plugin does not call private, never set: not ours to ask a backup of
         set_it = "在 %s 上跑 python3 ops/remote.py set %s %s（先檢查，沒過會說哪一項）" % (name, n, setting or "<private repo 網址>")
         if isinstance(row.get("mode"), int) and row["mode"] & 0o077:
             loose.append(folder)
@@ -946,7 +949,7 @@ def backup_records(name, o, on):
             if setting:
                 put("warn", "設了遠端 %s，但 %s 還不是 git repo：還沒接上" % (setting, folder),
                     "在 %s 上跑 ./install.sh（會照設定從遠端 clone 回來）" % name)
-            elif n == "instance":
+            elif n == "instance" or theirs:
                 put("warn", "沒有備份：%s 不是 git repo" % folder, set_it)
             continue
         origin = row.get("origin") or ""
@@ -1111,7 +1114,12 @@ def check(name, m, head, instance_repo=None):
             out.append(record("%s.channel" % plugin_name, name, "warn", "對話頻道沒設定：%s（%s 要叫醒的頻道，沒設就不會叫）" % (key, plugin_name),
                               "選一個有 Claude 的頻道，在機器人那台用 python3 dcbot/tools/dcctl channels 查它的 ID，"
                               + where))
-    for plugin_name, needed in unmet_needs(name):  # a choice in the settings, not a fault: shown with how to undo it
+    for plugin_name, needed, where in unmet_needs(name):  # a choice in the settings, not a fault: shown with how to undo it
+        if where == "blocked":  # C-94: not turned off by anyone; this engine cannot run it
+            out.append(record("%s.needs" % plugin_name, name, "warn",
+                              alt_text.t("doctor.needs_blocked", plugin=plugin_name, needed=needed),
+                              alt_text.t("doctor.needs_blocked_fix", plugin=plugin_name, needed=needed)))
+            continue
         out.append(record("%s.needs" % plugin_name, name, "warn", "%s 開著，但它要用的 %s 在這台關掉了：%s 拿不到需要的資料"
                           % (plugin_name, needed, plugin_name),
                           "要 %s 就把 %s 打開：從實例 plugins.json 的 plugins.%s.disabled_on 拿掉 %s，再跑 %s；不要的話把 %s 也關掉"
@@ -1173,8 +1181,8 @@ def check(name, m, head, instance_repo=None):
                               "%s（%.1f MB）" % (f, n / 1048576) for f, n in big[:3]) if big else "",
                           "在 %s 上跑 python3 %s/chatlog/chatlog.py split（原始紀錄分段＋壓縮）" % (name, eng) if big else ""))
     elif (o["cron_chatlog"] or o["hooks"]) and not single and "chatlog" not in unplaced:
-        say("chatlog.not-listed", "plugins.json 沒有讓 chatlog 在這台跑，但這台還在跑",
-            "%s 會移除；要留著就看實例 plugins.json 的 plugins.chatlog（disabled_on）" % apply_it)
+        say("chatlog.not-listed", "chatlog 在這台關掉了（或放在別台），但這台還有它的排程或 hook，對話還在被記錄",
+            "%s 會拿掉；要它在這台繼續記錄，就從實例 plugins.json 的 plugins.chatlog.disabled_on 拿掉這台" % apply_it)
     if "cron_dupes" in o:
         say("core.cron-duplicate", "crontab 裡同一個指令有兩行以上（會跑兩次）：%s" % "、".join(c[-60:] for c in o["cron_dupes"][:3])
             if o["cron_dupes"] else "", "在 %s 上跑 python3 ops/plugins.py plan 看哪幾行重複，手動刪掉多的那行（crontab -e）" % name)
@@ -1325,6 +1333,16 @@ def check(name, m, head, instance_repo=None):
         try:
             out.append(would_apply_record(name, o.get("apply_report"), o.get("now") or 0, m.get("always_on", True),
                                           m.get("_alone", False)))
+            off = (o.get("apply_report") or {}).get("disabled") if isinstance(o.get("apply_report"), dict) else None
+            if isinstance(off, list) and off and all(isinstance(x, str) for x in off):  # C-85 (b): said, not only in --json
+                out.append(record("plugins.disabled", name, "ok", "", value=sorted(off)))
+            blocked = (o.get("apply_report") or {}).get("blocked") if isinstance(o.get("apply_report"), dict) else None
+            if isinstance(blocked, list) and not report_odd(o["apply_report"]):  # C-94: that machine's own engine said so
+                for plugin_name, why in blocked:
+                    out.append(record("plugins.blocked", name, "warn",
+                                      alt_text.t("doctor.plugin_blocked", plugin=plugin_name, machine=name, why=why),
+                                      alt_text.t("doctor.plugin_blocked_fix", machine=name, plugin=plugin_name, apply=apply_it),
+                                      value=plugin_name))
         except Exception as e:  # one machine's report must never stop the checks of the others (#code-review 2026-10-09)
             out.append(record("plugins.would-apply", name, "warn", "套用報告讀不懂（%s: %s）" % (type(e).__name__, str(e)[:120]),
                               "看那台的 ~/.local/state/altention/scheduler/apply-report.*.json"))
@@ -1432,12 +1450,10 @@ def check(name, m, head, instance_repo=None):
         for path_name, state in (o.get("engine_paths") or {}).items():  # git no longer has it (after 2.3b) and no link stands there
             say("instance.engine-link.%s" % path_name.replace("/", "-"), "%s/%s 不是指向實例的連結（%s）；寫進去的東西不會同步"
                 % (eng, path_name, "是一般資料夾" if state == "folder" else "不存在") if state in ("folder", "missing") else "",
-                "不要手動搬：%s就好（它會把實例沒有的檔併過去，同名內容不同的兩份都留，再建連結）；跑完還在，"
-                "看 sync.links 的錯誤，和實例 plugins.json 的 sync.owns 有沒有列 %s" % (sync_it, path_name), state)
-    adopted = o.get("adopted") or []  # unpushed commits the sync took back after copying them into the instance
-    say("sync.adopted", "引擎有 %d 個被同步拿掉的未推 commit（內容已併進實例，留作備份）：%s；確認實例裡有之後可刪："
-        "git update-ref -d <ref>" % (len(adopted), "、".join(adopted[:3])) if adopted else "",
-        "確認實例裡有那些內容後，在 %s 的引擎資料夾對每個 ref 跑 git update-ref -d <ref>" % name)
+                ("同步不會動一般資料夾：先把 %s/%s 裡實例的 %s/%s 沒有的檔搬過去（同名但內容不同的，比過再決定留哪份），"
+                 "把這個資料夾移到別處（不要刪），再%s，它會建連結" % (eng, path_name, o["instance"], path_name, sync_it)
+                 if state == "folder" else "%s就好，它會建連結" % sync_it)
+                + "；跑完還在，看 sync.links 的錯誤，和實例 plugins.json 的 sync.owns 有沒有列 %s" % path_name, state)
     say("dcbot.events-bad", "機器人有 %d 個處理失敗的事件在 dcbot/state/events-bad/（看 supervisor.out 的錯誤）" % o["events_bad"]
         if o.get("events_bad") else "", "看 %s 上 dcbot/state/supervisor.out 的錯誤；處理完把 events-bad/ 裡的檔案移走" % name)
     if "routes_without_pid" in o:  # shown, not told: such a pane still reports; nothing is failing
@@ -1684,7 +1700,7 @@ def collect(names, watch=False):
     scan = privacy_record()
     setup = setup_record()
     asks = asks_record()
-    return [r for r in (setup, asks) if r] + external_records(needs=not watch) + out + ([scan] if scan else [])
+    return [r for r in (setup, asks) if r] + external_records(needs=not watch) + joined_records() + out + ([scan] if scan else [])
 
 
 def draft_leftovers(name, folder, d):
@@ -1699,11 +1715,10 @@ def draft_leftovers(name, folder, d):
             left.append("排程 %d 行" % n)
     except Exception:
         pass
-    try:
+    try:  # only hooks exactly as it declares them (C-61 E5): a person's own pointing into its folder is not its
         _raw, cc = plancore.read_settings_raw()
-        real = os.path.realpath(folder)
-        n = sum(1 for groups in ((cc or {}).get("hooks") or {}).values() for g in groups or []
-                for h in (g.get("hooks") or []) if real in str(h.get("command") or "") or folder in str(h.get("command") or ""))
+        theirs = plancore.external_hooks([(name, folder, d, "draft", "")], {})
+        n = len(plancore.installed_hooks(cc, "\0no engine\0", theirs)) if theirs else 0
         if n:
             left.append("hook %d 個" % n)
     except Exception:
@@ -1727,7 +1742,7 @@ def external_records(needs=True):
     until the instance declares it), a declared one whose source is unusable, and the notes of
     altplugin.external_notes (no folder here, a folder not named as the plugin). [] when it cannot be told."""
     try:
-        from altention import config as altconfig
+        from altention import config as altconfig, plugin_update
         rows, _ = altplugin.on_this_machine()
         settings = altconfig.settings()
     except Exception:
@@ -1745,6 +1760,9 @@ def external_records(needs=True):
             out.append(record("plugin.%s.draft" % n, me, "warn", "%s 這個插件在這台沒在跑（實例沒寫它從哪來），但這台還有它的%s"
                               % (n, "、".join(left)), "要用就在實例 plugins.json 寫 plugins.%s 的 source＋version，或 local: true；"
                               "不用了，它的排程和 hook 下一次 apply 會拿掉，資料夾留著不刪" % n, left))
+        elif os.path.isfile(plugin_update.state_path(n)):  # installed here before: said as 刻意停用 is (L3 off/on run)
+            out.append(record("plugins.draft-left", me, "ok", alt_text.t(
+                "doctor.draft_left", plugin=n, folder=f, state=plugin_update.state_path(n)), value=n))
     for n, f, _d, where, why in rows:
         if where == "unknown" and why.startswith("實例設定裡 plugins.%s 的來源" % n):
             out.append(record("plugin.%s.source" % n, me, "fail", why, "改實例 plugins.json 的 plugins.%s：source 寫 git 網址、version 寫標籤（vX.Y.Z），或只寫 local: true" % n))
@@ -1762,19 +1780,109 @@ def external_records(needs=True):
             elif isinstance(name, str) and not _inside(os.path.realpath(os.path.join(f, sk.get("path", ""))), os.path.realpath(f)):
                 out.append(record("core.skills-outside", me, "warn", "插件 %s 的 skill %s 指到插件資料夾外面：沒有連" % (n, name),
                                   "請插件把 skills[].path 寫成資料夾裡的路徑"))
-    from altention import plugin_update
+    try:  # C-61 E5: the external plugins' hooks the last apply here took out (a twin, or its plugin not in use)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import applycore
+        with open(os.path.join(applycore.state_root(me), applycore.HOOKS_REMOVED), encoding="utf-8") as f:
+            gone = json.load(f)
+        place = {n: where for n, _f, _d, where, _ in rows}
+        # a plugin on here again got its hook back: what was taken out for it is no longer news (manager 2026-10-24)
+        hooks = [h for h in (gone.get("hooks") or []) if isinstance(h, list) and len(h) == 3 and
+                 (h[2] == "twin" or place.get(h[0]) != "on")] if isinstance(gone, dict) else []
+        if hooks and time.time() - float(gone.get("at") or 0) < 7 * 86400:
+            out.append(record("plugins.hooks-removed", me, "warn", "%s apply 拿掉了插件的 hook：%s" % (
+                time.strftime("%m-%d %H:%M", time.localtime(gone["at"])),
+                "、".join("%s/%s（%s）" % (p, n, "多裝的那份" if why == "twin" else "插件沒在跑") for p, n, why in hooks))))
+    except (OSError, ValueError, TypeError, ImportError):
+        pass
+    for n, since, fails, nxt in plugin_update.unreachable_now():  # C-61 E3: a source that did not answer
+        out.append(record("plugin.%s.source-unreachable" % n, me, "warn",
+                          "%s 的來源連不上，從 %s 起（連續 %s 次）" % (n, plugin_update._hm(since or 0), fails),
+                          "檢查實例 plugins.%s.source 的網址和這台的網路；更新那一輪下次 %s 再試，連得上就自己恢復"
+                          % (n, plugin_update._hm(nxt or 0))))
     for n, f, d, where, _ in rows:  # C-61 E2: setup items given up on (failed twice in a row)
         if where != "on" or d is None or not altplugin.external(f):
             continue
         for item, words in plugin_update.stuck(n, f, d, plugin_update.head(f) if os.path.isdir(os.path.join(f, ".git")) else "", settings):
             out.append(record("plugin.%s.setup" % n, me, "warn", words, "照上面的「手動跑」那行跑，跑好之後就恢復"))
-    for n, f, d, where, _ in rows:  # C-61 E2: the system tools it looks for, on this machine only
-        if not needs or where != "on" or d is None or not d.get("needs") or not altplugin.external(f):
+    out += catalog_records(me, settings)
+    from altention import plugin_steps, text
+    for n, f, d, where, _ in rows:  # C-61 E2, C-77: the system tools it looks for and its guide steps, on this machine only
+        if not needs or where != "on" or d is None or not (d.get("needs") or d.get("guide")) or not altplugin.external(f):
             continue
-        missing = plugin_update.needs_missing(f, d, settings)
-        out.append(record("plugin.%s.needs" % n, me, "warn" if missing else "ok",
-                          "%s 要用的系統工具這台沒有：%s" % (n, "、".join(m for m, _ in missing)) if missing else "",
-                          "；".join("%s：%s" % (m, h) for m, h in missing if h) or "照插件的 README 裝好"))
+        p = plugin_steps.plan(n, f, d, settings, time.time() + plugin_steps.DOCTOR_LIMIT)
+        missing = [(x["name"], x["install"] or x["hint"]) for x in p["needs"] if x["state"] == "todo" and not x["optional"]]
+        extras = [x for x in p["needs"] if x["state"] == "todo" and x["optional"]]  # said as install says them: no warn
+        if d.get("needs"):
+            out.append(record("plugin.%s.needs" % n, me, "warn" if missing else "ok",
+                              "%s 要用的系統工具這台沒有：%s" % (n, "、".join(m for m, _ in missing)) if missing else
+                              text.t("install.optional_tools", plugin=n, names="、".join(x["name"] for x in extras),
+                                     what="、".join(f for x in extras for f in x["for"]) or "、".join(x["name"] for x in extras))
+                              if extras else "",
+                              "；".join("%s：%s" % (m, h) for m, h in missing if h) or "照插件的 README 裝好"))
+        todo = [s for s in p["guide"] if s["id"] in p["failing"]]
+        if todo:  # only what a check said; steps asked about are #setup's (plugin-steps), never a warning here
+            out.append(record("plugin.%s.guide" % n, me, "warn", text.t("doctor.steps_left", plugin=n, n=len(todo),
+                              title=todo[0]["title"]), text.t("doctor.steps_fix", plugin=n), value=todo[0]["id"]))
+        elif p["guide"] and not p["left"]:
+            out.append(record("plugin.%s.guide" % n, me, "ok", text.t("doctor.steps_done", plugin=n)))
+        waiting = plugin_steps.gated(n, d)  # C-77 G5: the plan just written; what still waits for a step
+        if waiting:
+            out.append(record("plugin.%s.gated" % n, me, "warn", text.t("install.steps_gated", plugin=n,
+                              items="、".join(sorted(waiting)), steps="」「".join(sorted(set(waiting.values())))),
+                              text.t("doctor.steps_fix", plugin=n), value=sorted(waiting)))
+    return out
+
+
+CATALOG_STALE = 7 * 86400  # the official list not fetched for this long: said (it is a convenience, not a fault)
+
+
+def catalog_records(me, settings):
+    """C-81 K4: the official plugin list here: fetched lately (else warn after CATALOG_STALE), what it left out (ok,
+    in the value), and a plugin the instance takes from the organisation's public repository that the list (fetched
+    within a day) no longer has (renamed or gone)."""
+    import re
+    from altention import catalog
+    d = catalog.load()
+    if d is None:
+        return []
+    out = []
+    at = float(d.get("at") or 0)
+    if time.time() - at > CATALOG_STALE:
+        out.append(record("plugins.catalog", me, "warn", "官方插件清單 %s 沒有抓到新的了%s" % (
+            "從 %s 起" % time.strftime("%m-%d", time.localtime(at)) if at else "一直",
+            "（上次試：%s）" % time.strftime("%m-%d %H:%M", time.localtime(float(d["tried"]))) if d.get("tried") else ""),
+            "這台要連得上 GitHub；python3 ops/plugins.py list --catalog-now 現在抓一次。已經裝好的插件不受影響"))
+    else:
+        out.append(record("plugins.catalog", me, "ok", "官方插件清單：%d 個，沒收的 %d 個" % (
+            len(d["plugins"]), len(d.get("left_out") or [])), value=[x.get("repo") for x in d.get("left_out") or []]))
+    if time.time() - at > 86400:
+        return out
+    gone = set(r.get("repo", "")[len("plugin-"):] for r in d.get("left_out") or [])
+    for n, entry in sorted(((settings or {}).get("plugins") or {}).items()):
+        src = entry.get("source") if isinstance(entry, dict) else None
+        m = re.search(r"github\.com[:/]%s/plugin-([a-z0-9-]+?)(?:\.git)?/?$" % re.escape(catalog.ORG), src or "")
+        if m and m.group(1) == n and n not in d["plugins"] and n not in gone:
+            out.append(record("plugin.%s.catalog" % n, me, "warn", "%s 不在官方插件清單上了（repo 改名、刪掉或改成私有？）" % n,
+                              "已經裝的照常用；更新那邊連不上時 doctor 會另外說。要換來源就改實例 plugins.%s.source" % n))
+    return out
+
+
+def joined_records(now=None):
+    """C-84: the machines apply joined to the instance by itself in the last 7 days (from this instance's origin when
+    the list names no instance.repo), each said once a run (warn: a line people read; nothing to fix)."""
+    path = os.path.join(os.path.expanduser("~/.local/state/altention"), "apply", "joined.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return []
+    now = time.time() if now is None else now
+    out = []
+    for m, j in sorted(d.items() if isinstance(d, dict) else []):
+        if isinstance(j, dict) and isinstance(j.get("at"), (int, float)) and now - j["at"] < 7 * 86400:
+            out.append(record("instance.joined-by-apply", m, "warn", "%s apply 讓 %s 接上了實例（%s）" % (
+                time.strftime("%m-%d %H:%M", time.localtime(j["at"])), m, j.get("url"))))
     return out
 
 
@@ -1845,6 +1953,9 @@ def report_odd(rep):
     for key, inside in (("unknown", (list, tuple)), ("problems", str), ("disabled", str)):
         if not isinstance(rep.get(key), list) or not all(isinstance(i, inside) and i for i in rep[key]):
             return "%s 不在或內容不對" % key
+    if "blocked" in rep and (not isinstance(rep["blocked"], list) or not all(  # C-94; older reports lack it
+            isinstance(i, list) and len(i) == 2 and all(isinstance(x, str) and x for x in i) for i in rep["blocked"])):
+        return "blocked 內容不對"
     if rep.get("refuse") is not None and not isinstance(rep["refuse"], str):
         return "refuse 不是文字"
     return ""
@@ -1900,6 +2011,10 @@ def would_apply_record(name, rep, now, always_on=True, alone=False):
         said.append("問題：%s" % "；".join(str(p)[:120] for p in rep["problems"][:3]))
     if rep.get("gone"):  # kept by apply: nothing removed or added for them; plugins.old-engine says what to do
         said.append("%d 項像是引擎搬家前的舊行或 hook，但舊資料夾已經不在，apply 不動它們（見 plugins.old-engine）" % len(rep["gone"]))
+    left = [x for x in rep.get("leftovers") or [] if isinstance(x, dict) and x.get("plugin") and x.get("installed")]
+    if left:  # C-85 (f): apply never touches these (commented out by hand, or the old format): a person's to clear
+        said.append("關掉的插件在 crontab 還有 apply 不動的舊行（註解掉的，或舊格式）：%s；不要了就 crontab -e 刪掉" % "；".join(
+            "%s：%s" % (x["plugin"], x["installed"][:80]) for x in left[:3]))
     off = "刻意停用：%s" % "、".join(rep["disabled"]) if rep.get("disabled") else ""
     if rep.get("refuse") or rep.get("core"):
         bad = ([str(rep["refuse"])] if rep.get("refuse") else []) + (
@@ -1938,6 +2053,11 @@ def render(records, fixes=False):
         bad = len([r for r in records if r["machine"] == name and r["status"] == "fail"])
         lines.append("%-9s %-10s %-10s %-11s %-11s %-11s %s" % (name, value("core.reachable") or "×", code, cl, prog, use,
                                                          "正常" if not bad else "有 %d 個問題" % bad))
+    off = ["%s（%s）" % ("、".join(r["value"]), r["machine"]) for r in records
+           if r["id"] == "plugins.disabled" and r.get("value")]
+    if off:  # C-85 (b): turned off on purpose is said in the plain output too, as that and not as a fault
+        lines.append("刻意停用：%s" % "；".join(off))
+    lines += [r["msg"] for r in records if r["id"] == "plugins.draft-left"]  # a draft installed here before, likewise
     for r in records:
         if r["status"] == "warn" and r["id"] != "core.machine-list":
             lines.append("\n%s" % r["msg"])

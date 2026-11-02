@@ -11,8 +11,7 @@
   "machines": "one",
   "requires": [
     {
-      "plugin": "chatlog",
-      "data": "chatlog"
+      "plugin": "chatlog"
     }
   ],
   "schedules": [

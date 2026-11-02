@@ -27,6 +27,7 @@ spec = importlib.util.spec_from_file_location("usage_collect", os.path.join(ENGI
 collect = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collect)
 SAMPLE = os.path.join(ENGINE, "usage", "samples", "2.1.299-stream.jsonl")
+WEEK_ONLY = os.path.join(ENGINE, "usage", "samples", "2.1.316-stream.jsonl")  # seven_day alone, as measured
 NOW = datetime.datetime(2026, 10, 14, 16, 40)  # the day the sample was taken (local time; TZ is UTC here)
 
 
@@ -46,6 +47,11 @@ def setUpModule():
 
 def sample():
     with open(SAMPLE, encoding="utf-8") as f:
+        return f.read()
+
+
+def week_only():
+    with open(WEEK_ONLY, encoding="utf-8") as f:
         return f.read()
 
 
@@ -118,7 +124,10 @@ class FromTheStream(unittest.TestCase):
         cases = {
             "no event": "\n".join(l for l in sample().split("\n") if "rate_limit_event" not in l),
             "no unifiedWindows": with_info(lambda i: i.pop("unifiedWindows")),
-            "renamed window": with_info(lambda i: i["unifiedWindows"].pop("seven_day")),
+            "no window at all": with_info(lambda i: i.update(unifiedWindows={})),
+            "renamed windows": with_info(lambda i: i.update(unifiedWindows={"weekly": {"utilization": 0.1, "resetsAt": 1}})),
+            "a window that is null": with_info(lambda i: i["unifiedWindows"].update(five_hour=None)),
+            "the other window as text": with_info(lambda i: i["unifiedWindows"].update(seven_day="40%")),
             "percent as text": with_info(lambda i: i["unifiedWindows"]["five_hour"].update(utilization="13%")),
             "percent below 0": with_info(lambda i: i["unifiedWindows"]["five_hour"].update(utilization=-0.1)),
             "no reset time": with_info(lambda i: i["unifiedWindows"]["seven_day"].pop("resetsAt")),
@@ -132,6 +141,30 @@ class FromTheStream(unittest.TestCase):
             self.assertEqual(limits, [], name)
             self.assertTrue(why.startswith(collect.CHANGED), (name, why))
             self.assertIn("讀不到用量額度：格式變了", collect.limits_board(limits, why), name)
+
+    def test_the_week_alone_as_measured(self):
+        limits, why = collect.limits_from_stream(week_only(), NOW)
+        self.assertIsNone(why)
+        self.assertEqual(limits, [["Current week (all models)", 58, "Nov 1, 9pm"]])  # 1793566800 = 2026-11-01 21:00 UTC
+        board = collect.limits_board(limits, why)
+        self.assertIn("- 這 5 小時：這次沒有提供", board)
+        self.assertIn("這週（所有模型）：**58%**　（Nov 1, 9pm 重置）", board)
+        self.assertNotIn("格式變了", board)
+        self.assertLess(board.index("這 5 小時"), board.index("這週"), "in the order they always have")
+
+    def test_the_session_alone(self):
+        limits, why = collect.limits_from_stream(with_info(lambda i: i["unifiedWindows"].pop("seven_day")), NOW)
+        self.assertEqual((limits, why), ([["Current session", 16, "11am"]], None))
+        board = collect.limits_board(limits, why)
+        self.assertIn("這 5 小時：**16%**", board)
+        self.assertIn("- 這週（所有模型）：這次沒有提供", board)
+
+    def test_a_window_in_a_wrong_shape_is_said_even_beside_a_good_one(self):
+        for bad in ("13%", -0.1):
+            limits, why = collect.limits_from_stream(
+                with_info(lambda i: i["unifiedWindows"]["seven_day"].update(utilization=bad)), NOW)
+            self.assertEqual(limits, [], bad)
+            self.assertTrue(why.startswith(collect.CHANGED), why)
 
     def test_a_failed_request_is_said_as_that(self):
         text = '{"type": "system", "subtype": "init"}\n{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "API Error: 529"}\n'
@@ -204,7 +237,7 @@ class TheSwitch(unittest.TestCase):
     """usage.subscription_limits: on when true or not set (owner 2026-10-16), off when false; anything else is said
     and taken as off (each reading is a request made with the owner's subscription)."""
 
-    def round(self, value, given=True, core=None, plan=None):
+    def round(self, value, given=True, core=None, plan=None, read=None):
         """One main() with everything around it stood in for: (read_limits called, the boards posted, stderr)."""
         settings = {"usage": {"channel": "100000000000000001"}, "plugins": {"usage": {"sources": ["host-a"]}}}
         if core is not None:
@@ -231,8 +264,8 @@ class TheSwitch(unittest.TestCase):
                 mock.patch.object(collect, "inventory", lambda: inv), \
                 mock.patch.object(collect, "machine_usage", lambda n, m: {"machine": n, "daily": [], "projects": []}), \
                 mock.patch.object(config, "settings", lambda: settings), \
-                mock.patch.object(collect, "read_limits", lambda zone=None: called.append(zone) or (
-                    [["Current session", 5, "7pm"], ["Current week (all models)", 9, "Oct 18, 9pm"]], None)), \
+                mock.patch.object(collect, "read_limits", lambda zone=None: called.append(zone) or (read or (
+                    [["Current session", 5, "7pm"], ["Current week (all models)", 9, "Oct 18, 9pm"]], None))), \
                 mock.patch.object(collect, "post", lambda board, text, file=None: posted.__setitem__(board, text) or 0), \
                 mock.patch.object(collect, "chart", lambda *a: self.charted.append(collect.PLAN)), \
                 mock.patch.object(collect, "SAMPLES", os.path.join(tmp, "samples.jsonl")), \
@@ -244,6 +277,15 @@ class TheSwitch(unittest.TestCase):
         with open(os.path.join(tmp, "samples.jsonl")) as f:
             last = json.loads(f.read().strip().split("\n")[-1])
         return called, posted, err.getvalue(), last
+
+    def test_the_week_is_sampled_without_the_session(self):
+        read = collect.limits_from_stream(week_only(), NOW)
+        _, posted, err, last = self.round(True, read=read)
+        self.assertEqual((last["week"], last["week_reset"]), (58, "Nov 1, 9pm"))
+        self.assertEqual(last["limits"], [["Current week (all models)", 58, "Nov 1, 9pm"]])
+        self.assertEqual(err, "", "nothing went wrong: no line in the cron log")
+        self.assertIn("這 5 小時：這次沒有提供", posted["訂閱額度"])
+        self.assertIn("到 Nov 1 重置的那週", posted["每週"])
 
     def test_on_when_not_given(self):
         called, posted, err, last = self.round(None, given=False)

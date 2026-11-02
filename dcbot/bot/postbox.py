@@ -2,6 +2,7 @@
 Python, which has no discord module."""
 import json
 import os
+import re
 import time
 
 from . import config
@@ -81,6 +82,43 @@ def failed(folder=None, now=None):
         if isinstance(at, (int, float)) and not isinstance(at, bool) and 0 <= now - at < RETRY_FOR:
             out.append((path, post))
     return out
+
+
+RECEIPTS = os.path.join(config.STATE, "receipts")
+RECEIPT_KEEP = 24 * 3600  # one nobody came for (its dcctl gave up waiting) is removed after this
+RECEIPT = re.compile(r"[0-9a-f]{16}")  # the name a post asks its receipt to be written under (dcctl: token_hex(8))
+
+
+def write_receipt(token, receipt, folder=None):
+    """What became of a post that asked for a receipt (altention dc post --wait, C-87): {"ok": True, "message_id",
+    "channel_id"} or {"ok": False, "why"}, for its dcctl to read. A token not of RECEIPT's shape is not written."""
+    if not isinstance(token, str) or not RECEIPT.fullmatch(token):
+        return
+    folder = folder or RECEIPTS
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, ".%s.%d" % (token, os.getpid()))
+    with open(tmp, "w") as f:
+        json.dump(dict(receipt, at=time.time()), f, ensure_ascii=False)
+    os.rename(tmp, os.path.join(folder, token + ".json"))
+    for name in os.listdir(folder):  # the ones nobody came for
+        path = os.path.join(folder, name)
+        try:
+            if time.time() - os.path.getmtime(path) > RECEIPT_KEEP:
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def take_receipt(token, folder=None):
+    """The receipt written for `token`, removed; None while there is none (or it cannot be read yet)."""
+    path = os.path.join(folder or RECEIPTS, token + ".json")
+    try:
+        with open(path) as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    done(path)
+    return got if isinstance(got, dict) else None
 
 
 def heartbeat_age():

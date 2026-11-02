@@ -37,7 +37,7 @@
 
 ## 頻道之間、機器之間的溝通
 
-- `altention dc post <頻道> "內容"`：把東西貼到一個頻道。那個頻道有對話的話，它會收到、知道是誰傳的、怎麼回覆。`--file` 附檔，`--board <名稱>` 是原地更新的看板。腳本和排程用頻道 ID 指定，頻道改名也不受影響。
+- `altention dc post <頻道> "內容"`：把東西貼到一個頻道。那個頻道有對話的話，它會收到、知道是誰傳的、怎麼回覆。`--file` 附檔，`--board <名稱>` 是原地更新的看板。腳本和排程用頻道 ID 指定，頻道改名也不受影響；插件可以用保留目標 `@audit`、`@notify`（機器人自己的紀錄頻道、預設通知頻道，見 `docs/plugins/discord.md`）。用名字時讀的頻道清單，同一台的 dcctl 一分鐘內共用一份。
 - `altention dc read <頻道>`：讀頻道的訊息、討論串，或那個頻道背後對話的最近幾輪。
 - `altention dc notify "訊息"`：只推播，不交給任何對話。
 - 這三支在任何機器都能用：機器人在這台就直接執行 `dcctl`，否則經 SSH 到機器人那台執行，所以其他機器不需要 Discord 的 token。
@@ -69,6 +69,10 @@
 - 全域說明：`~/.claude/CLAUDE.md` 連到共用的那一份，每台機器的每個對話都會讀到。
 - `skills/*` 連結到 `~/.claude/skills/`。
 - 多台機器同時追加的檔案（記憶的索引、skill 的教訓檔）在 `.gitattributes` 設成 union 合併。
+- 這幾項由同步的 `repair_links`（`altention/sync.py`）每輪補好，寫在程式裡，沒有設定可以改（以前列在 `core.plugin.json` 的 `links`，但沒有程式讀它，C-95 拿掉了）：
+  - `~/.claude/CLAUDE.md`：引擎和實例的全域說明組成的檔（`compose_global`），不是連結；
+  - `~/.claude/projects/<引擎>/memory` → `<實例>/memory`（`ops/instance.py join` 第一次接上實例時也會做）；
+  - `~/.ssh/config` 加一行 `Include <實例>/ssh_config`（實例有這個檔時；安裝時由 `ops/install.py` 先備份再加，只在不只一台機器時）。
 
 ## 同步
 

@@ -6,12 +6,6 @@
   "why": "Schedule files in the older at/days/text form are still read; a new install writes when/do and never reaches this."
  },
  {
-  "file": "altention/sync.py",
-  "text": "知識等資料夾還在引擎裡的機器（2.3b 的搬移）、和還寫 ~/agent-home/knowledge 的說明；每台的引擎裡都沒有這些資料夾的實體、說明不再用 ~/agent-home/<資料夾> 之後",
-  "status": "after-release",
-  "why": "adopt(): on a new install only its branch that links the engine's knowledge/memory folders to the instance runs; the merging of real folders is for machines from before stage 2.3b."
- },
- {
   "file": "dcbot/tools/dchook",
   "text": "hook 還由 dchook 自己寫的裝法（dcbot/install.sh、deploy.sh 和遠端串流的 --update）；hook 只由 plugins.py apply 寫、deploy.sh 和 tmux_bridge.py 不再叫 dchook --update 之後",
   "status": "after-release",

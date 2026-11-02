@@ -264,6 +264,9 @@ def init(permission=None):
     return 0
 
 
+JOINED_NOW = "ALT-INSTANCE-JOINED"  # join's line when it cloned the instance just now (ops/apply.py reads it)
+
+
 def join(url, rejoin=False):
     pointer = os.path.join(config.config_dir(), "instance")
     left = os.path.join(config.config_dir(), "left")
@@ -273,6 +276,7 @@ def join(url, rejoin=False):
         return 0
     if os.path.exists(left):
         os.remove(left)
+    fresh = not os.path.isdir(os.path.join(place(), ".git"))  # C-84: apply says when a machine was joined just now
     dest = clone(url, need_content=True)
     if git(dest, "rev-parse", "-q", "--verify", "HEAD").returncode != 0:
         sys.exit("instance：%s 還是空的，先在一台機器跑 `ops/instance.py seed`" % url)
@@ -288,6 +292,8 @@ def join(url, rejoin=False):
             os.makedirs(os.path.dirname(link), exist_ok=True)
             os.symlink(target, link)
     print("instance：這台已接上 %s；下一次同步（核心的 cron_sync，最多 15 分鐘）會把記憶和 SSH 的連結改過去" % dest)
+    if fresh:
+        print("%s %s" % (JOINED_NOW, url))
     return 0
 
 

@@ -162,6 +162,46 @@ class Blacklist(Base):
         code, data = self.findings("--public-repo", public)
         self.assertEqual([(f["line"], f["rule"]) for f in data["findings"]], [(2, "account")])
 
+    def test_an_org_named_like_the_project_is_no_account(self):
+        org = "nightjar"
+        inst = self.instance()
+        self.git("remote", "add", "origin", J(["git@", "github", ".com:", org, "/", org, "-private.git"]))
+        self.commit({"README.md": "# %s\nthe %s engine, see %s/%s-private\n" % (org, org, org, org),
+                     "INSTALL.md": "git clone %s\nit moved to %s.\n" % (J(["https://", "github", ".com/", org, "/", org, ".git"]),
+                                                                       J(["github", ".com/", org, "/", org]))})
+        for how in ("public_repos", "release.repo"):
+            with self.subTest(how=how):
+                if how == "public_repos":
+                    args = ("--public-repo", org + "/" + org)
+                else:
+                    write(os.path.join(inst, "plugins.json"),
+                          {"release": {"repo": J(["git@", "github", ".com:", org, "/", org, ".git"])}})
+                    args = ()
+                code, data = self.findings(*args)
+                self.assertEqual([(f["line"], f["rule"]) for f in data["findings"]], [(2, "private-repo")])
+
+    def test_a_plugins_public_repo_is_public_and_its_private_one_is_not(self):
+        org = "nightjar"
+        inst = self.instance()
+        write(os.path.join(inst, "plugins.json"), {"release": {
+            "repo": J(["git@", "github", ".com:", org, "/", org, ".git"]),
+            "plugins": {"demo": {"repo": J(["git@", "github", ".com:", org, "/plugin-demo.git"])}, "odd": "x"}}})
+        self.git("remote", "add", "origin", J(["git@", "github", ".com:", org, "/plugin-demo-private.git"]))
+        self.commit({"README.md": "git clone %s\nsee %s/plugin-demo-private\nor %s\n" % (
+            J(["https://", "github", ".com/", org, "/plugin-demo.git"]), org,
+            J(["https://", "github", ".com/", org, "/plugin-other-private"]))})
+        code, data = self.findings()
+        self.assertEqual([(f["line"], f["rule"]) for f in data["findings"]], [(2, "private-repo"), (3, "github-owner")])
+
+    def test_a_private_repo_under_the_own_account_still_finds_the_account(self):
+        inst = self.instance()
+        write(os.path.join(inst, "plugins.json"), {"release": {"repo": J(["git@", "github", ".com:", "nightjar/nightjar.git"])}})
+        self.git("remote", "add", "origin", J(["git@", "github", ".com:", "zoltan-dev/", "private-engine.git"]))
+        self.commit({"README.md": "the nightjar engine\nby zoltan-dev\n"})
+        code, data = self.findings("--public-repo", "nightjar/nightjar")
+        self.assertEqual(code, ps.FOUND)
+        self.assertEqual([(f["line"], f["rule"]) for f in data["findings"]], [(2, "account")])
+
     def test_an_old_machine_list_in_the_engine_is_not_read(self):
         write(os.path.join(self.engine, "ops", "machines.json"), {"machines": {MACHINE: {"ssh": [MACHINE]}}})
         self.commit({"x": "fine\n"})

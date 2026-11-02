@@ -2,7 +2,7 @@
 --guard). Standard library only, Python 3.8: the guard runs on every machine, before every tool call of every
 Claude Code there, so this reads one small file at most and starts nothing.
 
-The list: DEFAULT (the bot's token, private SSH keys) and the instance's own additions (a plugin's key files)
+The list: DEFAULT (the bot's token, private SSH keys, the plugins' secrets folder) and the instance's own additions (a plugin's key files)
 (setting "core.secret_paths", a list of paths; "~" and "*" as in DEFAULT, "**" for any depth). A path ending in
 ".pub" is a public key and never secret. ~/.ssh/config and known_hosts are not secret: the machines' settings rest
 on them and the owner has Claude edit them; nor authorized_keys (public keys, though its name has "key").
@@ -20,7 +20,8 @@ import re
 import shlex
 import sys
 
-DEFAULT = ("~/.config/dcbot/**", "~/.ssh/id_*", "~/.ssh/*key*")  # (an installation adds its own: core.secret_paths)
+DEFAULT = ("~/.config/dcbot/**", "~/.ssh/id_*", "~/.ssh/*key*",
+           "~/.config/altention/secrets/**")  # plugins' secrets (C-77 G3, altention/secret_store.py); an installation adds its own: core.secret_paths
 PUBLIC = ".pub"
 OPEN = ("authorized_keys", "authorized_keys2")  # public keys under a name "*key*" takes in: never secret
 SETTING = "secret_paths"  # under "core" in the instance's plugins.json

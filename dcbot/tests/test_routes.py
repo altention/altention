@@ -175,7 +175,9 @@ class GlobalHook(unittest.TestCase):
     def test_a_pane_number_reused_after_a_tmux_restart_is_not_routed(self):
         with open(os.path.join(self.tmp.name, "state", "routes.json"), "w") as f:
             json.dump({"/tmp/sock|%7": {"channel": "55", "pid": "999999999"}, "/tmp/sock|%9": {"channel": "56", "pid": str(os.getpid())}}, f)
-        self.assertEqual(self.fire({"TMUX": "/tmp/sock,123,0", "TMUX_PANE": "%7"}), [], "the attached pane's process is gone")
+        got = self.fire({"TMUX": "/tmp/sock,123,0", "TMUX_PANE": "%7"})
+        self.assertTrue(all(e.get("dc_respawned") for e in got), "the attached pane's process is gone: nothing comes as the "
+                        "route's (C-79: under a tmux server it comes marked, for the bot to judge; tests/test_respawned.py)")
         got = self.fire({"TMUX": "/tmp/sock,123,0", "TMUX_PANE": "%9"})
         self.assertEqual([e["channel"] for e in got], ["56"], "this test process is an ancestor of the hook it starts")
 
@@ -232,7 +234,8 @@ class GlobalHook(unittest.TestCase):
         self.assertEqual(self.fire({"TMUX": "%s,40404,7" % told, "TMUX_PANE": "%9"}), [], "another pane of that server: not attached")
         with open(os.path.join(self.tmp.name, "state", "routes.json"), "w") as f:
             json.dump({"%s|%%8" % written: {"channel": "77", "pid": "999999999"}}, f)
-        self.assertEqual(self.fire({"TMUX": "%s,40404,7" % told, "TMUX_PANE": "%8"}), [], "the pid check holds for it too")
+        self.assertTrue(all(e.get("dc_respawned") for e in self.fire({"TMUX": "%s,40404,7" % told, "TMUX_PANE": "%8"})),
+                        "the pid check holds for it too")
 
     def test_a_socket_that_is_not_there_or_has_no_sane_path_is_no_route_and_no_failure(self):
         """os.path.realpath raises nothing for a path that does not exist; whatever the names, the hook ends 0 with

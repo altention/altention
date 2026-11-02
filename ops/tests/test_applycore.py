@@ -71,8 +71,12 @@ class Rig(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"PATH": bindir + ":/usr/bin:/bin", "FAKE_CRONTAB": self.file})
         self.env.start()
         applycore.MACHINE[0] = "host-a"
+        self.notices = []  # C-85 (c): no test reaches the real dc notify; what apply would have said is kept here
+        self.notify = mock.patch.object(plugins, "notify", side_effect=lambda c, t: self.notices.append((c, t)) or True)
+        self.notify.start()
 
     def tearDown(self):
+        self.notify.stop()
         self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
         shutil.rmtree(os.path.dirname(applycore.state_root()), ignore_errors=True)
@@ -525,7 +529,7 @@ class HooksOff(Settings):
         self.assertEqual(sorted(left), sorted([("Stop", "other-tool", 5), ("Stop", ENGINE + "/other/o.sh", None),
                                                ("Stop", mine["text"], 99)]))
         self.assertNotIn("SessionEnd", after["hooks"], "an event left empty goes")
-        self.assertEqual(sum("chatlog 在這台沒在用" in a for a in actions), 2)
+        self.assertEqual(sum("chatlog 在這台沒在跑" in a for a in actions), 2)
         want, _ = plancore.wanted(self.rows("on"), "host-a", {}, None)  # turned on again: added back
         result = plancore.compare(want, [], plancore.installed_hooks(after, ENGINE))
         self.assertEqual(sorted(r[1]["name"] for r in result if r[0] == "missing" and r[1]["kind"] == "hook"), ["SessionEnd", "Stop"])
@@ -728,6 +732,21 @@ class Report(Rig):
         self.assertGreater(rep["marked_lines"], 3)
         self.assertEqual(rep["unclaimed"], 0, "someone else's line is not ours to count")
         json.dumps(rep)
+
+    def test_lines_of_a_plugin_turned_off_that_apply_leaves_are_listed(self):
+        """C-85 (f): a plugin turned off here whose line is commented out by hand, or written in the old format (no
+        marker), keeps it (apply never touches such lines): the report lists them for doctor to say."""
+        self.all_as_asked()
+        lines = self.get()
+        usage = next(l for l in lines if l.endswith(b"# altention:usage/collect"))
+        old = usage.rsplit(b"# altention:", 1)[0].rstrip()  # the same job, written before markers
+        self.put([l for l in lines if l != usage] + [b"# " + usage, old])
+        rep = self.report(settings={"plugins": {"progress": {"on": "host-a"}, "usage": {"on": "host-a", "disabled_on": ["host-a"]}}})
+        self.assertEqual(rep["disabled"], ["usage"])
+        self.assertEqual(sorted(x["installed"] for x in rep["leftovers"]), sorted([("# " + usage.decode()), old.decode()]))
+        self.assertEqual({x["plugin"] for x in rep["leftovers"]}, {"usage"})
+        rep = self.report()
+        self.assertEqual(rep["leftovers"], [], "on: they are its own paused / old lines, not leftovers")
 
     def test_a_line_and_a_hook_gone_are_what_apply_would_add_and_nothing_is_added(self):
         self.all_as_asked()
@@ -946,6 +965,123 @@ class Command(Rig):
         self.assertEqual([c.args for c in apply.call_args_list], [(False, []), (False, ["chatlog/sync"]), (True, [])])
 
 
+class ExternalHooks(Rig):
+    """C-61 E5 (manager 2026-10-20): an external plugin's hook was not taken for ours (only the engine's path was),
+    so every apply added another copy, and a draft kept its hooks. Now one that is exactly as a plugin declares it is
+    that plugin's: its twins go, and all of it goes when the plugin is off, disabled or a draft; the person's own
+    hook pointing into that folder stays."""
+
+    PLUG = "/home/a/altention/plugins/rigd"
+
+    def setUp(self):
+        super().setUp()
+        self.path = os.path.expanduser("~/.claude/settings.json")
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.addCleanup(lambda: os.path.exists(self.path) and os.remove(self.path))
+        mine = {"type": "command", "command": self.PLUG + "/hook.sh"}
+        self.before = {"model": "x", "hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": "other-tool", "timeout": 5}]},
+            {"hooks": [dict(mine)]}, {"hooks": [dict(mine)]}, {"hooks": [dict(mine)]},
+            {"hooks": [{"type": "command", "command": self.PLUG + "/my-own.sh"}]}]}}
+        self.raw = json.dumps(self.before).encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(self.raw)
+        self.theirs = {("Stop", "", (self.PLUG + "/hook.sh",), None): "rigd"}
+
+    hook_want = Settings.hook_want
+
+    def commands(self):
+        with open(self.path) as f:
+            return [h["command"] for g in json.load(f)["hooks"]["Stop"] for h in g["hooks"]]
+
+    def run_(self, want, off):
+        have = plancore.installed_hooks(self.before, ENGINE, self.theirs)
+        result = plancore.compare(want, [], have, theirs=self.theirs, off=off)
+        new, actions, added = applycore.new_settings(self.before, result)
+        self.assertTrue(applycore.write_settings(self.raw, self.before, new, added, "b"))
+        return result, actions
+
+    def test_its_twins_go_one_stays(self):
+        result, actions = self.run_([self.hook_want("Stop", "", self.PLUG + "/hook.sh", None)], set())
+        self.assertEqual(sorted(r[0] for r in result), ["hook twin", "hook twin", "same"], "the others are not ours at all")
+        self.assertEqual(self.commands(), ["other-tool", self.PLUG + "/hook.sh", self.PLUG + "/my-own.sh"])
+        self.assertEqual(len([a for a in actions if a.startswith("拿掉 hook（同一個已經裝了")]), 2)
+
+    def test_off_then_on_again_its_hook_comes_back_once(self):
+        """C-85 (f): turned off, all of it goes; on again, one copy is added back (and no more on the next apply)."""
+        self.run_([], {"rigd"})
+        with open(self.path, encoding="utf-8") as f:
+            self.before = json.load(f)
+        self.raw = json.dumps(self.before).encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(self.raw)
+        want = [self.hook_want("Stop", "", self.PLUG + "/hook.sh", None)]
+        result, actions = self.run_(want, set())
+        self.assertEqual([r[0] for r in result if r[1] is not None], ["missing"])
+        self.assertEqual(self.commands(), ["other-tool", self.PLUG + "/my-own.sh", self.PLUG + "/hook.sh"])
+        with open(self.path, encoding="utf-8") as f:
+            self.before = json.load(f)
+        have = plancore.installed_hooks(self.before, ENGINE, self.theirs)
+        self.assertEqual([r[0] for r in plancore.compare(want, [], have, theirs=self.theirs, off=set()) if r[1] is not None], ["same"])
+
+    def test_a_schedule_wanted_beside_a_plugin_not_in_use_does_not_break_compare(self):
+        """v0.5.0 blocker (manager 2026-10-26): the cron part of compare() reassigned its `off` parameter, so with any
+        cron item wanted, the hook part's `owner in off` raised TypeError and apply wrote nothing. A plugin that is a
+        draft, disabled or blocked here (applycore.removable) with a schedule of another plugin wanted."""
+        cmd = '/usr/bin/python3 "%s/progress/progress.py" run' % ENGINE
+        cron = {"plugin": "progress", "name": "run", "kind": "cron", "text": "", "key": plancore.cron_key("*/10 * * * *", cmd)}
+        for where in ("draft", "disabled", "blocked"):
+            with self.subTest(where=where):
+                off = applycore.removable([("rigd", self.PLUG, {}, where, "")])
+                self.assertEqual(off, {"rigd"})
+                hooks = plancore.installed_hooks(self.before, ENGINE, self.theirs)
+                result = plancore.compare([cron], [], hooks, theirs=self.theirs, off=off)
+                self.assertEqual(sorted(r[0] for r in result), ["hook off"] * 3 + ["missing"])
+
+    def test_all_of_it_goes_when_its_plugin_is_not_in_use_the_persons_own_stays(self):
+        result, actions = self.run_([], {"rigd"})
+        self.assertEqual(sorted(r[0] for r in result), ["hook off"] * 3)
+        self.assertEqual(self.commands(), ["other-tool", self.PLUG + "/my-own.sh"])
+        self.assertIn("rigd 在這台沒在跑", actions[0])
+
+    def test_the_persons_own_with_the_same_command_but_another_timeout_stays(self):
+        """#code-review of d719c16: the hook taken out is the one with the declared key, timeout included."""
+        theirs = {("Stop", "", (self.PLUG + "/hook.sh",), None): "rigd"}
+        self.before = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": self.PLUG + "/hook.sh", "timeout": 9}]},
+                                          {"hooks": [{"type": "command", "command": self.PLUG + "/hook.sh"}]}]}}
+        self.raw = json.dumps(self.before).encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(self.raw)
+        self.theirs = theirs
+        self.run_([], {"rigd"})
+        with open(self.path) as f:
+            left = [h for g in json.load(f)["hooks"]["Stop"] for h in g["hooks"]]
+        self.assertEqual(left, [{"type": "command", "command": self.PLUG + "/hook.sh", "timeout": 9}])
+
+    def test_with_twins_too_only_the_plugins_go(self):
+        mine = {"type": "command", "command": self.PLUG + "/hook.sh"}
+        self.before = {"hooks": {"Stop": [{"hooks": [dict(mine, timeout=9)]}, {"hooks": [dict(mine)]}, {"hooks": [dict(mine)]}]}}
+        self.raw = json.dumps(self.before).encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(self.raw)
+        self.run_([self.hook_want("Stop", "", self.PLUG + "/hook.sh", None)], set())
+        with open(self.path) as f:
+            left = [h for g in json.load(f)["hooks"]["Stop"] for h in g["hooks"]]
+        self.assertEqual(left, [dict(mine, timeout=9), mine], "the person's (timeout 9) and one of the plugin's")
+
+    def test_without_its_declaration_nothing_is_ours(self):
+        have = plancore.installed_hooks(self.before, ENGINE, {})
+        self.assertEqual(have, [])
+        result = plancore.compare([], [], have, theirs={}, off={"rigd"})
+        self.assertEqual([r[0] for r in result], [])
+
+    def test_doctor_is_told_what_went(self):
+        result, _ = self.run_([], {"rigd"})
+        applycore.note_hooks_removed(result, now=100)
+        with open(os.path.join(applycore.state_root(), applycore.HOOKS_REMOVED)) as f:
+            self.assertEqual(json.load(f), {"at": 100, "hooks": [["rigd", "Stop", "off"]] * 3})
+
+
 class Removable(unittest.TestCase):
     def test_off_disabled_and_drafts_only(self):
         """C-61 E1: a draft (an external plugin the instance does not declare) asks for nothing, and its marked lines
@@ -966,13 +1102,13 @@ class Overrides(Report):
     plugin's time back; the report does not take such changes for a mass removal (manager 2026-10-17)."""
     BASE = {"plugins": {"progress": {"on": "host-a"}, "usage": {"on": "host-a"}}}
 
-    def apply_with(self, settings, write=True):
+    def apply_with(self, settings, write=True, setting=None):
         out = io.StringIO()
         engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         cfg = plugins.config
         with mock.patch.object(cfg, "instance_dir", return_value=os.path.join(self.tmp, "instance")), \
                 mock.patch.object(cfg, "settings", return_value=settings), \
-                mock.patch.object(cfg, "setting", return_value=None), \
+                mock.patch.object(cfg, "setting", **({"side_effect": setting} if setting else {"return_value": None})), \
                 mock.patch.object(cfg, "inventory", return_value={"machines": {"host-a": {"roles": ["chatlog", "progress", "usage", "planner"]}, "host-b": {}}}), \
                 mock.patch.object(cfg, "this_machine", return_value="host-a"), \
                 mock.patch.object(cfg, "bot_machine", return_value=("host-a", {}, False)), \
@@ -1012,11 +1148,77 @@ class Overrides(Report):
         self.assertEqual(code, 0, out)
         self.assertEqual(hooks(), [c for c in before if c not in theirs])
         self.assertFalse([l for l in self.get() if l.endswith(b"# altention:chatlog/sync")])
-        self.assertIn("chatlog 在這台沒在用", out)
+        self.assertIn("chatlog 在這台沒在跑", out)
         code, out = self.apply_with(self.settings())
         self.assertEqual(code, 0, out)
         self.assertEqual(hooks(), before)
         self.line("chatlog/sync")
+
+    def test_a_plugin_whose_uses_this_engine_does_not_offer_is_blocked_and_comes_back_c94(self):
+        """C-94: chatlog's plugin.json asking for an interface version this engine does not offer: apply takes its
+        hooks and its cron line out like a plugin turned off; the report names it with why; offered again, both
+        come back. One asking for what is offered stays on."""
+        self.all_as_asked()
+        path = os.path.expanduser("~/.claude/settings.json")
+        def hooks():
+            with open(path) as f:
+                d = json.load(f)
+            return sorted(h["command"] for gs in (d.get("hooks") or {}).values() for g in gs for h in g["hooks"])
+        before = hooks()
+        theirs = [c for c in before if "/chatlog/chatlog.py" in c]
+        self.assertEqual(len(theirs), 2, before)
+        load = plugins.plugin.load
+
+        def asking(uses):
+            def wrapped(p, core=False):
+                d = load(p, core)
+                return dict(d, uses=uses) if d["name"] == "chatlog" else d
+            return mock.patch.object(plugins.plugin, "load", side_effect=wrapped)
+        with asking({"dc.post": 1, "tokens": 1}):
+            code, out = self.apply_with(self.settings())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hooks(), before, "offered: nothing changes")
+        with asking({"dc.post": 99}):
+            code, out = self.apply_with(self.settings())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hooks(), [c for c in before if c not in theirs])
+        self.assertFalse([l for l in self.get() if l.endswith(b"# altention:chatlog/sync")])
+        code, out = self.apply_with(self.settings())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hooks(), before)
+        self.line("chatlog/sync")
+
+    def test_a_plugin_turned_off_here_is_said_in_its_channel_once_after_the_writes(self):
+        """C-85 (c): apply --write notes each plugin's place here; usage turned off is said once in its channel
+        (the instance's usage.channel), on again once more; a dry apply says nothing and notes nothing."""
+        self.all_as_asked()
+        s = self.settings()
+        ch = lambda k, default=None: "333" if k == "usage.channel" else default  # noqa: E731
+        off = json.loads(json.dumps(s))
+        off["plugins"]["usage"]["disabled_on"] = ["host-a"]
+        self.assertEqual(self.apply_with(off, write=False, setting=ch)[0], 0)
+        self.assertEqual(self.notices, [], "a dry apply says nothing")
+        code, out = self.apply_with(off, setting=ch)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.notices, [("333", "用量統計 在 host-a 關掉了，這裡不會再更新。")])
+        self.apply_with(off, setting=ch)
+        self.assertEqual(len(self.notices), 1)
+        self.apply_with(s, setting=ch)
+        self.assertEqual(self.notices[-1], ("333", "用量統計 在 host-a 打開了，這裡會再開始更新。"))
+
+    def test_disabled_on_the_very_machine_its_on_names_turns_it_off_there(self):
+        """C-85 (f): a one-machine plugin whose "on" is this machine and whose disabled_on names it too is turned off
+        here (disabled wins): its line goes, and comes back when disabled_on is taken away."""
+        self.all_as_asked()
+        self.line("usage/collect")
+        s = self.settings()
+        both = json.loads(json.dumps(s))
+        both["plugins"]["usage"]["disabled_on"] = ["host-a"]
+        code, out = self.apply_with(both)
+        self.assertEqual(code, 0, out)
+        self.assertFalse([l for l in self.get() if l.endswith(b"# altention:usage/collect")], out)
+        self.assertEqual(self.apply_with(s)[0], 0)
+        self.line("usage/collect")
 
     def test_three_plugins_retimed_at_once_only_their_lines_and_only_the_time(self):
         self.all_as_asked()

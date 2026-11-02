@@ -66,8 +66,7 @@ def main(argv):
             try:  # the update may have taken the engine's copies of the instance's folders away: links now, not next sync
                 inst = sync.config.instance_dir()
                 if inst:
-                    sync.adopt_all(inst, lambda text: None)  # a hand-over commit it makes stays here: the engine is
-                    # never pushed by itself (C-31); doctor counts what is not on the upstream
+                    sync.adopt_all(inst, lambda text: None)
             except Exception as e:
                 print("home-pull：改連結時出錯：%s" % e, file=sys.stderr)
             if code == 0 and sync.engine_moved(repo, head) and not quiet:  # C-09: as update.py's own round

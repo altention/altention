@@ -136,6 +136,27 @@ class Posts(unittest.TestCase):
         with mock.patch.object(posts, "notify_default", return_value=default):
             self.post(notify=True, from_name="HostC", **kw)
 
+    def test_the_bots_own_audit_and_notification_channels_by_reserved_names(self):
+        """C-87: @audit and @notify, for a plugin that knows neither name; #audit renamed since the start is still it."""
+        self.bot.audit_ch.name = "audit-renamed"
+        self.notify("notes", channel="@audit", text="checked")
+        self.assertEqual(self.bot.audit_ch.sent, ["🔔 **[HostC]** checked"])
+        self.notify("notes", channel="@notify", text="done")
+        self.assertEqual(self.notes.sent, ["🔔 **[HostC]** done"], "no 「原本要送到」 note: it went where it was meant to")
+        with mock.patch.object(posts, "notify_default", return_value="notes"):
+            self.post(channel="#@notify", text="a report", from_name="HostB")
+            self.post(channel="@audit", text="a record", from_name="HostB")
+        self.assertEqual(self.notes.sent[-1], "📨 來自 HostB\na report")
+        self.assertEqual(self.bot.audit_ch.sent[-1], "📨 來自 HostB\na record")
+        self.assertEqual(len(self.bot.guild.text_channels), 3, "nothing made")
+        self.assertEqual(self.bot.tmux.given, [])
+
+    def test_reserved_audit_before_the_bot_found_it_goes_to_the_default(self):
+        self.bot.audit_ch = None
+        self.notify("notes", channel="@audit", text="x")
+        self.assertEqual(len(self.notes.sent), 1)
+        self.assertIn("x", self.notes.sent[0])
+
     def test_a_notification_for_a_channel_that_is_not_there_goes_to_the_default_saying_so(self):
         """#issues 7 (2026-10-11): it was dropped with one line in #audit, and dcnotify said it went."""
         before = len(self.bot.guild.text_channels)
@@ -1423,9 +1444,11 @@ class FewerListCalls(unittest.TestCase):
 
         def urlopen(req, timeout=None):
             raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(b'{"retry_after": 0.01}'))
-        err, out = io.StringIO(), io.StringIO()
+        err, out, state = io.StringIO(), io.StringIO(), tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
         with mock.patch.object(mod.urllib.request, "urlopen", urlopen), mock.patch.object(mod.time, "sleep", lambda s: None), \
                 mock.patch.object(postbox, "write", written.append), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                mock.patch.object(mod.config, "STATE", state.name), \
                 mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"channel": "notes", "text": "x"}))):
             with self.assertRaises(SystemExit) as e:
                 mod.main(["post"])

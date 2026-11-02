@@ -88,6 +88,8 @@ ALWAYS = ("altention/update.py", "altention/sync.py", "altention/config.py", "al
           "altention/cron_update.py", "altention/cron_sync.py",  # the cron entries themselves
           "altention/dc/post.py", "altention/dc/notify.py",  # every Claude's message and every notice
           "altention/update_go.py", "altention/dc/card.py",  # the update button's way (C-57 U2)
+          "altention/plugin_update.py", "altention/plugin.py",  # and the plugins' (C-61 E3: update_go imports them)
+          "altention/catalog.py",  # the official plugin list, looked at in update_go's plugins round (C-81)
           # tools without an extension every Claude or every notice goes through (manager 2026-10-06)
           "dcbot/tools/dchook", "dcbot/tools/dcctl", "dcbot/tools/dcremote",
           "bin/home-pull", "bin/home-git", "bin/altention")
@@ -121,6 +123,7 @@ def last_ok(name):
 
 
 BLOCKED = []  # (upstream hash, why) when this round refused the upstream
+OURS = []     # set when this round found this checkout is this machine's engine (only then its plugins round)
 REACHED = []  # set when this round compared with the upstream (updated, nothing new, refused): only then alive
 SKIPPED = []  # why this round did not get that far (the lock, a rebase left, a path not readable, fetch…)
 SAID = []     # what this round came to, in words (updated X → Y, nothing new, refused): the summary line
@@ -274,10 +277,35 @@ def latest_release(rnd):
     return (best[1], commit) if commit else None
 
 
-def available(found, rnd=None):
+LATER = []  # the release this round's notify left for plugins_round to tell with the plugins' (one card a round)
+
+
+def plugins_round_here():
+    """Whether this engine can run plugins-round (a whole engine: its bin/altention)."""
+    return os.path.exists(os.path.join(ENGINE, "bin", "altention"))
+
+
+def mark_told(tag):
+    """update-available's told set to `tag` (told by plugins_round's card)."""
+    path = os.path.join(state_dir(), "update-available")
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("tag") == tag:
+            d["told"] = tag
+            with open(path + ".tmp", "w") as f:
+                json.dump(d, f)
+            os.replace(path + ".tmp", path)
+    except (OSError, ValueError):
+        pass
+
+
+def available(found, rnd=None, later=False):
     """update-available: the release newer than HEAD that notify mode saw ({tag, commit, at, told}), for doctor;
     removed when there is none or the mode is not notify. A release not told yet is told (C-18: once per release,
-    pushed out like a notice; told: the tag whose notice went out, kept while the file is). True when told now."""
+    pushed out like a notice; told: the tag whose notice went out, kept while the file is). True when told now.
+    later (C-61 E3): not told here but left in LATER, for plugins_round's card with the plugins on it (manager
+    2026-10-20: one card a round); main tells it the old way when that round did not."""
     path = os.path.join(state_dir(), "update-available")
     try:
         with open(path) as f:
@@ -286,7 +314,9 @@ def available(found, rnd=None):
         told = None
     try:
         if found:
-            if told != found[0] and tell_release(rnd, found[0]):
+            if told != found[0] and later:
+                LATER.append(found[0])
+            elif told != found[0] and tell_release(rnd, found[0]):
                 told = found[0]
             os.makedirs(state_dir(), exist_ok=True)
             with open(path + ".tmp", "w") as f:
@@ -1036,7 +1066,8 @@ def check_tree(rnd, upstream, files):
 
 
 LOADED = ("altention.update", "altention.sync", "altention.config", "altention.engine_id",
-          "altention.update_go")  # the button's way finishes in the new version's update_go (C-57 U2)
+          "altention.update_go",  # the button's way finishes in the new version's update_go (C-57 U2)
+          "altention.plugin_update")  # which moves the plugins (C-61 E3)
 
 
 def load_check(rnd, upstream, base):
@@ -1177,6 +1208,7 @@ def one_round(force_release=False):
     if kind != "ok":
         SKIPPED.append("判斷不了這份是不是這台的引擎（%s）" % why)
         return 0
+    OURS.append(True)
     if not os.path.lexists(os.path.join(os.path.realpath(ENGINE), ".git")):  # unpacked from an archive: no upstream
         REACHED.append("not a checkout")
         SAID.append("這份引擎不是 git checkout（解開的壓縮檔），不會自動更新：新版請重新下載")
@@ -1234,7 +1266,7 @@ def one_round(force_release=False):
             rel = latest_release(rnd)
             newer = rel if rel and head and rnd.git("merge-base", "--is-ancestor", rel[1], head).returncode != 0 else None
             if mode == "notify" or not newer:
-                told = available(newer if mode == "notify" else None, rnd)
+                told = available(newer if mode == "notify" else None, rnd, later=plugins_round_here())
                 REACHED.append(mode)
                 SAID.append("有新版 %s（core.update 是 notify：不自動更新%s）" % (newer[0], "；已推播" if told else "") if newer
                             else "沒有比現在新的發佈版本（%s）" % (rel[0] if rel else "還沒有任何發佈版本"))
@@ -1308,6 +1340,61 @@ def one_round(force_release=False):
         rnd.lock.close()
 
 
+PLUGINS_UNTIL = 780  # seconds into the round the plugins may take (cron_update.py stops a round at 900)
+PLUGINS_LEAST = 60   # less than this left: not started this round
+
+
+TOLD = "ALT-TOLD "  # plugins-round's line for the engine release its card told (with --tell)
+
+
+def plugins_round(started, tell=None):
+    """C-61 E3: after the engine (the git lock let go), `altention update plugins-round` in a session of its own:
+    this machine's plugins follow the instance, and on the bot's machine their new releases are looked for (the
+    card, or moved when they update by themselves); `tell`, the engine's release this round left untold, goes on
+    that same card. Stopped whole at PLUGINS_UNTIL; its words go in the round's line. The set of releases told."""
+    until = started + PLUGINS_UNTIL
+    left = int(until - time.time())
+    if left < PLUGINS_LEAST:
+        SAID.append("插件這一輪沒時間看，下一輪再看")
+        return set()
+    cmd = os.path.join(ENGINE, "bin", "altention")
+    if not os.path.exists(cmd):  # not a whole engine (a test's): nothing to run
+        return set()
+    try:
+        p = subprocess.Popen([cmd, "update", "plugins-round", str(int(until - 30))] + (["--tell", tell] if tell else []),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             universal_newlines=True, errors="replace", start_new_session=True)
+    except OSError as e:
+        SAID.append("插件這一輪沒跑（%s）" % e)
+        return set()
+    try:
+        out, _ = p.communicate(timeout=left)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:  # and what left its group but not its session (setup items' own groups), as update_go.run does
+            subprocess.run(["pkill", "-KILL", "-s", str(p.pid)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            out, _ = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out = ""
+        SAID.append("插件這一輪 %d 秒沒做完，已中止，下一輪再看" % left)
+        return set()
+    said = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    told = set(l[len(TOLD):].strip() for l in said if l.startswith(TOLD))
+    said = [l for l in said if not l.startswith(TOLD)]
+    if p.returncode == 0:
+        SAID.extend(said)
+    elif not (p.returncode == 2 and "plugins-round" not in out):  # an engine whose update_go has no plugins yet
+        SAID.append("插件這一輪出錯（結束碼 %s）：%s" % (p.returncode, " ".join(said)[-200:]))
+    return told
+
+
 LOCK_BUSY = "git 鎖被別人拿著"
 LOCKED = 75  # update.py --release's exit when the git lock was held and nothing was done (EX_TEMPFAIL)
 
@@ -1316,7 +1403,8 @@ def main(argv):
     if argv not in ([], ["--release"]):
         print(__doc__)
         return 2
-    del BLOCKED[:], REACHED[:], SKIPPED[:], SAID[:], ALERTED[:]  # this round's own
+    del BLOCKED[:], OURS[:], LATER[:], REACHED[:], SKIPPED[:], SAID[:], ALERTED[:]  # this round's own
+    started = time.time()
     try:
         code = one_round(force_release=bool(argv))
     except Exception as e:  # written down; no DONE line, so cron_update.py fast-forwards by plain git
@@ -1328,6 +1416,19 @@ def main(argv):
             SAID.append(done)
     except Exception as e:
         alert("update", "deps", "裝機器人的套件這一步出錯（%s: %s）" % (type(e).__name__, e))
+    told = set()
+    if OURS:
+        try:
+            told = plugins_round(started, LATER[0] if LATER else None)
+        except Exception as e:
+            alert("update", "plugins", "插件這一步出錯（%s: %s）" % (type(e).__name__, e), notify=False)
+    for tag in LATER:  # plugins_round did not tell it (timed out, failed, a go running): the engine's 🆕 as before
+        if tag in told:
+            mark_told(tag)
+            SAID.append("已推播：有新版 %s（插件那一輪的卡片上）" % tag)
+        elif tell_release(Round(), tag):
+            mark_told(tag)
+            SAID.append("已推播：有新版 %s" % tag)
     if REACHED:  # only a round that compared with the upstream; a skipped one leaves the record (and its block) as it was
         mark_alive()
         try:

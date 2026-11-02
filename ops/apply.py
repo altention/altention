@@ -48,8 +48,10 @@ before it went through.
 """
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 
 from common import engine_on, inventory, run_on
 
@@ -63,6 +65,63 @@ def engine_origin():
     r = subprocess.run(["git", "-C", os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "remote", "get-url",
                         "origin"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
     return r.stdout.strip()
+
+
+def instance_origin():
+    """This machine's instance's origin when another machine can reach it too (a URL, or user@host:path; not file://,
+    a folder of this machine's like /srv/…), else ""."""
+    try:
+        inst = config.instance_dir()
+    except Exception:
+        return ""
+    if not inst:
+        return ""
+    r = subprocess.run(["git", "-C", inst, "remote", "get-url", "origin"], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, universal_newlines=True)
+    url = r.stdout.strip()
+    return url if r.returncode == 0 and re.match(r"^([a-z][a-z0-9+.-]*://|[^/\s]+@[^/\s]+:)", url) \
+        and not url.lower().startswith("file:") else ""
+
+
+def join_from(inv):
+    """The instance a machine joins: the list's instance.repo, else this machine's instance's origin (C-84: a list
+    without instance.repo left the other machines' instance as it was); "" when neither."""
+    return (inv.get("instance") or {}).get("repo") or instance_origin()
+
+
+JOINED_NOW = "ALT-INSTANCE-JOINED"  # ops/instance.py join's line when it cloned the instance just now
+JOINED = "joined.json"  # in apply's own state folder: {machine: {"at", "url"}}, read by doctor (instance.joined-by-apply)
+
+
+def joined_in(out):
+    """([url], the output without those lines): instance.py join's ALT-INSTANCE-JOINED lines as they reach apply,
+    indented by the remote script's step() (#code-review of 0b99680)."""
+    lines = out.splitlines()
+    found = [l.strip()[len(JOINED_NOW) + 1:].strip() for l in lines if l.strip().startswith(JOINED_NOW + " ")]
+    return found, "\n".join(l for l in lines if not l.strip().startswith(JOINED_NOW + " "))
+
+
+def joined_path():
+    return os.path.join(os.path.expanduser("~/.local/state/altention"), "apply", JOINED)
+
+
+def note_joined(machine, url, now=None):
+    """Write down that apply joined `machine` to the instance at `url` just now; never fails apply."""
+    path = joined_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        d = d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        d = {}
+    d[machine] = {"at": time.time() if now is None else now, "url": url}
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
 
 
 def clone_from(inv):
@@ -128,8 +187,9 @@ if [ -n "$NAME" ] && [ ! -s "$HOME/.config/altention/host" ]; then  # a name it 
 fi
 INSTANCE={instance}
 if [ -n "$INSTANCE" ]; then step "接上實例" "ALT-STEP-OK instance-join" python3 "$H/ops/instance.py" join "$INSTANCE"; fi
-# the instance up to date too, past its settings check (the way out when that check holds back by mistake)
-if [ -n "$INSTANCE" ]; then step "更新實例" "ALT-STEP-OK instance-pull" python3 "$H/ops/instance.py" pull --take-refused; fi
+# the instance up to date too, past its settings check (the way out when that check holds back by mistake); also
+# when the list names no instance.repo: a machine that joined one before pulls its own (C-84), one with none says so
+step "更新實例" "ALT-STEP-OK instance-pull" python3 "$H/ops/instance.py" pull --take-refused
 if [ {bot_leaves} = 1 ]; then  # the bot has moved away: stop it first, the installer's plugins.py apply then takes its two lines out
   step "停掉機器人（dcbot/uninstall.sh；先停行程，cron 的兩行接著由安裝拿掉）" "ALT-STEP-OK dcbot-uninstall" "$H/dcbot/uninstall.sh"
 fi
@@ -344,12 +404,16 @@ def main(argv=None):
             script = PREVIEW.format(engine=engine_on(m), allow=allow_args + holds)  # what is held back is shown as such (#code-review-2)
         else:
             script = SCRIPT.format(engine=engine_on(m), repo=config.shell_quote(clone_from(inv)), name=config.shell_quote(n),
-                                   instance=config.shell_quote((inv.get("instance") or {}).get("repo", "")),
+                                   instance=config.shell_quote(join_from(inv)),
                                    bot_leaves="1" if bot_leaves else "0", allow=allow_args + holds, take="1" if take else "0",
                                    how=how)
         alias, code, out, err = run_on(m, script, interpreter="sh", timeout=900)
+        joined, out = joined_in(out)
         if out.strip():
             print(out.rstrip())
+        if joined and not dry:  # C-84 (manager 2026-10-22): said, and kept for doctor; nobody is asked
+            print("  ℹ %s 還沒接上實例，已經用 %s 接上" % (n, joined[0]))
+            note_joined(n, joined[0])
         if code == 3 and not dry:  # everything done; only the supervisor someone stopped was left stopped
             print("  ⚠ 這台都做完了，只有 supervisor 被人停著（state/stop），沒有啟動")
             stopped = True

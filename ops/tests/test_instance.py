@@ -5,6 +5,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.
 from altention import testing as _testing  # noqa: E402
 _testing.guard_home()  # tests never touch the real home (altention/testing.py)
 import io
+import contextlib
 import json
 import os
 import shutil
@@ -80,8 +81,12 @@ class SeedAndJoin(Rig):
         self.run_on("host-a", first)
 
         def second(home):
-            self.assertEqual(instance.join(self.url), 0)
-            self.assertEqual(instance.join(self.url), 0, "again: nothing changes")
+            with contextlib.redirect_stdout(io.StringIO()) as o:
+                self.assertEqual(instance.join(self.url), 0)
+            self.assertIn("%s %s" % (instance.JOINED_NOW, self.url), o.getvalue(), "C-84: joined just now, said for apply")
+            with contextlib.redirect_stdout(io.StringIO()) as o:
+                self.assertEqual(instance.join(self.url), 0, "again: nothing changes")
+            self.assertNotIn(instance.JOINED_NOW, o.getvalue())
             inst = os.path.realpath(os.path.join(home, "altention", "instance"))
             self.assertEqual(config.instance_dir(), inst)
             self.assertEqual(os.path.realpath(os.path.join(home, "altention", "engine")), os.path.realpath(self.engine))

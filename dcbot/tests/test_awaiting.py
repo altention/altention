@@ -24,7 +24,8 @@ class Base(unittest.TestCase):
                    mock.patch.object(ask, "ASKS", os.path.join(self.state, "asks")),
                    mock.patch.object(ask, "ANSWERS", os.path.join(self.state, "answers")),
                    mock.patch.object(awaiting, "menus", None), mock.patch.object(awaiting, "written", None),
-                   mock.patch.object(awaiting, "on", True), mock.patch.object(awaiting, "failing", False)]
+                   mock.patch.object(awaiting, "on", True), mock.patch.object(awaiting, "failing", False),
+                   mock.patch.object(awaiting, "said", {})]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -56,10 +57,12 @@ class Questions(Base):
         async def go():
             await self.asker.post(self.ch, {"ask_id": "7-1", "questions": [Q1, Q2]})
             self.assertEqual(self.kinds(), [("9", "question")])
-            self.assertEqual(sorted(self.file()[0]), ["channel", "kind", "since"])
+            self.assertEqual(sorted(self.file()[0]), ["channel", "kind", "since", "text"])
+            self.assertEqual(self.file()[0]["text"], "Which one?")
             self.assertAlmostEqual(self.file()[0]["since"], __import__("time").time(), delta=5)
             await self.asker.on_interaction(Click(self.ch, ask.custom_id("7-1", 0, "1")))
             self.assertEqual(self.kinds(), [("9", "question")], "one of its two answered: it still waits")
+            self.assertEqual(self.file()[0]["text"], "Which ones?", "on the one not answered yet")
             await self.asker.on_interaction(Click(self.ch, ask.custom_id("7-1", 1, "s"), values=["0"]))
             self.assertEqual(self.kinds(), [])
         asyncio.run(go())
@@ -224,7 +227,9 @@ class Restart(Base):
         before = time.time()
         awaiting.start()
         self.assertGreaterEqual(self.whole()["at"], before, "and its time is the new writing's")
-        self.assertEqual(self.file(), [{"channel": "9", "kind": "plan", "since": 40.0}, {"channel": "9", "kind": "question", "since": 50.0}])
+        self.assertEqual(self.file(), [{"channel": "9", "kind": "plan", "since": 40.0},
+                                       {"channel": "9", "kind": "question", "since": 50.0, "text": "Which one?"}],
+                         "(a plan's text is what Claude said: nothing known after a restart, no key)")
 
     def test_nothing_open_is_an_empty_list(self):
         os.makedirs(self.state)
@@ -357,3 +362,63 @@ class CannotWrite(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Text(Base):
+    """C-88: "text", one line of what it waits on, for a reader that may send it off this machine."""
+    def test_a_menu_and_a_plan_take_what_claude_last_said_there(self):
+        m = menus.Menus(None)
+        m.open["1"] = {"channel": 9, "msg": 1, "title": "t"}
+        self.assertNotIn("text", self.file()[0], "nothing said yet: no key")
+        awaiting.said["9"] = "要刪掉這三個檔。"
+        ask.save("7-2", {"channel": "9", "kind": "plan", "questions": [Q1], "answers": {}, "messages": {}, "ts": 40.0})
+        self.assertEqual([(w["kind"], w.get("text")) for w in self.file()], [("plan", "要刪掉這三個檔。"), ("menu", "要刪掉這三個檔。")])
+        awaiting.said["5"] = "another channel's"
+        self.assertNotIn("another", json.dumps(self.file()))
+
+    def test_a_question_with_no_words_takes_what_claude_said(self):
+        awaiting.said["9"] = "先問一下。"
+        ask.save("7-1", {"channel": "9", "questions": [{"header": "h"}], "answers": {}, "messages": {}, "ts": 1.0})
+        self.assertEqual(self.file()[0]["text"], "先問一下。")
+
+    def test_masked_before_it_is_cut(self):
+        key = "sk-ant-" + "a" * 30
+        ask.save("7-1", {"channel": "9", "questions": [{"question": "x" * 70 + " " + key + " ok?"}], "answers": {},
+                         "messages": {}, "ts": 1.0})
+        text = self.file()[0]["text"]
+        self.assertNotIn("sk-ant", text)
+        self.assertEqual(len(text), 80)
+        self.assertTrue(text.startswith("x" * 70 + " [RED") and text.endswith("…"), text)
+
+
+class Line(unittest.TestCase):
+    def test_one_line(self):
+        L = awaiting.line
+        self.assertEqual(L("好的。接著做下一步。"), "好的。")
+        self.assertEqual(L("Done. Next I run the tests."), "Done.")
+        self.assertEqual(L("v0.5.0 is out"), "v0.5.0 is out", "a dot inside a word ends nothing")
+        self.assertEqual(L("\n\n## 結論\n第二行"), "結論", "the first line with words, Markdown marks dropped")
+        self.assertEqual(L("```bash\nls -la\n```\n- 列出檔案。然後"), "列出檔案。", "a code block is no sentence")
+        self.assertEqual(L("a\x1b[31mred\x07 \t  b"), "a [31mred b", "control characters are blanks, blanks run together")
+        self.assertEqual(L("字" * 100), "字" * 79 + "…")
+        self.assertEqual(len(L("字" * 80)), 80)
+        for nothing in (None, "", "   \n\t", "```\n```", 5, ["a"]):
+            self.assertIsNone(L(nothing), nothing)
+
+    def test_code_blocks_are_skipped_whole(self):
+        """Manager's ruling on C-88's review: what is inside a code block is never the line."""
+        L = awaiting.line
+        self.assertEqual(L("```\npassword = \"hunter2\"\n```\n第二行。後面"), "第二行。", "a reply that begins with a block")
+        self.assertEqual(L("~~~\nx = 1\n~~~\n\n  ## 結果\n"), "結果")
+        self.assertEqual(L("````md\n```\nnot closed by a shorter mark\n```\n````\nafter."), "after.")
+        for all_code in ("```py\nsecret = 'x'\n```", "```\na\n```\n\n```\nb\n```\n", "~~~\nonly\n"):
+            self.assertIsNone(L(all_code), all_code)
+        self.assertEqual(L("看這段：\n```\ncode"), "看這段：", "the words before a block")
+        self.assertIsNone(L("```\nnot closed\nthe rest. All skipped."), "a block not closed runs to the end")
+
+    def test_keys_never_get_through(self):
+        for text in ("token ghp_" + "A" * 36, "-----BEGIN RSA PRIVATE KEY-----\nMIIE", "x" * 75 + " sk-ant-" + "b" * 30):
+            out = awaiting.line(text) or ""
+            self.assertNotIn("ghp_A", out)
+            self.assertNotIn("MIIE", out)
+            self.assertNotIn("sk-ant", out)

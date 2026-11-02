@@ -29,6 +29,39 @@
                                               or spend the subscription; --dry-run only says it, --if-changed does
                                               nothing when the engine is the one last compared (C-57 S3)
   python3 ops/setup.py tutorial               #tutorial opened, its Claude asked to start the tour at step 1
+  python3 ops/setup.py plugin-add NAME [vX.Y.Z] [--yes [--hooks-ok]]
+                                              a plugin from the official list (C-81 K2, ops/plugins.py add): without
+                                              --yes what it would do here; with it written into the instance and
+                                              pushed, then install.sh on this machine
+  python3 ops/setup.py plugin-apply PLUGIN MACHINE
+                                              after plugin-add, another machine brought in line now (ops/apply.py
+                                              MACHINE: all it has not taken yet), then doctor; only for an external
+                                              plugin the instance names that runs on MACHINE, not this machine
+  python3 ops/setup.py plugin-steps PLUGIN [--all] [--json]
+                                              what PLUGIN still needs here (C-77, altention/plugin_steps.py): its
+                                              system tools and its guide[] steps, each checked again now, the next
+                                              step marked; installs nothing. --all: on the other machines that use
+                                              it too, each its own plan (C-77 G2). Exit 0 all done, 3 something left
+  python3 ops/setup.py plugin-run PLUGIN STEP
+                                              a guide[] step the plugin does itself (its "run"), once the person
+                                              said yes, then the step checked again (C-77 G2)
+  python3 ops/setup.py offer PLUGIN             an optional plugin of the official list whose moment came (its offer.when
+                                              "asked"): asked in #setup like the reconcile's questions, when it may be
+                                              (C-64: never after 「先不要」, at most three 「之後再說」)
+  python3 ops/setup.py secret-send PLUGIN NAME MACHINE
+                                              a plugin's secret stored here, written on MACHINE the same way (ssh,
+                                              the value inside the script on stdin, never on a command line); only
+                                              to a machine that uses the plugin (C-77 G3)
+  python3 ops/setup.py plugin-finish PLUGIN
+                                              once PLUGIN needs nothing more here: install.sh again, so what waited for
+                                              its steps (guide[]'s gate) starts now (C-77 G5)
+  python3 ops/setup.py plugin-tool PLUGIN NEED
+                                              a system tool installed with the plugin's command for this system,
+                                              only one without sudo (sudo is the person's, in their own terminal),
+                                              then checked again (C-77 G2)
+  python3 ops/setup.py plugin-said PLUGIN STEP yes|no
+                                              the person's answer to a step that cannot be checked here (its check is
+                                              null, or gave 3 just now); STEP is a guide[] id or needs:<name>
 
 Why one command: #setup's Claude runs in auto mode with one allow rule, `Bash(python3 <engine>/ops/setup.py:*)`
 (the folder install.py makes, setup_folder()); what is written (settings, the crontab through install.sh, a push)
@@ -57,7 +90,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)
 sys.path.insert(0, ENGINE)
 sys.path.insert(0, HERE)
-from altention import config, plugin  # noqa: E402
+from altention import config, plugin, text  # noqa: E402
 import plugins  # noqa: E402
 
 SECRETARY = plugins.SECRETARY
@@ -221,6 +254,10 @@ def flow(answered, found=None):
         asked.append(plugins.plan_question())
     if is_on("progress", answered, found):
         asked.append(plugins.progress_question())
+    from altention import offers  # C-64: an optional plugin of the official list offered at setup
+    settings = read_settings()
+    asked += [offers.question(n, d) for n, d in offers.candidates(settings=settings).items()
+              if n in offers.due(("install",), settings=settings)]
     off = {n for n, _, _ in found if not is_on(n, answered, found)}
     backup = plugins.backup_questions(off)
     asked.append(backup[0])
@@ -303,6 +340,10 @@ def question_for(key, found=None, answered=None):
         return plugins.dashboard_question(again=answered.get(key) == "make", gone=channel_gone(key, found))
     if key == "usage.plan":
         return plugins.plan_question()
+    if key.startswith("offer."):  # C-64: the reconcile's, or setup.py offer's
+        from altention import offers
+        d = offers.candidates(settings=read_settings()).get(key.split(".", 1)[1])
+        return offers.question(key.split(".", 1)[1], d) if d is not None else None
     if key == "plugins.%s" % SECRETARY:
         return plugins.secretary_question(found, again=answered.get(key) == "on", gone=channel_gone(key, found))
     import instance
@@ -314,7 +355,7 @@ def backups_missing(answered):
     if answered.get("backup") != "now":
         return []
     import remote
-    return [n for n in answered.get("backup.items") or [] if n in REMOTE_NAMES and not remote_set(remote, n)]
+    return [n for n in answered.get("backup.items") or [] if remote.known(n) and not remote_set(remote, n)]
 
 
 def remote_set(remote, name):
@@ -322,7 +363,7 @@ def remote_set(remote, name):
         r = subprocess.run(["git", "-C", config.instance_dir(), "remote", "get-url", "origin"],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
         return r.returncode == 0 and bool(r.stdout.strip())
-    return bool(config.setting("sync.dirs.%s.remote" % remote.NAMES[name]))
+    return bool(config.setting("sync.dirs.%s.remote" % remote.key_for(name)))
 
 
 def update_unfinished():
@@ -336,7 +377,7 @@ def update_unfinished():
         return None
     done = d.get("done") if isinstance(d.get("done"), list) else []
     return {"version": d.get("tag"), "moved": "update" in done,
-            "left": [words for key, words in update_go.STEPS if key not in done]}
+            "left": update_go.steps_left(d)}
 
 
 def status(as_json, out=None):
@@ -623,6 +664,13 @@ def answer(key, value, out=None):
                     turn(d, p, False, machine)
             elif config.setting(k) and str(config.setting(k)) not in there:
                 drop(d, k)  # a channel that is not there any more: made again by done
+    elif key.startswith("offer."):  # C-64: the person's answer kept in the instance's offers
+        from altention import offers
+        if value not in offers.ANSWERS:
+            raise Refused(text.t("offer.answer_values"))
+        name = key.split(".", 1)[1]
+        kept = offers.record(d, name, value)
+        said.append(text.t("offer.said_" + kept, plugin=name, most=offers.MAX_LATER))
     elif key == "install":
         if value not in q["values"]:
             raise Refused("只能是 new（新安裝）或 restore（從備份還原）")
@@ -831,11 +879,12 @@ def tutorial(out=None):
 
 def backup_set(name, target, create, out=None):
     out = out or sys.stdout
-    if name not in REMOTE_NAMES:
-        raise Refused("只能是 %s" % "、".join(REMOTE_NAMES))
+    import remote
+    if not remote.known(name):
+        raise Refused("只能是 %s，或 plugin:<插件>/<資料名>（插件的資料，C-61）" % "、".join(REMOTE_NAMES))
     if create:
         if not re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", target):
-            raise Refused("--create 要寫成 帳號/repo 名稱，例如 alice/altention-%s" % name)
+            raise Refused("--create 要寫成 帳號/repo 名稱，例如 alice/altention-%s" % re.sub(r"[^A-Za-z0-9_.-]+", "-", name))
         if subprocess.run(["gh", "repo", "view", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
             raise Refused("%s 已經有了：沒有重建、沒有清空。要用它就把網址交給 backup-set（只有之前同一種的備份過得了檢查），"
                           "不然換一個名字" % target)
@@ -1265,7 +1314,7 @@ def install_restored(mark, out):
 SETUP_FOLDER = "~/.local/state/altention/setup"  # #setup's working folder (C-48; the bot opens it there)
 # `altention update` subcommands #setup's Claude may run (C-57's U chain, support-3 2026-10-19): one rule each, so
 # that a subcommand added later is not let through by itself. Its update-work/ folder in there is never touched here.
-UPDATE_SUBCOMMANDS = ("check", "go", "save", "apply", "aside", "undo")  # aside: C-66
+UPDATE_SUBCOMMANDS = ("check", "go", "save", "apply", "aside", "undo", "plugin")  # aside: C-66; plugin: C-61 E3
 SETUP_SKILLS = ("setup", "update")  # linked into #setup's folder only (.local-only): the setup, and an update handed over
 
 
@@ -1412,6 +1461,11 @@ def reconcile_plan(chans):
         if a["question"] not in ask:
             ask.append(a["question"])
             plan.append({"kind": "ask", "what": a["question"], "say": "%s 沒設定（到 #setup 問）" % a["key"]})
+    from altention import offers  # C-64: an install offer answered 「之後再說」, asked again after an update
+    for n in offers.due(("install",), settings=config.settings(), later_only=True):
+        if "offer.%s" % n not in ask:
+            ask.append("offer.%s" % n)
+            plan.append({"kind": "ask", "what": "offer.%s" % n, "say": text.t("offer.reconcile", plugin=n)})
     order = ("dcbot.default_permission", "plugins.%s" % SECRETARY, "dashboard", "usage.plan")  # #setup's order
     rank = lambda p: (p["kind"] != "fill", order.index(p["what"]) if p["what"] in order else len(order))  # noqa: E731
     plan.sort(key=rank)
@@ -1540,6 +1594,314 @@ def done_restored(mark, out):
     return 0
 
 
+def offer(name, out=None):
+    """setup.py offer NAME (C-64 "asked"): something found the moment for an optional plugin of the official list
+    (its offer.when "asked"); when it may be offered, it is put in setup.ask and the bot asked to open #setup, where it
+    is asked like the reconcile's questions. Exit 0 offered, 1 not (said why)."""
+    from altention import offers
+    out = out or sys.stdout
+    d = read_settings()
+    p = offers.candidates(settings=d).get(name)
+    if p is None or p["offer"].get("when", "install") != "asked":
+        raise Refused(text.t("offer.not_listed", plugin=name))
+    if not offers.open_for(name, d):
+        raise Refused(text.t("offer.closed", plugin=name, most=offers.MAX_LATER))
+    st = d.get("setup") if isinstance(d.get("setup"), dict) else None
+    if st is not None and st.get("done") is not True:
+        raise Refused(text.t("offer.in_setup", plugin=name))
+    if st is None:  # set up before #setup: asked like the reconcile's (no tour)
+        st = d["setup"] = {"done": True, "since": "reconcile"}
+    key = "offer.%s" % name
+    if key not in asked(st):
+        st["ask"] = asked(st) + [key]
+        write_settings(d)
+        commit("setup: offer %s" % name)
+        r = dcctl("post", inp=json.dumps({"channel": "setup", "open_setup": True, "text": ""}))
+        if r.returncode != 0:
+            out.write("請機器人開 #setup 沒送出去：%s\n" % r.stdout.strip()[-200:])
+    out.write(text.t("offer.offered", plugin=name) + "\n")
+    return 0
+
+
+def plugin_add(rest, out=None):
+    """setup.py plugin-add: ops/plugins.py add, word for word (its usage checked there); once written, install.sh
+    here, as done() runs it (#setup's Claude has this command's rule only)."""
+    import plugins
+    out = out or sys.stdout
+    me = "python3 %s" % os.path.join(ENGINE, "ops", "setup.py")
+    code = plugins.main(["add"] + rest, again=me + " plugin-add", apply_cmd=me + " plugin-apply")
+    if code != 0 or "--yes" not in rest:
+        return code
+    r = script([os.path.join(ENGINE, "install.sh")])
+    last = [x for x in r.stdout.splitlines() if x.strip()][-1:] or ["（沒有輸出）"]
+    out.write("install.sh：%s\n" % last[0])
+    if r.returncode == 1:  # as done(): 2 is something left for the person, said by install itself
+        raise Failed("install.sh 沒跑完（log：~/.local/state/altention/install/last.log）；修好再跑一次 setup.py plugin-add")
+    return 0
+
+
+def _plugin_here(name):
+    """(folder, plugin.json) of PLUGIN as this machine runs it; Refused when it is not on here or cannot be read."""
+    rows, _ = plugin.on_this_machine()
+    for n, folder, d, where, why in rows:
+        if n == name:
+            if d is None:
+                raise Refused(text.t("setup.steps_unreadable", plugin=name))
+            if where != "on":
+                raise Refused(text.t("setup.steps_not_here", plugin=name, why=why or where))
+            return folder, d
+    raise Refused(text.t("setup.steps_no_plugin", plugin=name))
+
+
+ELSEWHERE_TIMEOUT = 300  # another machine's plugin-steps over ssh: its own plan is at most PLAN_LIMIT (120 s)
+ELSEWHERE = """import os, subprocess, sys
+engine = os.path.expanduser({engine!r})
+try:
+    r = subprocess.run([sys.executable, os.path.join(engine, "ops", "setup.py"), "plugin-steps", {name!r}, "--json"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout={limit})
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+sys.stdout.write(r.stdout)
+sys.exit(r.returncode)
+"""
+
+
+def plans_elsewhere(name, d):
+    """{machine: plan, or {"error": words}} of PLUGIN on the other machines that use it (C-77 G2: system tools are
+    each machine's own), each asked over ssh to run its own plugin-steps."""
+    from common import engine_raw, inventory, run_on
+    from altention import plugin_steps as steps
+    entry = (config.settings().get("plugins") or {}).get(name) or {}
+    machines = inventory().get("machines") or {}
+    out = {}
+    for m in plugins.users_elsewhere(d, name, entry if isinstance(entry, dict) else {}):
+        if m not in machines:
+            out[m] = {"error": text.t("setup.steps_not_listed", machine=m)}
+            continue
+        script = ELSEWHERE.format(engine=engine_raw(machines[m]), name=name, limit=steps.PLAN_LIMIT + 60)
+        alias, rc, stdout, err = run_on(machines[m], script, timeout=ELSEWHERE_TIMEOUT)
+        try:
+            p = json.loads(stdout) if rc in (0, 3) else None
+        except ValueError:
+            p = None
+        last = ([x for x in (stdout or err or "").splitlines() if x.strip()] or [""])[-1][:200]
+        out[m] = p if isinstance(p, dict) else {"error": text.t(
+            "setup.steps_unreachable" if alias is None or rc in (124, 255) else
+            "setup.steps_old_engine" if rc == 2 and "plugin-steps" not in stdout else "setup.steps_failed",
+            machine=m, line=last)}
+    return out
+
+
+def plugin_steps(name, as_json, everywhere=False, out=None):
+    """setup.py plugin-steps: the plan, as plugin_steps.lines() says it (#setup's Claude follows it as written);
+    --all adds the other machines' (plans_elsewhere)."""
+    from altention import plugin_steps as steps
+    out = out or sys.stdout
+    folder, d = _plugin_here(name)
+    p = steps.plan(name, folder, d, config.settings())
+    others = plans_elsewhere(name, d) if everywhere else {}
+    if as_json:
+        out.write(json.dumps({"here": p, "others": others} if everywhere else p, ensure_ascii=False, indent=1) + "\n")
+    else:
+        out.write("\n".join(steps.lines(p)) + "\n")
+        for m, q in sorted(others.items()):
+            out.write("\n" + (text.t("setup.steps_machine", machine=m) + "\n" + "\n".join(steps.lines(q))
+                               if "error" not in q else q["error"]) + "\n")
+    left = p["left"] or any(q.get("left") or "error" in q for q in others.values())
+    return 3 if left else 0
+
+
+def _ran_words(item, rc, output):
+    """How a plugin-run or plugin-tool command ended: one line when it printed nothing (C-77 acceptance)."""
+    tail = _tail(output)
+    return text.t("setup.ran", item=item, code=rc, tail=tail) if tail else text.t("setup.ran_quiet", item=item, code=rc)
+
+
+def _tail(output, n=5):
+    return "\n".join([x for x in output.strip().splitlines() if x.strip()][-n:])[-600:]
+
+
+def _checked_again(name, folder, d, kind, key, out):
+    """After plugin-run or plugin-tool: that one item's state now, said; 0 when its check passes."""
+    from altention import plugin_steps as steps
+    item = next(x for x in steps.plan(name, folder, d, config.settings())[kind] if (x.get("id") or x["name"]) == key)
+    out.write((text.t("setup.ran_check_ok", item=key) if item["state"] == "ok" else
+               text.t("setup.ran_check_why", item=key, why=item["reason"]) if item["reason"] else
+               text.t("setup.ran_check_todo", item=key)) + "\n")
+    return 0 if item["state"] == "ok" else 1
+
+
+def plugin_run(name, step_id, out=None):
+    """setup.py plugin-run: a guide[] step's "run" (the plugin does that step itself), once, with SETUP_TIMEOUT; what
+    it printed last, then the step checked again. Only a step plugin.json gives a "run"."""
+    from altention import plugin_update
+    out = out or sys.stdout
+    folder, d = _plugin_here(name)
+    g = next((g for g in d.get("guide", []) if g["id"] == step_id), None)
+    if g is None or not g.get("run"):
+        raise Refused(text.t("setup.run_none", plugin=name, item=step_id))
+    try:
+        cmd = plugin.expand(g["run"], folder, config.settings())
+    except plugin.PluginError as e:  # a setting it names is not set: nothing run
+        raise Refused(text.t("steps.cannot_run", error=e))
+    rc, output, killed = plugin_update._run(cmd, folder, plugin_update.SETUP_TIMEOUT)
+    out.write(_ran_words(step_id, rc, output) + "\n")
+    if killed or rc != 0:
+        raise Failed(text.t("setup.ran_failed", item=step_id, code=rc))
+    return _checked_again(name, folder, d, "guide", step_id, out)
+
+
+SECRET_SEND = """import base64, os
+value = base64.b64decode({value!r})
+root = os.path.expanduser("~/.config/altention/secrets")
+folder = os.path.join(root, {plugin!r})
+for f in (root, folder):
+    os.makedirs(f, mode=0o700, exist_ok=True)
+    os.chmod(f, 0o700)
+target = os.path.join(folder, {name!r})
+if os.path.lexists(target + ".new"):
+    os.remove(target + ".new")
+fd = os.open(target + ".new", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.write(fd, value)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+os.replace(target + ".new", target)
+print(len(value))
+"""
+SECRET_SEND_TIMEOUT = 120
+
+
+def secret_send(name, secret, machine, out=None):
+    """setup.py secret-send: the value stored here (secret_store) written on MACHINE as secret_store.write does,
+    by a script fed on ssh's stdin (it works whatever engine that machine has); only to a machine that uses PLUGIN.
+    The value is read here by this program alone, never printed; #audit gets a line."""
+    import base64
+    from common import inventory, run_on
+    from altention import secret_store
+    out = out or sys.stdout
+    rows, _ = plugin.on_this_machine()
+    d = next((d for n, _f, d, _w, _y in rows if n == name and d is not None), None)
+    if d is None:
+        raise Refused(text.t("secret.no_plugin", plugin=name))
+    if secret not in [s["name"] for s in d.get("secrets", [])]:
+        raise Refused(text.t("secret.not_declared", plugin=name, name=secret))
+    entry = (config.settings().get("plugins") or {}).get(name) or {}
+    machines = inventory().get("machines") or {}
+    if machine not in plugins.users_elsewhere(d, name, entry if isinstance(entry, dict) else {}) or machine not in machines:
+        raise Refused(text.t("setup.secret_not_user", plugin=name, machine=machine))
+    try:
+        with open(secret_store.path(name, secret), "rb") as f:
+            value = f.read()
+    except OSError:
+        value = b""
+    if not value:
+        raise Refused(text.t("setup.secret_not_here", plugin=name, name=secret))
+    script = SECRET_SEND.format(value=base64.b64encode(value).decode("ascii"), plugin=name, name=secret)
+    alias, rc, stdout, err = run_on(machines[machine], script, timeout=SECRET_SEND_TIMEOUT)
+    if rc != 0 or stdout.strip() != str(len(value)):
+        raise Failed(text.t("setup.secret_send_failed", name=secret, machine=machine,
+                            line=([x for x in (err or stdout or "").splitlines() if x.strip()] or ["?"])[-1][:200]))
+    out.write(text.t("setup.secret_sent", name=secret, machine=machine) + "\n")
+    try:
+        here = config.this_machine()
+    except config.ConfigError:
+        here = "?"
+    secret_store.tell_audit(text.t("secret.audit", plugin=name, name=secret, machine=machine,
+                                   via=text.t("secret.via_sent", machine=here)))
+    return 0
+
+
+def plugin_finish(name, out=None):
+    """setup.py plugin-finish: after the last step, install.sh here (as plugin-add runs it), so the setup items and
+    schedules its gates held start; refused while the plan still has something left."""
+    from altention import plugin_steps as steps
+    out = out or sys.stdout
+    folder, d = _plugin_here(name)
+    p = steps.plan(name, folder, d, config.settings())
+    if p["left"]:
+        raise Refused(text.t("setup.finish_left", plugin=name, n=p["left"]))
+    r = script([os.path.join(ENGINE, "install.sh")])
+    last = [x for x in r.stdout.splitlines() if x.strip()][-1:] or ["（沒有輸出）"]
+    out.write("install.sh：%s\n" % last[0])
+    if r.returncode == 1:
+        raise Failed(text.t("setup.finish_failed"))
+    waiting = steps.gated(name, d)
+    out.write((text.t("install.steps_gated", plugin=name, items="、".join(sorted(waiting)),
+                      steps="」「".join(sorted(set(waiting.values())))) if waiting else text.t("setup.finished", plugin=name)) + "\n")
+    return 0
+
+
+def plugin_tool(name, need, out=None):
+    """setup.py plugin-tool: one system tool installed with plugin.json's command for this system, never one starting
+    with sudo (the person runs those in their own terminal: #setup's Claude never runs sudo), then checked again."""
+    from altention import plugin_steps as steps, plugin_update
+    out = out or sys.stdout
+    folder, d = _plugin_here(name)
+    n = next((n for n in d.get("needs", []) if n["name"] == need), None)
+    cmd = ((n or {}).get("install") or {}).get(steps.os_name())
+    if not cmd:
+        raise Refused(text.t("setup.tool_none", plugin=name, item=need))
+    if cmd.startswith("sudo "):
+        raise Refused(text.t("setup.tool_sudo", item=need, cmd=cmd))
+    rc, output, killed = plugin_update._run(cmd, folder, plugin_update.SETUP_TIMEOUT)
+    out.write(_ran_words(need, rc, output) + "\n")
+    if killed or rc != 0:
+        raise Failed(text.t("setup.ran_failed", item=need, code=rc))
+    return _checked_again(name, folder, d, "needs", need, out)
+
+
+def plugin_said(name, key, answer, out=None):
+    """setup.py plugin-said: kept only for an item asked about, a check null or giving 3 now (one that can be checked
+    counts by its check, never by a word)."""
+    from altention import plugin_steps as steps
+    out = out or sys.stdout
+    if answer not in ("yes", "no"):
+        raise Refused(text.t("setup.said_yes_no"))
+    folder, d = _plugin_here(name)
+    if key.startswith("needs:"):
+        item = next((n for n in d.get("needs", []) if n["name"] == key[6:]), None)
+    else:
+        item = next((g for g in d.get("guide", []) if g["id"] == key), None)
+    if item is None:
+        raise Refused(text.t("setup.said_no_item", plugin=name, item=key))
+    if item.get("check") is not None:
+        st, why = steps.run_check(item["check"], folder, config.settings(), time.time() + steps.CHECK_TIMEOUT)
+        if st != "cannot":
+            raise Refused(text.t("setup.said_checkable_ok", item=key) if st == "ok" else
+                          text.t("setup.said_checkable_why", item=key, why=why) if why else text.t("setup.said_checkable_todo", item=key))
+    steps.said(name, key, answer)
+    out.write(text.t("setup.said_" + answer, plugin=name, item=key) + "\n")
+    return 0
+
+
+def plugin_apply(name, machine, out=None):
+    """setup.py plugin-apply PLUGIN MACHINE: after plugin-add, another machine on the list brought in line now
+    (ops/apply.py MACHINE: everything it has not taken yet, the engine and the other plugins too, then this plugin's
+    folder, schedules and hooks), then doctor's last lines; once the person said yes to that machine (the setup
+    skill's step 6). Only for an external plugin the instance names with a source that runs on MACHINE, never this machine
+    (manager 2026-10-21): anything else is wrong usage (2)."""
+    import plugins
+    out = out or sys.stdout
+    entry = (config.setting("plugins") or {}).get(name) if isinstance(config.setting("plugins"), dict) else None
+    d = plugins.plugin_json_of(name) if isinstance(entry, dict) and "source" in entry and \
+        plugin.source_of(entry) == (True, None) else None  # one with a source (as plugin-add writes), not a local one
+    others = plugins.users_elsewhere(d, name, entry) if d is not None else []
+    if machine not in others:
+        out.write("用法：setup.py plugin-apply <插件> <機器>，只給實例寫了的外部插件、它會用到的別台（%s）\n" % (
+            "%s 用到的別台：%s" % (name, "、".join(others) or "沒有") if d is not None else "實例沒有外部插件 %s" % name))
+        return 2
+    r = script([sys.executable, os.path.join(ENGINE, "ops", "apply.py"), machine])
+    lines = [x for x in r.stdout.splitlines() if x.strip()]
+    out.write("apply %s：%s\n" % (machine, " ｜ ".join(lines[-3:]) or "（沒有輸出）"))
+    d = script([sys.executable, os.path.join(ENGINE, "ops", "doctor.py")])
+    out.write("doctor：%s\n" % (" ｜ ".join([x for x in d.stdout.splitlines() if x.strip()][-6:]) or "（沒有輸出）"))
+    if r.returncode == 1:
+        raise Failed("apply %s 沒做完（它說的在上面）" % machine)
+    return 0
+
+
 def main(argv):
     args = [a for a in argv if a != "--json"]
     as_json = "--json" in argv
@@ -1568,6 +1930,24 @@ def main(argv):
             return done()
         if args[:1] == ["reconcile"] and set(args[1:]) <= {"--dry-run", "--if-changed"}:
             return reconcile("--dry-run" in args, as_json, "--if-changed" in args)
+        if len(args) == 3 and args[0] == "plugin-apply" and not as_json:
+            return plugin_apply(args[1], args[2])
+        if args[:1] == ["plugin-steps"] and len([a for a in args if a != "--all"]) == 2:
+            return plugin_steps([a for a in args if a != "--all"][1], as_json, "--all" in args)
+        if len(args) == 3 and args[0] == "plugin-run" and not as_json:
+            return plugin_run(args[1], args[2])
+        if len(args) == 2 and args[0] == "offer" and not as_json:
+            return offer(args[1])
+        if len(args) == 4 and args[0] == "secret-send" and not as_json:
+            return secret_send(args[1], args[2], args[3])
+        if len(args) == 2 and args[0] == "plugin-finish" and not as_json:
+            return plugin_finish(args[1])
+        if len(args) == 3 and args[0] == "plugin-tool" and not as_json:
+            return plugin_tool(args[1], args[2])
+        if len(args) == 4 and args[0] == "plugin-said" and not as_json:
+            return plugin_said(args[1], args[2], args[3])
+        if args[:1] == ["plugin-add"] and not as_json:
+            return plugin_add(args[1:])
         if args[:1] == ["backup-set"] and not as_json and (len(args) == 3 or (len(args) == 4 and args[2] == "--create")):
             return backup_set(args[1], args[-1], len(args) == 4)
     except Refused as e:

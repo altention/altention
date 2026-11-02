@@ -364,7 +364,7 @@ class Files(unittest.TestCase):
         got = {name: s.parse(items, "host-a")["items"] for name, items in self.SAMPLES.items()}
         self.assertEqual([(i["kind"], i["every"], i["offset_by"], i["scheduler"]) for i in got["chatlog"]],
                          [("every", 900, "machine", True)])  # only exports since 3a.10: may go into the scheduler
-        sync = [{"name": "s", "when": {"every": "15m"}, "do": {"run": "~/agent-home/bin/home-pull --quiet"}}]
+        sync = [{"name": "s", "when": {"every": "15m"}, "do": {"run": "~/engine/bin/home-pull --quiet"}}]
         if hasattr(s.plugin, "forbidden_run"):   # the real rule: the sync is refused without the mark
             self.assertRaises(s.ScheduleError, s.parse, sync, "host-a")
             s.parse([dict(sync[0], scheduler=False)], "host-a")

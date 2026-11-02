@@ -12,7 +12,9 @@
                                                  or it is the engine's; any other failure lets the push go
 
 NAME: instance (the instance repo itself), logs (chatlog's, sync.dirs.chatlog.remote), progress
-(sync.dirs.progress.remote), planner (the secretary's folder, sync.dirs.planner.remote).
+(sync.dirs.progress.remote), planner (the secretary's folder, sync.dirs.planner.remote), or plugin:<plugin>/<data>
+(C-61 E4: a data folder an external plugin on here declares in its plugin.json, sync.dirs.<plugin>/<data>.remote;
+a folder that is not a git repo yet is made one, 700, when it is set).
 
 The checks (all must pass before anything is written):
 - no user, password or token in an https (or any but ssh://) URL: GitHub takes a token as the user alone, and
@@ -59,6 +61,45 @@ from altention import config  # noqa: E402
 
 NAMES = {"instance": None, "logs": "chatlog", "progress": "progress", "planner": "planner"}  # -> sync.dirs.<key>
 LABELS = {"instance": "實例", "logs": "對話紀錄", "progress": "進度", "planner": "秘書"}
+PLUGIN_NAME = re.compile(r"^plugin:([a-z][a-z0-9-]*)/([A-Za-z0-9_-]+)$")  # C-61 E4: an external plugin's data
+
+
+def plugin_data(private_only=False):
+    """[(name, folder, private, plugin)]: the data folders the external plugins on here declare (plugin.json "data"),
+    named plugin:<plugin>/<data>; a data name that cannot be one is left out. [] when the plugins cannot be read."""
+    from altention import plugin
+    try:
+        rows, _ = plugin.on_this_machine()
+    except Exception:
+        return []
+    out = []
+    for n, f, d, where, _ in rows:
+        if where != "on" or d is None or not plugin.external(f):
+            continue
+        for item in d.get("data") or []:
+            name = "plugin:%s/%s" % (n, item.get("name"))
+            if not PLUGIN_NAME.match(name) or (private_only and not item.get("private")):
+                continue
+            try:
+                out.append((name, plugin.expand(item["path"], f), bool(item.get("private")), n))
+            except Exception:  # a setting it names is not there: not this machine's
+                continue
+    return out
+
+
+def known(name):
+    return name in NAMES or bool(PLUGIN_NAME.match(name or ""))
+
+
+def key_for(name):
+    """sync.dirs.<this>: the setting's key of `name` (None for the instance)."""
+    m = PLUGIN_NAME.match(name or "")
+    return "%s/%s" % m.groups() if m else NAMES.get(name)
+
+
+def label(name):
+    m = PLUGIN_NAME.match(name or "")
+    return "插件 %s 的「%s」" % m.groups() if m else LABELS[name]
 ON_MAIN = ("logs", "progress")  # their plugins put the clone on main (`checkout -B main`) and push it there
 HOOK_MARK = "# altention pre-push (ops/remote.py)"
 KEEP = 3600            # seconds a check's answer is kept for the hook (never "public": asked again every time)
@@ -277,8 +318,8 @@ def check(url, name=None):
         out.append(("content", "ok", "是空的"))
     elif name in KINDS:
         pattern, words = KINDS[name]
-        out.append(("content", "ok", "已經有%s的資料" % LABELS[name]) if any(pattern.search(f) for f in files) else
-                   ("content", "no", "不是空的，也看不出是%s的資料（沒有 %s）：免得推進別的 repo，換一個空的" % (LABELS[name], words)))
+        out.append(("content", "ok", "已經有%s的資料" % label(name)) if any(pattern.search(f) for f in files) else
+                   ("content", "no", "不是空的，也看不出是%s的資料（沒有 %s）：免得推進別的 repo，換一個空的" % (label(name), words)))
     else:
         out.append(("content", "unsure", "不是空的（沒說要放哪一樣，沒有核對內容）"))
     if out[-1][1] == "no":
@@ -396,9 +437,12 @@ def repo_of_git_dir(d, work_tree=None):
 # ---------------------------------------------------------------- the four folders
 
 def folder_of(name):
-    """Where that one lives on this machine (it may not be there yet); None for the instance when there is none."""
+    """Where that one lives on this machine (it may not be there yet); None for the instance when there is none, and
+    for a plugin's data when that plugin is not on here."""
     if name == "instance":
         return config.instance_dir()
+    if PLUGIN_NAME.match(name or ""):
+        return next((f for n, f, _p, _pl in plugin_data() if n == name), None)
     data = os.environ.get("ALT_DATA") or os.path.join(config.root(), "data")
     if name == "logs":
         return os.path.expanduser(os.environ.get("CHATLOG_REPO") or os.path.join(data, "logs"))
@@ -408,6 +452,14 @@ def folder_of(name):
     if isinstance(value, str) and value.strip():
         return os.path.expanduser(value.strip())
     return os.path.join(os.path.expanduser(data), "planner")
+
+
+def own_repo(path):
+    """A git repo of its own at `path` (not a folder inside another one: a plugin's data under some repo)."""
+    if not is_repo(path):
+        return False
+    top = git(path, "rev-parse", "--show-toplevel", timeout=20).stdout.strip()
+    return bool(top) and os.path.realpath(top) == os.path.realpath(path)
 
 
 def is_repo(path):
@@ -517,20 +569,31 @@ def set_remote(name, url, replace=False, say=print):
     for item, status, text in results:
         say("  %s %s" % ({"ok": "✓", "no": "✗", "unsure": "?"}[status], text))
     if not passed(results):
-        say("✗ 沒有設定%s的遠端" % LABELS[name])
+        say("✗ 沒有設定%s的遠端" % label(name))
+        return 1
+    if PLUGIN_NAME.match(name) and folder_of(name) is None:
+        say("✗ 這台沒有開著的外部插件宣告「%s」這份資料（python3 ops/plugins.py show 看哪些開著）" % name[len("plugin:"):])
         return 1
     if name != "instance":
         if not config.instance_dir():
-            say("✗ 這台還沒有實例，%s的遠端沒地方寫" % LABELS[name])
+            say("✗ 這台還沒有實例，%s的遠端沒地方寫" % label(name))
             return 1
-        before = config.setting("sync.dirs.%s.remote" % NAMES[name])
+        before = config.setting("sync.dirs.%s.remote" % key_for(name))
         if before and not same_repo(before, url) and not replace:
-            say("✗ 實例的 sync.dirs.%s.remote 已經是 %s，沒有改；要換成 %s 加 --replace" % (NAMES[name], before, url))
+            say("✗ 實例的 sync.dirs.%s.remote 已經是 %s，沒有改；要換成 %s 加 --replace" % (key_for(name), before, url))
             return 1
         if before != url:
-            write_setting(NAMES[name], url)
-            say("✓ 寫進實例 plugins.json 的 sync.dirs.%s.remote" % NAMES[name])
+            write_setting(key_for(name), url)
+            say("✓ 寫進實例 plugins.json 的 sync.dirs.%s.remote" % key_for(name))
     path = folder_of(name)
+    if PLUGIN_NAME.match(name) and path and not own_repo(path):  # C-61 E4: the plugin made a folder, not a repo
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        os.chmod(path, 0o700)
+        r = git(path, "init", "-q", "-b", "main", timeout=20)
+        if r.returncode != 0:
+            say("✗ %s 建不成 git repo：%s" % (path, said(r)))
+            return 1
+        say("✓ %s 建成 git repo（700），同步會從下一輪開始 commit 和推送" % path)
     if not is_repo(path):
         say("· %s 還不是 git repo：%s" % (path, "安裝那一樣時會照設定接上" if name != "instance" else "先建實例"))
         return 0 if name != "instance" else 1
@@ -576,13 +639,13 @@ def attach(name, url=None, path=None):
     if not is_repo(path):
         return "none", "%s 還不是 git repo" % path
     if url is None:
-        url = (config.setting("sync.dirs.%s.remote" % NAMES[name]) or "") if NAMES.get(name) else ""
+        url = (config.setting("sync.dirs.%s.remote" % key_for(name)) or "") if key_for(name) else ""
     now = origin(path)
     if not url and not now:
         return "none", "%s 沒有設定遠端：只在這台" % path
     if url and now and not same_repo(now, url):
         text = "%s 的 origin 是 %s，跟設定的 sync.dirs.%s.remote（%s）不一樣，沒有改；要換成設定的那個：python3 ops/remote.py " \
-               "set %s %s --replace" % (path, now, NAMES[name], url, name, url)
+               "set %s %s --replace" % (path, now, key_for(name), url, name, url)
         alert("origin-differs", text)
         return "differs", text
     what = "same"
@@ -645,16 +708,19 @@ def last_push(path):
 
 def status():
     rows = []
-    for name in NAMES:
+    private = dict((n, p) for n, _f, p, _pl in plugin_data())
+    for name in list(NAMES) + sorted(private):
         try:
             path = folder_of(name)
         except Exception as e:
             rows.append({"name": name, "error": "%s: %s" % (type(e).__name__, e)})
             continue
         row = {"name": name, "folder": path, "repo": is_repo(path)}
+        if name in private:
+            row["private"] = private[name]
         if name != "instance":
             try:
-                row["setting"] = config.setting("sync.dirs.%s.remote" % NAMES[name]) or ""
+                row["setting"] = config.setting("sync.dirs.%s.remote" % key_for(name)) or ""
             except Exception:
                 row["setting"] = ""
         if row["repo"]:
@@ -687,15 +753,15 @@ def other_branches(row):
 
 def show(rows):
     for row in rows:
-        label = LABELS[row["name"]]
+        name_ = label(row["name"])
         if row.get("error"):
-            print("%s：讀不出來（%s）" % (label, row["error"]))
+            print("%s：讀不出來（%s）" % (name_, row["error"]))
             continue
         if not row["repo"]:
-            print("%s：%s 還不是 git repo%s" % (label, row["folder"], "（設定的遠端：%s）" % row["setting"] if row.get("setting") else ""))
+            print("%s：%s 還不是 git repo%s" % (name_, row["folder"], "（設定的遠端：%s）" % row["setting"] if row.get("setting") else ""))
             continue
         if not row["origin"]:
-            print("%s：%s 沒有遠端：只在這台，電腦壞了救不回來" % (label, row["folder"]))
+            print("%s：%s 沒有遠端：只在這台，電腦壞了救不回來" % (name_, row["folder"]))
             continue
         bits = ["遠端 %s" % row["origin"], "hook %s" % ("在" if row["hook"] else "不在")]
         if row["ahead"] is not None:
@@ -707,7 +773,7 @@ def show(rows):
         if row["check"]:
             bits.append({"public": "⚠ 公開的", "private": "private", "unknown": "沒辦法確認是不是公開的"}.get(
                 row["check"].get("verdict"), "?"))
-        print("%s：%s" % (label, "；".join(bits)))
+        print("%s：%s" % (name_, "；".join(bits)))
 
 
 def main(argv):
@@ -719,14 +785,14 @@ def main(argv):
             return 1
     if len(argv) >= 2 and argv[0] == "check":
         name = argv[argv.index("--for") + 1] if "--for" in argv[:-1] else None
-        if name is not None and name not in NAMES:
-            print("不認得 %s（可以是 %s）" % (name, "、".join(NAMES)))
+        if name is not None and not known(name):
+            print("不認得 %s（可以是 %s，或 plugin:<插件>/<資料名>）" % (name, "、".join(NAMES)))
             return 2
         results = check(argv[1], name)
         for _item, s, text in results:
             print("%s %s" % ({"ok": "✓", "no": "✗", "unsure": "?"}[s], text))
         return 0 if passed(results) else 1
-    if len(argv) >= 3 and argv[0] == "set" and argv[1] in NAMES:
+    if len(argv) >= 3 and argv[0] == "set" and known(argv[1]):
         return set_remote(argv[1], argv[2], replace="--replace" in argv[3:])
     if argv[:1] == ["status"]:
         rows = status()
@@ -735,7 +801,7 @@ def main(argv):
         else:
             show(rows)
         return 0
-    if len(argv) == 2 and argv[0] == "hook" and argv[1] in NAMES:
+    if len(argv) == 2 and argv[0] == "hook" and known(argv[1]):
         path = folder_of(argv[1])
         if not is_repo(path):
             print("%s 不是 git repo" % path)
@@ -743,11 +809,11 @@ def main(argv):
         ok, text = put_hook(path)
         print(text)
         return 0 if ok else 1
-    if len(argv) in (2, 4) and argv[0] == "attach" and argv[1] in NAMES:  # attach NAME [URL PATH]
+    if len(argv) in (2, 4) and argv[0] == "attach" and known(argv[1]):  # attach NAME [URL PATH]
         what, text = attach(argv[1], *(argv[2:4] or [None, None]))
         print(("✓ " if what in ("set", "same", "none") else "⚠ ") + text)
         return 0 if what in ("set", "same", "none") else 1
-    if len(argv) == 4 and argv[0] == "clone" and argv[1] in NAMES:  # clone NAME URL PATH
+    if len(argv) == 4 and argv[0] == "clone" and known(argv[1]):  # clone NAME URL PATH
         ok, text = clone(*argv[1:4])
         print(("✓ " if ok else "⚠ ") + text)
         return 0 if ok else 1

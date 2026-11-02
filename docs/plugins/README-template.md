@@ -62,7 +62,7 @@
 
 ![<what the picture shows>](docs/screenshot.png)
 
-An [Altention](https://github.com/q12we34rt5/altention) plugin.
+An [Altention](https://github.com/altention/altention) plugin.
 
 ## What it does
 
@@ -134,7 +134,7 @@ MIT; see [LICENSE](LICENSE).
 
 ![<圖裡是什麼>](docs/screenshot.png)
 
-[Altention](https://github.com/q12we34rt5/altention) 的插件。
+[Altention](https://github.com/altention/altention) 的插件。
 
 ## 它做什麼
 
@@ -193,33 +193,3 @@ cd ~/altention/engine && ./install.sh && python3 ops/doctor.py
 
 MIT，見 [LICENSE](LICENSE)。
 ````
-
-## 照範本改寫的大綱
-
-只列每段要寫什麼，內容由各插件自己寫。現在的 README 裡要拿掉的：內部代號、`docs/decisions.md` 以外的開發過程，以及放在前面的實作細節。
-
-### display
-
-1. 一句話：Claude 在 Discord 給你看公式、表格、圖表、流程圖、程式差異時，先轉成圖片再貼。截圖：同一則回覆，左邊是原始文字，右邊是轉好的圖。
-2. 它做什麼：支援的種類，用使用者的話說（數學式、表格、資料圖表、流程圖和時序圖、程式差異、終端機顏色、SVG／HTML／PDF、完整 LaTeX、matplotlib）；深底、可以改白底；也會在 Discord 自己就排得好的時候直接用程式碼區塊。
-3. 需求：Chrome 或 Chromium（它怎麼找）；`pdf`、`tex` 要 poppler；其他工具第一次安裝時會下載。不需要其他插件。
-4. 安裝：每台都要跑。步驟是 clone、`bin/display --setup all`（下載什麼、放哪、不用 sudo）、連 skill、`bin/display --check`。最後加「之後核心會自動做」那句。
-5. 用法：在任何頻道說「畫出來」「轉成圖」「公式看不懂」，Claude 該用的時候也會自己用。終端機的 `display` 指令放一個例子就好。
-6. 設定：plugins.json 沒有自己的鍵，只有 `disabled_on`；環境變數 `DISPLAY_CHROME`。
-7. 資料與隱私：工具和輸出放在 `~/.cache/altention-display`，輸出一天後清掉；不進 git；不花訂閱額度（這段要核對）。另外說明畫圖時網路是擋掉的、給它的 HTML 不能讀這台的檔案，現在「安全」那段改寫成給使用者看的兩三句。
-8. 已知限制：例如第一次編 LaTeX 要下載約 40MB、要等幾分鐘，`plot` 會執行給它的 Python 腳本。
-9. 授權：MIT。repo 裡現在沒有 `LICENSE`，照引擎的那份加上（`Copyright (c) 2026 The Altention authors`）。
-- 種類清單的完整參數和測試怎麼跑，移到最後的「Development」或 `skill/SKILL.md`。
-
-### learn
-
-1. 一句話：一個學習頻道，裡面的 Claude 當老師，每天固定時間出練習、改答案、記下進度和常錯的地方。截圖：一則練習題加上批改。
-2. 它做什麼：自己定主題和時間；之後跟那個頻道說就能改主題或時間；會記得你學到哪、常錯什麼。
-3. 需求：不需要其他插件；不用另外裝系統套件（這點要核對）。
-4. 安裝：只在跑它的那台跑。步驟是 clone、`install.sh`（建學習資料夾，可以重跑，不會蓋掉筆記）、在引擎跑 `./install.sh`（裝上排程）、doctor（`#learn` 頻道還沒設定時，它會說怎麼開；這段要核對）。最後加「之後核心會自動做」那句。
-5. 用法：在 `#learn` 跟 Claude 說想學什麼；每天 13:00 會出題，用打字作答。
-6. 設定：`learn.channel`（頻道 ID，安裝時寫入）；排程 `practice`（預設每天 13:00），用 `plugins.learn.schedules.practice` 改時間或關掉；跑在哪台用 `plugins.learn.on`。
-7. 資料與隱私：放在 `~/altention/data/learn`（權限 700），是一個本機的 git repo，筆記只在這裡，不進插件的 repo；同步會定時提交，會不會推、推到哪要寫清楚（這段要核對）；每次出題、改答案都花訂閱額度，關掉排程就不會定時出題。
-8. 已知限制：目前只能打字作答，用按鈕作答還不支援。
-9. 授權：MIT。repo 裡現在沒有 `LICENSE`，照引擎的那份加上（`Copyright (c) 2026 The Altention authors`）。
-- `plugin.json`、`room/CLAUDE.md` 各管什麼，移到最後的「Development」。

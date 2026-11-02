@@ -38,6 +38,17 @@ Optional plugins (all bundled, each can be turned off):
 - **planner**: timed reminders that wake a channel's conversation with a message.
 - **council**: a multi-perspective "council" skill for decisions.
 
+More plugins are in the official list: the altention organization's public `plugin-<name>` repositories with a release.
+Each machine looks at it once a day.
+
+- **See them**: ask any channel's Claude which plugins can be installed, or run `altention plugins list`.
+- **Install one**: say "install <name>" in `#setup`. Claude first tells you what it would do on your computers, and installs
+  it only after you say yes; a plugin that would see your conversations is asked about separately. Steps left for you
+  are walked through there.
+- **Turn one off or on**: tell any channel's Claude. It says first what you would lose. This can be one machine only.
+
+Plugins run on your computer with no sandbox, as Claude does, so install only those you trust.
+
 How often or at what time each plugin runs can be changed in the instance's settings (`plugins.<plugin>.schedules`),
 and a single schedule can be turned off; just tell Claude.
 
@@ -77,12 +88,12 @@ repository is recommended as its backup (see [Backup and restore](#backup-and-re
 1. Get the engine:
 
    ```bash
-   git clone https://github.com/q12we34rt5/altention.git ~/altention/engine
+   git clone https://github.com/altention/altention.git ~/altention/engine
    ```
 
-   (Over SSH: `git clone git@github.com:q12we34rt5/altention.git ~/altention/engine`.)
+   (Over SSH: `git clone git@github.com:altention/altention.git ~/altention/engine`.)
 
-   Or from an archive downloaded from the [releases page](https://github.com/q12we34rt5/altention/releases) (an archive install never
+   Or from an archive downloaded from the [releases page](https://github.com/altention/altention/releases) (an archive install never
    updates itself); put the archive's file name in place of `<archive>`:
 
    ```bash
@@ -323,9 +334,9 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
     `["Max 5x", 5]`, `["Max 20x", 20]`; Team and Enterprise: as many Pro allowances as your limit is worth). Left
     out, the board says the plan is not set and shows the percentages without the Pro multiples.
   - To stop it: set it to `false`, or turn the usage plugin off. Removing the line does not: not set means on.
-  - The fields it reads are not documented by Anthropic; they follow what Claude Code 2.1.299 returns. If the format
-    changes the board says it could not read them (it never guesses a number), and they may be unreadable while the
-    limit is used up.
+  - The fields it reads are not documented by Anthropic; they follow what Claude Code 2.1.299 and 2.1.316 return
+    (2.1.316 gives only the week: the board says the 5-hour window was not provided). If the format changes the board
+    says it could not read them (it never guesses a number), and they may be unreadable while the limit is used up.
 
 ## Roadmap
 
@@ -363,7 +374,7 @@ The first public version (October 20) runs Claude Code inside tmux and talks to 
 
 ## Contributing
 
-[Issues](https://github.com/q12we34rt5/altention/issues) and pull requests are welcome. Before sending code:
+[Issues](https://github.com/altention/altention/issues) and pull requests are welcome. Before sending code:
 
 - Run the tests the bot runs before it deploys: `dcbot/deploy.sh` lists them (the bot's own suite and those of
   `altention`, `chatlog`, `bin`, `ops`, `tools`, `progress`). Shared code uses the standard library only and must run on
