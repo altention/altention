@@ -13,7 +13,7 @@ import time
 
 import discord
 
-from .routecore import bind_key, channel_of, entry, load, project_name, save, unbind  # noqa: F401  (the table itself: routecore.py)
+from .routecore import bind_key, channel_of, entry, load, project_name, routed_channel, save, unbind  # noqa: F401  (the table itself: routecore.py)
 
 
 def key(pane):
@@ -24,7 +24,7 @@ def key(pane):
 
 def routed_to(pane, table):
     """The channel a pane is attached to: from its own machine's table (remote panes bring it along)."""
-    return pane.get("routed") if pane.get("host") else channel_of(table.get(key(pane)))
+    return pane.get("routed") if pane.get("host") else routed_channel(table, key(pane), pane.get("pid"))
 
 
 async def bind_any(pane, channel_id):
@@ -83,9 +83,12 @@ def topic(host, pane):
 
 
 def archived_channel(channels, host, pane, project):
-    """Among the archive's channels, the one this pane had before (same name, same topic), if any."""
+    """Among the archive's channels, the one this pane had before (same name, same topic), if any. Its topic is
+    read without the note /archive puts in front (「📦 原分類：…」, bot/archive.py); of two, the one archived last."""
+    from .archive import noted, topic_without  # (archive.py imports this module)
     name, want = channel_name(pane, project), topic(host, pane)
-    return next((c for c in channels if c.name == name and (c.topic or "") == want), None)
+    same = [c for c in channels if c.name == name and topic_without(c.topic) == want]
+    return max(same, key=lambda c: (noted(c.topic) or (None, None))[1] or 0, default=None)
 
 
 def sibling_cwd(sibling_ids, channels_state):

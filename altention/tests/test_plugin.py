@@ -47,6 +47,19 @@ class Check(unittest.TestCase):
         self.assertEqual([w for w, _ in plugin.retired(d)], ["commands", "requires[].data"])
         self.assertEqual(plugin.retired(good(requires=[{"plugin": "a"}])), [])
 
+    def test_a_uses_entry_written_for_a_newer_engine_says_so(self):
+        """manager 11-03: v0.6.0's optional entry {"v": N, …} is "needs a newer engine", not unreadable; any other
+        wrong value is unreadable as before (this is v0.5.x's own check, run on such a plugin.json)."""
+        with self.assertRaises(plugin.NewerEngine) as e:
+            plugin.check(good(uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}}), "x/plugin.json")
+        self.assertEqual(str(e.exception), "x/plugin.json：這個插件要比較新的引擎（uses.dc.post 是 v0.6.0 起的寫法），先更新引擎")
+        for v in ({"x": 1}, {"v": 0}, {"v": True}, {"v": "1"}, [1]):
+            with self.subTest(v=v):
+                with self.assertRaises(plugin.PluginError) as e:
+                    plugin.check(good(uses={"dc.post": v}), "x/plugin.json")
+                self.assertNotIsInstance(e.exception, plugin.NewerEngine)
+                self.assertIn("uses.dc.post 要是 1 以上的整數", str(e.exception))
+
     def test_uses_c94(self):
         plugin.check(good(uses={"dc.post": 1, "anything": 3}))
         self.bad(good(uses=["dc.post"]), "uses 要是物件")

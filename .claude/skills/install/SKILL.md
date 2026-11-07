@@ -58,7 +58,7 @@ systemd: `sudo service cron start`). The last line failing on Debian or Ubuntu: 
 `--version` does not tell whether Claude Code is logged in: if they have never used it on this machine, ask them
 to start `claude` once in their own terminal, log in, and quit. Do not test it with `claude -p`.
 
-## 1b. A new install, or back from the backups
+## 2. A new install, or back from the backups
 
 First see whether this machine has an instance already (in `ENGINE`):
 
@@ -68,19 +68,19 @@ python3 -c "from altention import config; print(config.instance_dir() or '')"
 
 - **It prints a folder**: this is not a first install. Write no setting: the ones there are theirs. Run
   `./install.sh` and `python3 ops/doctor.py --fix` and go through what they say (steps 6 and 7). That is all.
-- **It prints nothing**: go on with step 4, for a new install and a restore alike: `#setup` asks first which one
+- **It prints nothing**: go on with step 3, for a new install and a restore alike: `#setup` asks first which one
   it is (in Discord, once the bot is up).
 
 ### Restoring from the backups
 
-Do nothing of it here: go on with step 4 as for a new install. The restore is in Discord: `#setup` asks first
+Do nothing of it here: go on with step 3 as for a new install. The restore is in Discord: `#setup` asks first
 whether this is a new install or one back from the backups, and does the rest there (C-57). Only when they joined
 their instance in a terminal before (`python3 ops/instance.py join <URL>`, the advanced way; it stays for that), the
-instance is there already: step 1b's first case.
+instance is there already: step 2's first case.
 
-## 4. The Discord application (the user does this; you guide)
+## 3. The Discord application (the user does this; you guide)
 
-Only three things are set by hand on Discord's site; `install.sh discord` (step 5) finds everything else itself
+Only three things are set by hand on Discord's site; `install.sh discord` (step 4) finds everything else itself
 (the application's ID, who owns it, the server) and prints the link that adds the bot. Walk them through it one
 step at a time, in this order, and wait for each "done". No ID is copied by hand.
 
@@ -99,15 +99,19 @@ in English only.
    default: anyone who has the application's ID could add this bot to a server of their own. If Discord refuses
    with "Private application cannot have a default authorization link": left menu **安裝（Installation）** →
    **安裝連結（Install Link）** → **無（None）** → **儲存變更（Save Changes，待核對）**, then back to
-   **機器人（Bot）** and turn 公開機器人（Public Bot） off again. They can still add the bot themselves: step 5
+   **機器人（Bot）** and turn 公開機器人（Public Bot） off again. They can still add the bot themselves: step 4
    prints the link.
+
+Tell them two things they may meet, in these words:
+- 「建應用程式、邀機器人、重設 token 時，Discord 有時會要你做人機驗證或輸入密碼，照做再繼續就好。」
+- 「打開邀請連結時，這台電腦如果開著 Discord 桌面版，會先停在「開啟 Discord 應用程式」大約 60 秒才退回網頁；桌面版登入的可能是別的帳號，選伺服器前先看一下是哪個帳號。」
 
 Say plainly what this means: whoever controls their Discord account can run commands on this machine through
 the bot. How much the bot's conversations may do without asking is one of the questions in `#setup`; until then they
 run in `auto` (risky actions are blocked, not asked), or `manual` when this Claude Code is too old for `auto`.
 Recommend two-factor authentication on that account.
 
-## 5. Connect Discord and install, in their own terminal
+## 4. Connect Discord and install, in their own terminal
 
 Leave the **機器人（Bot）** page open. Ask them to open a terminal of their own (not this conversation; it refuses anything
 but a terminal) and run, copied as it is:
@@ -142,7 +146,7 @@ If it waits 10 minutes without the bot coming in, it asks: Enter waits again, `q
 Any `fail dcbot.token` line says what was wrong and that nothing was written, and the install is not run: run it
 again (with a new 重設權杖（Reset Token） if the old one is gone).
 
-## 6. What the install said
+## 5. What the install said
 
 The install's lines were on their screen, not here: read them from its log (`~/.local/state/altention/install/last.log`,
 the step lines and what the scripts printed). Every step line is `<status> <id> <text>`, and the last one is
@@ -156,10 +160,10 @@ core.lock …` and so on) and go by that. Otherwise, for each step line in the l
   yourself: the token is in by now, so nothing is typed.
 - `fail` / `unknown`: read the text, and what the log says around it; fix the cause, then run `./install.sh` again.
 
-`todo dcbot.token … install.sh discord` means step 5 is not done yet. When you run `./install.sh` yourself, its
+`todo dcbot.token … install.sh discord` means step 4 is not done yet. When you run `./install.sh` yourself, its
 exit status is 0 (done), 1 (something failed) or 2 (something is left to the user).
 
-## 7. On to #setup
+## 6. On to #setup
 
 ```bash
 python3 ops/doctor.py --fix

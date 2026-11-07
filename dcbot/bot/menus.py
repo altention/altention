@@ -17,7 +17,7 @@ import discord
 
 from altention.connectors.claude_code import panels, screen
 
-from . import awaiting, config, messages, tmuxio
+from . import awaiting, config, masking, messages, tmuxio
 from .util import target
 
 PREFIX = "key"
@@ -50,15 +50,22 @@ def panel_of(view, has_box):
             action["label"] = "%s %s" % (action["label"], MOVES[action["move"]])
     return content
 def cut(text, n):
-    text = " ".join(text.split())
+    """What a menu shows of a line read off the screen (a title, a button's label, what was typed): keys masked
+    first (bot/masking.py; before it is cut, so no key is cut in two: C-127), on one line, at most n characters."""
+    text = masking.mask(" ".join(text.split()))[0]
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
 def body(title, excerpt, note="", deadline=None):
-    """`deadline`: when Claude Code denies the dialog by itself (epoch seconds), said under the screen; Discord counts
-    the time down by itself."""
+    """The message a dialog or a panel is posted as: its title, and what the screen shows of it in a code block.
+    That excerpt is Claude Code's screen: a command waiting for a yes, a file's lines, a tool's output. Keys in it
+    are masked before it is posted (C-127, as everything the bot posts of what Claude and its tools show: B-12),
+    masked before it is cut (the last 1500 characters), with the small line saying so. `deadline`: when Claude
+    Code denies the dialog by itself (epoch seconds), said under the screen; Discord counts the time down by
+    itself."""
     due = "\n⏳ 沒有回覆的話，Claude Code 會在 <t:%d:R> 自動拒絕（它當作沒人在顧）" % deadline if deadline else ""
-    return ("🔔 **%s**\n```\n%s\n```%s%s" % (title, excerpt.replace("```", "'''")[-1500:] or "（畫面是空的）", due, note))[:1990]
+    shown, said = masking.screen(excerpt.replace("```", "'''"))
+    return ("🔔 **%s**\n```\n%s\n```%s%s%s" % (masking.mask(title)[0], shown[-1500:] or "（畫面是空的）", due, said, note))[:1990]
 
 
 def deadline_of(view):
@@ -291,10 +298,10 @@ class Menus(object):
             if action is None:
                 did = "面板已經變了，沒有送出"
             elif key == "Escape":
-                did = ("按了「%s」" % action["label"]) if await tmuxio.escape(t, screen.panel_shown) else "面板已經關了，沒有送 Esc"
+                did = ("按了「%s」" % cut(action["label"], 80)) if await tmuxio.escape(t, screen.panel_shown) else "面板已經關了，沒有送 Esc"
             else:
                 await tmuxio.keys(t, key)
-                did = "按了「%s」" % action["label"]
+                did = "按了「%s」" % cut(action["label"], 80)
             if action is not None:
                 await asyncio.sleep(1.2)
                 view = await tmuxio.raw_screen(t)

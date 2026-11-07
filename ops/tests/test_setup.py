@@ -123,10 +123,29 @@ class Order(Rig):
         self.answer("core.timezone", "Mars/Olympus", code=1)
         self.answer("core.timezone", "../../etc/passwd", code=1)
         self.answer("dcbot.default_permission", "yolo", code=1)
-        self.answer("dcbot.talk_limit", "7", code=1)
+        self.answer("dcbot.talk_limit", "-1", code=1)
+        self.answer("dcbot.talk_limit", "abc", code=1)
+        self.answer("dcbot.talk_limit", "", code=1)
         self.answer("core.update", "branch", code=1, )
         self.assertEqual(self.settings(), before)
         self.answer("planner.times", "suggested", code=1)  # not asked yet: the secretary comes first
+
+    def test_a_typed_talk_limit_is_any_count(self):
+        """「其他」 under the talk limit: any whole number from 0 up, as /talklimit takes it (3 was refused, the
+        question asked again)."""
+        for typed, kept in (("3", 3), (" 45 ", 45), ("0", 0)):
+            self.answer("dcbot.talk_limit", typed)
+            self.assertEqual(self.settings()["dcbot"]["talk_limit"], kept)
+        out = self.answer("dcbot.talk_limit", "-1", code=1)
+        self.assertIn("來回上限要是 0 以上的整數，例如 5；0 是不限", out)
+
+    def test_plan_options_follow_the_pricing_page(self):
+        from ops import plugins
+        q = plugins.plan_question()
+        self.assertEqual(q["values"], ["Pro", "Max", "Ultra", "none"])
+        self.assertLessEqual(len(q["options"]), 4, "AskUserQuestion takes at most 4")
+        self.assertEqual([o["label"] for o in q["options"]][:3], ["Pro", "Max（5 倍 Pro）", "Ultra（10 倍 Pro）"])
+        self.assertNotIn("Max 20x", json.dumps(q, ensure_ascii=False))
 
     def test_a_mode_this_claude_code_does_not_have_is_refused(self):
         with mock.patch.object(setup, "claude_modes", return_value=["acceptEdits", "bypassPermissions", "default"]):
@@ -198,8 +217,14 @@ class Parts(Rig):
         self.basics()
         self.answer("plugins", "keep")
         self.answer("plugins.planner", "off")
-        self.answer("usage.plan", "Max 5x")
-        self.assertEqual(self.settings()["usage"], {"plan": ["Max 5x", 5], "subscription_limits": True})
+        self.answer("usage.plan", "Ultra")
+        self.assertEqual(self.settings()["usage"], {"plan": ["Ultra", 10], "subscription_limits": True})
+        self.answer("usage.plan", "Max")
+        self.assertEqual(self.settings()["usage"]["plan"], ["Max", 5])
+        self.answer("usage.plan", "Max 5x")  # older names, typed under 「其他」
+        self.assertEqual(self.settings()["usage"]["plan"], ["Max", 5])
+        self.answer("usage.plan", "Max 20x")
+        self.assertEqual(self.settings()["usage"]["plan"], ["Max 20x", 20], "a subscriber not moved to Ultra yet")
         self.answer("usage.plan", "none")
         self.assertEqual(self.settings()["usage"], {"subscription_limits": False})
         self.answer("usage.plan", "Team=5")
@@ -609,13 +634,19 @@ class ReconcileRig(Rig):
                   mock.patch.object(setup, "sleep", lambda s: None),
                   mock.patch.object(setup, "engine_head", return_value="1" * 40),  # an exported copy has no .git
                   mock.patch.object(setup.config, "bot_here", return_value=True),
-                  mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, []))):
+                  mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, [])),
+                  mock.patch("altention.catalog.look_before_asking", side_effect=self.look)):
             p.start()
             self.addCleanup(p.stop)
-        self.guided = 0
+        self.guided, self.looked = 0, 0
+        self.look_said = ("same", "官方插件清單沒有變")
         self.write({"format": 1, "core": {"timezone": "UTC"}, "usage": {"subscription_limits": True},
                     "planner": {"channel": "999"}})  # an installation from before #setup; its secretary's channel gone
         git(self.inst, "commit", "-qam", "old")
+
+    def look(self):  # the official list's look before the questions: never GitHub in a test
+        self.looked += 1
+        return self.look_said
 
     def server(self, *args, inp=None, timeout=120):
         if args[0] == "channels":
@@ -646,6 +677,100 @@ class ReconcileRig(Rig):
         return {p["what"]: p["kind"] for p in json.loads(out)}
 
 
+class PermissionWritten(ReconcileRig):
+    """C-121: the bot no longer opens a conversation with bypassPermissions when no permission mode is set. An
+    older installation ran with that mode unwritten; its first reconcile after the update writes it out (nothing
+    changes), says so in #audit, in the instance's commit and in #update, and asks in #setup with the buttons."""
+
+    def test_an_older_installation_gets_the_mode_it_ran_with_written_and_asked(self):
+        code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        d = self.settings()
+        self.assertEqual(d["dcbot"]["default_permission"], "bypassPermissions", "the mode it ran with: nothing changes")
+        self.assertEqual(d["setup"]["permission_written"], "bypassPermissions")
+        self.assertIn("dcbot.default_permission", d["setup"]["ask"])
+        self.assertIn(("audit", "把原本沒寫明的權限模式 bypassPermissions 寫進設定（行為不變）"), self.said)
+        self.assertIn(("update", "🔐 這個安裝之前沒設權限模式，機器人一直用 bypassPermissions 在跑：Claude 做什麼都不先問你。"
+                                 "這次更新把它寫明了，行為不變。建議到 #setup 改成 auto。"), self.said)
+        subjects = subprocess.run(["git", "-C", self.inst, "log", "--format=%s"], stdout=subprocess.PIPE,
+                                  universal_newlines=True).stdout
+        self.assertIn("把原本沒寫明的權限模式 bypassPermissions 寫進設定（行為不變）", subjects, "the commit says it too")
+
+    def test_the_question_says_why_and_offers_the_three_modes_as_buttons(self):
+        self.run_("reconcile")
+        q = setup.question_for("dcbot.default_permission")
+        self.assertTrue(q["question"].startswith(setup.WRITTEN_SAY), q["question"])
+        self.assertEqual(q["values"], ["auto", "manual", "bypassPermissions"])
+        self.assertEqual(len(q["options"]), 3, "one button each")
+        self.answer("dcbot.default_permission", "auto")
+        d = self.settings()
+        self.assertEqual(d["dcbot"]["default_permission"], "auto", "changed in one go")
+        self.assertNotIn("permission_written", d["setup"])
+        self.assertFalse(setup.question_for("dcbot.default_permission")["question"].startswith(setup.WRITTEN_SAY))
+
+    def test_written_once_only(self):
+        self.run_("reconcile")
+        self.answer("dcbot.default_permission", "manual")
+        n = len(self.said)
+        self.run_("reconcile")
+        self.assertEqual(self.settings()["dcbot"]["default_permission"], "manual", "an answer is never written over")
+        self.assertFalse([t for _, t in self.said[n:] if "bypassPermissions" in t])
+
+    def test_a_mode_set_already_is_left_alone(self):
+        d = self.settings()
+        d["dcbot"] = {"default_permission": "manual"}
+        self.write(d)
+        self.assertNotIn("permission-written", self.plan())
+        self.run_("reconcile")
+        self.assertEqual(self.settings()["dcbot"]["default_permission"], "manual")
+        self.assertNotIn("permission_written", self.settings()["setup"])
+        self.assertFalse([t for _, t in self.said if "bypassPermissions" in t])
+
+    def test_a_new_installation_still_in_setup_is_not_written_for(self):
+        d = self.settings()
+        d["setup"] = {"done": False}
+        self.write(d)
+        self.assertNotIn("permission-written", self.plan())
+        self.run_("reconcile")
+        self.assertNotIn("dcbot", self.settings(), "asked in #setup's own questions, never written for it")
+
+    def test_a_reconcile_that_stopped_after_writing_asks_next_time(self):
+        d = self.settings()  # as write_permission() leaves it, the run stopping before the asks
+        d["dcbot"] = {"default_permission": "bypassPermissions"}
+        d["setup"] = {"done": True, "since": "reconcile", "permission_written": "bypassPermissions"}
+        self.write(d)
+        plan = self.plan()
+        self.assertEqual(plan.get("dcbot.default_permission"), "ask")
+        self.assertNotIn("permission-written", plan, "written once")
+        self.run_("reconcile")
+        self.assertIn("dcbot.default_permission", self.settings()["setup"]["ask"])
+
+    def test_a_mode_chosen_or_written_then_taken_out_by_hand_is_not_written_again(self):
+        """#code-review on 85cd909: chosen in #setup (or written here once), then removed from plugins.json by hand:
+        no mode, so the bot opens nothing; the next update's reconcile does not write bypassPermissions back."""
+        for state in ({"done": True, "answered": {"dcbot.default_permission": "manual"}},
+                      {"done": True, "since": "reconcile", "permission_written": "bypassPermissions"}):
+            d = self.settings()
+            d.pop("dcbot", None)
+            d["setup"] = dict(state)
+            self.write(d)
+            self.assertNotIn("permission-written", self.plan(), state)
+            n = len(self.said)
+            self.run_("reconcile")
+            after = self.settings()
+            self.assertNotIn("default_permission", after.get("dcbot", {}), state)
+            self.assertFalse([t for _, t in self.said[n:] if "bypassPermissions" in t], state)
+            q = setup.question_for("dcbot.default_permission")
+            self.assertFalse(q["question"].startswith(setup.WRITTEN_SAY), "not said to be what it runs with: it has none")
+            self.assertNotIn("把原本沒寫明的權限模式", subprocess.run(["git", "-C", self.inst, "log", "-1", "--format=%s"],
+                             stdout=subprocess.PIPE, universal_newlines=True).stdout, state)
+
+    def test_a_dry_run_writes_nothing(self):
+        before = self.settings()
+        self.assertEqual(self.plan()["permission-written"], "fill")
+        self.assertEqual(self.settings(), before)
+
+
 class Reconcile(ReconcileRig):
     """C-57 S3: what the version declares next to the instance and the server. Filled in when it needs nobody,
     asked in #setup when it adds a channel to the main area or spends the subscription; a dry run writes nothing."""
@@ -653,7 +778,7 @@ class Reconcile(ReconcileRig):
     def test_dry_run_says_and_writes_nothing(self):
         before = self.settings()
         self.assertEqual(self.plan(), {"make-update": "fill", "make-guide": "fill", "move-audit": "fill",
-                                       "dashboard": "ask", "plugins.planner": "ask", "dcbot.default_permission": "ask",
+                                       "permission-written": "fill", "dashboard": "ask", "plugins.planner": "ask", "dcbot.default_permission": "ask",
                                        "usage.plan": "ask", "setup-folder": "fill"})
         self.assertEqual((self.settings(), self.said, self.moved, self.posted, self.guided), (before, [], [], [], 0))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "state", "altention")), "not even a lock")
@@ -662,13 +787,13 @@ class Reconcile(ReconcileRig):
         code, out = self.run_("reconcile")
         self.assertEqual(code, 0, out)
         self.assertIn(("update", setup.UPDATE_HELLO), self.said, "#update made, and says what it is first")
-        self.assertEqual([w for w, _ in self.said if w != "update"], [], "every line a notice, none a Claude's card")
+        self.assertEqual([w for w, _ in self.said if w not in ("update", "audit")], [], "every line a notice, none a Claude's card")
         self.assertEqual(self.moved, [("audit", "系統")])
         said = [t for _, t in self.said]
         self.assertLess(said.index(setup.UPDATE_HELLO), [i for i, t in enumerate(said) if t.startswith("📦")][0])
         self.assertEqual(self.guided, 1)
-        self.assertEqual(self.settings()["setup"], {"done": True, "since": "reconcile", "ask": [
-            "dcbot.default_permission", "plugins.planner", "dashboard", "usage.plan"]})
+        self.assertEqual(self.settings()["setup"], {"done": True, "since": "reconcile", "permission_written": "bypassPermissions",
+                                                    "ask": ["dcbot.default_permission", "plugins.planner", "dashboard", "usage.plan"]})
         opened = [json.loads(i) for a, i in self.posted if a == ("post",)]
         self.assertEqual(opened, [{"channel": "setup", "open_setup": True, "text": ""}])
         told = [t for t in said if t.startswith("📝 ")]
@@ -1396,24 +1521,98 @@ OFFERED = {"plugins": {
 
 class Offers(ReconcileRig):
     """C-64, C-77 G4: optional plugins of the official list offered in #setup in fixed words: by setup.py offer
-    (asked); the reconcile asks only an install offer answered 之後再說 (nothing new: owner 10-21), at most three
-    times; 先不要 is never asked again."""
+    (asked); the reconcile asks an install offer never answered (an installation older than the question, or one whose
+    list was not there when #setup asked) once, and one answered 之後再說 again, at most three times; 先不要 and 好，開
+    are never asked again."""
     def setUp(self):
         super().setUp()
         p = mock.patch("altention.offers.catalog.load", return_value=OFFERED)
         p.start()
         self.addCleanup(p.stop)
 
-    def test_reconcile_asks_only_a_later_three_times_at_most(self):
+    def test_an_installation_never_asked_is_asked_once_after_its_update(self):
+        code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.looked, 1, "the official list looked at before the questions")
+        self.assertLess(out.index("官方插件清單沒有變\n"), out.index("問 "), "said before the plan")
+        ask = self.settings()["setup"]["ask"]
+        self.assertIn("offer.rig-pdf", ask, "no offers record (from before the question): asked")
+        self.assertIn("offer.rig-two", ask)
+        self.assertNotIn("offer.rig-cal", ask, "an asked offer only when something asks for it")
+        self.assertIn("問 可選的插件 rig-pdf（要不要開，到 #setup 問）", out)
+        n = len(ask)
         self.run_("reconcile")
-        self.assertFalse([k for k in self.settings()["setup"]["ask"] if k.startswith("offer.")], "nothing new is asked")
+        self.assertEqual(len(self.settings()["setup"]["ask"]), n, "not answered yet: not added a second time")
+        self.answer("offer.rig-pdf", "no")
+        self.answer("offer.rig-two", "yes")
+        for _ in range(2):
+            self.run_("reconcile")
+            ask = self.settings()["setup"]["ask"]
+            self.assertNotIn("offer.rig-pdf", ask, "先不要: never again")
+            self.assertNotIn("offer.rig-two", ask, "好，開: never again")
+
+    def test_an_old_installation_updated_says_nothing_in_update_and_is_asked_in_setup(self):
+        """A v0.1.0 installation updated: no told record, no offers record. catalog.news() still says nothing the
+        first time (every plugin marked told: "#setup offers them"); the reconcile is what asks, so the plugin is not
+        missed by both ways (the manager, 2026-11-03)."""
+        from altention import catalog
+        self.assertFalse(os.path.exists(catalog.told_path()))
+        self.assertEqual(catalog.news(), [], "the first time: nothing said in #update (the rule stays)")
+        self.assertEqual(catalog._told(), {"rig-pdf", "rig-two", "rig-cal"})
+        self.assertNotIn("offers", self.settings())
+        self.run_("reconcile")
+        ask = self.settings()["setup"]["ask"]
+        self.assertIn("offer.rig-pdf", ask, "asked in #setup instead")
+        self.assertIn("offer.rig-two", ask)
+        self.assertNotIn("offer.rig-cal", ask)
+        self.assertTrue([t for c, t in self.said if c == "update" and "到 #setup 回答" in t and "可選功能" in t], self.said)
+
+    def test_the_permission_mode_is_written_before_the_list_is_looked_at(self):
+        """#code-review of 1ca3c0e: the look may take a minute; the bot opens no conversation until the mode is
+        written, so it is written first."""
+        seen = []
+
+        def look():
+            seen.append(setup.config.setting(setup.PERMISSION_KEY))
+            return self.look_said
+        self.assertTrue(setup.permission_unwritten(setup.setup_state()), "an installation from before #setup")
+        with mock.patch("altention.catalog.look_before_asking", side_effect=look):
+            code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [setup.WRITTEN_MODE], "written when the list was looked at")
+        self.assertEqual(out.count(setup.WRITTEN_AUDIT), 2, "the plan's line and the write's, as before: written once")
+        self.assertEqual(len([c for c in self.said if c == ("audit", setup.WRITTEN_AUDIT)]), 1, self.said)
+        self.assertIn("offer.rig-pdf", self.settings()["setup"]["ask"])
+
+    def test_dry_run_looks_at_nothing(self):
+        code, out = self.run_("reconcile", "--dry-run")
+        self.assertEqual(self.looked, 0, "a dry run writes nothing, the list's file included")
+        self.assertIn("問 可選的插件 rig-pdf", out)
+
+    def test_the_list_not_reached_the_reconcile_goes_on(self):
+        self.look_said = ("unreached", "連不上 GitHub，官方插件清單用上次的（x）")
+        code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        self.assertIn("連不上 GitHub", out)
+        self.assertIn("offer.rig-pdf", self.settings()["setup"]["ask"], "the list kept is used")
+
+    def test_one_the_instance_names_on_or_off_is_not_asked(self):
         d = self.settings()
-        d["offers"] = {"rig-pdf": {"answer": "later", "at": 1, "times": 1}, "rig-two": {"answer": "later", "at": 1, "times": 1}}
+        d["plugins"] = {"rig-pdf": {"disabled_on": ["lap"]}, "rig-two": {"source": "x", "version": "v1.0.0"}}
+        self.write(d)
+        self.run_("reconcile")
+        ask = self.settings()["setup"]["ask"]
+        self.assertNotIn("offer.rig-pdf", ask, "turned off")
+        self.assertNotIn("offer.rig-two", ask, "put on already")
+
+    def test_a_later_is_asked_again_three_times_at_most(self):
+        d = self.settings()
+        d["offers"] = {"rig-pdf": {"answer": "later", "at": 1, "times": 1}, "rig-two": {"answer": "no", "at": 1, "times": 0}}
         self.write(d)
         self.run_("reconcile")
         ask = self.settings()["setup"]["ask"]
         self.assertIn("offer.rig-pdf", ask)
-        self.assertNotIn("offer.rig-cal", ask, "asked only when something asks for it")
+        self.assertNotIn("offer.rig-two", ask, "先不要 at setup: never asked again")
         q = next(q for q in json.loads(self.run_("questions", "--json")[1]) if q["key"] == "offer.rig-pdf")
         self.assertEqual(q["question"], "PDF：看 PDF。\n需要：不用另外裝東西。要開嗎？")
         for n in range(2):  # the first later was at setup
@@ -1423,10 +1622,6 @@ class Offers(ReconcileRig):
             self.assertEqual("offer.rig-pdf" in self.settings()["setup"]["ask"], n < 1, n)
         self.assertEqual(self.settings()["offers"]["rig-pdf"]["answer"], "no")
         self.answer("offer.rig-two", "maybe", code=1)
-        code, out = self.run_("answer", "offer.rig-two", "no")
-        self.assertIn("rig-two 之後不會再主動問；要開時到 #setup 說「裝 rig-two」", out)
-        self.run_("reconcile")
-        self.assertNotIn("offer.rig-two", self.settings()["setup"]["ask"])
 
     def test_offer_asks_in_setup_only_what_may_be_asked(self):
         self.run_("reconcile")

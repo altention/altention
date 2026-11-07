@@ -13,15 +13,16 @@ import discord
 
 from altention.connectors.claude_code import screen
 
-from . import config, tmuxio
+from . import config, masking, tmuxio
 
 PREFIX = "sta"
 ASK_SECS = 1800  # how long a conversation waits on the owner's answer before its opening is given up
 
 
 def body(choice, note=""):
-    text = choice["text"].replace("```", "'''")[-1400:]
-    return ("🔔 **Claude Code 啟動前要你決定**\n```\n%s\n```"
+    text, said = masking.screen(choice["text"])  # C-127: masked before it is cut
+    text = text.replace("```", "'''")[-1400:] + "\n```" + (said + "\n" if said else "")
+    return ("🔔 **Claude Code 啟動前要你決定**\n```\n%s\n"
             "這個資料夾的 CLAUDE.md 引用了資料夾外面的檔案。選 Yes，Claude 會把那些檔案讀進對話（不經過讀檔工具，秘密防護擋不到）；"
             "只有你信任那些檔案時才選 Yes。選 No 也可以開始對話，只是不讀那些檔。你決定之前，這個頻道的 Claude 會停在這裡。%s"
             % (text, note))[:1990]
@@ -36,7 +37,7 @@ class StartupAsk(object):
         token = "%d" % (time.time() * 1000)
         v = discord.ui.View(timeout=None)
         for i, label in enumerate(choice["options"]):
-            v.add_item(discord.ui.Button(label=label[:80], custom_id="%s:%s:%d" % (PREFIX, token, i),
+            v.add_item(discord.ui.Button(label=masking.mask(label)[0][:80], custom_id="%s:%s:%d" % (PREFIX, token, i),
                                          style=discord.ButtonStyle.danger if label.startswith("Yes") else discord.ButtonStyle.secondary))
         try:
             msg = await ch.send(body(choice), view=v)
@@ -86,7 +87,9 @@ class StartupAsk(object):
         for key in screen.keys_for(now, index):
             await pane.keys(key)
         self.open.pop(parts[1], None)
-        await msg.edit(view=None, content="🔔 Claude Code 啟動前的問題：%s\n✅ 選了「%s」" % (m["title"], m["options"][index]))
-        await self.bridge.host.audit("#%s 啟動前的問題「%s」：選了「%s」" % (getattr(interaction.channel, "name", "?"), m["title"],
-                                                                     m["options"][index]))
+        await msg.edit(view=None, content="🔔 Claude Code 啟動前的問題：%s\n✅ 選了「%s」" % (
+            masking.mask(m["title"])[0], masking.mask(m["options"][index])[0]))
+        await self.bridge.host.audit("#%s 啟動前的問題「%s」：選了「%s」" % (getattr(interaction.channel, "name", "?"),
+                                                                     masking.mask(m["title"])[0],
+                                                                     masking.mask(m["options"][index])[0]))
         return True

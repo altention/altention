@@ -67,8 +67,8 @@ not write it as one key with a dot in its name (`"usage.plan": …`): such a key
   `<data>/planner/reminders.json`, made on first use; `python3 planner/remind.py --where` prints the one in use.
 - `planner.folder`: a folder of your own the secretary works in, if it already had one before (its CLAUDE.md and
   plan there). Left as it is: nothing is made or written in it. Leave it out for `<data>/planner`, made on first use.
-- `usage.plan`: your subscription as `[name, how many Pro allowances]`, e.g. `["Pro", 1]`, `["Max 5x", 5]`,
-  `["Max 20x", 20]` (Team and Enterprise: as many Pro allowances as your limit is worth). Only the subscription
+- `usage.plan`: your subscription as `[name, how many Pro allowances a week]`, e.g. `["Pro", 1]`, `["Max", 5]`,
+  `["Ultra", 10]` (as claude.com/pricing gives them; Team and Enterprise: as many Pro allowances as your limit is worth). Only the subscription
   limits part uses it; left out, the board says the plan is not set and shows the percentages without the Pro
   multiples.
 - `usage.subscription_limits`: whether the usage board shows your subscription limits (one smallest request an

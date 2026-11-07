@@ -9,7 +9,8 @@ asked are the ones doing the thing it helps with. The question is the plugin's "
 else made from what it needs: tools and their sizes, steps elsewhere), with three answers: 「好，開」 (yes: #setup goes
 on with plugin-add), 「先不要」 (no: never offered again), 「之後再說」 (later: offered again the next time the same
 moment comes: setup.py offer again for asked, the reconcile after the next update for install, the person having
-asked for that; MAX_LATER laters count as no).
+asked for that; MAX_LATER laters count as no). An install offer never answered (the installation is older than the
+question, or the list was not there yet when #setup asked) is asked by the reconcile after the next update.
 
 The answers are the person's, kept in the instance's plugins.json: "offers": {name: {"answer", "at", "times"}}
 (times: the laters so far). Someone asking for the plugin themselves (「裝 <name>」) is never held back by them.
@@ -49,12 +50,12 @@ def open_for(name, settings):
     return rec is None or (rec.get("answer") == "later" and int(rec.get("times") or 0) < MAX_LATER)
 
 
-def due(moments, listed=None, settings=None, later_only=False):
-    """[name] of the candidates whose offer.when is one of `moments` and that may be offered now; later_only: only
-    those the person answered 「之後再說」 (the reconcile asks nothing new)."""
+def due(moments, listed=None, settings=None):
+    """[name] of the candidates whose offer.when is one of `moments` and that may be offered now (open_for: never
+    answered, or 「之後再說」 fewer than MAX_LATER times). The reconcile asks the same ones: an installation
+    from before a plugin's question existed was never asked it, and is asked once after its update."""
     return [n for n, d in candidates(listed, settings).items()
-            if d["offer"].get("when", "install") in moments and open_for(n, settings)
-            and (not later_only or (answered(n, settings) or {}).get("answer") == "later")]
+            if d["offer"].get("when", "install") in moments and open_for(n, settings)]
 
 
 COST_MOST = 200  # characters of the cost shown (catalog.WORDS's way: words from a plugin.json made plain first)

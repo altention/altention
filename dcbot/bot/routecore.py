@@ -33,6 +33,14 @@ def channel_of(entry):
     return entry if isinstance(entry, str) else (entry or {}).get("channel")
 
 
+def routed_channel(table, pane_key, pid):
+    """The channel a pane is attached to. Not one routed to its number when the route names another process: pane
+    numbers start over when a tmux server restarts (a route with no process says nothing against it)."""
+    found = table.get(pane_key)
+    was = found.get("pid") if isinstance(found, dict) else None
+    return None if was and pid and str(was) != str(pid) else channel_of(found)
+
+
 def entry(channel_id, pid):
     """A route: the channel, the pane's process, and the session it shows if it is a `claude attach` viewer."""
     out = {"channel": str(channel_id), "pid": str(pid or "")}

@@ -23,11 +23,48 @@ class Params(Base):
     def pick(self, argv):
         return argv[argv.index("--model") + 1], argv[argv.index("--permission-mode") + 1]
 
-    def test_as_it_always_was_when_nothing_is_set(self):
-        got, argv = self.argv_of(Tmux(self))
+    def test_no_permission_mode_set_opens_nothing_and_says_how_to_set_one(self):
+        """C-121: the last resort was bypassPermissions (everything let through). Now nothing is opened, on every
+        way a conversation is opened, and the channel is told which value to set and how."""
+        for settings in ({}, {"dcbot.default_permission": ""}, {"dcbot.default_permission": None},
+                         {"dcbot.default_model": "sonnet"}):
+            for where in ("bot", "window", "far"):
+                self.setUp()
+                if where != "bot":
+                    self.st.pop("tmux", None)
+                    self.st["home"] = dict({"socket": "/tmp/x/default", "session": "main"}, **({"host": "lap"} if where == "far" else {}))
+                tmux = Tmux(self)
+                err, argv = self.argv_of(tmux, settings)
+                self.assertIsInstance(err, N, (settings, where))
+                self.assertEqual((err.why, err.data), (N.PERMISSION_UNSET, {}), (settings, where))
+                self.assertEqual(str(err), tmux_bridge.UNSET)
+                self.assertIn("dcbot.default_permission", str(err))
+                self.assertIn("#setup", str(err))
+                self.assertEqual((tmux.calls, argv), ([], None), "nothing started, and never with bypassPermissions instead")
+
+    def test_the_mode_written_is_the_one_opened_with(self):
+        """An older installation's first reconcile writes the mode it ran with (bypassPermissions): it opens as it did."""
+        got, argv = self.argv_of(Tmux(self), {"dcbot.default_permission": "bypassPermissions"})
         self.assertIsNone(got)
         self.assertEqual(argv, [config.CLAUDE, "--model", config.MODEL, "--settings", tmux_bridge.SETTINGS_FILE,
                                 "--permission-mode", "bypassPermissions", "--append-system-prompt", "you are in #c"])
+
+    def test_the_channels_own_with_none_for_the_installation(self):
+        self.st["permission"] = "manual"
+        got, argv = self.argv_of(Tmux(self), {})
+        self.assertIsNone(got)
+        self.assertEqual(self.pick(argv), (config.MODEL, "manual"))
+
+    def test_settings_that_cannot_be_read_never_open_with_bypass(self):
+        def broken(name):
+            raise ValueError("plugins.json: not JSON")
+        self.installation = broken
+        tmux = Tmux(self)
+        err = self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux)
+        self.assertEqual((getattr(err, "why", None), tmux.calls), (N.SETTINGS, []))
+        self.st["permission"] = "plan"  # the channel's own needs no settings file
+        self.installation = broken
+        self.assertIsNone(self.go(self.bridge.ensure(self.ch, self.st, self.rt), Tmux(self)))
 
     def test_the_installations(self):
         got, argv = self.argv_of(Tmux(self), {"dcbot.default_model": "sonnet", "dcbot.default_permission": "manual"})
@@ -83,7 +120,8 @@ class Params(Base):
             self.st["permission"] = value
             err, _ = self.argv_of(tmux)
             self.assertEqual((getattr(err, "why", None), tmux.calls), (N.PERMISSION, []), repr(value))
-            for whose, st, settings in (("channel", {"model": value}, {}), ("installation", {}, {"dcbot.default_model": value})):
+            for whose, st, settings in (("channel", {"model": value}, {"dcbot.default_permission": "manual"}),
+                                        ("installation", {}, {"dcbot.default_model": value, "dcbot.default_permission": "manual"})):
                 self.setUp()
                 tmux = Tmux(self)
                 self.st.update(st)
@@ -102,7 +140,8 @@ class Params(Base):
         for well in (True, False):
             self.setUp()
             seen = []
-            self.installation = lambda name: seen.append(threading.current_thread() is threading.main_thread())
+            self.installation = lambda name, seen=seen: seen.append(threading.current_thread() is threading.main_thread()) or \
+                ("manual" if name == "dcbot.default_permission" else None)
             with mock.patch.object(tmux_bridge, "settings_read_well", lambda: well):
                 self.assertIsNone(self.go(self.bridge.ensure(self.ch, self.st, self.rt), Tmux(self)))
             self.assertEqual(seen, [well, well], "the model and the permission mode, once each")
@@ -292,9 +331,13 @@ class Reasons(Base):
     def test_an_attached_pane_that_runs_no_agent(self):
         self.st.pop("tmux", None)
         self.st["pane"] = {"socket": "/tmp/x/default", "id": "%7"}
+        self.st["bg"] = 2
         err = self.go(self.bridge.ensure(self.ch, self.st, self.rt), Tmux(self))
         self.assertEqual(err.why, N.PANE_GONE)
         self.assertIn("%7", err.data["where"])
+        self.assertNotIn("bg", self.st, "what ran under it ended with it")
+        self.assertIn("claude --resume", str(err))
+        self.assertIn("/attach", str(err))
 
     def test_they_are_all_the_error_they_were(self):
         self.assertTrue(issubclass(N, tmux_bridge.BridgeError))

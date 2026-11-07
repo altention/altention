@@ -271,7 +271,7 @@ def limits_board(limits, why=None, off=False):
             rows.append("- %s：**%d%%**%s" % (names[title], got[1], "　（%s 重置）" % got[2] if got[2] else ""))
     week = next((p for t, p, _ in limits if t == "Current week (all models)"), None)
     if week is not None and PLAN:
-        rows.append("- 這週用量換算：約 Pro 一週額度的 **%.1f 倍**、Max 5x 的 %.1f 倍（照 Max 20x = 20 倍 Pro、Max 5x = 5 倍）"
+        rows.append("- 這週用量換算：約 Pro 一週額度的 **%.1f 倍**、Max 的 %.1f 倍（照官方：Max = 5 倍 Pro、Ultra = 10 倍，都是每週）"
                     % (week * PLAN[1] / 100.0, week * PLAN[1] / 500.0))
     return "\n".join(rows)
 

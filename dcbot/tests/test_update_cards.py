@@ -73,9 +73,9 @@ class Writer(unittest.TestCase):
                 card.show("x", "t")
         self.assertIn("找不到負責 Discord 機器人的機器", str(e.exception))
 
-        def gone():  # the machine list names no bot machine: what bot_machine() does then
-            raise SystemExit("altention dc post：找不到負責 Discord 機器人的機器（機器清單沒有 dcbot 角色）")
-        with mock.patch.object(card.dcpost, "bot_machine", gone):
+        def gone(*a, **k):  # the machine list names no bot machine: what botside.bot_machine() does then
+            raise card.dcpost.botside.NoBot("找不到負責 Discord 機器人的機器（機器清單沒有 dcbot 角色）")
+        with mock.patch.object(card.dcpost.botside, "bot_machine", gone):
             self.assertEqual(card.dcpost.deliver({"channel": "x", "text": "t"}, capture=True)[0], 1, "deliver itself never exits")
             with self.assertRaises(card.CardError) as e:
                 card.show("x", "t")

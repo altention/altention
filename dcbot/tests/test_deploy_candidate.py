@@ -455,6 +455,55 @@ class StepBack(Repo):
         self.assertIn("bin/home-git rebase --onto %s^ %s" % (step, step), r.stdout, "under another commit: still the step back named")
 
 
+class Help(Repo):
+    """spec §11.1 (manager 2026-11-03, high: "deploy.sh --help" deployed with the message "--help"): -h/--help says
+    how and does nothing; an option it does not know, or one given as a --commit hash, is refused (2) before
+    anything is done. The real deploy.sh in this test's repository, with a half-done edit in dcbot/ and an origin."""
+    def setUp(self):
+        super().setUp()
+        shutil.copy(os.path.join(HERE, "..", "deploy.sh"), os.path.join(self.live, "dcbot", "deploy.sh"))
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self.git("init", "-q", "--bare", self.origin)
+        self.git("remote", "add", "origin", self.origin)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "with deploy.sh")
+        self.git("push", "-q", "-u", "origin", "main")
+        self.write("dcbot/bot/main.py", "pass  # another channel's half-done edit\n")
+
+    def deploy(self, *args):
+        env = dict(ENV, DEPLOY_NO_GUIDE="1", GIT_CEILING_DIRECTORIES=os.path.dirname(self.tmp))
+        return subprocess.run(["bash", os.path.join(self.live, "dcbot", "deploy.sh")] + list(args), cwd=self.live, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=120)
+
+    def as_it_was(self):
+        return (self.git("rev-parse", "HEAD"), self.git("rev-parse", "main", cwd=self.origin), self.git("status", "--porcelain"),
+                sorted(os.listdir(os.path.join(self.live, ".git"))), sorted(os.listdir(os.path.join(self.live, "dcbot"))))
+
+    def test_help_says_how_and_does_nothing(self):
+        before = self.as_it_was()
+        for args in (["--help"], ["-h"], ["--help", "x"], ["--commit", "abc1234", "--help"]):
+            with self.subTest(args=args):
+                r = self.deploy(*args)
+                self.assertEqual(r.returncode, 0, r.stdout)
+                self.assertIn("兩種用法：", r.stdout)
+                self.assertIn("./deploy.sh --commit <hash>", r.stdout)
+                self.assertNotIn("set -euo", r.stdout)
+                self.assertNotIn("== ", r.stdout, "no step ran")
+                self.assertEqual(self.as_it_was(), before)
+
+    def test_an_option_it_does_not_know_is_refused(self):
+        before = self.as_it_was()
+        for args, words in ((["--nope", "x"], "✗ 不認得 --nope；什麼都沒做"), (["-m", "x"], "✗ 不認得 -m"),
+                            (["--commit", "--help", "msg"], "--commit 後面要是 commit 的 hash，不是 --help"),
+                            (["--commit", "abc1234", "--nope"], "✗ 不認得 --nope")):
+            with self.subTest(args=args):
+                r = self.deploy(*args)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn(words, r.stdout)
+                self.assertNotIn("== ", r.stdout)
+                self.assertEqual(self.as_it_was(), before)
+
+
 class InPlace(unittest.TestCase):
     def test_what_the_tools_import_runs_without_a_restart(self):
         live = deploy_candidate.live_modules()

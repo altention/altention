@@ -32,7 +32,8 @@ class Command(unittest.TestCase):
 
     def test_the_modes_as_the_program_lists_them(self):
         self.assertEqual(sorted(launch.permissions()), sorted(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]))
-        self.assertIn(launch.BYPASS, launch.permissions())
+        self.assertIn("bypassPermissions", launch.permissions())
+        self.assertFalse(hasattr(launch, "BYPASS"))  # C-121: no last resort for a caller to fall back on
 
 
 class Settings(unittest.TestCase):

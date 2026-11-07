@@ -14,7 +14,13 @@ from tests import tmuxguard  # noqa: F401,E402  (no test reaches a real tmux ser
 
 
 def run(coro):
-    return asyncio.run(coro)
+    """`coro`, and what it left running (open_setup hands #setup its first line in a task of its own)."""
+    async def go():
+        out = await coro
+        left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*left)
+        return out
+    return asyncio.run(go())
 
 
 class Ch(object):
@@ -69,7 +75,12 @@ class Base(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.folder = os.path.join(self.home, ".local", "state", "altention", "setup")
-        os.makedirs(self.folder)
+        self.make_folder()
+
+    def make_folder(self):  # as setup.py write_setup_folder makes it: the folder, then its settings.json
+        os.makedirs(os.path.join(self.folder, ".claude"), exist_ok=True)
+        with open(os.path.join(self.folder, ".claude", "settings.json"), "w") as f:
+            f.write("{}\n")
 
     def done(self, value):
         """The instance's setup.done as the engine reads it (missing: None)."""
@@ -121,13 +132,75 @@ class OpenSetup(Base):
         self.assertEqual([c.name for c in b.guild.text_channels].count(config.SETUP_CHANNEL), 1)
         self.assertIs(next(c for c in b.guild.text_channels if c.name == config.SETUP_CHANNEL), setup)
 
-    def test_no_folder_yet_nothing_made_and_said(self):
-        os.rmdir(self.folder)
+    def test_no_folder_yet_opened_once_the_install_makes_it(self):
+        """test-3 2026-11-03: the bot came up in the middle of the install, before #setup's folder; #setup was never
+        opened until someone restarted the bot. It is opened once the folder is there; a bare folder (settings.json
+        not written yet) is not taken for it."""
+        os.remove(os.path.join(self.folder, ".claude", "settings.json"))
+        botmain, b = bot()
+
+        async def go():
+            with mock.patch.object(botmain, "SETUP_WAIT_EVERY", 0.01):
+                self.assertIsNone(await b.open_setup(b.guild))
+                self.assertIsNone(await b.open_setup(b.guild), "asked again while waiting: one wait")
+                await asyncio.sleep(0.05)
+                self.assertEqual(b.guild.text_channels, [], "nothing made before the folder is ready")
+                self.make_folder()
+                await asyncio.wait_for(b.setup_waiting, 5)
+        with self.done(False):
+            run(go())
+        self.assertEqual([c.name for c in b.guild.text_channels], [config.SETUP_CHANNEL])
+        self.assertEqual(b.submitted, [(config.SETUP_CHANNEL, botmain.SETUP_FIRST)])
+        self.assertEqual(len([a for a in b.audits if "等安裝做好設定資料夾" in a]), 1, b.audits)
+        self.assertIsNone(b.setup_waiting)
+
+    def test_two_calls_while_the_audit_is_being_sent_wait_once(self):
+        """#code-review-2 of 54a8481: on_ready and the reconcile's open_setup at once, the #audit line taking a
+        while to send: one wait, #setup's first line once, the wait said once."""
+        os.remove(os.path.join(self.folder, ".claude", "settings.json"))
+        botmain, b = bot()
+        slow = b.audit
+
+        async def audit(text):
+            await asyncio.sleep(0.01)
+            await slow(text)
+        b.audit = audit
+
+        async def go():
+            with mock.patch.object(botmain, "SETUP_WAIT_EVERY", 0.01):
+                await asyncio.gather(b.open_setup(b.guild), b.open_setup(b.guild, resend=False))
+                await asyncio.sleep(0.03)
+                self.make_folder()
+                await asyncio.wait_for(b.setup_waiting, 5)
+        with self.done(False):
+            run(go())
+        self.assertEqual([c.name for c in b.guild.text_channels], [config.SETUP_CHANNEL])
+        self.assertEqual(b.submitted, [(config.SETUP_CHANNEL, botmain.SETUP_FIRST)])
+        self.assertEqual(len([a for a in b.audits if "等安裝做好設定資料夾" in a]), 1, b.audits)
+
+    def test_setup_done_in_the_terminal_while_waiting_opens_nothing(self):
+        os.remove(os.path.join(self.folder, ".claude", "settings.json"))
+        botmain, b = bot()
+
+        async def go():
+            with mock.patch.object(botmain, "SETUP_WAIT_EVERY", 0.01):
+                with self.done(False):
+                    await b.open_setup(b.guild)
+                with self.done(True):
+                    self.make_folder()
+                    await asyncio.wait_for(b.setup_waiting, 5)
+        run(go())
+        self.assertEqual(b.guild.text_channels, [])
+        self.assertEqual(b.submitted, [])
+
+    def test_no_folder_and_nothing_to_hand_over_is_said(self):
+        os.remove(os.path.join(self.folder, ".claude", "settings.json"))
         botmain, b = bot()
         with self.done(False):
-            self.assertIsNone(run(b.open_setup(b.guild)))
+            self.assertIsNone(run(b.open_setup(b.guild, first=None)))
         self.assertEqual(b.guild.text_channels, [])
         self.assertIn("./install.sh", b.audits[-1])
+        self.assertIsNone(b.__dict__.get("setup_waiting"), "an update card's ask: no wait")
 
     def test_a_channel_of_the_owners_by_that_name_is_left_alone(self):
         botmain, b = bot()
@@ -145,6 +218,52 @@ class OpenSetup(Base):
         self.assertEqual(b.submitted, [])
         self.assertIs(run(b.open_setup(b.guild)), ch)
         self.assertEqual(b.submitted, [(config.SETUP_CHANNEL, "請用 setup skill 帶使用者做完設定。")], "the reconcile's new questions")
+
+
+class Restart(Base):
+    """test-3 2026-11-03: a start with setup not done (the bot restarting to take a new version) opened #setup in
+    on_ready, through own_channels, and waited there for its Claude to come up; what tells that (its SessionStart) is
+    read by the pump, which on_ready starts only after own_channels. 90 s later: 「Claude 沒有啟動成功」. The first line
+    is now handed over in a task of its own: own_channels returns, the pump starts, the Claude is seen to be up."""
+
+    def test_setup_not_done_a_restart_does_not_wait_for_its_claude(self):
+        botmain, b = bot(state={"1": {}})  # (an installation with channels already: own_channels' second branch)
+        pumped, said = asyncio.Event, []
+
+        async def go():
+            pump_on = pumped()
+
+            async def submit(message, text):  # as TmuxBridge.submit: up only once the pump has read its SessionStart
+                try:
+                    await asyncio.wait_for(pump_on.wait(), 2)
+                    b.submitted.append((message.channel.name, text))
+                except asyncio.TimeoutError:
+                    said.append("Claude 沒有啟動成功")
+            b.tmux = type("T", (), {"submit": staticmethod(submit)})()
+
+            async def ensure(guild, name, topic):
+                return next((c for c in guild.text_channels if c.name == name), None) or await guild.create_text_channel(name)
+            b.ensure_channel = ensure
+            with self.done(False):
+                await asyncio.wait_for(b.own_channels(b.guild), 1)  # what on_ready waits for: no Claude in it
+            self.assertEqual(b.submitted, [], "not handed yet: its Claude is not up")
+            pump_on.set()  # on_ready goes on and starts the pump
+            await asyncio.gather(*b.handing)
+        asyncio.run(go())
+        self.assertEqual(said, [])
+        self.assertEqual(b.submitted, [(config.SETUP_CHANNEL, "請用 setup skill 帶使用者做完設定。")])
+
+    def test_a_failure_to_hand_it_over_is_printed_not_raised(self):
+        import contextlib
+        import io
+        botmain, b = bot()
+
+        async def submit(message, text):
+            raise OSError("tmux gone")
+        b.tmux = type("T", (), {"submit": staticmethod(submit)})()
+        with self.done(False), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNotNone(run(b.open_setup(b.guild)))
+        self.assertIn("tmux gone", err.getvalue())
 
 
 class Spool(Base):

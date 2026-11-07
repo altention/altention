@@ -6,6 +6,7 @@ from altention import testing as _testing  # noqa: E402
 _testing.guard_home()  # tests never touch the real home (altention/testing.py)
 import json
 import os
+import shlex
 import sys
 import tempfile
 import time
@@ -133,7 +134,8 @@ class ReviewedForms(unittest.TestCase):
 
     def test_what_the_ruling_leaves_as_a_known_limit(self):
         for command in ("cd ~/.config && cat dcbot/env", "grep -r TOKEN ~", "grep -r TOKEN /", "f=env; cat ~/.config/dcbot/$f",
-                        "python3 -c 'open(\"x\")'"):
+                        "python3 -c 'open(\"x\")'", "echo 'cat ~/.ssh/*' | sh",
+                        "flock /tmp/l $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)"):  # (C-108: a $(…)'s output run by a program not listed)
             self.assertEqual(self.hit(command)[:0], [], command)  # (whatever is said of these: none is promised)
         self.assertEqual(self.hit("cd ~/.config && cat dcbot/env"), [], "a relative path after cd: not seen")
         self.assertEqual(self.hit("grep -r TOKEN ~"), [], "a search of the whole home folder: not judged")
@@ -157,6 +159,181 @@ class ReviewedForms(unittest.TestCase):
         for _ in range(500):
             self.hit("git status && ls -la src/ && python3 -m pytest -q 'tests/test_x.py' && grep -r foo src/")
         self.assertLess((time.perf_counter() - began) / 500, 0.002)
+
+
+class Searched(unittest.TestCase):
+    """C-126 (manager 2026-11-03): a search's pattern is looked at too, and judged broadly: the folder a glob starts
+    from, the home folder and the root included."""
+
+    def setUp(self):
+        self.listed = [HOME + p[1:] for p in secrets.DEFAULT] + ["/etc/mine/key.pem"]
+
+    def reach(self, base, pattern=None, deep=True, cwd=HOME + "/work", any_level=False):
+        return secrets.searched(base, pattern, self.listed, home=HOME, cwd=cwd, deep=deep, any_level=any_level)
+
+    def test_glob_patterns(self):
+        """Glob as dchook judges it: the whole tree (manager), a last name with no wildcard looked for at every level
+        under its folder (ripgrep's way: #code-review-2 on e815c9b)."""
+        for base, pattern in ((None, "~/.ssh/*"), (None, HOME + "/.config/dcbot/*"), (None, "~/.c*/dcbot/env"),
+                              (HOME, "**/*"), (HOME, ".ssh/id_*"), (None, "/h/*/.ssh/id_rsa"), ("~", "**/env"),
+                              (None, "**/../../.ssh/*"), ("/", "etc/**/*.pem"), (None, "~/.config/altention/secrets/core/*"),
+                              (HOME + "/.config", "dcbot"), (None, "$HOME/.ssh/*key*"), (HOME + "/.config", "env"),
+                              (HOME + "/.config", "discord-token"), ("~", "id_rsa"), (None, HOME + "/id_rsa"),
+                              (HOME, "*.md"), (HOME, "notes.md"), (HOME + "/.ssh", "config")):
+            self.assertIsNotNone(self.reach(base, pattern, any_level=True), (base, pattern))
+        self.assertIsNotNone(self.reach(None, "id_rsa", cwd=HOME, any_level=True), "a conversation in the home folder")
+        for base, pattern in ((None, "**/*.py"), (None, "src/*.md"), (None, "a.py"), (HOME + "/work", "dcbot/env")):
+            self.assertIsNone(self.reach(base, pattern, any_level=True), (base, pattern))
+        self.assertIsNone(self.reach(None, "**/*", cwd=None, any_level=True), "nothing absolute to start from: not judged")
+
+    def test_grep_trees(self):
+        for base in ("~", HOME, "/", "/h", HOME + "/.config", ".config", "/etc", "~/.ssh"):
+            self.assertIsNotNone(self.reach(base, cwd=HOME), base)
+        for base in (HOME + "/work", "src", HOME + "/.ssh/config", "/tmp"):
+            self.assertIsNone(self.reach(base, cwd=HOME), base)
+        self.assertIsNotNone(self.reach(HOME + "/work", "~/.ssh/*"), "an absolute glob looks elsewhere")
+        self.assertIsNotNone(secrets.searched(HOME + "/.SSH", None, self.listed, home=HOME, fold=True))
+
+
+class TextACommandHandsOver(unittest.TestCase):
+    """C-108 (manager 2026-10-28): a heredoc's body or a quoted string is text the command hands over, not its
+    arguments; a pattern there is not expanded, so only a path written out in full counts. Text a shell runs is
+    commands. What the reader does not follow is judged by lines, as before (refuses more)."""
+
+    GLOB = "cat ~/.ss[h]/id_rsa"  # a pattern that reaches a key, while the same text taken literally names no secret
+
+    def setUp(self):
+        self.listed = [HOME + p[1:] for p in secrets.DEFAULT]
+
+    def hit(self, command):
+        return secrets.mentions(command, self.listed, home=HOME, cwd=HOME + "/work")
+
+    def test_a_doc_comment_in_text_goes_through(self):
+        for command in ("cat > a.js <<'EOF'\n/**\n * Adds.\n */\nfunction add() {}\nEOF",
+                        "cat > a.js <<EOF\n/**\n * Adds.\n */\nEOF",
+                        "cat > a.js <<-EOF\n\t/**\n\tEOF",
+                        "python3 -c \"\nprint('''\n/**\n''')\n\"",
+                        "node -e '\n/**\n * x\n */\nconsole.log(1)\n'",
+                        "echo '/**'", 'echo "/**"', "cat '/**'", "echo \\/\\*\\*",
+                        "cat > n.md <<'EOF'\n" + self.GLOB + "\nEOF",
+                        "cat > n.md <<'EOF'\n$(" + self.GLOB + ")\nEOF"):
+            self.assertEqual(self.hit(command), [], command)
+
+    def test_arguments_are_judged_as_before(self):
+        for command in ("cat /**", "ls /**/env", "cat ~/.ssh/*", self.GLOB, "cat ~/.ssh/id_[re]*",
+                        "cat > a.js <<'EOF' && cat /**\n/**\nEOF"):
+            self.assertTrue(self.hit(command), command)
+
+    def test_a_path_written_out_in_text_still_counts(self):
+        for command in ("cat > n.md <<'EOF'\nthe token is in ~/.config/dcbot/env\nEOF",
+                        "cat > n.md <<EOF\ncat $HOME/.ssh/id_rsa\nEOF",
+                        "cat > n.md <<'EOF'\ngrep -r TOKEN ~/.config\nEOF",
+                        "python3 -c \"\nopen('x')\nprint('''\n~/.config/dcbot/env\n''')\n\"",
+                        "echo '~/.config/dcbot/env'",
+                        "echo \"bot_here = ~/.config/dcbot/env); then\"", "git commit -m 'keys: ~/.ssh/id_rsa and more'",
+                        "grep -E 'dcpost|~/.config/dcbot/env|x' f", "M='see ~/.config/dcbot/env; then'; echo \"$M\"", "cat > n.md <<'EOF'\n~/.ssh/id_rsa is the key\nEOF"):
+            self.assertTrue(self.hit(command), command)
+
+    def test_what_the_shell_runs_in_text(self):
+        for command in ("cat > n.md <<EOF\n$(" + self.GLOB + ")\nEOF", "cat > n.md <<EOF\n`" + self.GLOB + "`\nEOF",
+                        'echo "$(' + self.GLOB + ')"', "echo `" + self.GLOB + "`", "x=$(" + self.GLOB + ")",
+                        'echo "\n$(' + self.GLOB + ')\n"'):
+            self.assertTrue(self.hit(command), command)
+
+    def test_text_handed_to_a_shell(self):
+        g = self.GLOB
+        for command in ("bash -c '%s'" % g, "sh -c \"%s\"" % g, "bash -c '\n%s\n'" % g, "zsh -c 'cd /tmp && %s'" % g,
+                        "timeout 60 bash -c '%s'" % g, "env X=1 sh -c '%s'" % g, "sudo bash -c '%s'" % g,
+                        "nohup sh -c '%s' &" % g, "nice -n 5 bash -c '%s'" % g, "ls | xargs -I{} sh -c '%s'" % g,
+                        "ssh lap '%s'" % g, "ssh -i ~/.ssh/id_rsa lap '%s'" % g, "eval '%s'" % g,
+                        "bash <<'EOF'\n%s\nEOF" % g, "cat <<'EOF' | bash\n%s\nEOF" % g, "ssh lap <<'EOF'\n%s\nEOF" % g,
+                        "ssh lap bash <<EOF\n%s\nEOF" % g, "cat <<'EOF' |\n%s\nEOF\nsh" % g,
+                        "bash -c 'bash -c \"%s\"'" % g):
+            self.assertTrue(self.hit(command), command)
+        p, full = "~/.ss[h]/id_rsa", HOME + "/.ss[h]/id_rsa"  # (#code-review on be4b29d: a shell over there reads them again)
+        for command in ("ssh lap cat '%s'" % p, "ssh lap cat ~/.ss\\[h\\]/id_rsa", 'ssh lap cat "%s"' % full,
+                        "eval cat '%s'" % p, "eval 'cat' \"%s\"" % full, "watch cat '%s'" % p,
+                        "ssh lap 'cat %s'" % p, "bash -c cat\\ '%s'" % p, "ssh h cat '/**'",
+                        "su lap -c cat '%s'" % p, "tmux send-keys -t w cat '%s' Enter" % p,
+                        # (#code-review-2 on be4b29d)
+                        "eval cat '~/.ssh/*'", "ssh lap cat '~/.ssh/*'", 'ssh lap cat "~/.ssh/*"',
+                        "watch cat '~/.ssh/*'", "ssh lap cat '%s'" % p,
+                        "bash -c \"$(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)\"", "source /dev/stdin <<'EOF'\ncat ~/.ssh/*\nEOF",
+                        ". /dev/stdin <<'EOF'\ncat ~/.ssh/*\nEOF", "sudo source /dev/stdin <<EOF\ncat ~/.ssh/*\nEOF",
+                        # (#code-review-2 on 4324c8e, manager: $(…) in a command's name runs what it prints)
+                        "$(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "bash <<'OUT'\n$(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)\nOUT",
+                        "X=1 \"$(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)\"", "`echo 'cat ~/.ssh/*'`",
+                        # (#code-review on a829a2b: after reserved words and launchers, every word may be the command)
+                        "timeout 5 $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "nice $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)",
+                        "env -i $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "if $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n); then :; fi",
+                        "nice -n 5 $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "while true; do $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n); done",
+                        "! $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "xargs $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n) < /dev/null",
+                        # (#code-review-2 on b062ca1, the manager's ruling: time with options, redirections first, the
+                        # shell's own builtin, coproc, function)
+                        "time -p $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "2>/dev/null $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)",
+                        ">/tmp/o $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "> /tmp/o $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)",
+                        "builtin $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)", "coproc $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n)",
+                        "function f { $(cat <<'EOF'\ncat ~/.ssh/*\nEOF\n); }"):
+            self.assertTrue(self.hit(command), command)
+        for command in ("ssh -i ~/.ssh/id_rsa lap 'uptime'", "bash -c 'echo hi'", "ssh lap <<'EOF'\nuptime\nEOF",
+                        "cat > a.js <<'EOF'\n/**\nEOF\nbash build.sh",
+                        "git commit -m \"$(cat <<'EOF'\nfix the /** comment\nEOF\n)\"", "find . -name '*.py' <<'EOF'\n/**\nEOF",
+                        "msg=$(cat <<'EOF'\nfix the /** comment\nEOF\n)", "git commit -m \"$(cat <<'EOF'\nsee ~/.ssh/*\nEOF\n)\"",
+                        "echo $(cat <<'EOF'\nsee ~/.ssh/*\nEOF\n)", "if true; then msg=$(cat <<'EOF'\n/**\nEOF\n); fi",
+                        "cat > /tmp/o \"$(cat <<'EOF'\n/**\nEOF\n)\"", "git commit -m \"$(cat <<'EOF'\n/**\nEOF\n)\" 2>/dev/null"):
+            self.assertEqual(self.hit(command), [], command)
+
+    def test_a_pattern_only_the_files_there_resolve(self):
+        """~/.ss?/id_rsa reaches the key only through the files there (#code-review-2 on be4b29d, in a scratch home)."""
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, ".ssh"))
+            for name in ("id_rsa", "id_rsa.pub"):
+                with open(os.path.join(home, ".ssh", name), "w") as f:
+                    f.write("x")
+            listed = [home + p[1:] for p in secrets.DEFAULT]
+            for command in ("eval cat '~/.ss?/id_rsa'", "ssh localhost cat '~/.ss?/id_rsa'", "cat ~/.ss?/id_rsa"):
+                self.assertTrue(secrets.mentions(command, listed, home=home), command)
+            self.assertEqual(secrets.mentions("echo '~/.ss?/id_rsa'", listed, home=home), [], "quoted, no shell: literal")
+
+    def test_what_the_reader_does_not_follow_is_judged_by_lines(self):
+        for command in ("echo 'not closed\n/**", "cat <<EOF\n/**\n", "echo $'a'\n/**", "cat > a <<EOF\n`odd\n/**\nEOF",
+                        "cat <<$X\n/**\n$X", "echo $(oops\n/**", "echo \"open\n/**"):
+            self.assertEqual(self.hit(command), ["/**"], command)
+
+    def test_a_fault_in_the_reader_refuses_more(self):
+        """The guard lets a call through when it fails: a reader that trips must fall back, not raise."""
+        with mock.patch.object(secrets, "_lex", side_effect=IndexError("x")):
+            self.assertEqual(self.hit("cat > a.js <<'EOF'\n/**\nEOF"), ["/**"])
+            self.assertTrue(self.hit("cat ~/.config/dcbot/env"))
+
+    def test_deep_nesting_still_refused(self):
+        deep = self.GLOB
+        for _ in range(8):
+            deep = "bash -c %s" % shlex.quote(deep)
+        self.assertTrue(self.hit(deep))
+
+    def test_comments_are_text(self):
+        self.assertEqual(self.hit("# don't stop\ncat > a.js <<'EOF'\n/**\nEOF"), [], "an apostrophe in a comment is no unclosed quote")
+        self.assertEqual(self.hit("ls  # see /** below"), [])
+        self.assertTrue(self.hit("ls  # the token: ~/.config/dcbot/env"))
+        self.assertTrue(self.hit("# x\ncat /**"))
+        self.assertTrue(self.hit("echo a#b && cat /**"))
+
+    def test_braces_in_quotes_are_not_expanded_and_never_multiply_for_long(self):
+        self.assertTrue(self.hit("cat ~/.config/{dcbot,x}/env"))
+        self.assertEqual(self.hit("cat '~/.config/{dcbot,x}/env'"), [], "the shell does not expand braces in quotes")
+        row = ",".join('{"m":"%d","v":%d,"s":"A"}' % (k, k) for k in range(12))
+        for command in ("python3 - <<'EOF'\nspec = {\"data\":{\"values\":[%s]}}\nEOF" % row, "echo '%s'" % row, "echo %s" % row):
+            began = time.perf_counter()
+            self.assertEqual(self.hit(command), [], command[:40])
+            self.assertLess(time.perf_counter() - began, 0.5, command[:40])
+        self.assertEqual(len(secrets._braces("{a,b}" * 20)), secrets.BRACES)
+
+    def test_still_fast_with_a_long_heredoc(self):
+        body = "\n".join("const x%d = '/a/b/c'; // a line of a file being written" % k for k in range(2000))
+        began = time.perf_counter()
+        self.hit("cat > big.js <<'EOF'\n" + body + "\nEOF")
+        self.assertLess(time.perf_counter() - began, 0.5)
 
 
 class Instance(unittest.TestCase):

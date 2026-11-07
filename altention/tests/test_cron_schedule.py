@@ -749,7 +749,67 @@ class HomeGuard(unittest.TestCase):
         finally:
             shutil.rmtree(home)
 
-class Judge(unittest.TestCase):
+    def test_a_plugins_own_folder_is_not_looked_into_the_cores_files_are(self):
+        """2026-11-02: a plugin serving pages wrote its own state folder while the suites ran, and the guard said the
+        tests had touched the real home (manager: a plugin's folder is its own, the core's stay checked)."""
+        from altention import testing
+        home = tempfile.mkdtemp(prefix="家 ")
+        try:
+            d = os.path.join(home, ".local", "state", "altention")
+            write(os.path.join(d, "rigplug", "web", "pages.json"), "x")
+            write(os.path.join(d, "scheduler", "other.json"), "x")
+            write(os.path.join(d, "other.json"), "x")
+            write(os.path.join(home, ".cache", "altention", "rigplug", "kept.json"), "x")
+            seen = testing._snapshot(home, {"rigplug"})
+            self.assertFalse([k for k in seen if os.path.join(d, "rigplug") in k], seen)
+            for path in (os.path.join(d, "scheduler", "other.json"), os.path.join(d, "other.json"),
+                         os.path.join(home, ".cache", "altention", "rigplug", "kept.json")):
+                self.assertIsNotNone(seen[path], "%s: still compared" % path)
+            self.assertIn(os.path.join(d, "rigplug", "web", "pages.json"), testing._snapshot(home), "no names: all")
+        finally:
+            shutil.rmtree(home)
+
+    def test_the_names_come_from_the_plugins_known(self):
+        from altention import testing
+        root = tempfile.mkdtemp(prefix="插件 ")
+        try:
+            write(os.path.join(root, "core.plugin.json"), json.dumps({"name": "core"}))
+            write(os.path.join(root, "a", "plugin.json"), json.dumps({"name": "rigplug"}))
+            write(os.path.join(root, "rigtwo", "plugin.json"), "{ half")
+            paths = [os.path.join(root, "core.plugin.json"), os.path.join(root, "a", "plugin.json"),
+                     os.path.join(root, "rigtwo", "plugin.json")]
+            with mock.patch.object(plugin, "candidates", lambda: paths):
+                self.assertEqual(testing.plugin_names(), {"rigplug", "rigtwo"})
+            with mock.patch.object(plugin, "candidates", mock.Mock(side_effect=config.ConfigError("broken"))):
+                self.assertEqual(testing.plugin_names(), set(), "unknown: every folder checked")
+        finally:
+            shutil.rmtree(root)
+
+    def test_during_a_run_a_plugins_writes_pass_and_the_cores_stop_it(self):
+        """The whole guard in a run of its own: a plugin writing its folder meanwhile passes, a core file fails."""
+        engine = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for target, code in ((os.path.join("rigplug", "now.json"), 0), ("rig-core.json", 1)):
+            with self.subTest(target=target):
+                home = tempfile.mkdtemp(prefix="家 ")
+                try:
+                    write(os.path.join(home, "altention", "plugins", "rigplug", "plugin.json"), json.dumps({"name": "rigplug"}))
+                    write(os.path.join(home, ".local", "state", "altention", "rigplug", "now.json"), "before")
+                    write(os.path.join(home, ".local", "state", "altention", "rig-core.json"), "before")
+                    script = ("import os, sys, time; sys.path.insert(0, sys.argv[1]); from altention import testing; "
+                              "real = os.environ['HOME']; testing.guard_home(); time.sleep(0.05); "
+                              "open(os.path.join(real, '.local', 'state', 'altention', sys.argv[2]), 'w').write('after')")
+                    env = dict(os.environ, HOME=home)
+                    for var in ("ALT_ROOT", "ALT_INSTANCE", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
+                        env.pop(var, None)
+                    r = subprocess.run([sys.executable, "-c", script, engine, target], env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+                    self.assertEqual(r.returncode, code, r.stderr)
+                    if code:
+                        self.assertIn("rig-core.json", r.stderr)
+                finally:
+                    shutil.rmtree(home)
+
+
     H = 3600
 
     def judge(self, mine, t, now, ours=None, others=(), within=300):

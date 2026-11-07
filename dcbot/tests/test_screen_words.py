@@ -105,6 +105,21 @@ class Ask(unittest.TestCase):
             said, pressed = self.ask(["\n".join(two)], pane)
             self.assertEqual([k for k in pressed if k in ("x", "Escape")], ["x", "Escape"], "the offer on the hint's first row")
 
+    def test_the_box_some_installations_of_2_1_316_draw_inline(self):
+        """#discord-control 2026-11-03: on one installation 2.1.316 draws the box with no row of "▔" and the
+        question above it as the owner's message; the bot (v0.5.0) saw no box, posted "沒有看到答案框" after
+        90 seconds and left it open. Now posted, its history cleared and the box closed, as the other one is."""
+        inline = lambda state: samples.extra("T", state, version="2.1.316")  # noqa: E731
+        for pane in (False, True):
+            said, pressed = self.ask([inline("inline-answering"), inline("inline-answer")], pane)
+            self.assertTrue(said.startswith("#試用 的工作目錄是 /hdir/user-x/altention/engine，也就是引擎資料夾。"), said)
+            self.assertNotIn("沒有看到答案框", said)
+            self.assertEqual([k for k in pressed if k in ("x", "Escape")], ["x", "Escape"])
+            said, pressed = self.ask([inline("inline-answering")], pane)  # not answered within the time
+            self.assertIn("還沒有答案", said)
+            self.assertNotIn("沒有看到答案框", said)
+            self.assertNotIn("Escape", pressed)
+
 
 class Retrying(unittest.TestCase):
     """#code-review-2 2026-10-12, on 2.1.296: when the /btw request fails and Claude Code tries again, the row under

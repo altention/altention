@@ -155,7 +155,7 @@ class Forwarded(unittest.TestCase):
     def test_attachments_are_saved_as_before(self):
         self.channel(Original(Author(OWNER)))
 
-        async def save(shim):
+        async def save(shim, host=None):
             return ["[附件] a.png 已存到 /x/a.png（用 Read 工具開啟；圖片也可以直接看）"] if shim.attachments else []
         from bot import attachments
         with mock.patch.object(attachments, "save", save):

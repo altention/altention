@@ -588,13 +588,20 @@ def notes(p, tags, lang=None, root=None):
 
 def _load_at(repo, tag):
     """plugin.json at `tag`, checked; (dict, None) or (None, why)."""
-    text = _show(repo, tag, "plugin.json")
-    if text is None:
-        return None, "%s 沒有 plugin.json" % tag
+    return _load_at_newer(repo, tag)[:2]
+
+
+def _load_at_newer(repo, tag):
+    """_load_at's (dict or None, why) and whether it is written for a newer engine (plugin.NewerEngine)."""
+    found = _show(repo, tag, "plugin.json")
+    if found is None:
+        return None, "%s 沒有 plugin.json" % tag, False
     try:
-        return plugin.check(json.loads(text), "%s:plugin.json" % tag), None
+        return plugin.check(json.loads(found), "%s:plugin.json" % tag), None, False
+    except plugin.NewerEngine as e:
+        return None, str(e), True
     except (ValueError, plugin.PluginError) as e:
-        return None, str(e)
+        return None, str(e), False
 
 
 def _when_words(w):
@@ -709,7 +716,10 @@ def check(p, tag, engine_version=None, root=None):
     found, why = [], {}
     if _git(repo, "rev-parse", "-q", "--verify", "%s^{commit}" % tag, timeout=30).returncode != 0:
         return {"kind": "unreachable", "kinds": ["unreachable"], "why": "拿不到 %s 的 %s" % (p["name"], tag), "added": []}
-    new, bad = _load_at(repo, tag)
+    new, bad, newer = _load_at_newer(repo, tag)
+    if newer:  # written for a newer engine: the card's "update the engine" kind, not unreadable
+        return {"kind": "engine", "kinds": ["engine"], "why": text.t("plugin_update.newer_engine", plugin=p["name"], tag=tag),
+                "added": []}
     if new is None:
         return {"kind": "broken", "kinds": ["broken"], "why": "%s 的 %s 讀不懂：%s" % (p["name"], tag, bad), "added": []}
     if os.path.lexists(folder) and not own:

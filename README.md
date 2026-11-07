@@ -137,6 +137,14 @@ Without the guide:
    writes the token, your user ID and the server's ID to `~/.config/dcbot/env` (mode 600). Then it goes straight on
    to install everything this machine needs (the same as `./install.sh`); wait until its last line says it is done.
 
+Two things you may meet:
+
+- Creating the application, adding the bot or resetting the token, Discord sometimes asks you to prove you are human
+  or for your password: do it and go on.
+- If the Discord app is open on this computer, the invite link first waits on "Open Discord app" for about 60 seconds
+  before it falls back to the web page; the app may be signed in to another account, so check which one before you
+  pick the server.
+
 Then:
 
 ```bash
@@ -331,7 +339,8 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
   - That request loads none of your settings, hooks, MCP servers or tools, runs in an empty temporary folder and
     leaves no conversation file.
   - The install guide asks your plan and writes it, for example `"usage": {"plan": ["Pro", 1]}` (or
-    `["Max 5x", 5]`, `["Max 20x", 20]`; Team and Enterprise: as many Pro allowances as your limit is worth). Left
+    `["Max", 5]`, `["Ultra", 10]`, a week's allowance as claude.com/pricing gives it; Team and Enterprise: as many
+    Pro allowances as your limit is worth). Left
     out, the board says the plan is not set and shows the percentages without the Pro multiples.
   - To stop it: set it to `false`, or turn the usage plugin off. Removing the line does not: not set means on.
   - The fields it reads are not documented by Anthropic; they follow what Claude Code 2.1.299 and 2.1.316 return

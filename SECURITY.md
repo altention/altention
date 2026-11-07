@@ -61,18 +61,25 @@ and any path you add in the instance's `plugins.json`:
 "core": {"secret_paths": ["~/.config/my-service/credentials.json"]}
 ```
 
-(`~` for your home, `*` within a name, `**` at any depth.)
+(`~` for your home; `*` matches within the last name only, as in `~/.ssh/id_*`; a path ending in `/**` covers
+everything under that folder. A `**` anywhere else is not supported: write each folder out.)
 
 **How**: a `PreToolUse` hook (`dchook --guard`) runs before every tool call of every Claude Code on every machine
 Altention manages: the bot's own conversations, the ones you started yourself and attached, and any other session of
 your user. It refuses
 
 - Read, Edit, Write and NotebookEdit on a protected file;
-- Grep, Glob and LS on a folder that holds one (for example `~/.config` or `~/.ssh`, but not your home folder
-  itself);
+- Grep and Glob that could reach one: Grep on a folder that holds one, your home folder and `/` included; Glob or
+  Grep's `glob` with a pattern that could match one, judged from the folder before its first wildcard (`~/.ssh/*`,
+  `**/*` in your home folder, `/h*/*/.ssh/id_rsa`). A plain name is looked for in every folder below, so Glob `env`
+  in `~/.config` is refused too;
+- LS on a folder that holds one (for example `~/.config` or `~/.ssh`, but not your home folder itself);
 - a Bash command that names one, read the way the shell reads it: quotes, `~`, `~you`, `$HOME`, `${HOME}`, wildcards
   and `{a,b}` braces, and relative paths resolved from the conversation's folder. Commands that read into folders
   (`grep -r`, `rg`, `find`, `tar`, `zip`, `rsync`, `cp -r`, `ls -R`) are refused on a folder above a secret too.
+  Text a command only hands over (a heredoc's body, a quoted string) is judged only for paths written out in full:
+  the shell does not expand a wildcard there. Text handed to a shell (`bash -c`, `ssh`, `eval`, a heredoc fed to
+  one) and the `$(…)` the shell runs are judged as commands.
 
 Using a key is allowed: the `-i` argument of `ssh`, `scp` and `sftp`, keys loaded with `ssh-add`, and
 `ssh-keygen -y -f`. When a call is refused, Claude is told which path it was and to ask you if it is really needed.
@@ -86,8 +93,10 @@ tool calls went through. Each tool call takes about 35 ms longer.
 **What it does not cover** (it is a best-effort match on what Claude asks for, not isolation):
 
 - a relative path after a `cd` in the command (`cd ~/.config && cat dcbot/env`);
-- a search over your whole home folder (Grep on `~`, `grep -r x ~`);
+- a shell search over your whole home folder (`grep -r x ~`);
 - a path put together at run time, or a program written to open the file;
+- the output of a `$(…)` run as a command by a program the guard does not know runs its arguments (`flock` or
+  `strace`, say);
 - programs other than Claude Code, and anything that runs before Claude: plugins, cron lines and your own scripts are
   trusted code;
 - a machine where the hook is not installed, or where you removed it or turned hooks off;
@@ -123,6 +132,21 @@ the bot reads the dialog off the terminal screen and posts its options as button
   happened, and nothing would warn you if it did. Knowing about waiting dialogs from Claude Code's hooks instead of
   the screen is the first item of the README's roadmap. Until then, after updating Claude Code, check that the bot
   still shows permission prompts as buttons before relying on it.
+
+## Conversations on one account are not isolated from each other
+
+All the Claude Code conversations on one account run as the same system user, in that user's tmux. Any of them can use
+the shell to send keys to another conversation (`tmux send-keys`), including the keys that answer a permission dialog.
+
+- So the permission dialogs, and the approval buttons in Discord, guard against mistakes. They do not keep one agent
+  from another: a channel in `manual` can have its "Yes" pressed by the Claude of another channel.
+- The same goes for what the bot keeps for you alone and does not offer agents: leaving out the official way is not a
+  wall.
+- For real isolation, run work you do not trust under another account, on another machine, or in a sandbox. That is
+  outside what Altention does.
+- Choosing the default permission mode (`dcbot.default_permission`): the three modes are described under "The one
+  thing to understand" above; they are the options of the permission question #setup asks. Keep in mind that one
+  channel in `manual` is not safer while another channel runs in `bypassPermissions`.
 
 ## What reaches Discord
 

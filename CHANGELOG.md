@@ -14,6 +14,118 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.5.1 — 2026-11-07
+
+### For people
+
+- **Attachments now reach a channel whose Claude works on another machine.** Before, the file was kept only on the
+  bot's machine, and the Claude there was given a path it could not open. Files up to 25 MB are now copied there; a
+  larger file, or one that cannot be sent, is described with the machine it is on and its original link.
+- **A `/**` in text a command only hands over (a code comment in a heredoc, a quoted string) is no longer refused as
+  naming a secret.** A wildcard there is not taken as a path; a secret's path written out in full is still refused
+  there, and a wildcard the shell expands (`cat /**`) is refused as before. Text handed to a shell to run (`bash -c`,
+  `ssh`, `eval`, a heredoc fed to one, `$(…)`) is now read as a command too, so a secret's path inside `bash -c '…'`,
+  which slipped through before, is refused.
+- **`dcctl` on a machine that does not run the bot hands its command to the bot's machine.** The Discord token is
+  needed only there now: from any other machine, the whole command goes over SSH to the bot's machine and its output
+  and exit status come back as they are; when that machine cannot be reached it says which one, and never falls back
+  on a token left here. doctor now asks Discord whether the bot's token still works, so a dead token shows there rather
+  than as a 401 later, and checks that every other machine can reach the bot's.
+- **After a reboot, attaching a conversation again puts it back in its own channel.** Resume it in a new tmux window and
+  `/attach` it: once the old pane is gone, the same conversation, or the same window and folder, takes the channel it
+  had instead of opening a second one. A new conversation started there takes the channel too, and the channel says
+  how to go back to the old one. What a channel says when its pane is gone now gives steps that work.
+- **A channel you archived is taken back when its Claude is attached again.** /archive puts a note in front of the
+  channel's topic, and attaching the same tmux window again did not see past it, so a second channel was opened; the
+  archived one now comes back out of the archive, with its history.
+- **An attachment keeps the name you gave it.** Discord replaces a file name that is not plain ASCII (「截圖.png」) with
+  a string of letters and digits, and Claude was given that; it now gets the file's own name. A very long name is cut
+  short, keeping its suffix (.png and the like).
+- **The tour no longer mentions a board that is off, and the README says what Discord may ask on the way** (a check
+  that you are human, your password, the app opening first).
+- **The tour answers the channel that greets it, and an archived channel says to send your message again once it is
+  back.**
+- **#setup takes any talk limit you type.** A number typed under 「其他」 (3, say) is no longer refused; any whole
+  number from 0 up is taken, as `/talklimit` takes it.
+- **#setup's plans follow the official pricing: Pro, Max, Ultra.** The ratios are the weekly allowances the pricing
+  page gives: Max is 5 times Pro, Ultra 10 times; the page no longer lists Max 20x. If yours is set to Max 20x and your
+  plan is now Ultra or Max, set `usage.plan` to `["Ultra", 10]` or `["Max", 5]`.
+- **A plugin written for a newer engine now says so.** Before, the official list and the update card called its
+  plugin.json unreadable; now they say it needs a newer engine.
+- **Posting to Discord from another machine no longer waits forever.** When the command handed to the bot's machine
+  over SSH has not ended in 15 minutes, it is stopped and says so; it may have been done there, and it is not sent
+  again.
+- **The secrets guard now looks at the patterns of a search too.** A Glob pattern or a Grep file filter that could
+  match a protected file (`~/.ssh/*`, `**/*` from your home folder) is refused, and so is a Grep over your whole home
+  folder or `/`. Searches inside a project are not affected.
+- **The guides now say plainly that Claude conversations on one account are not isolated from each other.** Any of them
+  can send keys to another, including answering a permission dialog: permission dialogs and approval buttons guard
+  against mistakes. For real isolation, use another account, machine or sandbox.
+- **`/btw` answers are posted again when Claude Code draws the answer box the newer way.** Some installations of
+  Claude Code 2.1.316 draw it without the line of "▔" over it, the question shown above as your message. The bot did
+  not see that box: it said after 90 seconds that no answer box came up, the answer was never posted, and the box
+  stayed open until `!key Escape`. Both ways are read now.
+- **After a restart, commands you sent while the bot was offline are not run again, except ones that only show
+  something.** The bot hands the messages it missed to Claude once it is back; commands were run too, so a `!restart`
+  sent just before a restart restarted it a second time. Now only plain messages and `!help`, `!status`, `!recap`,
+  `!screen` and `/btw` are handed on; for any other command (`!restart`, `!key`, `!cwd`, `/clear`, …) the channel
+  says it was not run, one line each, to send again if still wanted. In a terminal channel nothing typed for the shell
+  is run again, since the shell runs every message; when many were not run, one message lists the first few and how
+  many.
+- **Keys on Claude Code's screen are masked before the bot posts it.** A permission dialog, a panel, `/screen` (the
+  picture and its text), `!key`, a shell's output in a terminal channel and the screen the bot adds when something did
+  not go through all showed the terminal as it was, keys included. They are now masked as Claude's replies already
+  were, with the same small line saying so. When a key is on the screen, the `/screen` picture is drawn without
+  colours.
+- **An installation with no permission mode now has it written down, and is asked to choose.** An installation that
+  never had `dcbot.default_permission` written ran its conversations in bypassPermissions: Claude did anything without
+  asking. This update writes that mode out, so nothing changes; #audit and #update say so, and #setup asks whether to
+  change it (auto is recommended). From now on, with no mode set, a channel opens no conversation and says how to
+  choose one.
+- **A channel in print mode (`!mode print`) now follows the permission mode too;** before, it always ran in
+  bypassPermissions. Print mode cannot show a permission question, so with manual, tools that need permission are
+  refused there: switch the channel back with `!mode tmux`.
+- **After an update, #setup asks about optional plugins (such as display) you were never asked about.** Each is
+  asked once; ones you already answered, or that are already on or turned off, are not asked. A new installation
+  is asked the first time #setup opens.
+- **#setup no longer says that Claude did not start when the bot restarts before setup is done.** Before, it waited 90
+  seconds, said "Claude 沒有啟動成功", and you had to press "再送一次".
+- **#setup now always opens during the install.** Before, if the bot came online before the install was done,
+  #setup did not open until the bot was restarted.
+
+### For people (zh-TW)
+
+- **沒設權限模式的安裝，這次會寫明並問你要不要改。** 以前沒設 `dcbot.default_permission` 時，機器人默默用 bypassPermissions（Claude 做什麼都不先問）。這次把它寫進設定、行為不變，#setup 會問你要不要改（建議 auto）；以後還沒選的話，頻道會請你先到 #setup 選一個，選好再傳一則訊息就會開。`!mode print` 的頻道也改成照你設的權限模式。
+- **貼出 Claude Code 的畫面前會先遮掉金鑰，祕密守門也更準了。** 權限對話框、`/screen`、`!key`、終端機頻道的輸出都會先遮；Glob、Grep 的搜尋條件可能碰到受保護的檔也會擋，`bash -c '…'` 裡的祕密路徑不再漏掉，指令只是交出去的文字裡的 `/**` 不再誤擋。說明也寫清楚了：同一個帳號的 Claude 之間沒有隔離。
+- **頻道的 Claude 在別台機器時，附件讀得到，`dcctl` 和貼文也交給機器人那台。** 25 MB 以內的附件會送過去；別台的 `dcctl` 經 ssh 轉給機器人那台，token 只要放那台；轉過去的指令 15 分鐘沒結束就停掉並照實說，不會一直卡住。
+- **機器重開或封存後再接上，會回到原本的頻道。** 同一個對話，或同一個 tmux 視窗和資料夾，會接回原本的頻道和紀錄，不會多開一個。
+- **#setup 更順了：安裝時一定會開，重啟也不會誤報「Claude 沒有啟動成功」。** 從舊版更新上來會補問沒問過的可選插件（例如 display）；方案改成 Pro、Max、Ultra，來回上限可以打任意次數。
+- **機器人重啟後不會再補做離線時收到的指令，只是查看的指令（例如 `!status`、`!screen`）照常做。** 也修好了：`/btw` 新畫法的答案框、中文檔名的附件、需要新版引擎的插件會直接說要先更新引擎。
+
+### For agents
+
+1. `altention dc post`, `read` and `notify` no longer send a command again when the SSH line drops: the way to
+   the bot's machine is found first (`ssh <alias> true`, trying the next alias), then the command is sent once; a
+   255 while it ran says it may have been done. Check before sending it again.
+2. `--attach` of a pane whose conversation, or tmux window and folder, belongs to a channel whose own pane is gone now
+   takes that channel; its ID stays the same. Nothing to do when updating.
+3. A Grep over the home folder or `/` is refused now: search the project folder, or name a narrower path.
+4. `dcbot/deploy.sh -h`/`--help` now prints how to use it and does nothing; before, it deployed with "--help" as the
+   commit message (checks, commit, push, restart). An option it does not know is refused with exit 2.
+5. An installation without `dcbot.default_permission` gets `bypassPermissions` written by the bot's first reconcile
+   after the update; #audit and the instance's commit say so. If #audit shows the reconcile did not finish, new
+   conversations will not open: set `dcbot.default_permission` in plugins.json yourself (auto, manual or
+   bypassPermissions; ask the person which) and commit it.
+6. `setup.py reconcile` now asks every install offer `offers.open_for()` allows (never answered, or 之後再說 fewer
+   than three times), not only the laters: an installation older than the question, or one with no official list
+   yet when #setup asked, was never asked. Before its plan it looks at the official list
+   (`catalog.look_before_asking()`: forced, at most once every 10 minutes, 60 s at most; not reached, the kept
+   list is used and the reconcile goes on). install.py's new step `core.catalog` does the same look on the bot's
+   machine while setup is not done (`skip` when not reached; it never stops the install).
+7. The bot started before the install made #setup's folder now looks for it (its `.claude/settings.json`) every
+   5 s for as long as it runs and opens #setup then, said once in #audit; setup finished in the terminal
+   meanwhile opens nothing. No restart of the bot is needed.
+
 ## v0.5.0 — 2026-11-02
 
 ### For people

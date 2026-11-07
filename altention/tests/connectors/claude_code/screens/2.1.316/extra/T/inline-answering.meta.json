@@ -1,0 +1,17 @@
+{
+ "claude_code": "2.1.316 (Claude Code)",
+ "colour": true,
+ "TERM": "screen",
+ "pane": [
+  120,
+  50
+ ],
+ "claude_args": "(the bot's: --model opus --settings … --permission-mode auto --append-system-prompt …)",
+ "how": "an installation that draws the box inline (no ▔ row): a second /btw sent by the bot (v0.5.0), the answer on its way",
+ "captured": "2026-11-03",
+ "files": {
+  "plain": "tmux capture-pane -p",
+  "esc": "tmux capture-pane -p -e"
+ },
+ "api": "the real one (an installation's own bot session, tmux 3.2a)"
+}

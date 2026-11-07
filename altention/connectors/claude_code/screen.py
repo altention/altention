@@ -38,22 +38,41 @@ def btw_box(view):
     looked for on the whole screen, and a conversation that quoted them, an answer that said "Answering…" or
     "Esc to close", or a message of the owner's with a line starting "/btw" was taken for the box or for its
     end: an answer never posted and its box closed, an answer cut short, "（沒有內容）" posted for one still
-    on its way."""
-    rows = view.split("\n")
+    on its way.
+
+    That is edge_box(). Some installations of 2.1.316 draw the box without the row of "▔" (inline_box(); seen
+    2026-11-03, the bot of v0.5.0 then never posted the answer and left the box open): either is the box."""
     if box_span(view) is not None:
         return None
-    edges = [i for i, r in enumerate(rows) if r.startswith(BTW_EDGE)]
-    if not edges:
-        return None
-    below = rows[edges[-1] + 1:]
+    return edge_box(view) or inline_box(view)
+
+
+def hint_rows(below):
+    """(first filled row, top of the hint, last filled row) of the rows at the bottom of the screen, or None: the
+    hint is the last rows, down from an empty one. On a pane narrower than it (78 columns with its indent) it wraps
+    onto a second row, anywhere between two words (2.1.296)."""
     filled = [i for i, r in enumerate(below) if r.strip()]
     if len(filled) < 2:
         return None
     first, last = filled[0], filled[-1]
     top = last
-    while top - 1 > first and below[top - 1].strip():  # the hint: the last rows of the screen, down from an empty one.
-        top -= 1                                        # On a pane narrower than it (78 columns with its indent) it wraps
-    hint = " ".join(r.strip() for r in below[top:last + 1])  # onto a second row, anywhere between two words (2.1.296)
+    while top - 1 > first and below[top - 1].strip():
+        top -= 1
+    return first, top, last
+
+
+def edge_box(view):
+    """The box as most installations draw it (btw_box): under a row of "▔" from the left edge."""
+    rows = view.split("\n")
+    edges = [i for i, r in enumerate(rows) if r.startswith(BTW_EDGE)]
+    if not edges:
+        return None
+    below = rows[edges[-1] + 1:]
+    found = hint_rows(below)
+    if found is None:
+        return None
+    first, top, last = found
+    hint = " ".join(r.strip() for r in below[top:last + 1])
     indent = lambda r: len(r) - len(r.lstrip())  # noqa: E731
     if not below[first].strip().startswith("/btw") or not indent(below[first]) or BTW_HINT not in hint \
             or indent(below[top]) != indent(below[first]):
@@ -64,6 +83,49 @@ def btw_box(view):
     if end == top:
         return None  # no empty row between the questions and the hint: not the box as Claude Code draws it
     return below[first:end], below[end:top], " " * indent(below[top]) + hint
+
+
+def inline_box(view):
+    """The box as some installations of 2.1.316 draw it (measured on one, 2026-11-03; others on the same version
+    draw edge_box()'s): no row of "▔"; the question sent stands in the conversation above as the owner's message
+    ("❯ /btw …", on as many rows as it wraps to), then an empty row, the questions asked so far at an indent of
+    two, an empty row, the answer deeper, an empty row, and the hint at the questions' indent as
+    the last of the screen. Read from the bottom: the hint, then up past the answer (empty rows, or rows deeper
+    than the hint) to the questions (rows at the hint's indent up to an empty row, the first starting "/btw", as
+    edge_box() has them: a long one may wrap, its next row not starting so); over them an empty row and then
+    the "❯ /btw" message, or nothing on the screen (a tall answer pushes the conversation off it).
+    Anything else is not the box: a conversation that quotes its words has none of this shape."""
+    rows = view.split("\n")
+    found = hint_rows(rows)
+    if found is None:
+        return None
+    _, top, last = found
+    indent = lambda r: len(r) - len(r.lstrip())  # noqa: E731
+    hint = " ".join(r.strip() for r in rows[top:last + 1])
+    pad = indent(rows[top])
+    if not hint.endswith(BTW_HINT) or not pad:  # the hint ends the screen, and ends in "Esc to close"
+        return None
+    i = top - 1
+    while i >= 0 and (not rows[i].strip() or indent(rows[i]) > pad):  # the answer (and the empty rows around it)
+        i -= 1
+    end = i + 1
+    while i >= 0 and rows[i].strip() and indent(rows[i]) == pad:  # the questions: up to an empty row (one may
+        i -= 1                                                     # wrap: only the first row is sure to start "/btw")
+    start = i + 1
+    if start == end or end >= top or rows[end].strip() or not rows[start].strip().startswith("/btw"):
+        return None  # no questions, or no empty row between them and the answer
+    if i >= 0:
+        if rows[i].strip():
+            return None  # the questions start right under something else
+        j = i - 1
+        while j >= 0 and not rows[j].strip():
+            j -= 1
+        k = j
+        while k > 0 and rows[k - 1].strip():  # up to the first row of that paragraph: the owner's message
+            k -= 1
+        if j >= 0 and not rows[k].startswith("❯ /btw"):
+            return None
+    return rows[start:end], rows[end:top], " " * pad + hint
 
 
 def btw_hint(view):

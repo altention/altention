@@ -138,6 +138,10 @@ TEXT = {
         # C-94: a plugin whose "uses" this engine does not offer
         "plugin.blocked": "這版引擎沒有它需要的介面（{problem}）：更新引擎，或把插件換成這版引擎能用的版本",
         "plugin.uses_missing": "它需要的介面 {name}，這版引擎沒有",
+        # manager 2026-11-03: a plugin.json written for a newer engine (v0.6.0's optional uses), not "unreadable"
+        "plugin.newer_engine": "這個插件要比較新的引擎（uses.{name} 是 v0.6.0 起的寫法），先更新引擎",
+        "catalog.newer_engine": "{tag} 要比較新的引擎（plugin.json 用了 v0.6.0 起的寫法），先更新引擎",
+        "plugin_update.newer_engine": "{plugin} 的 {tag} 要比較新的引擎（plugin.json 用了 v0.6.0 起的寫法），先更新引擎",
         "plugin.uses_version": "它需要 {name} v{want}，這版引擎提供的是 v{have}",
         "plugin.blocked_provider": "它需要的介面要由別的插件提供（{problem}）：在這台打開那個插件，或把這個也關掉",
         "plugin.blocked_provider_version": "它需要的介面跟提供它的插件對不上（{problem}）：把 {provider} 更新到有提供這個介面 v{want} 的版本，或把這個也關掉",

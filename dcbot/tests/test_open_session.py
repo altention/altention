@@ -107,7 +107,7 @@ class Base(unittest.TestCase):
                 return e
         with fakepane.use(tmux), mock.patch.object(asyncio, "sleep", nap), mock.patch.object(tmux_bridge, "START_SECS", secs), \
                 mock.patch.object(tmux_bridge.routes, "bind_any", mock.AsyncMock()) as self.bound, \
-                mock.patch.object(tmux_bridge, "installation", getattr(self, "installation", lambda setting: None)), \
+                mock.patch.object(tmux_bridge, "installation", getattr(self, "installation", fakepane.installed)), \
                 mock.patch.dict(os.environ, env if env is not None else {"LANG": "en_US.UTF-8"}, clear=env is not None), \
                 contextlib.redirect_stderr(open(os.devnull, "w")):
             return asyncio.run(run())

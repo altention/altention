@@ -8,11 +8,15 @@ anything new, gone or changed there makes the run fail (exit status 1), naming i
 from the real home behind the tests' back (2026-10-06, a module-level ~ path) is caught the same day.
 
 Files the real sync rewrites every round (it may run during the tests) are only checked for appearing, not for
-changing; the instance's contents are not checked (the real sync pulls into it), only its top level. TMPDIR points into
+changing; a plugin's own folder, ~/.local/state/altention/<its name>/, is not checked at all (a plugin that runs
+here, like one serving pages, writes there whenever it likes: manager 2026-11-02). Which names those are comes from
+the plugins this engine knows when the guard starts (altention.plugin.candidates: the built-in and the external
+ones), never from a list written here; the core's own files and folders are checked as before; the instance's contents are not checked (the real sync pulls into it), only its top level. TMPDIR points into
 the throwaway home too, so temporary folders a test does not remove are removed with it.
 Standard library only, Python 3.8.
 """
 import atexit
+import json
 import os
 import shutil
 import sys
@@ -42,11 +46,35 @@ PASSING_SCHEDULER = ("trace-sample.", "apply-reporting.")
 _started = None
 
 
-def _snapshot(home):
+def plugin_names():
+    """The names of the plugins this engine knows (their plugin.json "name", else their folder's), the core aside;
+    none when they cannot be worked out (then every folder is checked, as before)."""
+    try:
+        from altention import plugin
+        paths = plugin.candidates()
+    except Exception:
+        return set()
+    names = set()
+    for path in paths:
+        if os.path.basename(path) != "plugin.json":
+            continue  # altention/core.plugin.json: the core's
+        try:
+            with open(path, encoding="utf-8") as f:
+                name = json.load(f).get("name")
+        except (OSError, ValueError, AttributeError):
+            name = None
+        names.add(name if isinstance(name, str) and name else os.path.basename(os.path.dirname(path)))
+    return names - {"", "core"}
+
+
+def _snapshot(home, plugins=()):
+    """plugins: the names whose folders in ~/.local/state/altention are not looked into (plugin_names())."""
     seen = {}
     for rel in (".local/state/altention", ".cache/altention", ".config/altention"):
         top = os.path.join(home, rel)
         for folder, dirs, files in os.walk(top):
+            if folder == top and rel == ".local/state/altention":
+                dirs[:] = [d for d in dirs if d not in plugins]
             for name in files:
                 path = os.path.join(folder, name)
                 base = name[:-4] if name.endswith(".tmp") else name
@@ -71,8 +99,8 @@ def _snapshot(home):
     return {k: v for k, v in seen.items() if not k.endswith(".tmp")}
 
 
-def _check(home, before):
-    after = _snapshot(home)
+def _check(home, before, plugins=()):
+    after = _snapshot(home, plugins)
     new = sorted(set(after) - set(before))
     gone = sorted(set(before) - set(after))
     changed = sorted(k for k in set(after) & set(before) if before[k] is not None and after[k] != before[k])
@@ -90,7 +118,8 @@ def guard_home():
     if _started is not None:
         return _started
     home = os.path.expanduser("~")
-    before = _snapshot(home)
+    plugins = plugin_names()  # with the real home: the real instance and root
+    before = _snapshot(home, plugins)
     fake = tempfile.mkdtemp(prefix="altention-test-home-")
     os.environ["HOME"] = fake
     os.environ["ALT_TEST_ANY_ENGINE"] = "1"  # engine_id: counts only because HOME is not the real home now
@@ -102,7 +131,7 @@ def guard_home():
     os.makedirs(os.path.join(fake, "tmp"))  # temporary folders the tests leave go away with the throwaway home
     os.environ["TMPDIR"] = os.path.join(fake, "tmp")
     tempfile.tempdir = None  # worked out again from TMPDIR
-    atexit.register(_check, home, before)
+    atexit.register(_check, home, before, plugins)
     atexit.register(shutil.rmtree, fake, True)  # runs first (last registered): the throwaway home goes away
     _started = fake
     return fake

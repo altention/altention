@@ -23,7 +23,7 @@ from altention.connectors.claude_code import transcript
 
 from . import activity, archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, secretbox, sessions, sources, setup, slash, terminal, tmuxio
 from .claude_bridge import run_turn
-from .tmux_bridge import TmuxBridge, fence
+from .tmux_bridge import NotOpened, TmuxBridge, fence, permission_of
 from . import frames, update_cards, util
 from .util import split_message
 
@@ -118,11 +118,18 @@ FIND_MIN = 8  # characters of an id's start that name a conversation not in the 
 
 RECONCILE_SECS = 300  # setup.py reconcile at a start: given up after this long (it moves channels, may run dcctl guide)
 SETUP_FIRST = "請用 setup skill 帶使用者做完設定。"  # what #setup's Claude is told first (setup-in-discord.md 2)
+SETUP_WAIT_EVERY = 5  # seconds between looks at #setup's folder while the install has not made it yet
 
 
 def setup_folder():
     """#setup's working folder (install.py makes it), from HOME at call time."""
     return os.path.expanduser("~/.local/state/altention/setup")
+
+
+def setup_folder_ready():
+    """Has the install made #setup's folder? Its .claude/settings.json is there (setup.py write_setup_folder writes
+    it first thing after the folder; a Claude started in the bare folder would lack its allow rule)."""
+    return os.path.isfile(os.path.join(setup_folder(), ".claude", "settings.json"))
 
 
 def setup_done():
@@ -394,9 +401,12 @@ class Bot(discord.Client):
             return None
         folder = setup_folder()
         if ch is None:
-            if not os.path.isdir(folder):
-                await self.audit("要開 #%s，可是設定資料夾 %s 還沒準備好（在機器人那台的引擎跑 ./install.sh），先不開"
-                                 % (config.SETUP_CHANNEL, folder.replace(os.path.expanduser("~"), "~")))
+            if not setup_folder_ready():
+                if first:
+                    await self.open_setup_later(guild, first)
+                else:
+                    await self.audit("要開 #%s，可是設定資料夾 %s 還沒準備好（在機器人那台的引擎跑 ./install.sh），先不開"
+                                     % (config.SETUP_CHANNEL, folder.replace(os.path.expanduser("~"), "~")))
                 return None
             ch = await self.ensure_channel(guild, config.SETUP_CHANNEL, "設定：一題一題回答，答完機器人的功能就照你的選擇開好")
             if ch is None:
@@ -406,8 +416,48 @@ class Bot(discord.Client):
         elif not resend:
             return ch
         if first:
-            await self.tmux.submit(posts.Origin(ch), first)
+            self.hand_later(ch, first)
         return ch
+
+    async def open_setup_later(self, guild, first):
+        """#setup's folder not made yet: the bot came up in the middle of the install (install.sh discord starts it
+        before the install makes the folder; test-3 2026-11-03). #setup is opened once the folder is there, looked
+        at every SETUP_WAIT_EVERY seconds for as long as the bot runs (an install stopped half way and run again
+        later too), without anyone restarting the bot. One wait at a time; said in #audit once."""
+        if self.__dict__.get("setup_waiting") is not None:
+            return
+
+        async def wait():  # set as setup_waiting before its first await: a second call never starts a second wait
+            try:
+                await self.audit("#%s 等安裝做好設定資料夾 %s 就會自己開（安裝沒跑完的話，在機器人那台的引擎再跑一次 ./install.sh）"
+                                 % (config.SETUP_CHANNEL, setup_folder().replace(os.path.expanduser("~"), "~")))
+                while not setup_folder_ready():
+                    await asyncio.sleep(SETUP_WAIT_EVERY)
+                self.setup_waiting = None
+                if not setup_done():  # done in the terminal meanwhile: setup.py done asks for #chat itself
+                    await self.open_setup(guild, first=first)
+            except Exception:
+                traceback.print_exc()
+            finally:
+                self.setup_waiting = None
+        self.setup_waiting = asyncio.ensure_future(wait())
+
+    def hand_later(self, ch, text):
+        """`text` handed to the channel's Claude in a task of its own; the task is returned. Handing it over waits
+        for that Claude to come up, which the pump tells (its SessionStart), and a caller may be what the pump waits
+        for: on_ready (it starts the pump only after own_channels, which opens #setup: every start with setup not done
+        waited the 90 s out and said "Claude 沒有啟動成功", test-3 2026-11-03) or a round of the pump itself (a chore
+        that opens #setup). What goes wrong is printed; the channel has said it already (submit())."""
+        async def hand():
+            try:
+                await self.tmux.submit(posts.Origin(ch), text)
+            except Exception:
+                traceback.print_exc()
+        task = asyncio.ensure_future(hand())
+        handing = self.__dict__.setdefault("handing", set())  # (held: a task nothing refers to may be collected)
+        handing.add(task)
+        task.add_done_callback(handing.discard)
+        return task
 
     async def first_chat(self, guild):
         """A new installation's first start: #chat, a Claude conversation in the bot's own tmux working in the instance
@@ -520,7 +570,7 @@ class Bot(discord.Client):
         if (self.channels_state.get(str(message.channel.id)) or {}).get("kind") == "terminal":
             if text.split(" ")[0] in BUILTINS:  # the bot's own commands still work; "!!" and the like go to the shell
                 return await self.command(message.channel, text, message.channel.send)
-            text = "\n".join([text] + await attachments.save(message)).strip()
+            text = "\n".join([text] + await attachments.save(message, self.works_on(message.channel))).strip()
             return await self.terminal.run(message.channel, text) if text else None
         now = text.startswith("!!")  # "!!…": Claude reads it right away, not after the tool call in progress
         if now:
@@ -540,7 +590,7 @@ class Bot(discord.Client):
             # the message that comes next must find the forward waiting, or it goes ahead of it and alone
             # (#code-review of 6d02f07).
             return self.hold_forward(message, asyncio.ensure_future(self.forwarded(message)))
-        text = "\n".join([text] + await attachments.save(message)).strip()
+        text = "\n".join([text] + await attachments.save(message, self.works_on(message.channel))).strip()
         forwarded = await self.forwarded(message) if forward else ""
         if forwarded and not text:
             return self.hold_forward(message, forwarded)
@@ -651,7 +701,7 @@ class Bot(discord.Client):
                 notes.append("（貼圖：%s）" % getattr(sticker, "name", "?"))
             when = s.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S") if getattr(s, "created_at", None) else None
             shim = type("Forwarded", (), {"attachments": list(s.attachments), "channel": message.channel, "id": message.id})
-            saved = await attachments.save(shim) if s.attachments else []
+            saved = await attachments.save(shim, self.works_on(message.channel)) if s.attachments else []
             out += util.forward_context(frames.worded(what, place), what.get("text"), when, getattr(ref, "message_id", None),
                                         getattr(ref, "jump_url", None), notes) + "".join(line + "\n" for line in saved)
         return out
@@ -774,6 +824,10 @@ class Bot(discord.Client):
         except discord.HTTPException:
             pass  # no audit log access: the card comes with the first message instead
 
+    def works_on(self, ch):
+        """The machine the channel's Claude works on, for its attachments (None: this one)."""
+        return files.host_of(self.channels_state.get(str(ch.id)) or {})
+
     def channel_label(self, cid):
         c = self.get_channel(cid)
         return "#%s" % c.name if c is not None else None
@@ -818,6 +872,10 @@ class Bot(discord.Client):
         st = self.chan(ch)
         name = getattr(ch, "name", "DM")
         note = self.note(ch, st)
+        try:  # the settings file is read: not in the event loop (a broken one is waited on)
+            permission = await asyncio.get_running_loop().run_in_executor(None, permission_of, dict(st))
+        except NotOpened as e:
+            return await ch.send(str(e))
         status = {"msg": None, "last": 0.0, "lines": []}
         t0 = time.time()
 
@@ -839,7 +897,7 @@ class Bot(discord.Client):
         self.active += 1
         try:
             async with ch.typing():
-                res = await run_turn(text, st.get("session_id"), st["cwd"], note, on_progress=progress,
+                res = await run_turn(text, st.get("session_id"), st["cwd"], note, permission, on_progress=progress,
                                      procs=self.procs, key=str(ch.id), channel_id=ch.id)
         finally:
             self.active -= 1
@@ -938,8 +996,9 @@ class Bot(discord.Client):
         if pane is None:
             return "找不到 `%s`。先用 `!attach` 看清單。" % ref
         taken = routes.routed_to(pane, routes.load())
-        if taken and self.get_channel(int(taken)):
-            return "這個對話已經接在 <#%s> 了。" % taken
+        was = ((self.channels_state.get(str(taken)) or {}).get("pane") or {}).get("pid") if taken else None
+        if taken and self.get_channel(int(taken)) and not (was and pane.get("pid") and str(was) != str(pane["pid"])):
+            return "這個對話已經接在 <#%s> 了。" % taken  # (a route from another machine's table: not when the number was the old pane's)
         st = self.chan(ch) if isinstance(ch, discord.TextChannel) else None
         if st is not None and not setup.configured(st) and ch.name not in (config.AUDIT_CHANNEL, "notifications"):
             return await self.attach_here(guild, pane, ch)  # a new channel nobody set up yet: it becomes this pane's
@@ -958,10 +1017,39 @@ class Bot(discord.Client):
             await self.tmux.submit(message, text)
         return said
 
+    async def pane_session_id(self, pane):
+        """The conversation a pane holds, as attach_one() reads it further on (None: not known)."""
+        if pane.get("host"):
+            code, out = await remote.dcremote(pane["host"], "backfill", pane["id"], pane["session"], pane["socket"], timeout=60)
+            try:
+                return (json.loads(out) if code == 0 else {}).get("session_id")
+            except ValueError:
+                return None
+        rec = cc_sessions.of_pane(pane["id"], pane["session"]) or {"cwd": pane["cwd"]}
+        screen = (await tmuxio.tmux("capture-pane", "-p", "-J", "-S", "-200", "-t", pane["id"], socket=pane["socket"]))[1]
+        return cc_sessions.live_session(rec.get("cwd") or pane["cwd"], screen, rec)
+
+    async def left_behind(self, pane, host):
+        """C-112a: the channel this pane's conversation or tmux window had, whose own pane is gone (a reboot, tmux
+        started anew): attached again, not opened anew. Only a channel attached to a pane, not archived (those are
+        attach_one()'s other way), on the same machine: the same conversation first, else the same window and folder
+        (the topic). A pane still alive, or a machine that does not say, keeps its channel."""
+        found = [(c, st) for c, st in ((self.get_channel(int(cid)), st) for cid, st in self.channels_state.items())
+                 if c is not None and st.get("pane") and not st.get("home") and kinds.channel_kind(st) == kinds.CONVERSATION
+                 and st["pane"].get("host") == pane.get("host") and not archive.same_pane(st["pane"], pane)]
+        if not found:
+            return None
+        sid, want = await self.pane_session_id(pane), routes.topic(host, pane)
+        same = [x for x in found if sid and x[1].get("session_id") == sid] + [x for x in found if getattr(x[0], "topic", None) == want]
+        for c, st in sorted(same, key=lambda x: (not (sid and x[1].get("session_id") == sid), -(x[1].get("last_active") or 0))):
+            if await tmuxio.standing(st["pane"]) == "gone":
+                return c
+        return None
+
     async def attach_one(self, guild, pane, project, into=None):
-        """Give one pane its channel under the project's category (reusing the one it had, if archived).
-        `into`: a channel to use as it is instead."""
-        host = pane.get("host") or remote.this_machine()
+        """Give one pane its channel under the project's category (reusing the one it had: archived, or left behind by
+        a pane that is gone). `into`: a channel to use as it is instead."""
+        host, kept_here = pane.get("host") or remote.this_machine(), None
         if into is not None:
             new, back = into, False
             project = getattr(getattr(into, "category", None), "name", None) or "無"
@@ -973,7 +1061,10 @@ class Bot(discord.Client):
             if new is None:
                 new = routes.archived_channel(archived.text_channels if archived else [], host, pane, project)
             back = new is not None
-        if into is not None:
+            kept_here = await self.left_behind(pane, host) if new is None else None
+            if kept_here is not None:
+                new, back = kept_here, True
+        if into is not None or kept_here is not None:
             pass
         elif back:  # this pane had a channel before: take it out of the archive (where it came from), its history comes along
             await self.archive.unarchive(new, (self.channels_state.get(str(new.id)) or {}).get("archived") or {}, None,
@@ -984,6 +1075,11 @@ class Bot(discord.Client):
                 name += "-p" + pane["id"].lstrip("%")
             new = await guild.create_text_channel(name, category=category, topic=routes.topic(host, pane))
         st = self.chan(new)
+        had = st.get("session_id")
+        if kept_here is not None:  # its old pane's route goes, what ran there ended with it; its conversation stays listed
+            await routes.unbind_any(new.id, pane.get("host"))
+            st.pop("bg", None)
+            sessions.remember(st, st.get("session_id"))
         st.pop("cwd_from", None)  # an attached session works where it already is
         rec = st.pop("archived", None)
         if into is not None:  # a channel not set up yet, maybe one in the archive (owner's report 2026-10-20): out of it first
@@ -1037,8 +1133,11 @@ class Bot(discord.Client):
                 history.mark(st, sid)  # the channel holds it now (owner's report 2026-10-20)
                 self.save()
                 self.loop.create_task(self.backfill(new, sessions.history_messages(path)))
+        if kept_here is not None and st.get("session_id") != had:  # started anew in that window: the old one is not lost
+            await new.send("這次接上的是另一個對話。要換回原本的：在終端機那個窗格結束 Claude，再跑 `claude --resume%s`。"
+                           % (" %s" % had[:8] if had else ""))
         return "已接上 `%s`：<#%d>（分類「%s」%s）。" % (routes.window(pane), new.id, project,
-                                                   "，沿用之前封存的頻道" if back else "")
+                                                   "，沿用原本的頻道" if kept_here is not None else "，沿用之前封存的頻道" if back else "")
 
     async def backfill(self, ch, messages):
         """Post a session's whole earlier conversation into its new channel, without notifications. Runs on

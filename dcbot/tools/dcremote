@@ -19,6 +19,9 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
   dcremote done PATH                the exit statuses a terminal channel's shell has written so far (JSON)
   dcremote info [FOLDER]            this user's tmux socket and home, and FOLDER made absolute if it exists (JSON)
   dcremote files                    the file browser's request (JSON on stdin, see bot/filecore.py), answered in JSON
+  dcremote attach CHANNEL MESSAGE ATTACHMENT NAME
+                                    keep an attachment sent from the bot's machine (base64 on stdin) under
+                                    state/attachments/CHANNEL/; prints its path (bot/attachcore.py)
 """
 import asyncio
 import json
@@ -29,7 +32,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from bot import envfile, events, filecore, routecore, termrc, tmuxio  # noqa: E402  (these import nothing outside the standard library)
+from bot import attachcore, envfile, events, filecore, routecore, termrc, tmuxio  # noqa: E402  (these import nothing outside the standard library)
 from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
 from altention.connectors.claude_code import transcript as cc_transcript  # noqa: E402
 from altention.connectors.claude_code import hooks as cc_hooks  # noqa: E402  (after bot: it puts the engine on the path)
@@ -43,7 +46,7 @@ def panes():
     table = routecore.load()
     for p in found:
         p["project"] = routecore.project_name(p["cwd"])
-        p["routed"] = routecore.channel_of(table.get("%s|%s" % (p["socket"], p["id"])))
+        p["routed"] = routecore.routed_channel(table, "%s|%s" % (p["socket"], p["id"]), p.get("pid"))
     print(json.dumps(found, ensure_ascii=False))
 
 
@@ -266,6 +269,20 @@ def part(path, start, own, item, field, offset, limit="10000"):
     print(out)
 
 
+def attach(channel, message, attachment, name):
+    """An attachment of a channel whose Claude works here: written where it reads (C-107). Refused, with a word on
+    stderr and exit 2, unless the ids are Discord's and the path falls inside the attachments folder."""
+    import base64
+    root = os.path.join(STATE, "attachments")
+    try:
+        path = attachcore.store(root, channel, message, attachment, name, base64.b64decode(sys.stdin.read(), validate=True))
+    except (ValueError, OSError) as e:
+        sys.stderr.write("dcremote attach：沒有存（%s）\n" % e)
+        sys.exit(2)
+    attachcore.prune(root)
+    print(path)
+
+
 def main(argv):
     # this tool has no tmux server of a bot's: it reads the owner's, and leaves alone that of a bot installed here
     tmuxio.configure(socket=None, skip=(envfile.bot_server(),))
@@ -293,6 +310,8 @@ def main(argv):
                           "folder": folder if folder and os.path.isdir(folder) else None}))
     elif argv[0] == "files":
         print(json.dumps(filecore.op(json.loads(sys.stdin.read() or "{}")), ensure_ascii=False))
+    elif argv[0] == "attach" and len(argv) >= 5:
+        attach(*argv[1:5])
     elif argv[0] == "turn" and len(argv) >= 3:
         turn(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
     elif argv[0] == "sessions" and len(argv) >= 2:

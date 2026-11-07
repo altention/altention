@@ -156,6 +156,15 @@ class Check(Rig):
         c = pu.check(self.p(), "v0.2.0", "v0.3.2")
         self.assertEqual((c["kind"], c["kinds"]), ("edits", ["edits", "perms"]))
 
+    def test_a_version_for_a_newer_engine_is_the_engine_kind(self):
+        """manager 11-03: a release whose plugin.json has v0.6.0's optional uses is "needs a newer engine" on the card
+        (kind engine), not unreadable."""
+        self.release("v0.2.0", dict(BASE, uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}}), "- **選用。**")
+        self.clone()
+        c = pu.check(self.p(), "v0.2.0", "v0.5.1")
+        self.assertEqual((c["kind"], c["kinds"]), ("engine", ["engine"]))
+        self.assertEqual(c["why"], "demo 的 v0.2.0 要比較新的引擎（plugin.json 用了 v0.6.0 起的寫法），先更新引擎")
+
     def test_a_rewrite_and_a_skill_are_more_that_it_does(self):
         """manager 2026-10-21 (#code-review-2 of 1323639): a rewrite of replies and a skill are lines of 「多了」, and a
         rewrite (as a hook) is one of the watchers asked about on their own; only what the new version adds."""

@@ -30,64 +30,27 @@ import subprocess
 import sys
 
 HOME_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # altention/dc/ -> the engine
+sys.path.insert(0, HOME_REPO)
+from altention.dc import botside  # noqa: E402  (which machine runs the bot, and the one way to its dcctl)
+
+quote, dcctl_on, this_engine = botside.quote, botside.dcctl_on, botside.this_engine
 
 
 def local_dcctl(engine=None):
-    """dcctl of the bot running on this machine: in its engine (`engine`, this machine's entry in the list, else
-    ~/altention/engine); this checkout's only when that is not there. Not simply this checkout's: run from a worktree or
-    a copy, posts would go into a state/ no running bot reads, and say nothing."""
-    for base in ([engine] if engine else []) + ["~/altention/engine"]:
-        path = os.path.join(os.path.expanduser(base), "dcbot", "tools", "dcctl")
-        if os.path.exists(path):
-            return path
-    return os.path.join(HOME_REPO, "dcbot", "tools", "dcctl")
-
-def quote(word):
-    """One word for the shell on the bot's machine, always in single quotes (altention.config.shell_quote, kept
-    here for the same reason as dcctl_on: zsh reads a bare word starting with = as a command's path)."""
-    return "'" + str(word).replace("'", "'\"'\"'") + "'"
-
-
-def dcctl_on(m):
-    """dcctl on the bot's machine `m`, for a shell there: its engine is its list entry's "engine" (default
-    ~/altention/engine; a leading ~ left to that shell). Worked out here, not by altention.config: the path problems are
-    reported on must not depend on the settings that may be the problem."""
-    engine = m.get("engine") if isinstance(m.get("engine"), str) and m.get("engine").strip() else "~/altention/engine"
-    engine = "~" if engine == "~" else "~/" + quote(engine[2:]) if engine.startswith("~/") else quote(engine)
-    return engine + "/dcbot/tools/dcctl"
+    """botside.local_dcctl, falling back on this checkout's dcctl (a copy's own, not the engine botside came from)."""
+    return botside.local_dcctl(engine, HOME_REPO)
 
 
 CACHE = os.path.expanduser("~/.local/state/altention/bot.json")  # the bot's machine as last found: {"name", "ssh"}
 
 
 def bot_machine():
-    """(name, machine, here) of the machine that runs the bot (altention.config: this one if the bot's settings
-    are here, else the machine list's). When the settings cannot be read, the machine last found (CACHE)."""
-    sys.path.insert(0, HOME_REPO)
-    problem = None
+    """botside.bot_machine with the machine last found (CACHE) when the settings cannot be read; exits when not even
+    that is there."""
     try:
-        from altention import config, text
-        name, m, here = config.bot_machine()
-        if name is None:
-            problem = text.t("bot.not_found")
-        else:
-            try:
-                os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-                with open(CACHE + ".tmp", "w") as f:
-                    json.dump({"name": name, "ssh": m.get("ssh", []), "here": bool(here)}, f)
-                os.replace(CACHE + ".tmp", CACHE)
-            except OSError:
-                pass
-            return name, m, here
-    except Exception as e:  # a broken machine list or instance pointer: the one this is likely to report
-        problem = "設定讀不出來（%s）" % e
-    try:
-        with open(CACHE) as f:
-            last = json.load(f)
-        sys.stderr.write("altention dc notify：%s；用上次找到的機器人（%s）\n" % (problem, last["name"]))
-        return last["name"], {"ssh": last.get("ssh", [])}, bool(last.get("here"))
-    except (OSError, ValueError, KeyError):
-        sys.exit("altention dc notify：%s，也沒有上次找到的機器人可用" % problem)
+        return botside.bot_machine(CACHE, "altention dc notify")
+    except botside.NoBot as e:
+        sys.exit("altention dc notify：%s" % e)
 
 
 def main():
@@ -96,8 +59,8 @@ def main():
     ap.add_argument("--wait", type=int, default=None)  # C-87: as altention dc post --wait (exit 0 and the ID once shown)
     ap.add_argument("message", nargs="*")
     a = ap.parse_args()
-    if a.wait is not None and not 1 <= a.wait <= 600:
-        sys.exit("altention dc notify：--wait 要給 1 到 600 的秒數")
+    if a.wait is not None and not 1 <= a.wait <= botside.WAIT_MOST:
+        sys.exit("altention dc notify：--wait 要給 1 到 %d 的秒數" % botside.WAIT_MOST)
     text = " ".join(a.message) if a.message else sys.stdin.read()
     text = text.strip()
     if not text:
@@ -114,23 +77,16 @@ def main():
     elif os.environ.get("TMUX") and os.environ.get("TMUX_PANE"):
         post["pane"] = "%s|%s|%s" % (me, os.environ["TMUX"].split(",")[0], os.environ["TMUX_PANE"])
     data = json.dumps(post, ensure_ascii=False).encode("utf-8")
-    name, m, here = bot_machine()
-    if here:
-        r = subprocess.run([local_dcctl(), "post"], input=data, stdout=None if a.wait is not None else subprocess.DEVNULL)
-        sys.exit(r.returncode)
-    for alias in m.get("ssh", []):
-        if alias == "local":
-            continue
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", alias, dcctl_on(m) + " post"],
-                           input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if r.returncode != 255:
-            if r.returncode != 0:
-                sys.stderr.write((r.stderr or r.stdout).decode("utf-8", "replace"))
-            elif a.wait is not None:  # the message's ID, on the last line
-                sys.stdout.write(r.stdout.decode("utf-8", "replace"))
-            sys.exit(r.returncode)
-    sys.exit("altention dc notify：連不上 %s" % name)
-
+    where = bot_machine()
+    try:
+        r = botside.run(["post"], data, repo=HOME_REPO, where=where, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except botside.NoBot as e:
+        sys.exit("altention dc notify：%s" % e)
+    if r.returncode != 0:
+        sys.stderr.write((r.stderr or r.stdout).decode("utf-8", "replace"))
+    elif a.wait is not None:  # the message's ID, on the last line
+        sys.stdout.write(r.stdout.decode("utf-8", "replace"))
+    sys.exit(r.returncode)
 
 if __name__ == "__main__":
     main()

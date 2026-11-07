@@ -106,7 +106,7 @@ python3 <ENGINE>/ops/setup.py answer <key> <value>
 ```
 
 `<value>` is the entry of `values` at the position of the option they chose. Quote it if it has a space
-(`"Max 5x"`). Then run `questions --json` again and ask the next first one: the list changes with the answers (the
+(`"Max 20x"`). Then run `questions --json` again and ask the next first one: the list changes with the answers (the
 parts come after 「關掉一些」, the times after 「自己選」, no frequency when progress is off, and so on), so never ask
 from an old list.
 
@@ -117,16 +117,19 @@ What `answer` says:
 - An `offer.<plugin>` question (header 「可選功能」, an optional plugin of the official list, C-64) is asked as
   printed like any other. After 「好，開」 (`answer offer.<plugin> yes`), go on with step 6 for that plugin before the
   next question; 「先不要」 and 「之後再說」 are only written.
-- `沒有寫：…` (exit status 1): the value was refused, and the line says why. Tell them in one plain sentence and ask
-  the same question again.
+- `沒有寫：…` (exit status 1): the value was refused, and the line says why. The person cannot see your terminal,
+  so that line never reaches them by itself: always first say in Discord, in one plain sentence, why it was not
+  taken, and only then ask the same question again. Never ask it again without saying why.
 - `沒做完：…` (exit status 2): something could not be done. Say so plainly, and that their earlier answers are
   kept; run `status` again and go on if you can, else stop there.
 
 Typed answers (the person chose 「其他」 or wrote something instead of choosing):
 - **Time zone**: the zone's name, e.g. `Europe/Berlin`. `setup.py` checks that it exists.
 - **The secretary's times**: `07:30` for the daily ones, `sat 10:00` for the weekly one (`mon` … `sun`).
-- **Plan**: a plan not listed: `Team=5`, its name and how many Pro allowances it counts as. Ask them if they do not
-  know; never read their Claude login files to find out.
+- **Talk limit**: any whole number from 0 up, e.g. `5`; `0` is no limit.
+- **Plan**: a plan not listed: `Team=5`, its name and how many Pro allowances a week it counts as. `Max 20x` and
+  `Max 5x` (older names) are taken as they are. Ask them if they do not know; never read their Claude login files
+  to find out.
 - **Which backups** (several may be chosen): the values joined with commas, e.g. `instance,logs,progress`. None
   chosen is the empty value `""`: that means later.
 
@@ -187,7 +190,8 @@ It takes a few minutes (it installs what waited, makes `#dashboard` with the boa
 channel, and asks the bot for `#chat`); say so before you run it. `沒有寫：` lists what is left: deal with it and
 run it again. `沒做完：` says which step failed: tell them plainly, and run `done` again once it is fixed (what was
 done is not done twice). When it ends with 「設定做完了」, tell them `#chat` is opening and is where they talk to
-Claude from now on.
+Claude from now on. Name each channel once: one it printed as `<#ID>` is written just so (Discord shows its name),
+never with its name beside it again.
 
 ## Back from the backups
 
@@ -224,8 +228,8 @@ step 3 is asked: their settings come back with the instance.
 
 Ask the tour question that `questions --json` prints now (its only question), as printed.
 
-- 「開始」: run `python3 <ENGINE>/ops/setup.py tutorial`, then tell them to go to `#tutorial` (with the channel as
-  `<#ID>`, the ID it printed).
+- 「開始」: run `python3 <ENGINE>/ops/setup.py tutorial`, then tell them to go to the channel it printed, written as
+  it printed it (`<#ID>`).
 - 「之後再說」 or 「不用了」: `answer tour later` or `answer tour no`, and say 「之後任何頻道打 /tour 都能帶你試。」
 
 Last line: 「設定做完了；之後要改設定，在任何頻道跟 Claude 說就好。」 This channel stays; nothing more happens here

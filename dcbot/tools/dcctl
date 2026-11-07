@@ -31,11 +31,16 @@
   dcctl roles                             list roles
   dcctl app [--json]                      the bot's own application: whether its Discord Activities are on, and the
                                           IDs a plugin needs (application, owner, server); never the token
+  dcctl check [--json]                    ask Discord once whether it takes the bot's token (GET /users/@me): exit 0
+                                          it does, 3 no token or refused (401), 4 Discord not reached; for doctor
   dcctl guide --check                     print the guide as it would be posted (GUIDE.md expanded), touch nothing
   dcctl guide [--note TEXT]               bring the guide channel in line with GUIDE.md (its messages are edited in
                                           place); --note also posts an update notice, keeping the last 5
 
 CHANNEL / CATEGORY may be a name (without #) or an ID; history also takes a thread's ID. Every change is also logged to #audit.
+
+On a machine that does not run the bot, every command is handed to the bot's machine's dcctl over SSH (sent once) and
+its output and exit status come back as they are: the Discord token is needed only there (altention/dc/botside.py).
 """
 import contextlib
 import datetime
@@ -52,6 +57,9 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(1, os.path.dirname(ROOT))  # the engine: altention/ (shared settings)
+if __name__ == "__main__":  # the bot runs on another machine: the command goes there, before this one's settings are read
+    from altention.dc import botside  # noqa: E402
+    botside.hand_over(sys.argv[1:])
 from bot import config, kinds, util  # noqa: E402
 from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
 
@@ -97,6 +105,26 @@ def app_info():
     app = call("GET", "/applications/@me") or {}
     return {"activities": bool(int(app.get("flags") or 0) & EMBEDDED), "app_id": str(app.get("id") or ""),
             "owner_id": str(config.OWNER_ID or ""), "guild_id": str(config.GUILD_ID or "")}
+
+
+def token_check(timeout=15):
+    """Does Discord take the bot's token now (GET /users/@me, asked once, not retried)? {"state": "ok" | "none" |
+    "invalid" | "unreachable", "said": words}: for doctor, which must not wait for a 401 when the token is used
+    (C-109). The token itself is never in it."""
+    if not config.TOKEN:
+        return {"state": "none", "said": "這台的機器人設定裡沒有 token"}
+    req = urllib.request.Request(API + "/users/@me", headers={"Authorization": "Bot " + config.TOKEN,
+                                                             "User-Agent": "DiscordBot (altention dcbot, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            me = json.loads(r.read() or b"{}")
+        return {"state": "ok", "said": "Discord 認得這個 token（機器人 %s）" % (me.get("username") or "?")}
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return {"state": "invalid", "said": "Discord 不收這個 token（401）：token 失效了"}
+        return {"state": "unreachable", "said": "Discord 回 %s，沒辦法確定 token 有沒有效" % e.code}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return {"state": "unreachable", "said": "連不到 Discord（%s），沒辦法確定 token 有沒有效" % getattr(e, "reason", e)}
 
 
 LIST_SECS = 60  # how long the server's channel list read from Discord serves every dcctl here (C-87)
@@ -971,6 +999,10 @@ def main(argv):
         else:
             print("Activities：%s\napplication %s · 擁有者 %s · 伺服器 %s"
                   % ("開" if info["activities"] else "沒開", info["app_id"], info["owner_id"], info["guild_id"]))
+    elif cmd == "check":
+        got = token_check()
+        print(json.dumps(got, ensure_ascii=False) if "--json" in args else got["said"])
+        sys.exit({"ok": 0, "none": 3, "invalid": 3}.get(got["state"], 4))
     elif cmd == "roles":
         for r in call("GET", "/guilds/%d/roles" % config.GUILD_ID):
             print("%-22s %s" % (r["id"], r["name"]))

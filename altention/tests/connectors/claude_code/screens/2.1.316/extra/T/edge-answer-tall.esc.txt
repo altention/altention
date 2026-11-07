@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.316[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/proj[39m
+
+
+
+
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m    [1m[38;5;220m/btw [0m[38;5;246mwhat is the answer?[39m
+
+      Line 1 of the side answer, with some words to fill it.
+      - Line 2 of the side answer, with some words to fill it.
+      - Line 3 of the side answer, with some words to fill it.
+      - Line 4 of the side answer, with some words to fill it.
+      - Line 5 of the side answer, with some words to fill it.
+      - Line 6 of the side answer, with some words to fill it.
+      - Line 7 of the side answer, with some words to fill it.
+      - Line 8 of the side answer, with some words to fill it.
+      - Line 9 of the side answer, with some words to fill it.
+      - Line 10 of the side answer, with some words to fill it.
+      - Line 11 of the side answer, with some words to fill it.
+      - Line 12 of the side answer, with some words to fill it.
+      - Line 13 of the side answer, with some words to fill it.
+      - Line 14 of the side answer, with some words to fill it.
+      - Line 15 of the side answer, with some words to fill it.
+      - Line 16 of the side answer, with some words to fill it.
+      - Line 17 of the side answer, with some words to fill it.
+      - Line 18 of the side answer, with some words to fill it.
+      - Line 19 of the side answer, with some words to fill it.
+      - Line 20 of the side answer, with some words to fill it.
+      - Line 21 of the side answer, with some words to fill it.
+      - Line 22 of the side answer, with some words to fill it.
+      - Line 23 of the side answer, with some words to fill it.
+      - Line 24 of the side answer, with some words to fill it.
+      - Line 25 of the side answer, with some words to fill it.
+      - Line 26 of the side answer, with some words to fill it.
+      - Line 27 of the side answer, with some words to fill it.
+      - Line 28 of the side answer, with some words to fill it.
+      - Line 29 of the side answer, with some words to fill it.
+      - Line 30 of the side answer, with some words to fill it.
+      - Line 31 of the side answer, with some words to fill it.
+      - Line 32 of the side answer, with some words to fill it.
+      - Line 33 of the side answer, with some words to fill it.
+      - Line 34 of the side answer, with some words to fill it.
+      - Line 35 of the side answer, with some words to fill it.
+      - Line 36 of the side answer, with some words to fill it.
+
+    [38;5;246m↑/↓ to scroll · c to copy · f to fork · Esc to close[39m

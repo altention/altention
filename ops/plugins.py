@@ -936,7 +936,8 @@ def setup_questions(plugins, zone, unpacked):
                         "誰拿到你的 Discord 帳號，幾乎就能控制這台電腦。不建議")],
             ["auto", "manual", "bypassPermissions"]),
         ask("dcbot.talk_limit", "來回上限", "各頻道的 Claude 可以互相交辦工作、回覆對方。連續來回幾次、中間你都沒說話時，"
-            "機器人要先停下來問你要不要繼續？它會標註你，手機會跳通知。之後每個頻道可以各自設定。",
+            "機器人要先停下來問你要不要繼續？它會標註你，手機會跳通知。之後每個頻道可以各自設定。"
+            "要別的次數，選「其他」打數字，0 是不限。",
             [("10 次（建議）", "一般的交辦和回覆都夠用"), ("30 次", "讓長一點的來回不被打斷"),
              ("不限", "一直來回到做完為止，可能用掉很多訂閱額度")], [10, 30, 0]),
         ask("core.update", "引擎更新", "有新版本時要怎麼做？" + (
@@ -956,16 +957,21 @@ def times_question():
                         {"label": "自己選", "description": "接著三個時間各問一次"}]}
 
 
-PLANS = (("Pro", 1), ("Max 5x", 5), ("Max 20x", 20))  # usage.plan as [name, how many Pro allowances]
+PLANS = (("Pro", 1, "Pro"), ("Max", 5, "Max（5 倍 Pro）"), ("Ultra", 10, "Ultra（10 倍 Pro）"))  # usage.plan as
+# [name, how many Pro allowances a week], as claude.com/pricing puts it (2026-11: Max "5x Pro usage", Ultra "10x Pro
+# usage" a week; Max 20x no longer listed). At most 4 options with "none", so older names are typed (PLANS_TYPED).
+PLANS_TYPED = {"Max 5x": ("Max", 5), "Max 20x": ("Max 20x", 20)}  # an old subscriber not moved yet types these
+PLAN_WEEK = {"Pro": "Pro 的一週額度", "Max": "一週是 Pro 的 5 倍", "Ultra": "一週是 Pro 的 10 倍"}
 
 
 def plan_question():
     """The plan, for the usage board's subscription limits (the install skill's own words until C-48); values are
     the plan's name, "none" for not reading the limits. Another plan typed in: "<name>=<Pro allowances>"."""
-    return {"key": "usage.plan", "values": [n for n, _ in PLANS] + ["none"], "header": "方案", "multiSelect": False,
+    return {"key": "usage.plan", "values": [n for n, _, _ in PLANS] + ["none"], "header": "方案", "multiSelect": False,
             "question": "你的 Claude 訂閱是哪個方案？用量看板會顯示訂閱額度用了多少：為了讀額度，每小時用 haiku 送一個最小的請求，"
                         "會算進 5 小時的額度。不想花這個額度就選最後一個。",
-            "options": [{"label": n, "description": "顯示訂閱額度（每小時一個最小的 haiku 請求）"} for n, _ in PLANS]
+            "options": [{"label": l, "description": "%s；顯示訂閱額度（每小時一個最小的 haiku 請求）" % PLAN_WEEK[n]}
+                        for n, _, l in PLANS]
             + [{"label": "不顯示訂閱額度（不花額度）", "description": "看板不顯示額度用了多少，也不送讀額度的請求；之後想看再開"}]}
 
 

@@ -30,7 +30,8 @@ class Offers(unittest.TestCase):
         self.assertEqual(offers.due(("asked",), LISTED, {}), ["rig-cal"])
         s = {}
         offers.record(s, "rig-tools", "later")
-        self.assertEqual(offers.due(("install",), LISTED, s, later_only=True), ["rig-tools"], "the reconcile asks nothing new")
+        offers.record(s, "rig-pdf", "no")
+        self.assertEqual(offers.due(("install",), LISTED, s), ["rig-tools"], "a later and a never-answered: a no is not")
 
     def test_answers_three_laters_are_a_no(self):
         s = {}

@@ -209,6 +209,20 @@ def setup_folder(r, bot_here):
         r.say("ok", "core.setup-folder", "#setup 的資料夾 %s" % folder)
 
 
+def catalog_look(r, bot_here):
+    """while #setup has not asked its questions yet, the official plugin list looked at once, so its install
+    offers are among them (else the first engine-update round brings the list, after #setup has asked). Not reached
+    or too slow: #setup goes on without them, as before; the reconcile after the next update asks them."""
+    if not bot_here or not setup_pending():
+        return
+    from altention import catalog
+    state, words = catalog.look_before_asking()
+    if state in ("fresh", "same", "partial", "kept"):
+        r.say("ok", "core.catalog", words or "官方插件清單 10 分鐘內看過了")
+    else:
+        r.say("skip", "core.catalog", "%s；#setup 先不問可選的插件，之後更新時會補問" % words)
+
+
 def skills(r):
     """~/.claude/skills/<name> linked to each skill of the engine, except those whose plugin is turned off here
     (disabled_on): their link is taken away, only when it is a link to this engine's own folder; anything else under
@@ -1088,6 +1102,7 @@ def install(argv, after_discord=False):
            needs=["core.instance", "core.plugins", "core.install"])
     st.run("dcbot.token", token, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.setup-folder", setup_folder, r, bot_here, needs=["core.instance", "core.plugins"])
+    st.run("core.catalog", catalog_look, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.git-user", git_user, r)
     r.say("ok", "core.log", "詳細輸出：%s" % r.log_path)
     done(r, st, "安裝")

@@ -71,7 +71,7 @@ def plugins_skeleton(permission=None):
     usage board's subscription limits on, as when not set, written out so that it can be seen and turned off.
     permission (init, for install.sh: C-48): a new installation, whose settings are asked in Discord's #setup:
     setup.done false until then, and the bot's permission mode set (auto, or manual where Claude Code has no auto),
-    never left unset (the bot's last resort lets everything through)."""
+    never left unset (the bot opens no conversation without one: C-121)."""
     d = {"format": 1, "core": {"language": "zh-TW", "timezone": system_timezone()},
          "sync": {"interval": "15m", "dirs": {}, "owns": ["knowledge"]},
          "usage": {"subscription_limits": True}}

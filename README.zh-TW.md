@@ -96,6 +96,11 @@
 2. **機器人（Bot）** 頁：**Privileged Gateway Intents** 底下打開 **Message Content Intent**；把 **公開機器人（Public Bot）** 關掉（預設開著，別人拿到應用程式的 ID 就能把你的機器人邀進他的伺服器）；按 **儲存變更（Save Changes）**。如果 Discord 不讓關、顯示「Private application cannot have a default authorization link」，先到 **安裝（Installation）** 頁把 **安裝連結（Install Link）** 改成 **無（None）**、存檔，再回來關。
 3. 在你自己的終端機跑 `~/altention/engine/install.sh discord`。它問 token 時，到 **機器人（Bot）** 頁按 **重設權杖（Reset Token）**，把新的 token 直接貼進去。它會用 token 查出應用程式的 ID 和擁有者（就是你；應用程式屬於團隊的話，從成員裡選你自己），說 機器人（Bot）頁還有什麼要改，再印出一個連結，裡面已經帶好要的 scope 和 14 個權限。打開連結、選你的伺服器（最好是新的、空的）。它會等機器人進伺服器（在好幾個伺服器裡就問你用哪個），再把 token、你的使用者 ID 和伺服器 ID 寫進 `~/.config/dcbot/env`（權限 600）。接著直接安裝這台需要的全部（跟 `./install.sh` 一樣），等最後一行說「安裝跑完了」。
 
+可能會遇到的兩件事：
+
+- 建應用程式、邀機器人、重設 token 時，Discord 有時會要你做人機驗證或輸入密碼，照做再繼續就好。
+- 打開邀請連結時，這台電腦如果開著 Discord 桌面版，會先停在「開啟 Discord 應用程式」大約 60 秒才退回網頁；桌面版登入的可能是別的帳號，選伺服器前先看一下是哪個帳號。
+
 然後：
 
 ```bash
@@ -222,7 +227,7 @@ python3 ops/doctor.py          # 系統檢查，每一台
 - **用量看板會讀訂閱額度，這會用到你的訂閱。** 預設打開；在實例的 `plugins.json` 設 `"usage": {"subscription_limits": false}` 就關掉。關掉時，用量看板的其他部分照常更新。
   - 打開時：每小時用你的訂閱帳號跑一次 `claude -p`，送一句最小的請求（haiku），一天約 24 次，每次約 0.001 美元的 API 等值，會算進 5 小時的額度。
   - 隱私：這個請求不載入你的設定、hook、MCP 和工具，在一個空的暫存資料夾跑，不留對話檔。
-  - 安裝指引會問你的方案並寫進去，例如 `"usage": {"plan": ["Pro", 1]}`（或 `["Max 5x", 5]`、`["Max 20x", 20]`；Team、Enterprise 照額度換算成幾個 Pro）。沒寫時看板會寫「方案沒設定」，只顯示百分比，不換算成幾倍 Pro。
+  - 安裝指引會問你的方案並寫進去，例如 `"usage": {"plan": ["Pro", 1]}`（或 `["Max", 5]`、`["Ultra", 10]`，照官方定價頁寫的每週額度；Team、Enterprise 照額度換算成幾個 Pro）。沒寫時看板會寫「方案沒設定」，只顯示百分比，不換算成幾倍 Pro。
   - 怎麼關：設成 `false`，或把 usage 插件關掉。拿掉這一行不算關：沒寫就是打開。
   - 限制：讀的欄位沒有官方文件，只依 Claude Code 2.1.299 和 2.1.316 的實測（2.1.316 只給週額度，看板會註明 5 小時那段這次沒有提供）。格式變了時看板會寫「讀不到：格式變了」，不會猜數字；額度用完時可能讀不到。
 

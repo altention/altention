@@ -84,7 +84,9 @@ Say:
 3. 「在新頻道對它說：「跟 #<this channel> 說你好」。」 (your own channel's name; its Claude knows how to send from
    its global instructions, so do not name the command)
 
-End the turn. What comes next is a card here, 「📨 來自 #<their channel>」, from that channel's Claude: say 「這張卡片
+End the turn. What comes next is a card here, 「📨 來自 #<their channel>」, from that channel's Claude. First answer it,
+as its card says (`altention dc post <their channel> "你好，收到了！（我在帶導覽，不用再回我）"`), so they see the
+message went both ways; then say here 「這張卡片
 就是另一個頻道的 Claude 傳來的。叫 Claude「貼到 #某頻道」或「去看 #某頻道」都可以；每個頻道是一個獨立的對話，
 這個新頻道之後就當你的第一個專案頻道吧。」 and go on.
 
@@ -106,9 +108,10 @@ answered: 「最下面那塊就是剛剛這一題：哪個頻道的 Claude 在�
 run `altention dc read <the boards' channel> 12`; nothing there yet, say they appear within a few minutes of the
 install and the usage ones on the hour, and go on.
 
-If `usage` is on, say one line about the subscription board: 「「訂閱額度」那塊是整個 Claude 帳號這 5 小時和這週用了
-多少，每小時用 haiku 送一個最小的請求去讀；不要的話跟 Claude 說「關掉訂閱額度看板」。」 (If that board says it is
-turned off, say instead how to turn it on: 「打開訂閱額度看板」.)
+If `usage` is on, run `altention dc read <the boards' channel> 12` and look at the 「訂閱額度」 board. Only when it is
+there and reads the limits, say one line about it: 「「訂閱額度」那塊是整個 Claude 帳號這 5 小時和這週用了多少，每小時用
+haiku 送一個最小的請求去讀；不要的話跟 Claude 說「關掉訂閱額度看板」。」 When it says 「不讀訂閱額度」 (turned off, or
+setup not done) or is not there yet, say nothing about it.
 
 ## 5. A reminder
 

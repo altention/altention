@@ -118,11 +118,17 @@ class NotOpened(BridgeError):
     UNREACHABLE = "unreachable"    # the machine of the attached pane cannot be reached: {"host", "where", "said"}
     PERMISSION = "permission"      # the permission mode set is not one there is: {"value", "valid", "whose"}
     SETTINGS = "settings"          # the installation's settings could not be read: {"error"}
+    PERMISSION_UNSET = "permission-unset"  # neither the channel nor the installation says the permission mode: {}
     MODEL = "model"                # the model set is nothing a command line can hold: {"value", "whose"}
 
     def __init__(self, why, text, **data):
         BridgeError.__init__(self, text)
         self.why, self.data = why, data
+
+
+def resume_command(st):
+    """The line that takes up the channel's conversation again, in the owner's own tmux."""
+    return "claude --resume %s" % st["session_id"][:8] if st.get("session_id") else "claude --resume"
 
 
 def unreachable(pane):
@@ -401,15 +407,44 @@ def settings_read_well():
 def chosen(st, key, setting, last):
     """What a channel's conversations are opened with (`key`: "model" or "permission"), and whose word it is:
     (value, "channel" | "installation" | None). The channel's own, else the installation's (`setting` in its
-    settings), else `last`, as it always was."""
+    settings), else `last` (None for the permission mode: then nothing is opened, permission_of())."""
     if st.get(key):
         return st[key], "channel"
     value = installation(setting)
     return (value, "installation") if value else (last, None)
 
 
+UNSET = ("這個安裝還沒選權限模式，所以沒有開對話。到 #setup 回答「權限」那一題；沒有這一題的話，到 #chat 跟 Claude 說"
+         "「權限模式設成 auto」（auto、manual、bypassPermissions 三選一）。選好再傳一則訊息就會開。"
+         "（設定在 plugins.json 的 dcbot.default_permission）")
+
+
+def permission_of(st):
+    """The permission mode a conversation of this channel is opened with: the channel's own, else the
+    installation's dcbot.default_permission. NotOpened when neither says one (C-121: never a mode nobody chose;
+    the last resort was bypassPermissions, which lets everything through), when it is no mode there is, or when
+    the installation's settings cannot be read. Both ways of opening a conversation ask this (tmux: with_(); print
+    mode: main.turn())."""
+    try:
+        value, whose = chosen(st, "permission", "dcbot.default_permission", None)
+    except Exception as e:  # what the installation says of permissions is not known: not opened, and said
+        traceback.print_exc()
+        raise NotOpened(NotOpened.SETTINGS, "讀不到這個安裝的設定（%s），不知道要用哪個權限模式，沒有開對話。"
+                        "那是實例資料夾裡的 `plugins.json`；修好之後再傳一則訊息就會開。" % e, error=str(e))
+    if whose is None:
+        raise NotOpened(NotOpened.PERMISSION_UNSET, UNSET)
+    valid = cc_launch.permissions()
+    if not isinstance(value, str) or value not in valid:
+        where = "這個頻道設定的權限模式" if whose == "channel" else "這個安裝設定的預設權限模式（plugins.json 的 dcbot.default_permission）"
+        raise NotOpened(NotOpened.PERMISSION, "%s「%s」不是可以用的值，沒有開對話。可以用的：%s。"
+                        % (where, value, "、".join(valid)), value=value, valid=list(valid), whose=whose)
+    return value
+
+
 def fence(text, limit=1500):
-    return "```\n%s\n```" % (text.replace("```", "'''")[-limit:] or "（空白）")
+    """A screen in a code block, its last `limit` characters, keys masked first (C-127)."""
+    shown, said = masking.screen(text)
+    return "```\n%s\n```%s" % (shown.replace("```", "'''")[-limit:] or "（空白）", said)
 
 
 def events_cut(text, n):
@@ -486,27 +521,17 @@ class TmuxBridge(object):
 
     def with_(self, st):
         """(model, permission mode) a conversation of this channel is opened with; NotOpened when one of them is
-        no value there can be, or when the installation's settings cannot be read and the channel does not say the
-        permission mode itself. Nothing is started then, and the channel is told which value, whose it is, and which
-        there are. (Never the default instead: that lets everything through, and nobody asked for it. A model that
-        is a word but does not exist is Claude Code's own to refuse: its words come back with the screen.)
+        no value there can be, when neither the channel nor the installation says the permission mode, or when the
+        installation's settings cannot be read and the channel does not say the permission mode itself. Nothing is
+        started then, and the channel is told which value, whose it is, and which there are (permission_of()). (A
+        model that is a word but does not exist is Claude Code's own to refuse: its words come back with the screen.)
         Reads the installation's settings file: in the event loop through chosen_for()."""
         try:
             model, whose_model = chosen(st, "model", "dcbot.default_model", config.MODEL)
         except Exception:  # the settings cannot be read: the model as it always was (written to the log)
             traceback.print_exc()
             model, whose_model = config.MODEL, None
-        try:
-            value, whose = chosen(st, "permission", "dcbot.default_permission", cc_launch.BYPASS)
-        except Exception as e:  # what the installation says of permissions is not known, and the last resort lets
-            traceback.print_exc()  # everything through. Not opened, and said.
-            raise NotOpened(NotOpened.SETTINGS, "讀不到這個安裝的設定（%s），不知道要用哪個權限模式，沒有開對話。"
-                            "那是實例資料夾裡的 `plugins.json`；修好之後再傳一則訊息就會開。" % e, error=str(e))
-        valid = cc_launch.permissions()
-        if not isinstance(value, str) or value not in valid:
-            where = "這個頻道設定的權限模式" if whose == "channel" else "這個安裝設定的預設權限模式（plugins.json 的 dcbot.default_permission）"
-            raise NotOpened(NotOpened.PERMISSION, "%s「%s」不是可以用的值，沒有開對話。可以用的：%s。"
-                            % (where, value, "、".join(valid)), value=value, valid=list(valid), whose=whose)
+        value = permission_of(st)
         if not isinstance(model, str):  # a number, a list (a file edited by hand): nothing a command line can hold
             where = "這個頻道設定的模型" if whose_model == "channel" else "這個安裝設定的預設模型（plugins.json 的 dcbot.default_model）"
             raise NotOpened(NotOpened.MODEL, "%s「%s」不是可以用的值（要是一個名稱，例如 opus），沒有開對話。" % (where, model),
@@ -533,9 +558,13 @@ class TmuxBridge(object):
                 return
             if how == "unknown":
                 raise unreachable(st["pane"])
+            if st.pop("bg", None):  # what ran under it ended with it
+                self.host.save()
+            resume = resume_command(st)
             raise NotOpened(NotOpened.PANE_GONE, "這個頻道接的 tmux 窗格已經沒有在跑 Claude Code 了（%s）。"
-                            "訊息沒有送出。用 `!detach` 卸下這個頻道，或在那個窗格重新開 Claude 後再發一次。"
-                            % attached.label, where=attached.label)
+                            "訊息沒有送出。窗格還在的話，在那裡跑 `%s` 就會自動接回。窗格不在了（例如機器重開過）："
+                            "在 tmux 開一個視窗，到 `%s` 跑同一行，再用 `/attach` 選它，會接回這個頻道。不要了就用 `!detach` 卸下。"
+                            % (attached.label, resume, st.get("cwd")), where=attached.label)
         name = st.setdefault("tmux", tmuxio.session_name(getattr(ch, "name", "dm"), ch.id))
         own = tmuxio.pane(name)
         if await own.alive():
@@ -606,6 +635,7 @@ class TmuxBridge(object):
         if how == "unknown":  # its machine did not answer: the window may well be there and running. Another one
             raise unreachable(st["pane"])  # opened now (the line back a moment later) would be a second Claude on the
             # same conversation: not opened, and said
+        st.pop("bg", None)  # what ran under the old window ended with it
         home, why = st["home"], []
         remote_host = home.get("host")
 
@@ -1103,7 +1133,8 @@ class TmuxBridge(object):
             st.pop("bg", None)
             if ch is not None:  # the machine rebooted, or someone killed the tmux server
                 await self.say(ch, "⚠️ 這個頻道的 tmux 對話不見了（機器重開過？），%s已中斷。%s" % ("和".join(lost), (
-                    "在 tmux 裡用 `claude --resume` 重開後，再用 `!attach` 接回來。" if st.get("pane") and not st.get("home")
+                    "對話內容還在：在 tmux 開一個視窗，到 `%s` 跑 `%s`，再用 `/attach` 選它，會接回這個頻道。" % (
+                        st.get("cwd"), resume_command(st)) if st.get("pane") and not st.get("home")
                     else "對話內容還在，下一則訊息會自動接回。")))
         self.host.save()
         self.last_reap = time.time()
@@ -2125,6 +2156,7 @@ class TmuxBridge(object):
                 silent, told = None, False
             if how == "gone":
                 await self.end_turn(st, rt)
+                st.pop("bg", None)  # what ran under it ended with it
                 self.host.save()
                 return await self.say(ch, "⚠️ Claude 的行程結束了，這一輪沒有完成。" + (
                     "" if st.get("pane") and not st.get("home") else "下一則訊息會自動接回同一個對話。"))

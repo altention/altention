@@ -31,6 +31,30 @@ from tests import tmuxguard  # noqa: F401  (in force wherever a fake pane is: no
 # fake pane reads none, unless it says where its own are. "-" is the engine's word for "this machine has no instance".
 os.environ.setdefault("ALT_INSTANCE", "-")
 
+# C-121: no permission mode, no conversation (the bot no longer falls back to bypassPermissions). Every installation
+# has one written (install.sh; an older one gets it at its first reconcile), so for a test a setting the instance has
+# not is INSTALLED's. A test about what is set and what not replaces tmux_bridge.installation itself (test_open_params).
+INSTALLED = {"dcbot.default_permission": "bypassPermissions"}
+
+
+def installed(setting):
+    return INSTALLED.get(setting)
+
+
+def _as_installed(real):
+    def installation(setting):
+        value = real(setting)
+        if value is None:  # whatever ALT_INSTANCE a test left (some clear the environment): as installed
+            return installed(setting)
+        return value
+    installation.real = real
+    return installation
+
+
+from bot import tmux_bridge as _tmux_bridge  # noqa: E402
+if not hasattr(_tmux_bridge.installation, "real"):
+    _tmux_bridge.installation = _as_installed(_tmux_bridge.installation)
+
 if not tmuxio._set.get("done"):  # a test file run alone, without the bot's bridge (which tells tmuxio from the bot's settings)
     tmuxio.configure(socket="dcbot-test-none")  # a name no server has: whatever gets past the guard reaches nothing
 

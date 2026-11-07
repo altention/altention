@@ -97,7 +97,7 @@ class Restore(unittest.TestCase):
 
     def test_the_restore_path(self):
         text = read(".claude", "skills", "install", "SKILL.md")
-        part = text[text.index("## 1b."):text.index("## 4. The Discord application")]
+        part = text[text.index("## 2. A new install"):text.index("## 3. The Discord application")]
         for gone in ("instance.py names", "take-name", "host.bak", "AskUserQuestion"):
             self.assertNotIn(gone, part, "done in #setup now")
         self.assertIn("#setup", part)

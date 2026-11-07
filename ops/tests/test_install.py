@@ -1787,6 +1787,31 @@ class Setup(Base):
         self.assertEqual((got["names"], got["made"]), (["a"], ["a"]))
         self.assertFalse(os.path.lexists(os.path.join(self.home, ".claude", "skills", "setup")))
 
+    def test_the_official_list_is_looked_at_before_setup_asks(self):
+        """A new installation has no official list until its first engine-update round: looked at once at install,
+        so #setup's questions have its install offers; not reached, the install goes on."""
+        looked = []
+        said = {"look": ("fresh", "官方插件清單：1 個")}
+
+        def look():
+            looked.append(1)
+            return said["look"]
+        with mock.patch("altention.catalog.look_before_asking", side_effect=look):
+            for setup, bot_here, n in (({"done": True}, True, 0), ({"done": False}, False, 0), ({"done": False}, True, 1)):
+                with self.instance(setup=setup):
+                    r, out = self.run_()
+                    with redirect_stdout(out):
+                        install.catalog_look(r, bot_here)
+                self.assertEqual(len(looked), n, (setup, bot_here))
+            self.assertIn("ok core.catalog 官方插件清單：1 個", out.getvalue())
+            said["look"] = ("unreached", "連不上 GitHub，官方插件清單用上次的（x）")
+            with self.instance(setup={"done": False}):
+                r, out = self.run_()
+                with redirect_stdout(out):
+                    install.catalog_look(r, True)
+            self.assertIn("skip core.catalog 連不上 GitHub", out.getvalue())
+            self.assertEqual(r.code(), 0, "never what stops the install")
+
     def test_setups_folder(self):
         eng = os.path.join(self.home, "引擎")
         os.makedirs(os.path.join(eng, "skills", "setup"))

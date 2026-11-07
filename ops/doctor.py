@@ -192,7 +192,18 @@ try:  # a link to the engine's (no instance), or the file the sync composes from
     o["global_md"] = o["global_md_state"] in ("link", "composed")
 except OSError:
     o["global_md"], o["global_md_state"] = False, "missing"
-o["bot_env"] = os.path.exists(H("~/.config/dcbot/env"))
+o["bot_env"] = os.path.exists(H("~/.config/dcbot/env"))  # only whether it is there: never opened (C-109)
+_bot = globals().get("IS_BOT")  # given by check(): this machine runs the bot (None: not said, nothing asked)
+if _bot and o["bot_env"]:  # does Discord take its token now: dcctl asks, the token is read by it alone
+    try:
+        o["bot_token"] = json.loads(sh("python3 %s/dcbot/tools/dcctl check --json" % shlex.quote(H(ENGINE))).splitlines()[-1])
+    except (ValueError, IndexError):
+        o["bot_token"] = None
+elif _bot is False:  # another machine: can its dcctl hand commands to the bot's machine
+    try:
+        o["bot_reach"] = json.loads(sh("python3 %s/altention/dc/botside.py --reach" % shlex.quote(H(ENGINE))).splitlines()[-1])
+    except (ValueError, IndexError):
+        o["bot_reach"] = None
 o["bot_cron"] = any("supervisor.py" in l and not l.lstrip().startswith("#") for l in cron)
 o["bot_supervisor"] = False
 sl = os.path.join(H(ENGINE), "dcbot/state/supervisor.lock")
@@ -598,7 +609,7 @@ def bot_notes(name, o):
     if "open_settings" in o:
         why = open_settings_problem(o.get("open_settings"))
         out.append(record("dcbot.open-settings", name, "fail" if why else "ok", "機器人會因為這個安裝的設定而不開對話：%s" % why if why else "",
-                          "改實例 plugins.json 的那個鍵（或拿掉它，就用預設），在實例 repo commit、push；改好後對頻道再傳一則訊息就會開"))
+                          "改實例 plugins.json 的那個鍵（模型可以拿掉，就用預設；權限模式不能拿掉，選 auto、manual 或 bypassPermissions，或到 #setup 選），在實例 repo commit、push；改好後對頻道再傳一則訊息就會開"))
     return out
 
 
@@ -608,8 +619,8 @@ def open_settings_problem(found):
     reads it (altention.config.setting; the connector's launch.permissions()): {"valid", "permission", "model"} or
     "permission_error" / "model_error" / "error". The same two conditions as the bot's own (dcbot/bot/tmux_bridge.py
     with_(); written once there and once here, a test feeds both the same values; one function for both comes with
-    step 2.7): the permission mode must be a word of the list, the model a word; a value that is not set is the
-    default's, and a model that cannot be read is the default too. A channel that sets its own is not held back
+    step 2.7): the permission mode must be a word of the list, the model a word; a permission mode that is not set
+    is a refusal too (C-121), a model that is not set or cannot be read is the default. A channel that sets its own is not held back
     by the installation's: this says what a channel without its own will meet."""
     if not isinstance(found, dict):
         return None
@@ -618,7 +629,9 @@ def open_settings_problem(found):
     if found.get("permission_error"):
         return "讀不到這個安裝的設定（%s）：不知道要用哪個權限模式，沒有自己設權限模式的頻道都不開" % found["permission_error"]
     valid, value, model = found.get("valid") or [], found.get("permission"), found.get("model")
-    if value and (not isinstance(value, str) or value not in valid):
+    if not value:  # C-121: no mode is chosen for the owner (the bot's last resort let everything through)
+        return "plugins.json 沒有 dcbot.default_permission：機器人不會開新的對話。到 #setup 選一個"
+    if not isinstance(value, str) or value not in valid:
         return "plugins.json 的 dcbot.default_permission 是「%s」，不是可以用的值（可以用的：%s）" % (value, "、".join(valid))
     if model and not isinstance(model, str):
         return "plugins.json 的 dcbot.default_model 是「%s」，不是可以用的值（要是一個名稱，例如 opus）" % (model,)
@@ -697,6 +710,8 @@ def tidy(o):
         for key in ("repo", "hook", "own"):
             fix(row, key, lambda v: isinstance(v, bool), where="backup.")
     fix(o.get("sync") or {}, "data", obj, dict, "sync.")
+    for key in ("bot_token", "bot_reach"):
+        fix(o, key, obj)
     for key in ("now", "cleanup_days", "tmp_inodes", "tmp_space", "events_bad", "posts_bad", "posts_failed", "cards_failed", "bot_heartbeat_age", "update_alive_at",
                 "bot_started_age"):
         fix(o, key, num)
@@ -1007,6 +1022,53 @@ def backup_records(name, o, on):
     return out
 
 
+def token_records(name, eng, is_bot, o):
+    """C-109: the token is kept only where the bot runs. There: does Discord take it now (dcctl check), not first
+    found out by a 401 when it is used. Elsewhere: can dcctl hand its commands to that machine; and a bot settings
+    file left here is said (whether it is there only, never opened), not as a fault: a standby machine (C-53) keeps
+    one."""
+    out = []
+    if is_bot and o.get("bot_env") and "bot_token" in o:  # (not there: a probe that was not asked)
+        got = o.get("bot_token")
+        if not got:
+            out.append(record("dcbot.token", name, "warn", "%s：沒辦法問 Discord token 有沒有效（dcctl check 沒有回答）" % name,
+                              "在 %s 上跑 python3 %s/dcbot/tools/dcctl check 看它說什麼" % (name, eng)))
+        elif got.get("state") == "unreachable":
+            out.append(record("dcbot.token", name, "warn", "%s：%s" % (name, got.get("said")), "過一下再跑一次 doctor"))
+        else:
+            out.append(record("dcbot.token", name, "ok" if got.get("state") == "ok" else "fail",
+                              "" if got.get("state") == "ok" else "機器人的 token 失效了（Discord 回 401）"
+                              if got.get("state") == "invalid" else "機器人的 token：%s" % got.get("said"),
+                              "在 %s 自己的終端機跑 %s/install.sh discord，重新輸入 token（到 Developer Portal → 機器人（Bot）→ "
+                              "重設權杖（Reset Token）拿新的）" % (name, eng), got.get("state")))
+    if is_bot is not False or "bot_reach" not in o:
+        return out
+    got = o.get("bot_reach")
+    bot = (got or {}).get("bot") or "機器人那台"
+    if not got:
+        out.append(record("dcbot.forward", name, "warn", "%s：沒辦法檢查 dcctl 轉不轉得到機器人那台" % name,
+                          "在 %s 上跑 python3 %s/altention/dc/botside.py --reach 看它說什麼" % (name, eng)))
+    elif got.get("error"):
+        out.append(record("dcbot.forward", name, "fail", "dcctl 不知道要轉給哪台：%s" % got["error"], "看這台的機器清單"))
+    elif got.get("here"):
+        out.append(record("dcbot.forward", name, "fail", "這台的 dcctl 認為機器人在這台，機器清單卻說在別台",
+                          "對一下 %s 的機器名字和清單裡 dcbot 那台" % name))
+    elif not got.get("way"):
+        tried = got.get("tried") or []
+        out.append(record("dcbot.forward", name, "fail", "dcctl 轉不到 %s（%s）" % (bot, "ssh %s %s連不上" % (
+                              "、".join(tried), "都" if len(tried) > 1 else "") if tried else "清單裡沒有它的 ssh 別名"),
+                          "確認在 %s 上 ssh %s 不用密碼就連得上 %s" % (name, tried[0] if tried else "<別名>", bot)))
+    elif got.get("dcctl") is False:
+        out.append(record("dcbot.forward", name, "fail", "%s 上找不到 dcctl，這台的 dcctl 轉過去也沒有用" % bot,
+                          "python3 ops/apply.py %s" % bot))
+    else:
+        out.append(record("dcbot.forward", name, "ok", "", value=bot))
+    if o.get("bot_env"):
+        out.append(record("dcbot.standby-token", name, "warn", "%s：這台沒有在跑機器人，dcctl 會轉給 %s；這份 token 只有這台當待命機器時才用得到。"
+                          % (name, bot), "不用處理（之後待命接手時，這台要靠它連上 Discord）"))
+    return out
+
+
 def check(name, m, head, instance_repo=None):
     """The records of one machine. A problem's sentence is what doctor has always said; its fix is new."""
     out = []
@@ -1018,8 +1080,11 @@ def check(name, m, head, instance_repo=None):
     eng = engine_raw(m)  # that machine's engine as its entry in the list says, else the default place
     sync_it = "在 %s 上跑 python3 %s/altention/cron_sync.py（紀錄在 ~/.local/state/altention/cron-sync.log）" % (name, eng)
     chatlog_it = "在 %s 上跑 python3 %s/chatlog/chatlog.py sync（紀錄在 ~/.cache/chatlog/chatlog.log）" % (name, eng)
-    alias, rc, stdout, err = run_on(m, "ENGINE = %r  # this machine's engine (its entry in the list)\n" % engine_raw(m) + PROBE,
-                                    timeout=120)
+    is_bot = True if "dcbot" in m.get("roles", []) or m.get("_bot_unlisted") else \
+        None if m.get("_single") or m.get("_bot_nowhere") else False
+    alias, rc, stdout, err = run_on(m, "ENGINE = %r  # this machine's engine (its entry in the list)\n" % engine_raw(m)
+                                    + "IS_BOT = %r  # runs the bot (C-109: its token is checked, others' way to it)\n" % is_bot
+                                    + PROBE, timeout=120)
     # what runs here: the plugins placed on it, and the list's two roles that are not plugins (the bot, attaching)
     placed = plugins_on(name)
     on, unplaced = placed if placed is not None else (set(), {"chatlog", "planner", "progress", "usage"})
@@ -1567,6 +1632,7 @@ def check(name, m, head, instance_repo=None):
                 break
     elif o.get("bot_cron") and not single:
         say("dcbot.not-listed", "清單上不負責 dcbot，卻有機器人排程", "%s 會移除；機器人要搬來這台就先改機器清單" % apply_it)
+    out.extend(token_records(name, eng, is_bot, o))
     if "progress" in roles and "progress" not in sched_off:
         problem = ""
         if o["cron_progress_paused"] and not o["cron_progress"]:
@@ -1680,6 +1746,7 @@ def collect(names, watch=False):
     nobody = not any("dcbot" in (m.get("roles") or []) for m in machines.values())
     for m in machines.values():  # no machine given the bot: it runs where its settings are (config.bot_machine)
         m["_bot_unlisted"] = nobody and "local" in (m.get("ssh") or [])
+        m["_bot_nowhere"] = nobody
     unknown = [n for n in names if n not in machines]
     if unknown:
         sys.exit("清單裡沒有：%s" % ", ".join(unknown))

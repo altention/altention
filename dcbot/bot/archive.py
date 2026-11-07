@@ -27,6 +27,7 @@ import traceback
 import discord
 
 from . import config, kinds, layout, routes, tmuxio
+from .util import target
 
 PREFIX = "arch"
 SHELF_MAX = 50  # Discord's limit of channels in one category
@@ -237,7 +238,7 @@ class Archive(object):
             await ch.send("📦 這個頻道已經封存。要恢復嗎？", view=v)
             return v.stop()
         v = view(ch.id, can_return=bool(rec and (rec.get("pane") or rec.get("session_id"))))
-        await ch.send("🗄️ 這個頻道已經封存，訊息不會送給 Claude。要怎麼繼續？", view=v)
+        await ch.send("🗄️ 這個頻道已經封存，剛剛的訊息沒有送給 Claude；接回或開新對話後，請再送一次。要怎麼繼續？", view=v)
         v.stop()
 
     async def unarchive(self, ch, rec, cwd, fallback=None):
@@ -283,6 +284,19 @@ class Archive(object):
             return "這是機器人自己用的頻道，不能封存。"
         return None
 
+    async def still_working(self, st):
+        """Busy or with background work, as far as anyone knows. What the channel remembers of a window that is gone
+        (a reboot with nobody attaching: the count stayed, and /archive was refused for it, #teach-explain-0 2026-10-30)
+        is let go of here; a machine that does not answer says nothing, the count stays."""
+        if not (st.get("busy") or st.get("bg")):
+            return False
+        if target(st) and await tmuxio.standing(target(st)) != "gone":
+            return True
+        st["busy"] = False
+        st.pop("bg", None)
+        self.bot.save()
+        return False
+
     async def put(self, ch, force=False, adopt=False):
         """/archive: put the channel away (see the module's note). (what to say, a view or None): a conversation
         working right now is not touched unless `force` (the view asks for it). `adopt` (adopt_all(): nobody asked,
@@ -294,7 +308,7 @@ class Archive(object):
             return why, None
         guild, kind = ch.guild, kinds.channel_kind(st)
         conversation = kind == kinds.CONVERSATION
-        if conversation and (st.get("busy") or st.get("bg")) and not force:
+        if conversation and not force and await self.still_working(st):
             v = discord.ui.View(timeout=None)
             v.add_item(discord.ui.Button(label="還是封存", custom_id="%s:%d:force" % (PREFIX, ch.id),
                                          style=discord.ButtonStyle.danger))
@@ -367,7 +381,7 @@ class Archive(object):
                             moved.append(ch.name)
                         continue
                     if kinds.channel_kind(st) == kinds.CONVERSATION and (
-                            st.get("busy") or st.get("bg") or time.time() - st.get("last_active", 0) <= idle):
+                            await self.still_working(st) or time.time() - st.get("last_active", 0) <= idle):
                         left.append((ch.id, ch.name))
                         continue
                     if st.get("pane") and kinds.channel_kind(st) == kinds.CONVERSATION:

@@ -15,14 +15,23 @@
 # 只提交 dcbot/ 和明確列出的路徑：同一個引擎資料夾裡別的頻道改到一半的東西不會被帶出去。
 # 每次都會把 GUIDE.md 同步到說明頻道；使用者感覺得到的改動請附更新說明。
 set -euo pipefail
+usage() { sed -n '2,/^set -euo pipefail$/{/^#/s/^# \{0,1\}//p}' "$0"; }  # the comment above, as the help
+# -h/--help says how and does nothing (spec §11.1); an option it does not know is refused, never taken for the
+# commit message (manager 2026-11-03: "deploy.sh --help" committed, pushed and restarted, as a deploy)
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 cd "$(dirname "$0")"
 LIVE="$PWD"  # 正式樹的 dcbot/
 REVIEWED=""; HASHES=()
 while [ "${1:-}" = "--commit" ]; do  # 疊起來的幾個 commit：每一個都要列出來（每一個都審過）
   HASHES+=("${2:?用法：./deploy.sh --commit <hash> [--commit <hash>…] \"commit 訊息\" [\"更新說明\"]}")
+  case "$2" in -*) echo "✗ --commit 後面要是 commit 的 hash，不是 $2；什麼都沒做（./deploy.sh --help）"; exit 2 ;; esac
   REVIEWED="${REVIEWED:+$REVIEWED }$2"
   shift 2
 done
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -*) echo "✗ 不認得 $1；什麼都沒做（./deploy.sh --help）"; exit 2 ;;
+esac
 MSG="${1:?用法：./deploy.sh [--commit <hash>] \"commit 訊息\" [\"給使用者看的更新說明\"]}"
 NOTE="${2:-}"
 EXTRA=("${@:3}")  # 相對於 dcbot/ 的路徑，例如 ../docs/x.md（只有原地改的用法才有）

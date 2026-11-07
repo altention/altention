@@ -117,7 +117,12 @@ class Base(unittest.TestCase):
 
         async def kill_pane(pane):
             self.killed.append(pane["id"])
+        self.standing = "alive"
+
+        async def standing(t):
+            return self.standing
         for p in (mock.patch.object(routes, "unbind_any", unbind_any), mock.patch.object(tmuxio, "exists", exists),
+                  mock.patch.object(tmuxio, "standing", standing),
                   mock.patch.object(tmuxio, "kill_pane", kill_pane),
                   mock.patch.object(tmuxio, "label", lambda pane: "lap:%s" % pane.get("id")),
                   mock.patch.object(config, "OWNER_ID", 111)):
@@ -178,6 +183,25 @@ class Conversations(Base):
         self.assertEqual(self.unbound, [ch.id])
         self.assertEqual(self.state(ch)["archived"]["pane"]["host"], "lap")
         self.assertIn("你接上的對話還在原處繼續跑（lap:%5）", text)
+
+    def test_background_work_of_a_window_gone_does_not_hold_it_back(self):
+        """#teach-explain-0, 2026-10-30: a reboot, nobody attached; bg stayed and /archive asked to wait for nothing."""
+        self.standing = "gone"
+        for state in ({"pane": dict(P)}, {"tmux": "dc-b"}, {}):
+            ch = Ch(self.g, "after-reboot", self.proj)
+            self.bot.channels_state[str(ch.id)] = dict({"cwd": "/w", "session_id": "sid", "bg": 2}, **state)
+            text, view = self.put(ch)
+            self.assertIsNone(view, state)
+            self.assertEqual(ch.category.name, config.ARCHIVE_CATEGORY, state)
+            self.assertNotIn("bg", self.state(ch), state)
+
+    def test_background_work_on_a_machine_not_answering_still_asks(self):
+        self.standing = "unknown"
+        ch = Ch(self.g, "far", self.proj)
+        self.bot.channels_state[str(ch.id)] = {"cwd": "/w", "pane": dict(P, host="lap"), "session_id": "sid", "bg": 2}
+        text, view = self.put(ch)
+        self.assertIn("正在工作", text)
+        self.assertEqual(self.state(ch)["bg"], 2)
 
     def test_no_window_only_a_session_id(self):
         """The 11 of the owner's list that /detach refused: the window closed by the idle reaper."""

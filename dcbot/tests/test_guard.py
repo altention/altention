@@ -56,13 +56,18 @@ class Guard(unittest.TestCase):
 ("Bash", {"command": "cat $HOME/.ssh/id_rsa | base64"}),
                           ("Bash", {"command": "cd ~/.config/dcbot && cat env"}), ("Grep", {"pattern": "TOKEN", "path": "~/.config"}),
                           ("Glob", {"pattern": "*", "path": os.path.join(self.home, ".ssh")}),
+                          ("Glob", {"pattern": "~/.ssh/*"}), ("Glob", {"pattern": os.path.join(self.home, ".config/*/env")}),
+                          ("Glob", {"pattern": "**/*", "path": "~"}), ("Grep", {"pattern": "x", "path": "~"}),
+                          ("Grep", {"pattern": "x", "path": "/"}), ("Grep", {"pattern": "x", "glob": "~/.ssh/id_*"}),
+                          ("Glob", {"pattern": "env", "path": "~/.config"}), ("Glob", {"pattern": "discord-token", "path": "~/.config"}),
+                          ("Glob", {"pattern": "id_rsa", "path": "~"}), ("Glob", {"pattern": os.path.join(self.home, "id_rsa")}),
                           ("Read", {"file_path": "../.config/dcbot/env"})):
             self.assertTrue(self.refused(tool, inp), (tool, inp))
 
     def test_relative_paths_from_the_calls_folder(self):
         """(#code-review on b3370e8) the event's cwd is the home folder."""
         for tool, inp in (("Bash", {"command": "cat .config/dcbot/env"}), ("Bash", {"command": "grep -r TOKEN .config"}),
-                          ("Grep", {"pattern": "TOKEN", "path": ".config"})):
+                          ("Grep", {"pattern": "TOKEN", "path": ".config"}), ("Glob", {"pattern": "id_rsa"})):
             self.assertTrue(self.refused(tool, inp, cwd=self.home), (tool, inp))
         self.assertIsNone(self.run_guard("Bash", {"command": "ssh -i ~/.ssh/id_ed25519 lap"}, cwd=self.home))
         self.assertTrue(self.refused("Bash", {"command": "ssh -i ~/.ssh/id_ed25519 lap cat ~/.ssh/id_ed25519"}, cwd=self.home))
@@ -71,7 +76,8 @@ class Guard(unittest.TestCase):
         for tool, inp in (("Read", {"file_path": "/etc/hostname"}), ("Read", {"file_path": "~/.ssh/config"}),
                           ("Edit", {"file_path": "~/.ssh/known_hosts"}), ("Read", {"file_path": "~/.ssh/id_rsa.pub"}),
                           ("Bash", {"command": "git status && ls -la"}), ("Bash", {"command": "vim ~/.ssh/config"}),
-                          ("Grep", {"pattern": "x", "path": "~"}), ("Grep", {"pattern": "x"}), ("Glob", {"pattern": "**/*.py"}),
+                          ("Grep", {"pattern": "x", "glob": "*.py"}), ("Grep", {"pattern": "x"}), ("Glob", {"pattern": "**/*.py"}),
+                          ("Glob", {"pattern": "*.md", "path": "~/work"}), ("LS", {"path": "~"}),
                           ("WebFetch", {"url": "https://example.com/.config/dcbot/env"}), ("TodoWrite", {"todos": []})):
             self.assertIsNone(self.run_guard(tool, inp), (tool, inp))
 

@@ -347,7 +347,11 @@ def question_for(key, found=None, answered=None):
     if key == "plugins.%s" % SECRETARY:
         return plugins.secretary_question(found, again=answered.get(key) == "on", gone=channel_gone(key, found))
     import instance
-    return next((q for q in plugins.setup_questions(found, instance.system_timezone(None), False) if q["key"] == key), None)
+    q = next((q for q in plugins.setup_questions(found, instance.system_timezone(None), False) if q["key"] == key), None)
+    written = (setup_state() or {}).get("permission_written")
+    if q and key == PERMISSION_KEY and written and config.setting(PERMISSION_KEY) == written:  # still the mode written
+        q = dict(q, question=WRITTEN_SAY + "\n\n" + q["question"])
+    return q
 
 
 def backups_missing(answered):
@@ -584,8 +588,8 @@ def answer(key, value, out=None):
             raise Refused("這台的 Claude Code 沒有 %s 這個模式（太舊了）：先在終端機跑 claude update，或選別的" % value)
         put(d, key, value)
     elif key == "dcbot.talk_limit":
-        if value not in [str(v) for v in q["values"]]:
-            raise Refused("來回上限只能是 %s" % "、".join(str(v) for v in q["values"]))
+        if not re.match(r"^\s*[0-9]+\s*$", value):  # any count, as /talklimit takes (0: no limit)
+            raise Refused("來回上限要是 0 以上的整數，例如 5；0 是不限")
         value = int(value)
         put(d, key, value)
     elif key == "core.update":
@@ -619,17 +623,18 @@ def answer(key, value, out=None):
         put(d, key, when)
         value = when
     elif key == "usage.plan":
-        named = dict(plugins.PLANS)
+        named = {n: [n, k] for n, k, _ in plugins.PLANS}
+        named.update({n: list(p) for n, p in plugins.PLANS_TYPED.items()})
         if value == "none":
             drop(d, "usage.plan")
             put(d, "usage.subscription_limits", False)
         else:
             if value in named:
-                plan = [value, named[value]]
+                plan = named[value]
             else:
                 m = re.match(r"^\s*([^=]+?)\s*=\s*([0-9]+)\s*$", value)
                 if not m or int(m.group(2)) < 1:
-                    raise Refused("方案是 Pro、Max 5x、Max 20x 或 none；別的方案寫成「名稱=幾個 Pro 的額度」，例如 Team=5")
+                    raise Refused("方案是 Pro、Max、Ultra 或 none；別的方案寫成「名稱=幾個 Pro 的一週額度」，例如 Team=5")
                 plan = [m.group(1), int(m.group(2))]
             put(d, "usage.plan", plan)
             put(d, "usage.subscription_limits", True)
@@ -691,6 +696,8 @@ def answer(key, value, out=None):
     state["answered"] = answered
     if key in asked(state):
         state["ask"] = [k for k in asked(state) if k != key]
+    if key == PERMISSION_KEY:
+        state.pop("permission_written", None)  # chosen now: #setup's question no longer begins with WRITTEN_SAY
     state.setdefault("done", False)
     write_settings(d)
     check_read_back(key, value)
@@ -835,7 +842,7 @@ def secretary(out=None):
     write_channel("planner.channel", cid)
     commit("setup: secretary")
     check = script([sys.executable, os.path.join(ENGINE, "planner", "remind.py"), "--check"])
-    out.write("秘書開在 #%s（%s）\n%s" % (name, cid, check.stdout))
+    out.write("秘書開在 <#%s>\n%s" % (cid, check.stdout))  # as Claude says it: a mention shows the name
     return 0
 
 
@@ -871,7 +878,7 @@ def tutorial(out=None):
         node(d, "setup").setdefault("answered", {})["tour"] = "start"
         write_settings(d)
         commit("setup: tour")
-    out.write("導覽開在 #%s（%s）\n" % (name, cid))
+    out.write("導覽開在 <#%s>\n" % cid)
     return 0
 
 
@@ -1378,6 +1385,15 @@ def update_name():
     return said.strip().lstrip("#") if isinstance(said, str) and said.strip().lstrip("#") else "update"
 
 
+def say_audit(line):
+    """One line in #audit (dcbot.channels.audit), a notice as say_update's (the system speaking, not a Claude's
+    card); not said is not a failure (the instance's commit says the same)."""
+    try:
+        altention("dc", "notify", "-c", str(config.setting("dcbot.channels.audit") or "audit"), line)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def say_update(text):
     """One line in #update (core.update_channel), as a notice of this machine's like update.py's (altention dc
     notify): the system speaking, not a card "來自 … 上的 Claude" as altention dc post makes it; not said is not a
@@ -1409,9 +1425,53 @@ def declared(found, rows):
     return channels, asks
 
 
-def reconcile_plan(chans):
+# C-121: an installation from before the permission mode was asked has none written, and the bot opened its
+# conversations with bypassPermissions. The bot now opens nothing without one, so the first reconcile writes that
+# mode out (nothing changes) and asks in #setup, the question beginning with WRITTEN_SAY.
+PERMISSION_KEY = "dcbot.default_permission"
+WRITTEN_MODE = "bypassPermissions"
+WRITTEN_AUDIT = "把原本沒寫明的權限模式 bypassPermissions 寫進設定（行為不變）"
+WRITTEN_COMMIT = "setup: write the permission mode bypassPermissions, never written before, into the settings " \
+                 "(behaviour unchanged) / " + WRITTEN_AUDIT
+WRITTEN_SAY = "這個安裝之前沒設權限模式，機器人一直用 bypassPermissions 在跑：Claude 做什麼都不先問你。" \
+              "這次更新把它寫明了，行為不變。建議到 #setup 改成 auto。"
+
+
+def permission_unwritten(state):
+    """Is this an installation set up already (or from before #setup) that has no permission mode written, the
+    case write_permission() is for? A new installation still in #setup is not: it is asked there, and install.sh
+    wrote one already (instance.py init). Nor is one whose mode was chosen in #setup, or written here once, and
+    then taken out by hand: that is no mode, and the bot opens nothing (#code-review on 85cd909: it was written
+    again as bypassPermissions at the next update, said to be what it had always run with)."""
+    if state is not None and state.get("done") is not True:
+        return False
+    if state is not None and (PERMISSION_KEY in (state.get("answered") or {}) or state.get("permission_written")):
+        return False
+    value = config.setting(PERMISSION_KEY)
+    return value is None or value == ""
+
+
+def write_permission(out):
+    """The mode the bot ran with written out (WRITTEN_MODE), said in #audit with the instance's commit saying the
+    same, and in #update; the setup state remembers it, so #setup's question says so (question_for)."""
+    d = read_settings()
+    put(d, PERMISSION_KEY, WRITTEN_MODE)
+    st = d.get("setup") if isinstance(d.get("setup"), dict) else None
+    if st is None:  # an installation from before #setup: set up already (as the asks below make it)
+        st = d["setup"] = {"done": True, "since": "reconcile"}
+    st["permission_written"] = WRITTEN_MODE
+    write_settings(d)
+    commit(WRITTEN_COMMIT)
+    say_audit(WRITTEN_AUDIT)
+    say_update("🔐 " + WRITTEN_SAY)
+    out.write("%s\n" % WRITTEN_AUDIT)
+
+
+def reconcile_plan(chans, before_offers=None):
     """What the reconcile would do, given the server's text channels [(id, name, category)]:
-    [{"kind": "fill" | "ask" | "note", "what": short id, "say": plain words, ...}]."""
+    [{"kind": "fill" | "ask" | "note", "what": short id, "say": plain words, ...}]. before_offers: called once the
+    rest is known and before the install offers are read (the reconcile writes the permission mode, then looks at
+    the official list there)."""
     found = plugin.discover()[0]
     rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
     channels, asks = declared(found, rows)
@@ -1453,6 +1513,13 @@ def reconcile_plan(chans):
                 ask.append(key)
                 plan.append({"kind": "ask", "what": key, "say": "%s：%s" % (
                     "#%s" % c["name"], "設定裡的頻道已經不在了" if stale else "還沒有這個頻道") + "（要不要開，到 #setup 問）"})
+    state = setup_state()
+    if permission_unwritten(state):
+        plan.append({"kind": "fill", "what": "permission-written", "say": WRITTEN_AUDIT})
+    elif state is not None and state.get("permission_written") and PERMISSION_KEY not in (state.get("answered") or {}) \
+            and PERMISSION_KEY not in asked(state) and PERMISSION_KEY not in ask:
+        ask.append(PERMISSION_KEY)  # written by an earlier reconcile that stopped before it asked
+        plan.append({"kind": "ask", "what": PERMISSION_KEY, "say": "%s 是補寫的（到 #setup 問）" % PERMISSION_KEY})
     for a in asks:
         if config.setting(a["key"]) is not None:
             continue
@@ -1461,8 +1528,10 @@ def reconcile_plan(chans):
         if a["question"] not in ask:
             ask.append(a["question"])
             plan.append({"kind": "ask", "what": a["question"], "say": "%s 沒設定（到 #setup 問）" % a["key"]})
-    from altention import offers  # C-64: an install offer answered 「之後再說」, asked again after an update
-    for n in offers.due(("install",), settings=config.settings(), later_only=True):
+    if before_offers is not None:
+        before_offers(plan)
+    from altention import offers  # C-64, an install offer never answered or answered 「之後再說」, after an update
+    for n in offers.due(("install",), settings=config.settings()):
         if "offer.%s" % n not in ask:
             ask.append("offer.%s" % n)
             plan.append({"kind": "ask", "what": "offer.%s" % n, "say": text.t("offer.reconcile", plugin=n)})
@@ -1504,7 +1573,22 @@ def reconcile(dry, as_json, if_changed, out=None):
             return 0
     try:
         state = setup_state()
-        plan = reconcile_plan(discord_channels())
+        first = []
+
+        def before_offers(plan):
+            """The install offers come from the official list: looked at first (a dry run writes nothing). The
+            permission mode is written before that look, which may take up to a minute: the bot opens no
+            conversation until it is written (#code-review of 1ca3c0e)."""
+            if dry:
+                return
+            if any(p["what"] == "permission-written" for p in plan):
+                write_permission(out)
+                first.append("permission-written")
+            from altention import catalog
+            _, words = catalog.look_before_asking()
+            if words:
+                out.write("%s\n" % words)
+        plan = reconcile_plan(discord_channels(), before_offers)
         if as_json:
             json.dump(plan, out, ensure_ascii=False, indent=1)
             out.write("\n")
@@ -1516,6 +1600,8 @@ def reconcile(dry, as_json, if_changed, out=None):
         if dry:
             return 0
         fills = [p for p in plan if p["kind"] == "fill"]
+        if any(p["what"] == "permission-written" for p in fills) and "permission-written" not in first:
+            write_permission(out)  # first: the bot opens nothing until it is written (written above already, as a rule)
         if any(p["what"] == "make-update" for p in fills):
             p = next(p for p in fills if p["what"] == "make-update")
             r = dcctl("create", p["channel"], "--topic", UPDATE_TOPIC)

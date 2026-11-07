@@ -449,6 +449,14 @@ def guard():
         named = []
         if tool in GUARD_TOOLS:
             named = [p for p in (inp.get("file_path"), inp.get("notebook_path"), inp.get("path")) if secrets.is_secret(p, listed, cwd)]
+        elif tool == "Glob":  # C-126: its pattern too, which may start anywhere (absolute, ~, ..), judged as a whole
+            # tree (manager 2026-11-03): a name with no "/" is looked for at every level, as ripgrep does
+            reach = secrets.searched(inp.get("path") or cwd, inp.get("pattern"), listed, cwd=cwd, any_level=True)
+            named = [reach] if reach else []
+        elif tool == "Grep":  # C-126: the whole tree under its path, the home folder and the root included, and its glob
+            base = inp.get("path") or cwd
+            reach = secrets.searched(base, None, listed, cwd=cwd) or secrets.searched(base, inp.get("glob"), listed, cwd=cwd)
+            named = [reach] if reach else []
         elif tool in SEARCH_TOOLS:
             where = inp.get("path") or cwd
             named = [where] if secrets.is_secret(where, listed, cwd) or secrets.holds(where, listed, cwd=cwd) else []

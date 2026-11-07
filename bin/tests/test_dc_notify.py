@@ -39,9 +39,10 @@ class Broken(unittest.TestCase):
         sent = []
 
         def run(cmd, input=None, **kw):
-            sent.append((cmd, json.loads(input.decode("utf-8"))))
+            if cmd[-1] != "true":  # finding the way (botside.way) is not the post
+                sent.append((cmd, json.loads(input.decode("utf-8"))))
             return mock.Mock(returncode=0, stdout=b"", stderr=b"")
-        with mock.patch.object(config, "bot_machine", bot), mock.patch.object(self.mod.subprocess, "run", run), \
+        with mock.patch.object(config, "bot_machine", bot), mock.patch.object(self.mod.botside.subprocess, "run", run), \
                 mock.patch.object(sys, "argv", ["dcnotify"] + argv), mock.patch.dict(os.environ, {"DCNOTIFY_CHANNEL": ""}):
             with self.assertRaises(SystemExit) as e:
                 self.mod.main()
@@ -50,14 +51,14 @@ class Broken(unittest.TestCase):
     def test_unreadable_settings_still_send_through_the_bot_last_reached(self):
         code, sent = self.send(["sync failing"], lambda: ("host-a", {"ssh": ["A"]}, False))
         self.assertEqual(code, 0)
-        self.assertEqual(sent[0][0][-2:], ["A", "~/'altention/engine'/dcbot/tools/dcctl post"])
+        self.assertEqual(sent[0][0][-2:], ["A", "ALTENTION_HANDED=1 ~/'altention/engine'/dcbot/tools/dcctl 'post'"])
         self.assertNotIn("channel", sent[0][1], "the bot's machine decides the default channel")
 
         def broken():
             raise config.ConfigError("plugins.json is not JSON")
         code, sent = self.send(["sync failing"], broken)
         self.assertEqual(code, 0, "still sent")
-        self.assertEqual(sent[0][0][-2:], ["A", "~/'altention/engine'/dcbot/tools/dcctl post"])
+        self.assertEqual(sent[0][0][-2:], ["A", "ALTENTION_HANDED=1 ~/'altention/engine'/dcbot/tools/dcctl 'post'"])
         self.assertEqual(sent[0][1]["text"], "sync failing")
 
     def test_unreadable_settings_and_no_bot_reached_before_says_so(self):

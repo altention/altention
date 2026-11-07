@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 
 from . import config, plugin, plugin_update
+from .text import t as _t
 
 ORG = "altention"
 API = "https://api.github.com"
@@ -228,6 +229,8 @@ def entry(name, tag):
         return None, "%s %s" % (tag, NOT_THERE)
     try:
         d = plugin.check(json.loads(text), "plugin-%s:%s:plugin.json" % (name, tag))
+    except plugin.NewerEngine:
+        return None, _t("catalog.newer_engine", tag=tag)
     except (ValueError, plugin.PluginError) as e:
         return None, "%s 的 plugin.json 讀不懂：%s" % (tag, str(e)[:200])
     if d.get("name") != name:
@@ -322,6 +325,20 @@ def refresh(deadline=None, force=False, now=None):
     _save(d)
     return ("partial" if partial else "fresh"), "官方插件清單：%d 個%s" % (
         len(plugins), "（時間到了，其他的下一輪看）" if partial else "")
+
+
+ASK_LIMIT = 60  # seconds the look before #setup's questions may take (more than LOOK_LEAST: one repository at least)
+
+
+def look_before_asking(limit=ASK_LIMIT):
+    """The list looked at once just before #setup's questions are made: at install, and in the reconcile
+    after an update. A fresh installation has no list until its first engine-update round, so without this the
+    install offers are not among the questions. Forced (at most once every FORCE_GAP), within `limit` seconds;
+    not reached: the list kept is used, as before. (state, words); never raises."""
+    try:
+        return refresh(deadline=time.time() + limit, force=True)
+    except Exception as e:  # the list is a convenience: the questions go on without it
+        return "error", "官方插件清單沒看成（%s: %s），用上次的" % (type(e).__name__, str(e)[:120])
 
 
 # ------------------------------------------------------------------------------------------ told in #update

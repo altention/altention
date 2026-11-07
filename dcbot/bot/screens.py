@@ -11,7 +11,7 @@ import traceback
 
 import discord
 
-from . import tmuxio
+from . import masking, tmuxio
 from .util import split_message
 
 EMOJI = "📝"
@@ -19,9 +19,13 @@ KEEP = 10  # screens remembered per channel
 
 
 def fenced(text, limit=1900):
-    """The screen as code blocks, split between lines so each fits in a message."""
-    rows = [r.rstrip() for r in text.replace("```", "'''").split("\n") if r.strip(" ─")] or ["（空白）"]
-    return ["```\n%s\n```" % part for part in split_message("\n".join(rows), limit - 8)]
+    """The screen as code blocks, split between lines so each fits in a message; keys masked first (C-127), the
+    small line saying so after the last block."""
+    shown, said = masking.screen(text)
+    rows = [r.rstrip() for r in shown.replace("```", "'''").split("\n") if r.strip(" ─")] or ["（空白）"]
+    parts = ["```\n%s\n```" % part for part in split_message("\n".join(rows), limit - 8 - len(said))]
+    parts[-1] += said
+    return parts
 
 
 def remember(st, message_id, text):
@@ -35,7 +39,9 @@ async def post(bot, ch, t, send):
     """Post the screen of `t` (a session name or pane address) as a picture. `send` posts a message and
     returns it; falls back to the text if the picture cannot be made."""
     colored, cols = await tmuxio.color_screen(t)
-    text = await tmuxio.screen(t)
+    text, said = masking.screen(await tmuxio.screen(t))  # C-127: the picture and the text kept for 📝 alike
+    if said:  # a key on the screen: the picture drawn from the masked text, without colours (an escape sequence
+        colored = text  # in the middle of a key hides the rest of it from the pattern)
     try:
         from . import screenshot
         png = await asyncio.get_running_loop().run_in_executor(None, screenshot.render, colored, cols)
@@ -44,7 +50,7 @@ async def post(bot, ch, t, send):
         for part in fenced(text):
             await send(part)
         return
-    msg = await send("-# 按 %s 看文字版" % EMOJI, file=discord.File(io.BytesIO(png), "screen.png"))
+    msg = await send("-# 按 %s 看文字版" % EMOJI + said, file=discord.File(io.BytesIO(png), "screen.png"))
     if msg is None:
         return
     remember(bot.chan(ch), msg.id, text)

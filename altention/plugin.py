@@ -85,6 +85,11 @@ class PluginError(Exception):
     pass
 
 
+class NewerEngine(PluginError):
+    """A plugin.json written for a newer engine (a "uses" entry in v0.6.0's {"v": N, …} shape): said as that, not as
+    unreadable (manager 2026-11-03)."""
+
+
 def candidates(engine=None, instance=None, root=None):
     """Every plugin.json path, the core's first, without duplicates (a folder linked in twice counts once)."""
     engine = engine or ENGINE
@@ -243,6 +248,9 @@ def check(d, path="plugin.json", core=False):
     uses = d.get("uses", {})
     _need(isinstance(uses, dict), path, "uses 要是物件（介面名 → 版本）")
     for k, v in uses.items():
+        n = v.get("v") if isinstance(v, dict) else None
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 1:  # v0.6.0's optional entry: {"v": N, "optional": …}
+            raise NewerEngine("%s：%s" % (path, text.t("plugin.newer_engine", name=k)))
         _need(isinstance(v, int) and not isinstance(v, bool) and v >= 1, path, "uses.%s 要是 1 以上的整數（介面的版本）" % k)
     offers = d.get("interfaces", {})
     _need(isinstance(offers, dict), path, "interfaces 要是物件（介面名 → {version, what, paths, also}）")

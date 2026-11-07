@@ -790,9 +790,16 @@ class Records(unittest.TestCase):
         Read the way the bot reads it; the message names the key and the value."""
         valid = ["acceptEdits", "plan", "bypassPermissions"]
         self.assertIsNone(self.one("dcbot.open-settings"))
-        for fine in ({"valid": valid, "permission": None, "model": None}, {"valid": valid, "permission": "plan", "model": "opus"},
-                     {"valid": valid, "permission": "", "model": ""}, {"valid": valid, "model_error": "ConfigError: broken"}):
+        for fine in ({"valid": valid, "permission": "plan", "model": None}, {"valid": valid, "permission": "plan", "model": "opus"},
+                     {"valid": valid, "permission": "bypassPermissions", "model": ""},
+                     {"valid": valid, "permission": "plan", "model_error": "ConfigError: broken"}):
             self.assertEqual(self.one("dcbot.open-settings", open_settings=fine)["status"], "ok", fine)
+        for unset in ({"valid": valid, "permission": None, "model": None}, {"valid": valid, "permission": "", "model": "opus"},
+                      {"valid": valid, "model": "opus"}):  # C-121: no mode is chosen for the owner any more
+            r = self.one("dcbot.open-settings", open_settings=unset)
+            self.assertEqual(r["status"], "fail", unset)
+            self.assertIn("plugins.json 沒有 dcbot.default_permission：機器人不會開新的對話。到 #setup 選一個", r["msg"])
+            self.assertIn("#setup", r["fix"])
         r = self.one("dcbot.open-settings", open_settings={"valid": valid, "permission": "everything", "model": None})
         self.assertEqual(r["status"], "fail")
         self.assertIn("dcbot.default_permission 是「everything」", r["msg"])
@@ -2800,6 +2807,63 @@ class JoinedByApply(unittest.TestCase):
         with open(path, "w") as f:
             f.write("{")
         self.assertEqual(doctor.joined_records(now), [])
+
+class TokenOnTheBotsMachineOnly(unittest.TestCase):
+    """C-109: where the bot runs, is its token taken now; elsewhere, does dcctl reach that machine; a bot settings file
+    left elsewhere is said, not as a fault (a standby machine, C-53, keeps one), and never opened."""
+
+    def records(self, is_bot, o):
+        return {r["id"]: r for r in doctor.token_records("host-b", "~/altention/engine", is_bot, o)}
+
+    def test_the_bots_machine(self):
+        refused = self.records(True, {"bot_env": True, "bot_token": {"state": "invalid", "said": "Discord 不收這個 token（401）：token 失效了"}})
+        self.assertEqual(refused["dcbot.token"]["status"], "fail")
+        self.assertEqual(refused["dcbot.token"]["msg"], "機器人的 token 失效了（Discord 回 401）")
+        self.assertIn("install.sh discord", refused["dcbot.token"]["fix"])
+        self.assertEqual(self.records(True, {"bot_env": True, "bot_token": {"state": "ok", "said": "x"}})["dcbot.token"]["status"], "ok")
+        self.assertEqual(self.records(True, {"bot_env": True, "bot_token": {"state": "unreachable", "said": "連不到 Discord"}})
+                         ["dcbot.token"]["status"], "warn", "Discord not reached says nothing of the token")
+        self.assertEqual(self.records(True, {"bot_env": True, "bot_token": None})["dcbot.token"]["status"], "warn")
+        self.assertEqual(self.records(True, {"bot_env": False, "bot_token": None}), {}, "no settings: dcbot.settings says it")
+        self.assertEqual(self.records(True, {"bot_env": True}), {}, "a probe not asked")
+        self.assertNotIn("dcbot.forward", self.records(True, {"bot_env": True, "bot_reach": {}}))
+
+    def test_another_machine(self):
+        ok = self.records(False, {"bot_env": False, "bot_reach": {"bot": "botbox", "here": False, "way": "A", "tried": ["A"], "dcctl": True}})
+        self.assertEqual((ok["dcbot.forward"]["status"], ok["dcbot.forward"]["value"]), ("ok", "botbox"))
+        self.assertNotIn("dcbot.standby-token", ok)
+        cut = self.records(False, {"bot_env": False, "bot_reach": {"bot": "botbox", "here": False, "way": None, "tried": ["A", "B"]}})
+        self.assertEqual(cut["dcbot.forward"]["status"], "fail")
+        self.assertEqual(cut["dcbot.forward"]["msg"], "dcctl 轉不到 botbox（ssh A、B 都連不上）")
+        none = self.records(False, {"bot_env": False, "bot_reach": {"bot": "botbox", "here": False, "way": "A", "tried": ["A"], "dcctl": False}})
+        self.assertIn("找不到 dcctl", none["dcbot.forward"]["msg"])
+        self.assertEqual(self.records(False, {"bot_env": False, "bot_reach": {"error": "找不到"}})["dcbot.forward"]["status"], "fail")
+        self.assertEqual(self.records(False, {"bot_env": False, "bot_reach": None})["dcbot.forward"]["status"], "warn")
+        self.assertEqual(self.records(None, {"bot_env": True, "bot_reach": {}}), {}, "one machine: nothing to reach")
+
+    def test_a_settings_file_left_elsewhere_is_said_with_no_word_of_deleting_it(self):
+        left = self.records(False, {"bot_env": True, "bot_reach": {"bot": "botbox", "here": False, "way": "A", "tried": ["A"], "dcctl": True}})
+        r = left["dcbot.standby-token"]
+        self.assertEqual(r["status"], "warn")
+        self.assertEqual(r["msg"], "host-b：這台沒有在跑機器人，dcctl 會轉給 botbox；這份 token 只有這台當待命機器時才用得到。")
+        self.assertNotIn("刪", r["msg"] + r["fix"])
+
+    def test_the_probe_never_opens_the_settings_file(self):
+        """Only whether it is there: here it is a FIFO nobody writes to, which would hang whoever opened it."""
+        home = tempfile.mkdtemp(prefix="家 目錄 ")
+        try:
+            os.makedirs(os.path.join(home, ".config", "dcbot"))
+            os.mkfifo(os.path.join(home, ".config", "dcbot", "env"))
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\nIS_BOT = False\n" % doctor.ENGINE_DIR + doctor.PROBE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               env=dict(os.environ, HOME=home), timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertTrue(o["bot_env"])
+            self.assertIsInstance(o["bot_reach"], dict, "botside.py --reach answered (no list here: an error, said)")
+            self.assertNotIn("bot_token", o, "another machine's token is not checked")
+        finally:
+            shutil.rmtree(home)
+
 
 if __name__ == "__main__":
     unittest.main()

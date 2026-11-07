@@ -64,45 +64,21 @@ import subprocess
 import sys
 
 HOME_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # altention/dc/ -> the engine
+sys.path.insert(0, HOME_REPO)
+from altention.dc import botside  # noqa: E402  (which machine runs the bot, and the one way to its dcctl)
+
+quote, dcctl_on, this_engine = botside.quote, botside.dcctl_on, botside.this_engine
 
 
 def local_dcctl(engine=None):
-    """dcctl of the bot running on this machine: in its engine (`engine`, this machine's entry in the list, else
-    ~/altention/engine); this checkout's only when that is not there. Not simply this checkout's: run from a worktree or
-    a copy, posts would go into a state/ no running bot reads, and say nothing."""
-    for base in ([engine] if engine else []) + ["~/altention/engine"]:
-        path = os.path.join(os.path.expanduser(base), "dcbot", "tools", "dcctl")
-        if os.path.exists(path):
-            return path
-    return os.path.join(HOME_REPO, "dcbot", "tools", "dcctl")
-
-def quote(word):
-    """One word for the shell on the bot's machine, always in single quotes (altention.config.shell_quote, kept
-    here for the same reason as dcctl_on: zsh reads a bare word starting with = as a command's path)."""
-    return "'" + str(word).replace("'", "'\"'\"'") + "'"
+    """botside.local_dcctl, falling back on this checkout's dcctl (a copy's own, not the engine botside came from)."""
+    return botside.local_dcctl(engine, HOME_REPO)
 
 
-def dcctl_on(m):
-    """dcctl on the bot's machine `m`, for a shell there: its engine is its list entry's "engine" (default
-    ~/altention/engine; a leading ~ left to that shell). Worked out here, not by altention.config: the path problems are
-    reported on must not depend on the settings that may be the problem."""
-    engine = m.get("engine") if isinstance(m.get("engine"), str) and m.get("engine").strip() else "~/altention/engine"
-    engine = "~" if engine == "~" else "~/" + quote(engine[2:]) if engine.startswith("~/") else quote(engine)
-    return engine + "/dcbot/tools/dcctl"
 MAX_FILE = 8 * 1024 * 1024  # all of a post's files together
 MAX_FILES = 10              # files on one post (Discord's limit for one message)
 MAX_ARGS = 2000             # --activity's --arg pairs together, as JSON: kept with the button in the channel's state
 NAME = re.compile(r"^[a-z][a-z0-9-]*$")  # a plugin's or a page's name (altention.plugin.check_name)
-
-
-def this_engine(name):
-    """This machine's "engine" in the machine list, or None."""
-    try:
-        from altention import config
-        engine = ((config.inventory().get("machines") or {}).get(name) or {}).get("engine")
-        return engine if isinstance(engine, str) and engine.strip() else None
-    except Exception:
-        return None
 
 
 def file_source(path):
@@ -110,20 +86,6 @@ def file_source(path):
     sys.path.insert(0, HOME_REPO)
     from altention import sources
     return sources.sidecar(path)
-
-
-def bot_machine():
-    """(name, machine, here) of the machine that runs the bot (altention.config: this one if the bot's settings
-    are here, else the machine list's; no list at all and no bot here is an error, said plainly)."""
-    sys.path.insert(0, HOME_REPO)
-    from altention import config, text
-    try:
-        name, m, here = config.bot_machine()
-    except config.ConfigError as e:
-        sys.exit("altention dc post：%s" % e)
-    if name is None:
-        sys.exit("altention dc post：" + text.t("bot.not_found"))
-    return name, m, here
 
 
 def pane_address(target):
@@ -143,8 +105,8 @@ def wait_secs(text):
         secs = int(text)
     except (TypeError, ValueError):
         secs = 0
-    if not 1 <= secs <= 600:
-        sys.exit("altention dc post：--wait 要給 1 到 600 的秒數")
+    if not 1 <= secs <= botside.WAIT_MOST:
+        sys.exit("altention dc post：--wait 要給 1 到 %d 的秒數" % botside.WAIT_MOST)
     return secs
 
 
@@ -303,25 +265,17 @@ def build(argv, stdin_text, env, host, cwd):
 
 
 def deliver(post, capture=False):
-    """Hand a post to dcctl post on the bot's machine (here, or over SSH). (exit status, what it printed): with
-    `capture` its output is collected (altention.dc.card raises with it), else it goes to this terminal. Never
-    exits: no machine with the bot is (1, why) too; only main() turns a failure into an exit (manager 2026-10-19)."""
+    """Hand a post to dcctl post on the bot's machine (here, or over SSH: botside.run, sent once). (exit status, what
+    it printed): with `capture` its output is collected (altention.dc.card raises with it), else it goes to this
+    terminal. Never exits: no machine with the bot is (1, why) too; only main() turns a failure into an exit (manager
+    2026-10-19)."""
     data = json.dumps(post, ensure_ascii=False).encode("utf-8")
     out = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT} if capture else {}
     try:
-        name, m, here = bot_machine()
-    except SystemExit as e:  # bot_machine() is shared with altention dc notify, which exits on it
-        return 1, str(e.code if e.code is not None else "altention dc post：找不到負責 Discord 機器人的機器")
-    if here:
-        r = subprocess.run([local_dcctl(this_engine(name)), "post"], input=data, **out)
-        return r.returncode, (r.stdout or b"").decode("utf-8", "replace")
-    for alias in m.get("ssh", []):
-        if alias == "local":
-            continue
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", alias, dcctl_on(m) + " post"], input=data, **out)
-        if r.returncode != 255:
-            return r.returncode, (r.stdout or b"").decode("utf-8", "replace")
-    return 1, "altention dc post：連不上 %s" % name
+        r = botside.run(["post"], data, prog="altention dc post", repo=HOME_REPO, **out)
+    except botside.NoBot as e:
+        return 1, "altention dc post：%s" % e
+    return r.returncode, (r.stdout or b"").decode("utf-8", "replace")
 
 
 def main():

@@ -10,9 +10,6 @@ from . import hooks
 # The values of --permission-mode, as `claude --help` of 2.1.296 lists them (read on two machines, 2026-10-13).
 # A version that names them otherwise is told apart here, not by the caller.
 PERMISSIONS = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")
-# TODO(stage 6, D-03): the caller's last resort is still BYPASS (this installation's way since the first day); the
-# public version must not let everything through without being told to (DESIGN section 11).
-BYPASS = "bypassPermissions"
 
 
 def permissions():

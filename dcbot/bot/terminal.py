@@ -20,7 +20,7 @@ import traceback
 
 import discord
 
-from . import config, remote, tmuxio
+from . import config, masking, remote, tmuxio
 from .termrc import done_count, rc_files, shell  # noqa: F401  (shared with tools/dcremote)
 
 PREFIX = "term"
@@ -44,10 +44,17 @@ def history(st, current=""):
 
 
 def body(text, status, limit=SHOWN):
+    """A shell's output in a code block, its tail; keys masked first (C-127), the small line saying so."""
+    text, said = masking.screen(text)
     text = text.replace("```", "'''").rstrip()
     if len(text) > limit:
         text = "…\n" + text[-limit:]
-    return "```\n%s\n```%s" % (text or " ", status)
+    return "```\n%s\n```%s%s" % (text or " ", said, status)
+
+
+def full_output(text):
+    """The whole output of a command, as the file posted when it does not fit: keys masked (C-127)."""
+    return discord.File(io.BytesIO(masking.screen(text)[0].encode("utf-8")), "output.txt")
 
 
 async def screen_since(pane, start):
@@ -200,7 +207,7 @@ class Terminal(object):
                         v.stop()
                     if finished:
                         if len(text) > SHOWN:  # the whole output, as a file
-                            await ch.send("完整輸出：", file=discord.File(io.BytesIO(text.encode("utf-8")), "output.txt"))
+                            await ch.send("完整輸出：", file=full_output(text))
                         return
                 await asyncio.sleep(0.5)
         except Exception:

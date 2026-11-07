@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -116,6 +117,23 @@ class Table(unittest.TestCase):
         self.assertIs(routes.archived_channel(chans, "H", PANE, "proj"), mine)
         self.assertIsNone(routes.archived_channel(chans, "OtherHost", PANE, "proj"))
         self.assertIsNone(routes.archived_channel([], "H", PANE, "proj"))
+
+    def test_a_channel_put_in_the_archive_is_recognised_under_its_note(self):
+        """/archive puts 「📦 原分類…」 in front of the topic: a pane attached again after its channel was really archived
+        gets that channel back, not a new one (a test channel, 11-02); of two, the one archived last."""
+        from bot import archive
+        C = lambda name, topic: type("C", (), {"name": name, "topic": topic})()  # noqa: E731
+        rec = lambda day: {"from": {"id": 1, "name": "機器人"}, "at": time.mktime(time.strptime(day, "%Y-%m-%d"))}  # noqa: E731
+        older = C("work-2", archive.topic_with(routes.topic("H", PANE), rec("2026-10-20")))
+        newer = C("work-2", archive.topic_with(routes.topic("H", PANE), rec("2026-11-02")))
+        unknown = C("work-2", archive.topic_with(routes.topic("H", PANE), {"at": 0}))
+        other = C("work-2", archive.topic_with(routes.topic("H", dict(PANE, cwd="/other/place")), rec("2026-11-03")))
+        self.assertIs(routes.archived_channel([older, other], "H", PANE, "proj"), older)
+        self.assertIs(routes.archived_channel([older, newer, other], "H", PANE, "proj"), newer)
+        self.assertIs(routes.archived_channel([newer, older], "H", PANE, "proj"), newer)
+        self.assertIs(routes.archived_channel([unknown], "H", PANE, "proj"), unknown)
+        self.assertIsNone(routes.archived_channel([other], "H", PANE, "proj"))
+        self.assertIsNone(routes.archived_channel([older], "OtherHost", PANE, "proj"))
 
     def test_a_new_channel_takes_its_category_folder(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

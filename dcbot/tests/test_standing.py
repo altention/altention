@@ -102,13 +102,14 @@ class Callers(unittest.TestCase):
         self.assertEqual(self.said(), "")
         self.assertIsNotNone(self.rt.turn, "the turn is still the channel's")
         self.answers = [None, False]
-        self.st["busy"], naps[:] = True, []
+        self.st["busy"], self.st["bg"], naps[:] = True, 2, []
 
         async def go_on():
             with fakepane.use(alive=self.alive), mock.patch.object(tmux_bridge.asyncio, "sleep", mock.AsyncMock()), mock.patch("builtins.print"):
                 await self.bridge.watch_busy(self.ch, self.st, self.rt)
         asyncio.run(go_on())
         self.assertIn("Claude 的行程結束了", self.said(), "gone for a fact, once its machine answers: said as ever")
+        self.assertNotIn("bg", self.st, "what ran under it ended with it")
 
     def test_a_window_just_opened_is_not_given_up_while_its_machine_is_silent(self):
         """wait_ready(): taken for gone, open() closed the window and began a new conversation in its place."""
