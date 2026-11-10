@@ -18,12 +18,15 @@ do nothing, and the test would go on to the real tmux server of the bot that is 
     fakepane.replace("ESC_GAP", 0.1)              # one patcher (mock's), for a constant or a list of patchers
 """
 import asyncio
+import atexit
 import contextlib
 import os
+import shutil
+import tempfile
 import time
 from unittest import mock
 
-from bot import tmuxio
+from bot import attachments, tmuxio
 from altention.connectors.claude_code import typist as cc_typing  # noqa: E402
 from tests import tmuxguard  # noqa: F401  (in force wherever a fake pane is: no real tmux server is reached)
 
@@ -128,7 +131,27 @@ def patchers(fake=None, **named):
     for name, new in named.items():
         out.append(replace(name, new))
     out.append(guard())  # also when tmux itself is stood in for: an ssh started directly is still a real one
+    # Opening a conversation makes the channel's attachments folder (C-151): in a folder of the tests' own, and on
+    # another machine by asking it over ssh, which a fake pane stands in for (FAR); `fake` may bring its own
+    out.append(mock.patch.object(attachments, "DIR", attachments_dir()))
+    out.append(mock.patch.object(attachments, "far_folder", getattr(fake, "far_folder", None) or far_folder))
     return out
+
+
+FAR = "/far/engine/dcbot/state/attachments"  # where another machine's engine keeps them, as a fake pane says
+_made = []
+
+
+def attachments_dir():
+    """The attachments folder of tests that open conversations: one for the whole run, removed at its end."""
+    if not _made:
+        _made.append(tempfile.mkdtemp(prefix="dcq-attach-"))
+        atexit.register(shutil.rmtree, _made[0], True)
+    return _made[0]
+
+
+async def far_folder(host, channel_id):
+    return "%s/%s" % (FAR, channel_id)
 
 
 reached = []  # what the guard caught, until use() or a test looks

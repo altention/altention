@@ -25,6 +25,13 @@ class Command(unittest.TestCase):
             cmd = launch.command("claude", "n", "some-model", mode)
             self.assertEqual((cmd[cmd.index("--model") + 1], cmd[cmd.index("--permission-mode") + 1]), ("some-model", mode))
 
+    def test_folders_to_read_one_flag_each_never_last(self):
+        """--add-dir takes every word up to the next flag: each folder its own flag, and a flag after them (C-151)."""
+        cmd = launch.command("claude", "NOTE", "opus", "auto", resume="r", dirs=["/a/5", "/b c/5"])
+        self.assertEqual(cmd, ["claude", "--model", "opus", "--permission-mode", "auto", "--add-dir", "/a/5",
+                               "--add-dir", "/b c/5", "--append-system-prompt", "NOTE", "--resume", "r"])
+        self.assertNotIn("--add-dir", launch.command("claude", "NOTE", "opus", "auto"))
+
     def test_a_permission_mode_there_is_not_is_refused(self):
         for mode in ("", None, "bypass", "BYPASSPERMISSIONS", "yolo", "default"):
             with self.assertRaises(ValueError, msg=repr(mode)):

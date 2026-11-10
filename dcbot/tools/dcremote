@@ -22,6 +22,8 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
   dcremote attach CHANNEL MESSAGE ATTACHMENT NAME
                                     keep an attachment sent from the bot's machine (base64 on stdin) under
                                     state/attachments/CHANNEL/; prints its path (bot/attachcore.py)
+  dcremote attachdir CHANNEL        make state/attachments/CHANNEL/ and print its path (handed to the channel's
+                                    Claude when the bot opens it here: --add-dir)
 """
 import asyncio
 import json
@@ -283,6 +285,17 @@ def attach(channel, message, attachment, name):
     print(path)
 
 
+def attachdir(channel):
+    """The attachments folder of a channel whose Claude is opened here (attachcore.folder), made: its path printed, to
+    be handed to that Claude (--add-dir, C-151). Refused, with a word on stderr and exit 2, for an id that is not
+    Discord's or a folder that cannot be made."""
+    try:
+        print(attachcore.folder(os.path.join(STATE, "attachments"), channel))
+    except (ValueError, OSError) as e:
+        sys.stderr.write("dcremote attachdir：沒有建（%s）\n" % e)
+        sys.exit(2)
+
+
 def main(argv):
     # this tool has no tmux server of a bot's: it reads the owner's, and leaves alone that of a bot installed here
     tmuxio.configure(socket=None, skip=(envfile.bot_server(),))
@@ -312,6 +325,8 @@ def main(argv):
         print(json.dumps(filecore.op(json.loads(sys.stdin.read() or "{}")), ensure_ascii=False))
     elif argv[0] == "attach" and len(argv) >= 5:
         attach(*argv[1:5])
+    elif argv[0] == "attachdir" and len(argv) >= 2:
+        attachdir(argv[1])
     elif argv[0] == "turn" and len(argv) >= 3:
         turn(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
     elif argv[0] == "sessions" and len(argv) >= 2:

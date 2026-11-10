@@ -979,6 +979,116 @@ class AskedAgain(Rig):
                 self.assertEqual(qs[key]["options"][0]["label"], "開（建議）", (key, answered))
 
 
+class OpenedChannel(Rig):
+    """A channel with its own Claude that setup.py asks the bot to open (#secretary, #tutorial), looked for through the
+    real dcctl: its channel list is kept for a minute for every dcctl on the machine, so the wait reads a fresh one
+    (B5 of v0.5.2: every new install waited the 60 s out at #secretary, while it was there); run again after a wait
+    that ran out, the channel the bot made since is used, not a #secretary-2 next to it."""
+
+    def setUp(self):
+        super().setUp()
+        import importlib.machinery
+        import importlib.util
+        path = os.path.join(setup.ENGINE, "dcbot", "tools", "dcctl")
+        loader = importlib.machinery.SourceFileLoader("dcctl_setup", path)
+        self.d = importlib.util.module_from_spec(importlib.util.spec_from_loader("dcctl_setup", loader))
+        loader.exec_module(self.d)
+        state = os.path.join(self.home, "dcbot-state")
+        os.makedirs(state)
+        self.server = [{"id": "11", "name": "audit", "type": 0, "parent_id": None, "position": 0}]
+        self.gets, self.asked, self.slept = 0, [], 0
+        self.bot_makes = True
+        for p in (mock.patch.object(self.d.config, "STATE", state), mock.patch.object(self.d.config, "GUILD_ID", 42),
+                  mock.patch.object(self.d, "call", self.call), mock.patch.object(self.d, "audit", lambda text: None),
+                  mock.patch.object(setup, "dcctl", self.real_dcctl), mock.patch.object(setup, "altention", self.bot),
+                  mock.patch.object(setup, "sleep", self.sleep), mock.patch.object(setup, "script", self.script)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.d.channels()  # a dcctl here read the list a moment ago: kept for a minute, no #secretary in it
+
+    def call(self, method, path, body=None):
+        self.assertEqual((method, path), ("GET", "/guilds/42/channels"))
+        self.gets += 1
+        return [dict(c) for c in self.server]
+
+    def real_dcctl(self, *args, inp=None, timeout=120):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.d.main(list(args))
+        return subprocess.CompletedProcess(args, 0, out.getvalue())
+
+    def make(self, name):
+        self.server.append({"id": str(500 + len(self.server)), "name": name, "type": 0, "parent_id": None,
+                            "position": len(self.server)})
+
+    def bot(self, *args, timeout=120):
+        self.asked.append(args)
+        if args[:2] == ("dc", "post") and "--new-claude" in args and self.bot_makes:
+            self.make(args[2])  # the bot makes it at once
+        return subprocess.CompletedProcess(args, 0, "")
+
+    def sleep(self, s):
+        self.slept += 1
+
+    def script(self, argv, timeout=1800):
+        folder = os.path.join(self.home, "planner")
+        os.makedirs(folder, exist_ok=True)
+        return subprocess.CompletedProcess(argv, 0, folder + "\n")
+
+    def id_of(self, name):
+        return next(c["id"] for c in self.server if c["name"] == name)
+
+    def opened(self):
+        return [a[2] for a in self.asked if "--new-claude" in a]
+
+    def test_the_wait_sees_the_channel_while_the_kept_list_is_old(self):
+        self.assertIsNotNone(self.d.cached_list(), "the list of a moment ago is there")
+        out = io.StringIO()
+        self.assertEqual(setup.secretary(out), 0)
+        self.assertEqual(self.opened(), ["secretary"])
+        self.assertEqual(self.slept, 0, "seen on the first look, not after the list ran out")
+        self.assertEqual(self.settings()["planner"]["channel"], self.id_of("secretary"))
+        self.assertIn("秘書開在 <#%s>" % self.id_of("secretary"), out.getvalue())
+        self.assertIsNone(setup.opening("secretary"), "taken out once written down")
+        plain = self.d.channels()  # (what the wait read before: the kept list, without it)
+        self.assertIn("secretary", [c["name"] for c in plain])
+
+    def test_run_again_after_the_wait_ran_out_uses_the_channel_made_since(self):
+        self.bot_makes = False  # the bot makes it only after the wait has run out
+        with self.assertRaises(setup.Failed) as e:
+            setup.secretary(io.StringIO())
+        self.assertIn("再跑一次", str(e.exception))
+        self.assertEqual(setup.opening("secretary"), "secretary")
+        self.make("secretary")
+        self.bot_makes = True
+        out = io.StringIO()
+        self.assertEqual(setup.secretary(out), 0)
+        self.assertEqual(self.opened(), ["secretary"], "asked once: no #secretary-2")
+        self.assertNotIn("secretary-2", [c["name"] for c in self.server])
+        self.assertEqual(self.settings()["planner"]["channel"], self.id_of("secretary"))
+        self.assertNotIn("已經有 #secretary", out.getvalue())
+
+    def test_someone_elses_secretary_still_gets_a_name_of_its_own(self):
+        self.make("secretary")  # there before setup.py asked for anything (not the one it asked for)
+        out = io.StringIO()
+        self.assertEqual(setup.secretary(out), 0)
+        self.assertEqual(self.opened(), ["secretary-2"])
+        self.assertIn("已經有 #secretary 了，秘書開在 #secretary-2", out.getvalue())
+        self.assertEqual(self.settings()["planner"]["channel"], self.id_of("secretary-2"))
+
+    def test_the_tour_channel_the_same(self):
+        self.write({"format": 1, "core": {"timezone": "UTC"}, "setup": {"done": True}})
+        self.bot_makes = False
+        with self.assertRaises(setup.Failed):
+            setup.tutorial(io.StringIO())
+        self.make("tutorial")
+        out = io.StringIO()
+        self.assertEqual(setup.tutorial(out), 0)
+        self.assertEqual(self.opened(), ["tutorial"], "asked once: no #tutorial-2")
+        self.assertIn("導覽開在 <#%s>" % self.id_of("tutorial"), out.getvalue())
+        self.assertEqual(self.settings()["setup"]["answered"]["tour"], "start")
+
+
 class Restore(unittest.TestCase):
     """C-57 S2 (strict): only the instance install.sh has just made, untouched, is swapped for the backup; the fresh
     one is kept (never deleted) and put back when anything fails; then which machine, done, the tour."""

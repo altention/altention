@@ -44,6 +44,10 @@ def question_text(q, i, total):
     return (head + "\n" + "\n".join(rows))[:1950]
 
 
+ELSEWHERE_AUDIT = "#%s：有一個提問不在這個對話的紀錄裡，沒有貼成卡片，交回終端機的選單"  # (C-167; words #release)
+CANCELLED_HERE = "（在終端機取消了，沒有回答）"  # a question or plan cancelled in Claude Code's terminal (C-152; #release)
+
+
 def answered_text(q, answer, done="✅"):
     return ("%s **%s**　%s\n→ %s" % (done, cut(q.get("header") or "問題", 60), (q.get("question") or "").strip(), answer))[:1950]
 
@@ -311,14 +315,18 @@ class Asker(object):
                 content=answered_text(state["questions"][qi], answer), view=None)
         except Exception:
             traceback.print_exc()
-        await self.settle(ch, ask_id, state, qi, answer)
-        return True
+        return await self.settle(ch, ask_id, state, qi, answer)  # (closed meanwhile: the message goes to Claude, C-152)
 
     async def settle(self, ch, ask_id, state, qi, answer):
-        """Record one answer; once every question has one, hand them all to the waiting hook."""
+        """Record one answer; once every question has one, hand them all to the waiting hook. A question closed
+        meanwhile (while the message was being edited: cancelled in the terminal, C-152; the turn ended) stays closed:
+        False, nothing written, nothing handed; True when the answer was taken."""
+        if load(ask_id) is None:
+            return False
         state["answers"][str(qi)] = answer
         if len(state["answers"]) < len(state["questions"]):
-            return save(ask_id, state)
+            save(ask_id, state)
+            return True
         forget(ask_id)
         await deliver_to(state.get("host"), ask_id, {"answers": dict((qq.get("question") or "", state["answers"][str(i)])
                                          for i, qq in enumerate(state["questions"]))})
@@ -328,6 +336,7 @@ class Asker(object):
             getattr(ch, "name", "DM"),
             "；".join("%s → %s" % (cut(qq.get("header") or qq.get("question"), 30), cut(state["answers"][str(i)], 60))
                       for i, qq in enumerate(state["questions"]))))
+        return True
 
     async def hand(self, ask_id, state, result):
         """A question is closed, and its hook is handed `result`. A hook of this machine: at once. One on another
@@ -368,6 +377,38 @@ class Asker(object):
             else:
                 left += 1
         return left
+
+    async def elsewhere(self, ch, ev):
+        """An AskElsewhere event (C-167): dchook --ask saw a question whose tool call never reached the conversation's
+        file (Claude Code's background memory pass, run with no transcript, asks with the conversation's session and
+        file): no card was made, the hook left it to the terminal. Said in #audit, nothing else."""
+        await self.audit(ELSEWHERE_AUDIT % getattr(ch, "name", "?"))
+
+    async def cancelled(self, ch, ev):
+        """An AskCancelled event (C-152): the question or plan `ask_id` was cancelled in Claude Code's terminal (Esc,
+        Ctrl-C, also through !key), and the hook that waited for its answer has ended. Its buttons close and its record
+        goes, so the next message typed in the channel is not taken for its answer (typed()); nothing is handed to the
+        hook, which is no more. Whichever comes first counts: a question answered or closed before this came (a click
+        a moment earlier, the turn's end), or one not known here, is left as it is, with one line in #audit."""
+        ask_id, name = str(ev.get("ask_id") or ""), getattr(ch, "name", "DM")
+        state = load(ask_id) if ask_id else None
+        if not isinstance(state, dict) or str(state.get("channel")) != str(ch.id):
+            return await self.audit("#%s 的提問在終端機取消了，但它已經回答或關掉，沒有改任何東西" % name)
+        forget(ask_id)
+        if self.on_done is not None:
+            try:
+                await self.on_done(ch, ask_id, "已取消")
+            except Exception:
+                traceback.print_exc()
+        for i, mid in state.get("messages", {}).items():
+            if i in state.get("answers", {}):
+                continue
+            try:
+                q = state["questions"][int(i)]
+                await ch.get_partial_message(mid).edit(content=answered_text(q, CANCELLED_HERE, "⌛"), view=None)
+            except Exception:
+                traceback.print_exc()
+        await self.audit("#%s 的提問在終端機取消了（Esc、Ctrl-C 或 !key），按鈕已關掉" % name)
 
     async def cancel(self, ch, reason="The user interrupted before answering."):
         """The turn that asked is over (stopped, reset, or it ended): close whatever is still open."""

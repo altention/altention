@@ -510,14 +510,16 @@ class TmuxBridge(object):
         return sent
 
     # ------------------------------------------------------------------ session
-    def argv(self, ch, st, resume, how=None):
+    def argv(self, ch, st, resume, dirs, how=None):
         """The command line that opens the channel's conversation (the connector's). On another machine: its own
-        claude, and its global hook reports; here: the bot's settings file, whose hooks do. `how`: the model and
-        the permission mode (with()); looked up here when not given."""
+        claude, and its global hook reports; here: the bot's settings file, whose hooks do. `dirs`: what it reads
+        without asking besides its working directory (attachments.folders(): every way a conversation is opened
+        comes here, and none may leave them out, or what the owner attaches is read now without a question, now
+        with one; C-151). `how`: the model and the permission mode (with()); looked up here when not given."""
         there = bool((st.get("home") or {}).get("host"))
         model, permission = how or self.with_(st)
         return cc_launch.command("claude" if there else config.CLAUDE, self.host.note(ch, st), model, permission,
-                                 settings=None if there else SETTINGS_FILE, resume=resume)
+                                 settings=None if there else SETTINGS_FILE, resume=resume, dirs=dirs)
 
     def with_(self, st):
         """(model, permission mode) a conversation of this channel is opened with; NotOpened when one of them is
@@ -571,9 +573,9 @@ class TmuxBridge(object):
             return
         seen = {}
 
-        async def start(resume, how):
+        async def start(resume, how, dirs):
             try:
-                started = await tmuxio.start(name, st["cwd"], self.argv(ch, st, resume, how), self.env(ch))
+                started = await tmuxio.start(name, st["cwd"], self.argv(ch, st, resume, dirs, how), self.env(ch))
             except OSError as e:
                 raise NotOpened(NotOpened.NO_TMUX, "無法執行 tmux：%s" % e, error=str(e))
             return own if started else None
@@ -586,7 +588,7 @@ class TmuxBridge(object):
             seen["view"] = await own.screen(15) if await own.alive() else ""
             await own.close()
 
-        if await self.open(ch, st, rt, start, kept, failed):
+        if await self.open(ch, st, rt, start, kept, failed, None):  # this machine's (the bot's own tmux)
             return
         view = seen.get("view")
         raise NotOpened(NotOpened.NOT_STARTED, "Claude 沒有啟動成功。%s" % (("最後的畫面：\n" + fence(view)) if view else ""),
@@ -598,13 +600,17 @@ class TmuxBridge(object):
             env["LANG"] = "C.UTF-8"  # started from cron: no locale
         return env
 
-    async def open(self, ch, st, rt, start, kept, failed):
+    async def open(self, ch, st, rt, start, kept, failed, host):
         """Open the channel's conversation: the saved one first, a new one when that does not come up (and the
         channel is told so); True when one is up. What the kinds of channel differ in is in the three it is given:
-        `start(resume, how)` begins it, wherever that kind keeps it (how: the model and the permission mode), and gives its pane (None: could not be begun);
+        `start(resume, how, dirs)` begins it, wherever that kind keeps it (how: the model and the permission mode;
+        dirs: the channel's attachments folder, made on `host`, the machine it works on: None for this one; C-151),
+        and gives its pane (None: could not be begun);
         `kept(pane, fresh)` when it came up (fresh: a new conversation in place of the saved one); `failed(pane)`
-        clears away one that did not (pane: what start gave, None too)."""
+        clears away one that did not (pane: what start gave, None too). The folder is made once the conversation is
+        to be opened at all (not when the permission mode says no), once for both tries."""
         how = await self.chosen_for(st)
+        dirs = await attachments.folders(host, ch.id)
         saved = st.get("session_id")
         for resume in ([saved, None] if saved else [None]):
             rt.ready.clear()
@@ -612,7 +618,7 @@ class TmuxBridge(object):
             st["busy"] = False
             pane = None
             try:
-                pane = await start(resume, how)
+                pane = await start(resume, how, dirs)
                 if pane is not None and await self.wait_ready(pane, rt, ask=lambda choice, p=pane: self.startup.post(ch, p, choice)):
                     await kept(pane, bool(saved and not resume))
                     opened(st, rt)
@@ -639,11 +645,11 @@ class TmuxBridge(object):
         home, why = st["home"], []
         remote_host = home.get("host")
 
-        async def start(resume, how):
+        async def start(resume, how, dirs):
             env = {"DCBOT_CHANNEL": str(ch.id)} if remote_host else self.env(ch)  # there: dcpost's sender only
             rt.opening = True  # what the new window reports is the channel's from before the channel remembers it
             pane = await tmuxio.open_window(home["socket"], home["session"], home.get("window", ""), st["cwd"],
-                                            self.argv(ch, st, resume, how), env, host=remote_host, why=why)
+                                            self.argv(ch, st, resume, dirs, how), env, host=remote_host, why=why)
             rt.opening = pane
             if pane and remote_host:  # its hooks report through that machine's route table, like an attached pane
                 await routes.bind_any(pane, str(ch.id))
@@ -657,7 +663,7 @@ class TmuxBridge(object):
             if pane is not None:
                 await pane.close()
 
-        if await self.open(ch, st, rt, start, kept, failed):
+        if await self.open(ch, st, rt, start, kept, failed, remote_host):
             return
         raise NotOpened(NotOpened.NO_WINDOW, "在 tmux `%s` 裡開不起 Claude。%s" % (home["session"], ("\n-# %s" % why[-1]) if why else ""),
                         session=home["session"], said=why[-1] if why else "")
@@ -1479,6 +1485,10 @@ class TmuxBridge(object):
         if what in TURN_MOVED:
             st.pop("own_panel", None)  # a turn moved: a dialog on the screen from here on is the turn's, not the bot's
             self.unsent.moved(ch, st)  # posts held up by a dialog: handed again once the box is back (a task, C-74)
+        if what == cc_hooks.ASK_CANCELLED:  # cancelled in its terminal: its buttons close (C-152)
+            return await self.asks.cancelled(ch, ev)
+        if what == cc_hooks.ASK_ELSEWHERE:  # not the conversation's own question: no card, said in #audit (C-167)
+            return await self.asks.elsewhere(ch, ev)
         if what in (cc_hooks.ASK, cc_hooks.PLAN):
             self.fill(rt, ev)
             await self.interim(ch, rt, texts=ev.get("texts"))  # what Claude said before asking goes above the question

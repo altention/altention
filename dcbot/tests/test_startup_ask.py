@@ -145,7 +145,7 @@ class Opening(Waiting):
         started, failed = [], []
         pane = Pane([real("imports-colour-120x50")])
 
-        async def start(resume, how):
+        async def start(resume, how, dirs):
             started.append(resume)
             return pane
 
@@ -164,8 +164,9 @@ class Opening(Waiting):
             pass
         bridge.say = say
         st = {"session_id": "saved-1"}
-        with mock.patch.object(startup_ask, "ASK_SECS", tmux_bridge.START_SECS * 2):
-            got = run(tmux_bridge.TmuxBridge.open(bridge, self.ch, st, self.rt, start, kept, failed_))
+        with mock.patch.object(startup_ask, "ASK_SECS", tmux_bridge.START_SECS * 2), \
+                mock.patch.object(tmux_bridge.attachments, "folders", mock.AsyncMock(return_value=[])):  # (C-151: none made)
+            got = run(tmux_bridge.TmuxBridge.open(bridge, self.ch, st, self.rt, start, kept, failed_, None))
         self.assertFalse(got)
         self.assertEqual(started, ["saved-1"], "the saved conversation only, no new one after it")
         self.assertEqual(len(failed), 1)
@@ -176,7 +177,7 @@ class Opening(Waiting):
         started = []
         pane = Pane([samples.screen("busy")])  # never ready, no dialog to ask about
 
-        async def start(resume, how):
+        async def start(resume, how, dirs):
             started.append(resume)
             return pane
 
@@ -188,7 +189,8 @@ class Opening(Waiting):
             return ("opus", "bypassPermissions")
         bridge.chosen_for = chosen
         bridge.wait_ready = lambda where, rt, ask=None: tmux_bridge.TmuxBridge.wait_ready(bridge, where, rt, ask=ask)
-        run(tmux_bridge.TmuxBridge.open(bridge, self.ch, {"session_id": "saved-1"}, self.rt, start, nothing, nothing))
+        with mock.patch.object(tmux_bridge.attachments, "folders", mock.AsyncMock(return_value=[])):  # (C-151: none made)
+            run(tmux_bridge.TmuxBridge.open(bridge, self.ch, {"session_id": "saved-1"}, self.rt, start, nothing, nothing, None))
         self.assertEqual(started, ["saved-1", None], "as before")
 
 

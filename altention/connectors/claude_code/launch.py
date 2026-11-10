@@ -17,17 +17,21 @@ def permissions():
     return PERMISSIONS
 
 
-def command(binary, note, model, permission, settings=None, resume=None):
+def command(binary, note, model, permission, settings=None, resume=None, dirs=()):
     """The command line that opens a conversation: `binary` the program, `note` what is added to its system prompt,
     `model` and `permission` as the caller chose them (permission: one of permissions(); ValueError for another),
     `settings` the file of settings() when the conversation is to report through it (None: it reports by what the
-    machine has installed), `resume` the conversation to go on with (None: a new one)."""
+    machine has installed), `resume` the conversation to go on with (None: a new one), `dirs` folders it may read
+    besides its working directory without asking (each one there already: Claude Code drops a folder that is not)."""
     if permission not in PERMISSIONS:
         raise ValueError(permission)
     cmd = [binary, "--model", model]
     if settings:
         cmd += ["--settings", settings]
-    cmd += ["--permission-mode", permission, "--append-system-prompt", note]
+    cmd += ["--permission-mode", permission]
+    for d in dirs:  # one flag each, never last: --add-dir takes every word up to the next flag
+        cmd += ["--add-dir", d]
+    cmd += ["--append-system-prompt", note]
     return cmd + (["--resume", resume] if resume else [])
 
 

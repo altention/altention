@@ -88,15 +88,65 @@ def file_source(path):
     return sources.sidecar(path)
 
 
-def pane_address(target):
-    """{"socket", "pane"} of a tmux target on this machine (the owner's default tmux server)."""
+PLACE = "#{socket_path}\t#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{window_id}\t#{pane_index}"
+
+
+def same_place(target, session, window_index, window_name, window_id, pane_index, pane_id):
+    """Is the pane tmux answered for (its session, window and pane) the one `target` names? tmux 3.4's
+    display-message answers for the current pane, exit 0, when the window or pane a target names is not there (a:7,
+    a:0.5) and even for a session that is not there (C-154): the parts the target names are compared. A session is
+    tmux's exact name or a beginning of it (as tmux takes it); a window its index, @id, or name or a beginning of it;
+    a pane its index or %id. A part written with tmux's other forms (!, ^, $, +, -, {…}) is taken as tmux took it."""
+    if target.startswith("%"):
+        return pane_id == target
+    special = ("!", "^", "$", "+", "-", "{", "~")
+
+    def window_is(win):
+        if not win or win.startswith(special):
+            return True
+        if win.startswith("@"):
+            return window_id == win
+        if win.isdigit():
+            return window_index == win
+        return window_name == win.lstrip("=") or (not win.startswith("=") and window_name.startswith(win))
+
+    def session_is(sess):
+        name = sess.lstrip("=")
+        return not name or session == name or (not sess.startswith("=") and session.startswith(name))
+
+    if ":" not in target and "." not in target:  # one name: tmux takes it as a session, else as a window
+        return bool(session) and (session_is(target) or window_is(target))
+    sess, colon, rest = target.partition(":")
+    if not colon:
+        sess, rest = "", target
+    win, _, pane = rest.partition(".")
+    if not session_is(sess) or not window_is(win):
+        return False
+    if pane and not pane.startswith(special):
+        if pane.startswith("%"):
+            return pane_id == pane
+        if pane.isdigit() and pane_index != pane:
+            return False
+    return bool(session)
+
+
+def pane_address(target, socket=None):
+    """{"socket", "pane"} of a tmux target on this machine (the owner's default tmux server; `socket`: another, for
+    tests). Refused when tmux answers for another pane than the target names (same_place, C-154)."""
     path = "%s/.local/bin:/opt/homebrew/bin:/usr/local/bin:%s" % (os.path.expanduser("~"), os.environ.get("PATH", ""))
-    r = subprocess.run(["tmux", "display-message", "-p", "-t", target, "#{socket_path}\t#{pane_id}"], stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, PATH=path))
-    sock, _, pane = r.stdout.strip().partition("\t")
-    if r.returncode != 0 or not pane.startswith("%"):
+    where = ["-S", socket] if socket else []
+    try:
+        r = subprocess.run(["tmux"] + where + ["display-message", "-p", "-t", target, PLACE], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, PATH=path), timeout=10)
+    except subprocess.TimeoutExpired:
+        sys.exit("altention dc post：找不到 tmux 的 %s（tmux 10 秒沒有回答）" % target)
+    f = r.stdout.rstrip("\n").split("\t")
+    if r.returncode != 0 or len(f) != 7 or not f[1].startswith("%"):
         sys.exit("altention dc post：找不到 tmux 的 %s（%s）" % (target, r.stderr.strip()))
-    return {"socket": sock, "pane": pane}
+    if not same_place(target, *f[2:], f[1]):
+        sys.exit("altention dc post：tmux 裡沒有 %s（tmux 回的是 %s:%s.%s，不是它）：用 tmux list-panes -a 看有哪些"
+                 % (target, f[2], f[3], f[6]))
+    return {"socket": f[0], "pane": f[1]}
 
 
 def wait_secs(text):

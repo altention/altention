@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """dcctl: manage the Discord server through the REST API (standard library only).
 
-  dcctl channels                          list categories and channels (with IDs)
+  dcctl channels [--fresh]                list categories and channels (with IDs); --fresh: read from Discord now, not
+                                          the list a dcctl here read in the last minute (waiting for a channel to come)
   dcctl map [--me ID | --pane KEY]        the server for a Claude: categories, what each channel is for, and
                                           which one is the caller's (for altention dc read --map)
   dcctl create NAME [--category C] [--topic T] [--voice]
@@ -788,7 +789,7 @@ def main(argv):
         me = opt("--me") or (sender_channel(opt("--pane")) if opt("--pane") else None)
         print(structure(channels(), state, me if (opt("--me") or opt("--pane")) else None))
     elif cmd == "channels":
-        cs = sorted(channels(), key=lambda c: (c.get("parent_id") or "", c["position"]))
+        cs = sorted(channels(fresh="--fresh" in args), key=lambda c: (c.get("parent_id") or "", c["position"]))
         cats = {c["id"]: c["name"] for c in cs if c["type"] == 4}
         for c in cs:
             if c["type"] == 4:

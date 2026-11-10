@@ -1,0 +1,8 @@
+{
+  "guide": {},
+  "usage": {
+    "altention apply": "Maintaining an installation (machines, plugins): Claude runs it from the global CLAUDE.md and the knowledge base, not something used day to day.",
+    "altention plugins": "Maintaining an installation (turning plugins on or off, schedules): Claude runs it from the global CLAUDE.md and the knowledge base, not something used day to day.",
+    "altention update": "Maintaining an installation (updating the engine): Claude runs it from the global CLAUDE.md and the knowledge base, not something used day to day."
+  }
+}

@@ -19,6 +19,42 @@ REMOTE_SECS = 60  # the message waits for this before it goes to Claude; past it
 safe_name = attachcore.safe_name
 
 
+FOLDER_SECS = 30  # making the folder on another machine before its Claude is opened
+
+
+def folder_here(channel_id):
+    """This machine's attachments folder of the channel, made (attachcore.folder); None when it cannot be (written
+    to the log: the conversation is opened all the same, and asks before it reads an attachment)."""
+    try:
+        return attachcore.folder(DIR, channel_id)
+    except (ValueError, OSError) as e:
+        print("attachments: the folder of %s was not made (%s): opened without --add-dir" % (channel_id, e), flush=True)
+        return None
+
+
+async def far_folder(host, channel_id):
+    """The channel's attachments folder on `host`, made there (dcremote attachdir), as that machine's engine names it:
+    its path, or None (written to the log, as folder_here())."""
+    err = []
+    code, out = await remote.dcremote(host, "attachdir", str(channel_id), timeout=FOLDER_SECS, err=err)
+    there = out.strip().splitlines()[-1] if code == 0 and out.strip() else ""
+    if there.startswith("/"):
+        return there
+    print("attachments: the folder of %s on %s was not made (%s): opened without --add-dir"
+          % (channel_id, host, " / ".join(err) or "結束碼 %s" % code), flush=True)
+    return None
+
+
+async def folders(host, channel_id):
+    """What the channel's Claude is handed to read without asking when it is opened (--add-dir, C-151): the
+    channel's own attachments folder on the machine it works on (`host`; None: this one), made first (a folder that
+    is not there when Claude Code starts is dropped without a word, and one made later does not count: tried on
+    2.1.316). A list: empty when it could not be made."""
+    here = remote.this_machine()
+    there = folder_here(channel_id) if not host or host == here else await far_folder(host, channel_id)
+    return [there] if there else []
+
+
 def target(channel_id, message_id, attachment_id, name):
     return attachcore.target(DIR, channel_id, message_id, attachment_id, name)
 

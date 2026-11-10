@@ -17,12 +17,16 @@ Two ways a session is tied to a channel:
 `dchook --ask` is the one exception to "silent". It is registered for the AskUserQuestion tool only: it
 hands the questions to the bot (which shows them in Discord as buttons), waits for the answers file the
 bot writes into state/answers/, and prints them as the tool's input, so the tool returns the owner's
-choices without ever opening its on-screen menu, which nobody on Discord could operate.
+choices without ever opening its on-screen menu, which nobody on Discord could operate. Cancelled in the terminal
+while it waits (Esc or Ctrl-C there, or `!key` from Discord), Claude Code ends it with SIGTERM and says nothing else
+to any hook: it then hands the bot an AskCancelled event before it ends, so the buttons close and the next message
+typed in the channel is not taken for the answer (C-152). The same holds for --plan.
 """
 import io
 import json
 import os
 import re
+import signal
 import sys
 import time
 
@@ -318,6 +322,45 @@ def install(remove=False, only_if_present=False):
     os.replace(tmp, path)
     print("%s dchook 的全域 hooks：%s" % ("已移除" if remove else "已安裝", path))
 ASK_WAIT = 12 * 3600 - 300  # a little less than the hook timeout the bot sets (tmux_bridge.ASK_SECS)
+ASK_LINE_SECS = 60  # how long a question's tool call may take to show in the conversation's file (C-167): Claude Code
+# calls the hook as soon as the question's block has streamed and writes the line only once the whole reply has (0.1 s
+# when the question is the reply's last block; when more follows it, as long as that takes: 20-25 s measured by both
+# reviews). A call that never shows there is not the conversation's (its background memory pass runs with no file).
+# Manager 11-11: 60, not 15. Waiting costs the conversation nothing (on as soon as the line shows); the memory pass
+# is not waited on by a turn (Claude Code starts it and goes on; it awaits it only in its hosted "sync" setting), and
+# the hook's own timeout is ASK_SECS, 12 h (connectors/claude_code/hooks.py)
+ASK_LINE_TAIL = 4 * 1024 * 1024  # how far back the file is read the first time (a tool call is written at its end)
+
+
+def in_the_conversation(ev, wait=None, sleep=time.sleep, clock=time.time):
+    """Is this question's tool call (tool_use_id) in the conversation's file (transcript_path)? Looked at until it
+    shows, at most `wait` (ASK_LINE_SECS) seconds: True at once when it does, False when it never did (C-167, manager
+    11-06/11-11: Claude Code's memory pass asks as a fork run with skipTranscript, with the conversation's session and
+    file and no agent_id: its call is written nowhere). Nothing to tell by (no file named, no id, the file not there):
+    True, as every question went before. A subagent's question (agent_id) is written in its own file, not this one:
+    True too, as before."""
+    path, tid = ev.get("transcript_path"), ev.get("tool_use_id")
+    if ev.get("agent_id"):
+        return True
+    if not isinstance(path, str) or not isinstance(tid, str) or not tid or not os.path.isfile(path):
+        return True
+    needle, seen, rest = tid.encode(), None, b""
+    deadline = clock() + (ASK_LINE_SECS if wait is None else wait)
+    while True:
+        try:
+            with open(path, "rb") as f:
+                size = os.fstat(f.fileno()).st_size
+                start = max(0, size - ASK_LINE_TAIL) if seen is None else min(seen, size)
+                f.seek(start)
+                got = f.read(max(0, size - start))
+            if needle in rest + got:
+                return True
+            seen, rest = size, (rest + got)[-len(needle):]  # (an id cut across two reads is still found)
+        except OSError:
+            return True  # (not readable now: as before, never a question lost on a guess)
+        if clock() >= deadline:
+            return False
+        sleep(0.2)
 
 
 def came_from():
@@ -381,13 +424,51 @@ def ours(ev, source):
     return dict({"dc_pane": source} if source else {}, **{k: True for k in ("dc_parked", "dc_unplaced", "dc_routed") if ev.get(k)})
 
 
+CANCELLED_BY = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)  # how Claude Code ends a hook it no longer waits for
+# (SIGTERM on Esc and on Ctrl-C, 2.1.317, measured 2026-11-03; the other two for a terminal closed under it)
+
+
+def cancelled_on_signal(root, channel, ask_id, ev, source):
+    """While a question or a plan waits: a signal that ends this hook first tells the bot that the question was
+    cancelled (an AskCancelled event, written whole as every event is), then ends it at once, without waiting to be
+    killed. Nothing else would tell: Claude Code sends no Stop and no other event for a question cancelled in its
+    terminal, and the bot kept the question open (C-152)."""
+    def cancelled(signum, frame):
+        try:
+            spool_event(root, dict({"hook_event_name": "AskCancelled", "ask_id": ask_id, "session_id": ev.get("session_id"),
+                                    "channel": channel, "ts": time.time(), "dc_signal": int(signum)}, **ours(ev, source)))
+        finally:
+            os._exit(0)
+    for sig in CANCELLED_BY:
+        signal.signal(sig, cancelled)
+
+
+def waited(root, channel, ask_id, ev, source):
+    """wait_answer(), told to the bot if a signal ends it meanwhile (cancelled_on_signal); after it, a signal ends
+    this hook as it always did (the answer is being handed to Claude Code)."""
+    cancelled_on_signal(root, channel, ask_id, ev, source)
+    try:
+        return wait_answer(root, ask_id)
+    finally:
+        for sig in CANCELLED_BY:
+            signal.signal(sig, signal.SIG_DFL)
+
+
 def ask(root, channel, ev, source=None):
     inp = ev.get("tool_input") or {}
+    if not in_the_conversation(ev):  # (C-167) no card: left to the terminal (no decision), which takes a question the
+        # conversation does ask after all (its line later than ASK_LINE_SECS: its menu is posted as buttons, Claude is
+        # never stuck); the memory pass is refused there by its own permission check. The bot is told, for #audit.
+        first = ((inp.get("questions") or [{}])[0] or {}) if isinstance(inp.get("questions"), list) else {}
+        spool_event(root, dict({"hook_event_name": "AskElsewhere", "session_id": ev.get("session_id"), "channel": channel,
+                                "ts": time.time(), "dc_question": str(first.get("question") or "")[:200]},
+                               **dict(carried(ev), **ours(ev, source))))
+        return
     ask_id = "%d-%d" % (time.time_ns(), os.getpid())
     spool_event(root, dict({"hook_event_name": "Ask", "ask_id": ask_id, "questions": inp.get("questions") or [],
                             "session_id": ev.get("session_id"), "channel": channel, "ts": time.time()},
                            **dict(carried(ev), **ours(ev, source))))
-    got = wait_answer(root, ask_id)
+    got = waited(root, channel, ask_id, ev, source)
     if got is None or got.get("pass"):
         return  # (pass: not a question of the channel's conversation; the terminal's own menu takes it)
     if got.get("answers"):
@@ -405,7 +486,7 @@ def plan(root, channel, ev, source=None):
     spool_event(root, dict({"hook_event_name": "Plan", "ask_id": ask_id, "plan": clip(inp.get("plan")),
                             "session_id": ev.get("session_id"), "channel": channel, "ts": time.time()},
                            **dict(carried(ev), **ours(ev, source))))
-    got = wait_answer(root, ask_id)
+    got = waited(root, channel, ask_id, ev, source)
     if not got:
         return  # nobody answered: the terminal's own dialog is still there
     if got.get("approve"):

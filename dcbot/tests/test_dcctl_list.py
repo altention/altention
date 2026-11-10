@@ -82,6 +82,24 @@ class SharedList(Base):
         self.d.channels()
         self.assertEqual(self.gets(), 2, "older than a minute: read again")
 
+    def test_channels_fresh_reads_discord_now(self):
+        """setup.py waiting for a channel the bot is making (B5 of v0.5.2): `dcctl channels --fresh` reads the
+        server now; plain `dcctl channels` gives the minute's list, without the new channel."""
+        self.d.channels()
+        self.server.append(chan(7, "secretary"))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.d.main(["channels"])
+        self.assertNotIn("#secretary", out.getvalue())
+        self.assertEqual(self.gets(), 1)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.d.main(["channels", "--fresh"])
+        self.assertIn("#secretary", out.getvalue())
+        self.assertEqual(self.gets(), 2)
+        self.assertIn("secretary", [c["name"] for c in self.d.channels()], "and the list kept is the new one")
+        self.assertEqual(self.gets(), 2)
+
     def test_another_servers_or_a_broken_file_is_not_taken(self):
         with open(self.d.list_file(), "w") as f:
             json.dump({"at": time.time(), "guild": 7, "channels": [chan(9, "elsewhere")]}, f)

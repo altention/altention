@@ -37,6 +37,8 @@ READY, INPUT, PROGRESS, PEER_SENT, TURN_END, TURN_FAILED = "ready", "input", "pr
 SESSION_CHANGED, SESSION_LEAVING, SESSION_ENDED = "session_changed", "session_leaving", "session_ended"
 COMPACTING, COMPACTED, COMPACT_DONE = "compacting", "compacted", "compact_done"
 ASK, PLAN, DIALOG, IDLE = "ask", "plan", "dialog", "idle"
+ASK_CANCELLED = "ask_cancelled"
+ASK_ELSEWHERE = "ask_elsewhere"  # a question not of the conversation in the file (C-167): handed to the terminal
 AGENT_START, AGENT_PROGRESS, AGENT_STOP, AGENT_LAUNCHED, WORKFLOW_START = \
     "agent_start", "agent_progress", "agent_stop", "agent_launched", "workflow_start"
 UNKNOWN = "unknown"
@@ -105,7 +107,10 @@ def normalize(ev, anew=False):
       (anything else in <…>).
     - PROGRESS: a tool is about to be called. PEER_SENT: that tool is a message to another conversation.
     - TURN_END, TURN_FAILED (`dc_why`: the API's error code, "unknown" when it gives none).
-    - ASK, PLAN: Claude waits for an answer to a question, to a plan. DIALOG: Claude Code shows something to be
+    - ASK, PLAN: Claude waits for an answer to a question, to a plan. ASK_CANCELLED: it no longer does, the question
+      or plan `ask_id` was cancelled in its terminal (Esc, Ctrl-C: the hook that waited was ended; C-152).
+      ASK_ELSEWHERE: a question whose tool call never showed in the conversation's file (a background fork of Claude
+      Code's own, the memory pass: C-167): no card, the hook left it to the terminal. DIALOG: Claude Code shows something to be
       answered on the screen; IDLE: its notice that it is waiting for input, which is nobody's business.
     - AGENT_START, AGENT_STOP; AGENT_PROGRESS (a tool call from inside a subagent); AGENT_LAUNCHED (the Agent or
       Task tool has returned), WORKFLOW_START (the Workflow tool has returned). These four hooks are the ones seen
@@ -140,6 +145,10 @@ def _kind(ev):
         return {"dc_kind": ASK}
     if name == "Plan":
         return {"dc_kind": PLAN}
+    if name == "AskCancelled":
+        return {"dc_kind": ASK_CANCELLED}
+    if name == "AskElsewhere":
+        return {"dc_kind": ASK_ELSEWHERE}
     if name == "SubagentStart":
         return {"dc_kind": AGENT_START}
     if name == "SubagentStop":

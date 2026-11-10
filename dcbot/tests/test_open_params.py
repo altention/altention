@@ -47,7 +47,8 @@ class Params(Base):
         got, argv = self.argv_of(Tmux(self), {"dcbot.default_permission": "bypassPermissions"})
         self.assertIsNone(got)
         self.assertEqual(argv, [config.CLAUDE, "--model", config.MODEL, "--settings", tmux_bridge.SETTINGS_FILE,
-                                "--permission-mode", "bypassPermissions", "--append-system-prompt", "you are in #c"])
+                                "--permission-mode", "bypassPermissions", "--add-dir", os.path.join(fakepane.attachments_dir(), "5"),
+                                "--append-system-prompt", "you are in #c"])
 
     def test_the_channels_own_with_none_for_the_installation(self):
         self.st["permission"] = "manual"

@@ -732,9 +732,10 @@ def check_read_back(key, value):
 
 # --- channels and boards ------------------------------------------------------------------------------------------
 
-def discord_channels():
-    """[(id, name, category name or "")] of the server's text channels (dcctl channels)."""
-    r = dcctl("channels")
+def discord_channels(fresh=False):
+    """[(id, name, category name or "")] of the server's text channels (dcctl channels). `fresh`: read from Discord
+    now, not dcctl's list of the last minute, which has no channel the bot made since."""
+    r = dcctl("channels", *(["--fresh"] if fresh else []))
     if r.returncode != 0:
         raise Failed("讀不到 Discord 的頻道（dcctl channels：%s）：機器人或伺服器連不上，等一下再跑" % r.stdout.strip()[-200:])
     rows = []
@@ -745,28 +746,82 @@ def discord_channels():
     return rows
 
 
-def channel_ids(name):
+def channel_ids(name, fresh=False):
     """IDs of the text channels called `name`."""
-    return [cid for cid, n, _ in discord_channels() if n == name]
+    return [cid for cid, n, _ in discord_channels(fresh) if n == name]
 
 
 def free_name(base):
-    """base, or base-2, base-3 … when a channel of that name is there already."""
+    """base, or base-2, base-3 … when a channel of that name is there already (in a fresh list: one the bot made a
+    moment ago is there too)."""
+    there = set(n for _, n, _ in discord_channels(fresh=True))
     n = 1
     while True:
         name = base if n == 1 else "%s-%d" % (base, n)
-        if not channel_ids(name):
+        if name not in there:
             return name
         n += 1
 
 
 def wait_for(name):
+    """The ID of #name once the bot has made it, looked for in a fresh list every 5 s (dcctl's list of the last
+    minute would not have it until the wait was over: every new install stopped at #secretary, B5 of v0.5.2)."""
     for _ in range(WAIT // 5):
-        ids = channel_ids(name)
+        ids = channel_ids(name, fresh=True)
         if ids:
             return ids[0]
         sleep(5)
     raise Failed("等了 %d 秒還沒看到 #%s：看 #audit 機器人怎麼說（altention dc read audit 5），再跑一次" % (WAIT, name))
+
+
+def opening_path():
+    return os.path.join(os.path.expanduser("~/.local/state/altention"), "setup-opening.json")
+
+
+def opening(what):
+    """The channel name the last setup.py asked the bot to open for `what` (secretary, tutorial), or None."""
+    try:
+        with open(opening_path(), encoding="utf-8") as f:
+            name = json.load(f).get(what)
+        return name if isinstance(name, str) and name else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def set_opening(what, name):
+    """Kept before the bot is asked (name), or taken out once its channel is written down (None)."""
+    try:
+        with open(opening_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        d = d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        d = {}
+    d.pop(what, None)
+    if name:
+        d[what] = name
+    path = opening_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False)
+    os.replace(path + ".tmp", path)
+
+
+def open_claude(what, base, folder, topic, out, moved=None):
+    """The ID of a new channel with its own Claude in `folder` (secretary, tutorial). Run again after a wait that
+    ran out, the channel it asked for then and the bot made since is the one used (not a #secretary-2 next to it)."""
+    asked = opening(what)
+    if asked:
+        ids = channel_ids(asked, fresh=True)
+        if ids:
+            return ids[0]
+    name = free_name(base)
+    if name != base and moved:
+        out.write(moved % name + "\n")
+    set_opening(what, name)
+    r = altention("dc", "post", name, "--new-claude", folder, topic)
+    if r.returncode != 0:
+        raise Failed("開不了 #%s：%s" % (name, r.stdout.strip()[-200:]))
+    return wait_for(name)
 
 
 def write_channel(key, cid):
@@ -832,14 +887,9 @@ def secretary(out=None):
     if r.returncode != 0 or not lines or not os.path.isdir(lines[-1].strip()):
         raise Failed("秘書的資料夾沒建好：%s" % r.stdout.strip()[-300:])
     folder = lines[-1].strip()
-    name = free_name("secretary")
-    if name != "secretary":
-        out.write("已經有 #secretary 了，秘書開在 #%s\n" % name)
-    r = altention("dc", "post", name, "--new-claude", folder, "秘書：早報、回顧和提醒")
-    if r.returncode != 0:
-        raise Failed("開不了 #%s：%s" % (name, r.stdout.strip()[-200:]))
-    cid = wait_for(name)
+    cid = open_claude("secretary", "secretary", folder, "秘書：早報、回顧和提醒", out, moved="已經有 #secretary 了，秘書開在 #%s")
     write_channel("planner.channel", cid)
+    set_opening("secretary", None)
     commit("setup: secretary")
     check = script([sys.executable, os.path.join(ENGINE, "planner", "remind.py"), "--check"])
     out.write("秘書開在 <#%s>\n%s" % (cid, check.stdout))  # as Claude says it: a mention shows the name
@@ -862,11 +912,7 @@ def tutorial(out=None):
     mark = restore_mark()
     if mark is not None and mark.get("stage") != "done" or mark is None and state is not None and state.get("done") is not True:
         raise Refused("設定還沒做完：先 python3 ops/setup.py done")
-    name = free_name("tutorial")
-    r = altention("dc", "post", name, "--new-claude", config.instance_dir(), "導覽：一步步試機器人的主要功能")
-    if r.returncode != 0:
-        raise Failed("開不了 #%s：%s" % (name, r.stdout.strip()[-200:]))
-    cid = wait_for(name)
+    cid = open_claude("tutorial", "tutorial", config.instance_dir(), "導覽：一步步試機器人的主要功能", out)
     r = altention("dc", "post", cid, "設定做完了。請用 tour skill 帶使用者導覽：從第 1 步開始，不用再問開場那一題。")
     if r.returncode != 0:
         raise Failed("導覽的第一句沒送出去：%s" % r.stdout.strip()[-200:])
@@ -878,6 +924,7 @@ def tutorial(out=None):
         node(d, "setup").setdefault("answered", {})["tour"] = "start"
         write_settings(d)
         commit("setup: tour")
+    set_opening("tutorial", None)
     out.write("導覽開在 <#%s>\n" % cid)
     return 0
 

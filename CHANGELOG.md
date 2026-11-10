@@ -14,6 +14,48 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## Unreleased
+
+## v0.5.2 — 2026-11-11
+
+### For people
+
+- **Claude started by the bot no longer asks before reading your attachments.** Every conversation the bot opens can
+  now read that channel's own attachments folder, on the machine where Claude runs, so reading an attachment no longer
+  stops on a "Read outside the working directories" question. Only that channel's folder is opened to it. A Claude
+  Code you started yourself and connected with `/attach` is unchanged and may still ask.
+- **A message you type after a question was cancelled at the terminal is no longer taken as its answer.** When Claude
+  asks with buttons (or shows a plan to approve) and the question is cancelled in its terminal (Esc or Ctrl-C, also
+  through `!key`), the bot now closes the buttons and sends your next message to Claude as usual; before, that message
+  was swallowed as the answer.
+- **altention dc post --attach no longer attaches the wrong pane when the tmux target is not there.** tmux answered for
+  the current pane instead of failing when a target named a window or pane that does not exist (cv:7); the post is
+  now refused and says what tmux answered.
+- **A question Claude Code asks on its own in the background no longer takes your answer.** When Claude Code tidies
+  its memory in the background, it can ask a question under the same conversation; the bot used to post it as
+  buttons, and your answer went to it instead of to Claude. A question that is not in the conversation's own record
+  is now left to the terminal, where Claude Code deals with it.
+- **Finishing #setup on a fresh install no longer stops waiting for #secretary.** The last step looked for the new
+  channel in a channel list kept for 60 seconds, so it could miss a channel that was already there; running it again as
+  told made a #secretary-2 and never got to #chat. It now reads a fresh list, and running it again uses the channel that
+  is already there.
+
+### For people (zh-TW)
+
+- **機器人開的 Claude 讀附件不再先問。** 機器人開的每段對話都讀得到這個頻道自己的附件資料夾（在 Claude 所在的那台），讀附件不會再停在「Read outside the working directories」的問題。只開放這個頻道的資料夾。你自己開、用 /attach 接上的 Claude Code 不變，還是可能會問。
+- **在終端機取消 Claude 的提問後，下一則訊息不會再被當成回答。** Claude 用按鈕提問（或貼出計畫）時，在終端機按了 Esc 或 Ctrl-C（包括用 !key），機器人現在會關掉按鈕，你接著打的字照常送給 Claude；以前那則會被當成答案吞掉。
+- **`--attach` 的 tmux 目標不存在時，不會再接到別的窗格。** 以前 tmux 會改用目前的窗格（例如寫了 `cv:7` 但沒有第 7 個視窗）；現在會拒絕，並說 tmux 回的是哪個。
+- **Claude Code 在背景自己問的問題，不再收走你的答案。**它整理記憶時會用同一個對話提問，以前機器人把它貼成按鈕，你的答案就被它收走；現在這種問題不貼，交回終端機由 Claude Code 自己處理。
+- **新安裝 #setup 的最後一步，不會再說等不到 #secretary。**以前它讀的是 60 秒前的頻道清單，明明開好了還說等不到；照提示重跑會多開 #secretary-2，#chat 也開不出來。現在每次讀新的清單，重跑也會沿用已經開好的頻道。
+
+### For agents
+
+1. `dchook --ask` posts a question only once its tool call (`tool_use_id`) is in the conversation's file
+   (`transcript_path`), waiting up to 60 s for the line. One that never shows there (Claude Code's background memory
+   pass runs with no transcript) gets no card: the hook makes no decision, leaving it to the terminal, and writes an
+   `AskElsewhere` event (connector kind `ask_elsewhere`), which the bot only notes in #audit. A subagent's question
+   (`agent_id`) and an event without a file or id go on as before.
+
 ## v0.5.1 — 2026-11-07
 
 ### For people

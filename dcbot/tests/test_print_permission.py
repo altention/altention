@@ -2,11 +2,12 @@
 line. Now it takes the mode tmux_bridge.permission_of() gives (the channel's, else the installation's), and with
 none nothing is run and the channel is told how to set one."""
 import asyncio
+import os
 import types
 import unittest
 from unittest import mock
 
-from bot import claude_bridge, main, tmux_bridge
+from bot import attachments, claude_bridge, main, tmux_bridge
 from tests import fakepane  # noqa: F401  (the guard, and no real installation's settings)
 
 
@@ -31,7 +32,8 @@ class Turn(unittest.TestCase):
                                      save=lambda: None)
         ran = mock.AsyncMock(return_value=claude_bridge.TurnResult("done", "s1"))
         with mock.patch.object(tmux_bridge, "installation", lambda name: settings.get(name)), \
-                mock.patch.object(main, "run_turn", ran):
+                mock.patch.object(main, "run_turn", ran), \
+                mock.patch.object(attachments, "DIR", fakepane.attachments_dir()):  # C-151: the channel's folder, made
             try:
                 asyncio.run(main.Bot.turn(host, types.SimpleNamespace(channel=ch), "hello"))
             except Exception:  # what comes after the run (the reply's footer) needs more of the bot than this
@@ -51,6 +53,13 @@ class Turn(unittest.TestCase):
             _, ran = self.turn(st, settings)
             ran.assert_called_once()
             self.assertEqual(ran.call_args.args[4], want)
+
+    def test_the_channels_attachments_folder_goes_along_c151(self):
+        _, ran = self.turn({"cwd": "/tmp"}, {"dcbot.default_permission": "manual"})
+        want = os.path.join(fakepane.attachments_dir(), str(Ch.id))
+        self.assertEqual(ran.call_args.kwargs["dirs"], [want])
+        self.assertTrue(os.path.isdir(want))
+        os.rmdir(want)
 
     def test_the_command_line_carries_it(self):
         seen = []

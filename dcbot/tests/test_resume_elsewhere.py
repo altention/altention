@@ -494,15 +494,16 @@ class ClosedByTheBot(unittest.TestCase):
         self.play("close")
         rt = self.bridge.rt(self.ch)
 
-        async def start(resume, how):
+        async def start(resume, how, dirs):
             return self.tb.tmuxio.pane(dict(self.PANE))
 
         async def kept(pane, fresh):
             self.st["pane"] = dict(self.PANE)
 
         async def go():
-            with mock.patch.object(self.bridge, "wait_ready", mock.AsyncMock(return_value=True)):
-                return await self.bridge.open(self.ch, self.st, rt, start, kept, mock.AsyncMock())
+            with mock.patch.object(self.bridge, "wait_ready", mock.AsyncMock(return_value=True)), \
+                    mock.patch.object(self.tb.attachments, "folders", mock.AsyncMock(return_value=[])):  # (C-151: none made)
+                return await self.bridge.open(self.ch, self.st, rt, start, kept, mock.AsyncMock(), None)
         self.assertTrue(asyncio.run(go()))
         self.assertEqual(rt.closed, [])
 

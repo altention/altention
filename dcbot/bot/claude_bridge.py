@@ -23,15 +23,19 @@ class TurnResult(object):
         self.tools, self.error, self.duration = tools or {}, error, duration
 
 
-async def run_turn(prompt, session_id, cwd, system_note, permission, on_progress=None, procs=None, key=None, channel_id=""):
+async def run_turn(prompt, session_id, cwd, system_note, permission, on_progress=None, procs=None, key=None, channel_id="",
+                   dirs=()):
     """Send `prompt` into the channel's session. Creates the session on first use. `permission`: the permission
     mode, as the caller chose it (tmux_bridge.permission_of(); never one this module picks: C-121).
-    on_progress(str) is called with short tool-use notes while Claude works."""
+    on_progress(str) is called with short tool-use notes while Claude works. `dirs`: what it reads without asking
+    besides `cwd` (the channel's attachments folder: attachments.folders(), C-151)."""
     new = session_id is None
     sid = session_id or str(uuid.uuid4())
     cmd = [config.CLAUDE, "-p", "--model", config.MODEL, "--output-format", "stream-json", "--verbose",
-           "--permission-mode", permission, "--settings", settings(),
-           "--append-system-prompt", system_note]
+           "--permission-mode", permission, "--settings", settings()]
+    for d in dirs:  # one flag each, never last: --add-dir takes every word up to the next flag
+        cmd += ["--add-dir", d]
+    cmd += ["--append-system-prompt", system_note]
     cmd += ["--session-id", sid] if new else ["--resume", sid]
     env = dict(os.environ, DCBOT_ROOT=config.ROOT, DCBOT_CHANNEL=str(channel_id))  # deploy.sh reports back here
     proc = await asyncio.create_subprocess_exec(

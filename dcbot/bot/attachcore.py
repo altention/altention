@@ -40,6 +40,19 @@ def target(root, channel_id, message_id, attachment_id, name):
     return os.path.join(root, str(channel_id), "%s-%s-%s" % (message_id, attachment_id, safe_name(name)))
 
 
+def folder(root, channel_id):
+    """root/<channel>/, made when it is not there yet (readable by this user only), its path as given (not resolved:
+    Claude Code reads a file through a linked folder and through the real one alike as inside a folder it was handed
+    through the link, and not the other way round; tried on 2.1.316, 2026-11-03). The channel's Claude is handed this
+    folder when it is opened (--add-dir): it reads what the owner attaches without asking (C-151). ValueError for an
+    id that is not Discord's; OSError when it cannot be made."""
+    if not re.fullmatch(r"[0-9]{1,25}", str(channel_id)):
+        raise ValueError("不是 Discord 的 id：%r" % (channel_id,))
+    path = os.path.join(root, str(channel_id))
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
 def store(root, channel_id, message_id, attachment_id, name, data):
     """Write one attachment sent from the bot's machine under root/<channel>/, readable by this user only. The ids
     must be Discord's (digits) and the path must fall inside root: what comes over SSH is not trusted to be a name.

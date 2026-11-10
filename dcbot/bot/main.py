@@ -101,6 +101,20 @@ def git(*args):
     return r.stdout.strip()
 
 
+def talk_limit_said(st, default):
+    """What !talklimit answers: this channel's limit, and (#release 11-03) that between two channels the larger of
+    their two limits counts (posts.pair_limit()), so setting one side alone does not stop a pair whose other side
+    has the default (#discord-control met it). Off is said as before."""
+    limit = st.get("talk_limit", default)
+    free = "".join(" <#%d>" % c for c in st.get("talk_free", []))
+    free = "跟這些頻道不限制：%s" % free if free else ""
+    if limit == 0:
+        return "這個頻道的 Claude 跟別的頻道的 Claude 連續來回：不限制。%s" % free
+    unset = "沒設的頻道不限制" if default == 0 else "沒設的頻道是 %d 次" % default  # (an installation that chose none)
+    return ("這個頻道的上限：最多 %d 次（你一插話就重新計算）。兩個頻道互傳時，以兩邊上限比較大的為準（%s），"
+            "任一邊設成 off 就不限制。要在 %d 次停下，對方頻道也要設成 %d 次以下。%s" % (limit, unset, limit, limit, free))
+
+
 RELEASE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
@@ -898,7 +912,8 @@ class Bot(discord.Client):
         try:
             async with ch.typing():
                 res = await run_turn(text, st.get("session_id"), st["cwd"], note, permission, on_progress=progress,
-                                     procs=self.procs, key=str(ch.id), channel_id=ch.id)
+                                     procs=self.procs, key=str(ch.id), channel_id=ch.id,
+                                     dirs=await attachments.folders(None, ch.id))
         finally:
             self.active -= 1
         st["session_id"] = res.session_id
@@ -1236,11 +1251,7 @@ class Bot(discord.Client):
             elif want:
                 return await send("用法：`!talklimit <次數>`、`!talklimit off`（不限制）、`!talklimit default`")
             self.save()
-            limit = st.get("talk_limit", posts.default_limit())
-            free = "".join(" <#%d>" % c for c in st.get("talk_free", []))
-            await send("這個頻道的 Claude 跟別的頻道的 Claude 連續來回：%s。%s" % (
-                "不限制" if limit == 0 else "最多 %d 次（你一插話就重新計算）" % limit,
-                "跟這些頻道不限制：%s" % free if free else ""))
+            await send(talk_limit_said(st, posts.default_limit()))
         elif cmd == "!rename":
             await send(await self.rename(ch, st, arg))
         elif cmd == "!commands":
