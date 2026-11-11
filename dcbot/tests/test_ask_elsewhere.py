@@ -68,8 +68,13 @@ class Hook(unittest.TestCase):
         return {"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "session_id": "s", "tool_use_id": tid,
                 "transcript_path": self.file, "prompt_id": "p1", "tool_input": {"questions": [Q1]}}
 
-    def run_ask(self, ev, answer=None, wait=None):
+    def run_ask(self, ev, answer=None, wait=None, check=True):
+        """dchook's ask() with C-167's look on (`check`; it is off in dchook since 11-11: ASK_LINE_CHECK) or as shipped."""
         out = io.StringIO()
+        if check:
+            p = mock.patch.object(self.hook, "ASK_LINE_CHECK", True)
+            p.start()
+            self.addCleanup(p.stop)
         waited = mock.Mock(return_value=answer if answer is not None else {"answers": {"Which one?": "B"}})
         with mock.patch.object(self.hook, "waited", waited), contextlib.redirect_stdout(out):
             if wait is not None:
@@ -78,6 +83,16 @@ class Hook(unittest.TestCase):
             else:
                 self.hook.ask(self.root, "9", ev)
         return out.getvalue(), waited.called
+
+    def test_off_every_question_gets_its_card_at_once(self):
+        """Manager 11-11 (C-167 taken back): with the look off, as dchook ships, a question whose line never shows in
+        the file gets its card at once, not after ASK_LINE_SECS, and no AskElsewhere is written."""
+        self.assertFalse(self.hook.ASK_LINE_CHECK)
+        t0 = time.time()
+        out, asked = self.run_ask(self.payload("toolu_late"), check=False)
+        self.assertTrue(asked)
+        self.assertLess(time.time() - t0, 1)
+        self.assertEqual([e["hook_event_name"] for e in self.events()], ["Ask"])
 
     def test_three_tools_in_one_reply_the_line_late_still_a_card(self):
         """The reverse case (manager 11-11): one reply with three tools, its lines written 3.5 s after the hook was

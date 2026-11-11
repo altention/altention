@@ -332,6 +332,14 @@ ASK_LINE_SECS = 60  # how long a question's tool call may take to show in the co
 ASK_LINE_TAIL = 4 * 1024 * 1024  # how far back the file is read the first time (a tool call is written at its end)
 
 
+ASK_LINE_CHECK = False  # C-167's look (in_the_conversation) before a question's card: OFF (manager 11-11). Claude Code
+# 2.1.322 was seen writing a question's line only after its PreToolUse hook had ended (the file last written the moment
+# the hook gave up, 60 s on): the conversation's own questions waited a minute and went to the terminal's menu. The
+# line being in the file says nothing then; every question gets its card again, as before C-167 (a question of Claude
+# Code's background memory pass may take the answer again: rare; another way to tell it is a research item). Kept,
+# not run: turn it on only with a way to tell that holds.
+
+
 def in_the_conversation(ev, wait=None, sleep=time.sleep, clock=time.time):
     """Is this question's tool call (tool_use_id) in the conversation's file (transcript_path)? Looked at until it
     shows, at most `wait` (ASK_LINE_SECS) seconds: True at once when it does, False when it never did (C-167, manager
@@ -456,7 +464,7 @@ def waited(root, channel, ask_id, ev, source):
 
 def ask(root, channel, ev, source=None):
     inp = ev.get("tool_input") or {}
-    if not in_the_conversation(ev):  # (C-167) no card: left to the terminal (no decision), which takes a question the
+    if ASK_LINE_CHECK and not in_the_conversation(ev):  # (C-167, off: ASK_LINE_CHECK) no card: left to the terminal (no decision), which takes a question the
         # conversation does ask after all (its line later than ASK_LINE_SECS: its menu is posted as buttons, Claude is
         # never stuck); the memory pass is refused there by its own permission check. The bot is told, for #audit.
         first = ((inp.get("questions") or [{}])[0] or {}) if isinstance(inp.get("questions"), list) else {}

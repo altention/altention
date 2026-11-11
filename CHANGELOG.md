@@ -16,6 +16,27 @@ Each version has these sections:
 
 ## Unreleased
 
+## v0.5.3 — 2026-11-11
+
+### For people
+
+- **Claude's questions get their buttons right away again.** v0.5.2 held a question back for up to 60 seconds to
+  check it was the conversation's own, but Claude Code sometimes writes that line later, so a real question could end
+  up as a terminal menu instead of buttons. The check is taken out: every question gets its buttons at once. A
+  question Claude Code asks on its own while tidying its memory may again show as buttons, as before v0.5.2, until a
+  better fix.
+
+### For people (zh-TW)
+
+- **Claude 的提問又會馬上出按鈕。**v0.5.2 會先等最多 60 秒，確認是主對話問的，但 Claude Code 有時寫得比較晚，真正的提問就變成終端機選單。這個確認先拿掉，提問一律馬上出按鈕；Claude Code 整理記憶時自己問的少數問題，可能又會出成按鈕（跟 v0.5.2 以前一樣），之後再好好修。
+
+### For agents
+
+1. v0.5.2's wait in `dchook --ask` (up to 60 s for the question's `tool_use_id` in `transcript_path`) is off:
+   `ASK_LINE_CHECK = False`. Claude Code 2.1.322 was seen writing that line only after the PreToolUse hook ended, so
+   the look said nothing. Every question gets its card at once; `AskElsewhere` is no longer written (the connector
+   still knows the kind, and the code stays for a way to tell the memory pass that holds).
+
 ## v0.5.2 — 2026-11-11
 
 ### For people
