@@ -18,7 +18,8 @@
   dcctl archive CHANNEL                   archive it as /archive does (the bot does it: queued while it is offline)
   dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
   dcctl send CHANNEL TEXT [--mentions]    post a message, straight to Discord (not through the bot); mentions in it
-                                          ping nobody unless --mentions; over 2000 characters is refused (exit 4),
+                                          ping nobody; --mentions pings the owner alone (never @everyone, a
+                                          role or anyone else); over 2000 characters is refused (exit 4),
                                           never cut or split
   dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off)
   dcctl edit CHANNEL MESSAGE_ID           replace the text of a message the bot itself posted with what stdin
@@ -435,9 +436,10 @@ def post_target_error(post, sender_category=None, chans=None):
 
 
 def audit(text):
+    """A line in #audit; a mention it quotes (a channel's or a message's words) pings nobody."""
     for c in channels():
         if c["name"] == config.AUDIT_CHANNEL and c["type"] == 0:
-            call("POST", "/channels/%s/messages" % c["id"], {"content": "[dcctl] " + text[:1900]})
+            call("POST", "/channels/%s/messages" % c["id"], {"content": "[dcctl] " + text[:1900], "allowed_mentions": {"parse": []}})
             return
 
 
@@ -468,14 +470,15 @@ def units(text):
 def send_body(words, pings=False):
     """What `dcctl send CHANNEL TEXT… [--mentions]` posts, from the words after the channel (C-89): the text as it
     is, never cut (over EDIT_LIMIT: exits with SEND_TOO_LONG and says nothing was sent), and mentions in it ping
-    nobody (`allowed_mentions` with nothing to parse) unless `pings` (--mentions), which leaves them to Discord's own
-    rules as before."""
+    nobody (`allowed_mentions` with nothing to parse) unless `pings` (--mentions), which pings the owner alone
+    (OWNER_ID; none set: nobody): never @everyone, a role or anyone else in the text (messaging review P0-1)."""
     text = " ".join(words)
     if units(text) > EDIT_LIMIT:
         print("沒有送出：超過 %d 字（%d 字；不會截斷或拆成幾則，長的請用 altention dc post）" % (EDIT_LIMIT, units(text)),
               file=sys.stderr)
         sys.exit(SEND_TOO_LONG)
-    return {"content": text} if pings else {"content": text, "allowed_mentions": {"parse": []}}
+    owner = [str(config.OWNER_ID)] if pings and config.OWNER_ID else []
+    return {"content": text, "allowed_mentions": dict({"parse": []}, **({"users": owner} if owner else {}))}
 
 
 def edit_text(raw):

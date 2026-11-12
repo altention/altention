@@ -24,7 +24,7 @@ from altention.connectors.claude_code import launch as cc_launch
 from altention.connectors.claude_code import typist as cc_typing
 
 from . import posts as posts_mod
-from . import agents, ask, attachments, awaiting, cc_btw, config, events, history, masking, menus, messages, peers, process, remote, routes, sessions, rewrite, sources, startup_ask, tables, tmuxio, unsent as unsent_mod
+from . import agents, ask, attachments, awaiting, cc_btw, config, events, history, masking, mentions, menus, messages, peers, process, remote, routes, sessions, rewrite, sources, startup_ask, tables, tmuxio, unsent as unsent_mod
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
@@ -498,13 +498,14 @@ class TmuxBridge(object):
     def rt(self, ch):
         return self.rts.setdefault(str(ch.id), Runtime())
 
-    async def say(self, ch, text, silent=False):
+    async def say(self, ch, text, silent=False, allowed=None):
         """Post text (split as needed); returns the messages sent. `silent`: no push notification (what
-        Claude says along the way); replies, questions and failures do ring."""
-        sent = []
+        Claude says along the way); replies, questions and failures do ring. `allowed`: who it may ping (the
+        client's default: nobody, bot/mentions.py)."""
+        sent, kw = [], ({"allowed_mentions": allowed} if allowed is not None else {})
         for part in split_message(text):
             try:
-                sent.append(await ch.send(part, silent=True) if silent else await ch.send(part))
+                sent.append(await ch.send(part, silent=True, **kw) if silent else await ch.send(part, **kw))
             except Exception:
                 traceback.print_exc()
         return sent
@@ -1647,24 +1648,27 @@ class TmuxBridge(object):
         A message may have a third item, what each picture was made from (rewrite.read()): kept for 📝 (sources.py)."""
         foot, sent = job.get("foot"), []
         for i, (text, pics, *more) in enumerate(msgs):
+            calls = None  # the last one's footer calls the owner after a long turn: it alone may ping them (P0-1)
             if i == len(msgs) - 1 and foot:
                 text = text + "\n" + foot if text else foot
+                calls = mentions.owner_only() if "<@" in foot else None
             parts = split_message(text) if text else []
             if not pics:
-                sent += await self.say(ch, "\n".join(parts)) if parts else []
+                sent += await self.say(ch, "\n".join(parts), allowed=calls) if parts else []
                 continue
             for part in parts[:-1]:
-                sent += await self.say(ch, part)
+                sent += await self.say(ch, part, allowed=calls)
             files = []
             try:
                 files = [discord.File(p) for p in pics]
-                sent.append(await ch.send(parts[-1] if parts else None, files=files))
+                sent.append(await ch.send(parts[-1] if parts else None, files=files,
+                                          **({"allowed_mentions": calls} if calls is not None else {})))
                 if more:
                     sources.remember(sent[-1], ch.id, more[0], len(pics))
             except Exception:
                 traceback.print_exc()
                 if parts:
-                    sent += await self.say(ch, parts[-1])
+                    sent += await self.say(ch, parts[-1], allowed=calls)  # (the footer's mention too: #code-review)
             finally:
                 for f in files:  # (the pictures are dropped next: nothing left open on them)
                     f.close()

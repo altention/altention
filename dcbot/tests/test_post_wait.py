@@ -146,13 +146,19 @@ class Send(Base):
         return code, out.getvalue(), err.getvalue()
 
     def test_mentions_ping_nobody_unless_asked(self):
-        """C-89: a script's line that quotes <@42> or @everyone pings no one; --mentions (anywhere) as before."""
+        """C-89: a script's line that quotes <@42> or @everyone pings no one; --mentions (anywhere) pings the owner
+        alone: never @everyone, a role or another user the text names (messaging review P0-1); no owner set, nobody."""
         self.send("2", "hi", "<@42>", "@everyone")
         self.assertEqual(self.bodies[-1], {"content": "hi <@42> @everyone", "allowed_mentions": {"parse": []}})
-        for args in (("2", "hi", "<@42>", "--mentions"), ("--mentions", "2", "hi", "<@42>")):
-            code, out, err = self.send(*args)
-            self.assertEqual(self.bodies[-1], {"content": "hi <@42>"}, args)
-            self.assertEqual(out.splitlines(), ["已送出", "777"])
+        with mock.patch.object(self.d.config, "OWNER_ID", 42):
+            for args in (("2", "hi", "<@42>", "<@43>", "@everyone", "--mentions"), ("--mentions", "2", "hi", "<@42>", "<@43>", "@everyone")):
+                code, out, err = self.send(*args)
+                self.assertEqual(self.bodies[-1], {"content": "hi <@42> <@43> @everyone",
+                                                   "allowed_mentions": {"parse": [], "users": ["42"]}}, args)
+                self.assertEqual(out.splitlines(), ["已送出", "777"])
+        with mock.patch.object(self.d.config, "OWNER_ID", 0):
+            self.send("2", "hi", "<@42>", "--mentions")
+            self.assertEqual(self.bodies[-1], {"content": "hi <@42>", "allowed_mentions": {"parse": []}})
 
     def test_over_2000_is_refused_never_cut(self):
         code, out, err = self.send("2", "字" * 2000)

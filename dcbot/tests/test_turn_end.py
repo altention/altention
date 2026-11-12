@@ -13,8 +13,9 @@ from tests import fakepane
 
 
 class Msg(object):
-    def __init__(self, mid, content, view, silent):
+    def __init__(self, mid, content, view, silent, allowed=None):
         self.id, self.content, self.view, self.silent, self.reactions = mid, content, view, silent, []
+        self.allowed = allowed
 
     async def delete(self):
         pass
@@ -29,8 +30,9 @@ class Ch(object):
     def __init__(self):
         self.sent = []
 
-    async def send(self, content, view=None, silent=False):
-        self.sent.append(Msg(len(self.sent) + 1, content, view, silent))
+    async def send(self, content, view=None, silent=False, allowed_mentions=None, files=None):
+        self.sent.append(Msg(len(self.sent) + 1, content, view, silent, allowed_mentions))
+        self.sent[-1].files = files
         return self.sent[-1]
 
     async def typing(self):
@@ -115,7 +117,35 @@ class TurnEnd(unittest.TestCase):
                 self.bridge.rt(self.ch).turn.t0 = time.time() - secs
                 await self.bridge.handle(self.ev("Stop", last_assistant_message="done"))
                 self.assertEqual("<@42>" in self.ch.sent[-1].content, mention)
+                allowed = self.ch.sent[-1].allowed  # P0-1: the client pings nobody; the footer's send lets the owner through
+                self.assertEqual(allowed.to_dict() if allowed else None, {"parse": [], "users": [42]} if mention else None)
         asyncio.run(go())
+
+    def test_a_long_turns_mention_still_rings_when_its_picture_cannot_be_sent(self):
+        """P0-1 (#code-review on 1c0d6f85): the last message falls back to its text alone; it keeps the footer and may
+        still ping the owner."""
+        async def go():
+            await self.bridge.post_reply(self.ch, {}, [("done", ["/nonexistent/picture.png"])],
+                                         {"foot": "-# 11 分鐘 · <@42>", "final": "done"})
+        asyncio.run(go())
+        last = self.ch.sent[-1]
+        self.assertIn("<@42>", last.content)
+        self.assertEqual(last.allowed.to_dict() if last.allowed else None, {"parse": [], "users": [42]})
+
+    def test_a_long_turns_mention_rings_on_the_message_with_its_picture(self):
+        """P0-1 (#code-review-2 on 1c0d6f85): the footer on the last message, sent with its picture."""
+        with tempfile.TemporaryDirectory() as d:
+            pic = os.path.join(d, "chart.png")
+            with open(pic, "wb") as f:
+                f.write(b"\x89PNG\r\n")
+
+            async def go():
+                await self.bridge.post_reply(self.ch, {}, [("done", [pic])], {"foot": "-# 11 分鐘 · <@42>", "final": "done"})
+            asyncio.run(go())
+        last = self.ch.sent[-1]
+        self.assertEqual(len(last.files or []), 1, "sent with its picture, not the fallback")
+        self.assertIn("<@42>", last.content)
+        self.assertEqual(last.allowed.to_dict() if last.allowed else None, {"parse": [], "users": [42]})
 
     def test_progress_and_notes_along_the_way_are_silent(self):
         async def go():

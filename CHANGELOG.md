@@ -16,6 +16,26 @@ Each version has these sections:
 
 ## Unreleased
 
+## v0.5.4 — 2026-11-12
+
+### For people
+
+- **The bot no longer pings anyone else; it pings you at the same moments as before.** When Claude writes someone's
+  name, a role or `@everyone` in a reply or a card, it is only shown, nobody is notified (you neither).
+  `dcctl send --mentions` now pings only you.
+
+### For people (zh-TW)
+
+- **機器人不會再 @ 到別人，@ 你的時機照舊。**Claude 在回覆或卡片裡寫到別人、身分組或 `@everyone`，只顯示、不通知（寫到你也一樣）。`dcctl send --mentions` 也只會 @ 你。
+
+### For agents
+
+1. Writing `<@owner>` in a reply or in an `altention dc notify` no longer pings the owner. `altention dc notify`
+   still posts a message that notifies as any message in that channel does, and the bot still @-mentions the owner
+   itself when it needs them.
+2. `dcctl send --mentions` now pings only the owner; the dcctl interface version stays the same. There is no way for
+   now to ping someone else, a role or `@everyone`; a later version adds rules for who may be pinged.
+
 ## v0.5.3 — 2026-11-11
 
 ### For people

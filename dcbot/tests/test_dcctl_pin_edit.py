@@ -43,12 +43,12 @@ class PinEdit(unittest.TestCase):
         said, calls = self.run_cmd(["pin", "board", "555"])
         self.assertEqual(said, "已釘選")
         self.assertEqual(self.changes(calls), [("PUT", "/channels/10/messages/pins/555", None),
-                                               ("POST", "/channels/11/messages", {"content": "[dcctl] #board 釘選訊息 555"})])
+                                               ("POST", "/channels/11/messages", {"content": "[dcctl] #board 釘選訊息 555", "allowed_mentions": {"parse": []}})])
         for argv in (["pin", "board", "555", "--unpin"], ["pin", "--unpin", "10", "555"]):
             said, calls = self.run_cmd(argv)
             self.assertEqual(said, "已取消釘選")
             self.assertEqual(self.changes(calls), [("DELETE", "/channels/10/messages/pins/555", None),
-                                                   ("POST", "/channels/11/messages", {"content": "[dcctl] #board 取消釘選訊息 555"})])
+                                                   ("POST", "/channels/11/messages", {"content": "[dcctl] #board 取消釘選訊息 555", "allowed_mentions": {"parse": []}})])
 
     def test_a_thread_is_named_by_its_id(self):
         said, calls = self.run_cmd(["pin", "777", "555"])
@@ -66,7 +66,7 @@ class PinEdit(unittest.TestCase):
         said, calls = self.run_cmd(["edit", "board", "555"], stdin="第一行\n\n  第二行\n")
         self.assertEqual(said, "已修改")
         self.assertEqual(self.changes(calls), [("PATCH", "/channels/10/messages/555", {"content": "第一行\n\n  第二行"}),
-                                               ("POST", "/channels/11/messages", {"content": "[dcctl] #board 修改訊息 555（10 字）"})])
+                                               ("POST", "/channels/11/messages", {"content": "[dcctl] #board 修改訊息 555（10 字）", "allowed_mentions": {"parse": []}})])
 
     def test_edit_refuses_a_message_of_someone_else(self):
         said, calls = self.run_cmd(["edit", "board", "555"], stdin="new", author="2")

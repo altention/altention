@@ -24,7 +24,7 @@ from altention.connectors.claude_code import transcript
 from . import activity, archive, attachments, awaiting, catalog, catchup, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, secretbox, sessions, sources, setup, slash, terminal, tmuxio
 from .claude_bridge import run_turn
 from .tmux_bridge import NotOpened, TmuxBridge, fence, permission_of
-from . import frames, update_cards, util
+from . import frames, mentions, update_cards, util
 from .util import split_message
 
 STATE = config.STATE
@@ -160,7 +160,7 @@ class Bot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(intents=intents)
+        super().__init__(intents=intents, allowed_mentions=mentions.nobody())  # (P0-1: bot/mentions.py)
         self.new_install = not os.path.exists(CHANNELS)  # no channel state at all, not one that could not be read
         self.channels_state = load_json(CHANNELS, {})
         self.locks = {}

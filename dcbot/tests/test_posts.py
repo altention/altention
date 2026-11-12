@@ -722,6 +722,8 @@ class Posts(unittest.TestCase):
         self.bot.channels_state["1"]["busy"] = True
         self.hold_once()
         self.assertTrue(self.b.sent[-1].startswith("⏸️ <@%d> #st-1 " % config.OWNER_ID), self.b.sent[-1])
+        allowed = self.b.how[-1]["mentions"].to_dict()  # P0-1: the client pings nobody; this line lets the owner through
+        self.assertEqual(allowed, {"parse": [], "users": [config.OWNER_ID]} if config.OWNER_ID else {"parse": []})
         self.assertEqual(len(self.bot.tmux.given), posts.LOOP_LIMIT + 1, "the post itself is not handed over")
         cid, text = self.bot.tmux.given[-1]
         self.assertEqual(cid, 1, "the sender is told")

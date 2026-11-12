@@ -33,7 +33,7 @@ import discord
 from altention.connectors.claude_code import sessions as cc_sessions
 from altention.sources import check as srccheck
 
-from . import config, events, files, kinds, layout, messages, postbox, remote, sources
+from . import config, events, files, kinds, layout, mentions, messages, postbox, remote, sources
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 
@@ -719,7 +719,7 @@ class Posts(object):
         v.add_item(discord.ui.Button(label="停下來", custom_id="post:%d:stop" % ch.id, style=discord.ButtonStyle.secondary))
         await ch.send("⏸️ <@%d> %s 和這個頻道的 Claude 已經連續來回 %d 次，你都沒有插話。上面這則先不交給 Claude，要繼續嗎？\n"
                       "-# 要讓它們長時間討論：按「這兩個頻道不再限制」，或用 `/talklimit` 調整這個頻道的上限"
-                      % (config.OWNER_ID, sender, limit), view=v)
+                      % (config.OWNER_ID, sender, limit), view=v, allowed_mentions=mentions.owner_only())
         v.stop()
         sst = (self.bot.channels_state.get(str(sender_ch.id)) or {}) if sender_ch is not None else {}
         if listens(sst) and sst.get("busy"):
