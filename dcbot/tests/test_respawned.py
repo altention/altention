@@ -89,22 +89,28 @@ class Hook(unittest.TestCase):
         stays silent, as before C-79. Before this fix both stayed silent (the global one sent them to 55, marked,
         and the bot dropped them)."""
         self.route("999999999")
-        mine = os.path.join(self.tmp.name, "state", "claude-settings.json")  # the bot's --settings (this hook's state)
-        bot_window = {"DCBOT_CHANNEL": "77", "DCBOT_ROOT": self.tmp.name, "settings": mine}
-        _, got = self.fire(local=True, **bot_window)
-        self.assertEqual([(e["channel"], "dc_respawned" in e) for e in got], [("77", False)])
-        self.assertEqual(self.fire(**bot_window), (b"", []), "the global hook of that process: nothing")
-        same = {"DCBOT_CHANNEL": "55", "DCBOT_ROOT": self.tmp.name, "settings": mine}  # the channel's own window, attached since
-        self.assertEqual(self.fire(local=True, **same), (b"", []), "its own hook: the table's one reports it")
-        _, got = self.fire(**same)
-        self.assertEqual([(e["channel"], e.get("dc_respawned")) for e in got], [("55", self.pane_pid())])
+        for name in ("claude-settings.json", "claude-settings.0123456789ab.json"):  # the bot's --settings (this hook's
+            # state), or the copy with the window's attachments folder in it that the bot opens windows with
+            mine = os.path.join(self.tmp.name, "state", name)
+            bot_window = {"DCBOT_CHANNEL": "77", "DCBOT_ROOT": self.tmp.name, "settings": mine}
+            _, got = self.fire(local=True, **bot_window)
+            self.assertEqual([(e["channel"], "dc_respawned" in e) for e in got], [("77", False)], name)
+            self.assertEqual(self.fire(**bot_window), (b"", []), "the global hook of that process: nothing (%s)" % name)
+            same = {"DCBOT_CHANNEL": "55", "DCBOT_ROOT": self.tmp.name, "settings": mine}  # the channel's own window, attached since
+            self.assertEqual(self.fire(local=True, **same), (b"", []), "its own hook: the table's one reports it (%s)" % name)
+            _, got = self.fire(**same)
+            self.assertEqual([(e["channel"], e.get("dc_respawned")) for e in got], [("55", self.pane_pid())], name)
 
     def test_an_owners_pane_that_inherited_another_channels_variable_is_judged_by_the_bot(self):
         """DCBOT_CHANNEL alone does not make a window the bot's (a tmux server started from a bot window passes it on
         to the owner's panes): with no bot --settings on the command line the global hook passes it on marked, and
         the bot goes by the session; another --settings file is not the bot's either."""
         self.route("999999999")
-        for settings in (None, os.path.join(self.tmp.name, "elsewhere", "claude-settings.json")):
+        for settings in (None, os.path.join(self.tmp.name, "elsewhere", "claude-settings.json"),
+                         os.path.join(self.tmp.name, "elsewhere", "claude-settings.0123456789ab.json"),
+                         os.path.join(self.tmp.name, "state", "claude-settings.0123456789.json"),
+                         os.path.join(self.tmp.name, "state", "claude-settings.0123456789AB.json"),
+                         os.path.join(self.tmp.name, "state", "other.0123456789ab.json")):
             _, got = self.fire(DCBOT_CHANNEL="77", settings=settings)
             self.assertEqual([(e["channel"], e.get("dc_respawned")) for e in got], [("55", self.pane_pid())], settings)
 

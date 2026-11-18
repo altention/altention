@@ -28,7 +28,7 @@ def folder_here(channel_id):
     try:
         return attachcore.folder(DIR, channel_id)
     except (ValueError, OSError) as e:
-        print("attachments: the folder of %s was not made (%s): opened without --add-dir" % (channel_id, e), flush=True)
+        print("attachments: the folder of %s was not made (%s): opened without it" % (channel_id, e), flush=True)
         return None
 
 
@@ -40,13 +40,13 @@ async def far_folder(host, channel_id):
     there = out.strip().splitlines()[-1] if code == 0 and out.strip() else ""
     if there.startswith("/"):
         return there
-    print("attachments: the folder of %s on %s was not made (%s): opened without --add-dir"
+    print("attachments: the folder of %s on %s was not made (%s): opened without it"
           % (channel_id, host, " / ".join(err) or "結束碼 %s" % code), flush=True)
     return None
 
 
 async def folders(host, channel_id):
-    """What the channel's Claude is handed to read without asking when it is opened (--add-dir, C-151): the
+    """What the channel's Claude is handed to read without asking when it is opened (in its settings, cc_launch.command(); C-151): the
     channel's own attachments folder on the machine it works on (`host`; None: this one), made first (a folder that
     is not there when Claude Code starts is dropped without a word, and one made later does not count: tried on
     2.1.316). A list: empty when it could not be made."""

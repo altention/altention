@@ -1,4 +1,5 @@
-"""C-151: every way the bot opens a channel's Claude hands it the channel's attachments folder (--add-dir), made first
+"""C-151: every way the bot opens a channel's Claude hands it the channel's attachments folder (in its settings:
+permissions.additionalDirectories, never --add-dir, which Claude Code 2.1.326 asks about), made first
 on the machine that Claude works on, so what the owner attaches is read without a question. One left out, and an
 attachment is read now without asking, now with a question (manager 2026-11-03: each way listed in a test).
 
@@ -17,6 +18,7 @@ The ways, each below:
 An attached pane (/attach) is the owner's own Claude Code, never started by the bot: nothing is handed to it."""
 import asyncio
 import io
+import json
 import os
 import stat
 import tempfile
@@ -31,7 +33,18 @@ from tests.test_open_session import Base, Tmux
 
 
 def dirs_of(argv):
-    return [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    """The folders the command line hands over: in its one --settings (JSON, or the file it names), never --add-dir."""
+    assert "--add-dir" not in argv, argv
+    given = [argv[i + 1] for i, a in enumerate(argv) if a == "--settings"]
+    if not given:
+        return []
+    assert len(given) == 1, "only the last --settings counts: %r" % argv
+    if given[0].startswith("{"):
+        d = json.loads(given[0])
+    else:
+        with open(given[0]) as f:
+            d = json.load(f)
+    return d.get("permissions", {}).get("additionalDirectories", [])
 
 
 class Ways(Base):
@@ -49,7 +62,6 @@ class Ways(Base):
         self.assertEqual(dirs_of(argv), [self.here()])
         self.assertTrue(os.path.isdir(self.here()), "made before Claude Code starts: a folder not there is dropped")
         self.assertEqual(stat.S_IMODE(os.stat(self.here()).st_mode), 0o700)
-        self.assertEqual(argv.index("--add-dir") + 2, argv.index("--append-system-prompt"), "a flag after it: it takes every word up to one")
 
     def test_2_the_saved_conversation_resumed(self):
         tmux = Tmux(self)
@@ -175,7 +187,8 @@ class PrintMode(unittest.TestCase):
                 asyncio.run(claude_bridge.run_turn("hi", None, "/w", "note", "auto", dirs=["/a/5"]))
         cmd, = seen
         self.assertEqual(dirs_of(cmd), ["/a/5"])
-        self.assertEqual(cmd.index("--add-dir") + 2, cmd.index("--append-system-prompt"))
+        self.assertIn("deny", json.loads(cmd[cmd.index("--settings") + 1])["permissions"],
+                      "the deny rules still there beside it")
 
 
 class Folders(unittest.TestCase):

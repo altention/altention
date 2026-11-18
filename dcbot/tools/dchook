@@ -163,14 +163,25 @@ def routed(root, where=None):
 
 def bot_window(chain):
     """Does a process among `chain` run with the bot's own hooks: `--settings <the bot's state>/claude-settings.json`
-    on its command line (a window the bot opened; the bot's own server or the owner's tmux)? The command line is read
-    from /proc on Linux, from ps elsewhere (macOS: split at blanks, so a path with a blank in it is not recognised)."""
-    wanted = set(os.path.realpath(os.path.join(r, "state", "claude-settings.json")) for r in (ROOT, os.environ.get("DCBOT_ROOT")) if r)
+    on its command line, or the copy of it with the conversation's attachments folder in it that the bot opens
+    windows with (claude-settings.<12 hex>.json in the same folder: launch.with_folders(); a window the bot opened;
+    the bot's own server or the owner's tmux)? The command line is read from /proc on Linux, from ps elsewhere
+    (macOS: split at blanks, so a path with a blank in it is not recognised)."""
+    states = set(os.path.realpath(os.path.join(r, "state")) for r in (ROOT, os.environ.get("DCBOT_ROOT")) if r)
     for pid, _ in chain:
         args = command_line(pid)
-        if any(a == "--settings" and os.path.realpath(b) in wanted for a, b in zip(args, args[1:])):
+        if any(a == "--settings" and bot_settings(b, states) for a, b in zip(args, args[1:])):
             return True
     return False
+
+
+BOT_SETTINGS = re.compile(r"^claude-settings(\.[0-9a-f]{12})?\.json$")  # the bot's file, or a copy (launch.with_folders)
+
+
+def bot_settings(path, states):
+    """Is `path` the bot's settings file, or a copy of it, in one of the bot's state folders `states` (real paths)?"""
+    real = os.path.realpath(path)
+    return os.path.dirname(real) in states and bool(BOT_SETTINGS.match(os.path.basename(real)))
 
 
 def command_line(pid):

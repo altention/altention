@@ -46,9 +46,9 @@ class Params(Base):
         """An older installation's first reconcile writes the mode it ran with (bypassPermissions): it opens as it did."""
         got, argv = self.argv_of(Tmux(self), {"dcbot.default_permission": "bypassPermissions"})
         self.assertIsNone(got)
-        self.assertEqual(argv, [config.CLAUDE, "--model", config.MODEL, "--settings", tmux_bridge.SETTINGS_FILE,
-                                "--permission-mode", "bypassPermissions", "--add-dir", os.path.join(fakepane.attachments_dir(), "5"),
-                                "--append-system-prompt", "you are in #c"])
+        copy = tmux_bridge.cc_launch.with_folders(fakepane.settings_file(), [os.path.join(fakepane.attachments_dir(), "5")])
+        self.assertEqual(argv, [config.CLAUDE, "--model", config.MODEL, "--settings", copy,
+                                "--permission-mode", "bypassPermissions", "--append-system-prompt", "you are in #c"])
 
     def test_the_channels_own_with_none_for_the_installation(self):
         self.st["permission"] = "manual"
@@ -94,7 +94,9 @@ class Params(Base):
             self.assertIsNone(got)
             self.assertEqual(self.pick(argv), ("haiku", "plan"), host)
             self.assertEqual(argv[0], "claude" if host else config.CLAUDE)
-            self.assertEqual("--settings" in argv, not host)
+            given = argv[argv.index("--settings") + 1]
+            self.assertEqual(given.startswith("{"), bool(host), "there: the folder alone, as JSON; here: a file")
+            self.assertNotIn("--add-dir", argv)
 
     def test_a_permission_mode_there_is_not_opens_nothing_and_says_which_there_are(self):
         for where, value in (("the channel's", "yolo"), ("the installation's", "everything")):

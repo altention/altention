@@ -14,7 +14,25 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
-## Unreleased
+## v0.5.5 — 2026-11-19
+
+### For people
+
+- **Channels open their Claude again with Claude Code 2.1.326 and later.** From that version a channel's Claude
+  could stop at Claude Code's question whether you trust a directory and never start: on an installation that had
+  never opened Claude Code in the engine's folder and said yes, and for channels on other machines. The bot now
+  gives Claude Code the attachments folder in a way that does not ask. After the update the next message opens the
+  channel's Claude as usual. Only a channel stuck at that question at the very moment you update needs !key Escape
+  typed there, then the message sent again; the conversation goes on where it was.
+
+### For people (zh-TW)
+
+- **Claude Code 2.1.326 起頻道開不了 Claude 的問題修好了。**從那版起，從沒在引擎資料夾開過 Claude Code 並答應信任的安裝，以及別台機器上的頻道，頻道的 Claude 會停在 Claude Code 問「信不信任這個資料夾」的畫面，開不起來。現在機器人改用不會問的方式，把附件資料夾交給 Claude Code。更新後下一則訊息就會照常開起來；只有更新那時剛好卡在那個畫面的頻道，要在那裡打 `!key Escape` 再傳一次，對話內容都還在。
+
+### For agents
+
+- A channel's Claude Code gets the attachments folder through --settings (permissions.additionalDirectories) instead
+  of --add-dir. Nothing to run.
 
 ## v0.5.4 — 2026-11-12
 

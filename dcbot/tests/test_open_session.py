@@ -3,6 +3,7 @@ test that went through submit() put an empty function in ensure's place). What i
 again, what the owner is told, and what is never touched (an attached pane is the owner's own terminal)."""
 import asyncio
 import contextlib
+import json
 import os
 import time
 import unittest
@@ -133,7 +134,13 @@ class Ensure(Base):
         self.assertEqual((name, cwd), (self.st["tmux"], "/w"))
         self.assertTrue(name.startswith("dc-") and name.endswith(str(self.ch.id)), name)
         self.assertEqual(argv[0], config.CLAUDE)
-        self.assertEqual(argv[argv.index("--settings") + 1], tmux_bridge.SETTINGS_FILE, "the hooks that report to the bot")
+        with open(argv[argv.index("--settings") + 1]) as f:  # a copy of the bot's file, its attachments folder in it
+            given = json.load(f)
+        with open(fakepane.settings_file()) as f:
+            own = json.load(f)
+        self.assertEqual(given["hooks"], own["hooks"], "the hooks that report to the bot")
+        self.assertEqual(given["permissions"]["deny"], own["permissions"]["deny"])
+        self.assertNotIn("--add-dir", argv)
         self.assertEqual(argv[argv.index("--model") + 1], config.MODEL)
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
         self.assertEqual(argv[argv.index("--append-system-prompt") + 1], "you are in #c")
@@ -279,7 +286,9 @@ class Home(Base):
         self.assertIsNone(self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux))
         (_, _, _, _, _, argv, env, host), = tmux.did("open_window")
         self.assertEqual((host, argv[0]), ("lap", "claude"), "that machine's own claude")
-        self.assertNotIn("--settings", argv, "its global hook reports, through its route table")
+        given = json.loads(argv[argv.index("--settings") + 1])  # only its attachments folder: no file, no hooks
+        self.assertEqual(given, {"permissions": {"additionalDirectories": ["/far/engine/dcbot/state/attachments/5"]}},
+                         "its global hook reports, through its route table")
         self.assertEqual(env, {"DCBOT_CHANNEL": str(self.ch.id)}, "dcpost's sender only: this machine's paths mean nothing there")
         self.bound.assert_awaited_once()
         self.assertEqual(self.bound.await_args[0][1], str(self.ch.id))

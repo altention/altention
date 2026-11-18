@@ -23,7 +23,7 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
                                     keep an attachment sent from the bot's machine (base64 on stdin) under
                                     state/attachments/CHANNEL/; prints its path (bot/attachcore.py)
   dcremote attachdir CHANNEL        make state/attachments/CHANNEL/ and print its path (handed to the channel's
-                                    Claude when the bot opens it here: --add-dir)
+                                    Claude when the bot opens it here, in its settings)
 """
 import asyncio
 import json
@@ -287,7 +287,7 @@ def attach(channel, message, attachment, name):
 
 def attachdir(channel):
     """The attachments folder of a channel whose Claude is opened here (attachcore.folder), made: its path printed, to
-    be handed to that Claude (--add-dir, C-151). Refused, with a word on stderr and exit 2, for an id that is not
+    be handed to that Claude (in its settings: permissions.additionalDirectories, C-151). Refused, with a word on stderr and exit 2, for an id that is not
     Discord's or a folder that cannot be made."""
     try:
         print(attachcore.folder(os.path.join(STATE, "attachments"), channel))

@@ -514,9 +514,10 @@ class TmuxBridge(object):
     def argv(self, ch, st, resume, dirs, how=None):
         """The command line that opens the channel's conversation (the connector's). On another machine: its own
         claude, and its global hook reports; here: the bot's settings file, whose hooks do. `dirs`: what it reads
-        without asking besides its working directory (attachments.folders(): every way a conversation is opened
-        comes here, and none may leave them out, or what the owner attaches is read now without a question, now
-        with one; C-151). `how`: the model and the permission mode (with()); looked up here when not given."""
+        without asking besides its working directory, put in its settings (cc_launch.command(): a copy of the file
+        here, JSON there; never --add-dir, which Claude Code 2.1.326 asks about; attachments.folders(): every way a
+        conversation is opened comes here, and none may leave them out, or what the owner attaches is read now
+        without a question, now with one; C-151). `how`: the model and the permission mode (with()); looked up here when not given."""
         there = bool((st.get("home") or {}).get("host"))
         model, permission = how or self.with_(st)
         return cc_launch.command("claude" if there else config.CLAUDE, self.host.note(ch, st), model, permission,

@@ -135,6 +135,9 @@ def patchers(fake=None, **named):
     # another machine by asking it over ssh, which a fake pane stands in for (FAR); `fake` may bring its own
     out.append(mock.patch.object(attachments, "DIR", attachments_dir()))
     out.append(mock.patch.object(attachments, "far_folder", getattr(fake, "far_folder", None) or far_folder))
+    # The bot's settings file, of which an opened conversation gets a copy with its attachments folder in it: the
+    # tests' own, never the one in the engine's state (a copy would be written beside it)
+    out.append(mock.patch.object(_tmux_bridge, "SETTINGS_FILE", settings_file()))
     return out
 
 
@@ -148,6 +151,21 @@ def attachments_dir():
         _made.append(tempfile.mkdtemp(prefix="dcq-attach-"))
         atexit.register(shutil.rmtree, _made[0], True)
     return _made[0]
+
+
+_settings = []
+
+
+def settings_file():
+    """The bot's settings file of tests that open conversations (tmux_bridge.SETTINGS_FILE while a fake pane is in
+    force): written once for the whole run, in a folder of its own removed at its end (its copies go there too)."""
+    if not _settings:
+        d = tempfile.mkdtemp(prefix="dcq-settings-")
+        atexit.register(shutil.rmtree, d, True)
+        from altention.connectors.claude_code import launch
+        launch.write_settings(os.path.join(d, "claude-settings.json"), ["Read(z-secret)"], "'/z/dchook'")
+        _settings.append(os.path.join(d, "claude-settings.json"))
+    return _settings[0]
 
 
 async def far_folder(host, channel_id):

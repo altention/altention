@@ -4,6 +4,8 @@ import json
 import os
 import uuid
 
+from altention.connectors.claude_code import launch as cc_launch
+
 from . import config
 
 def deny():
@@ -13,8 +15,13 @@ def deny():
     return secrets.deny_rules()
 
 
-def settings():
-    return json.dumps({"permissions": {"deny": deny()}})
+def settings(dirs=()):
+    """--settings of a print turn: the deny rules, and the folders it reads without asking besides its working
+    directory (permissions.additionalDirectories, never --add-dir: cc_launch.command() says why)."""
+    permissions = {"deny": deny()}
+    if dirs:
+        permissions[cc_launch.FOLDERS] = list(dirs)
+    return json.dumps({"permissions": permissions})
 
 
 class TurnResult(object):
@@ -32,9 +39,7 @@ async def run_turn(prompt, session_id, cwd, system_note, permission, on_progress
     new = session_id is None
     sid = session_id or str(uuid.uuid4())
     cmd = [config.CLAUDE, "-p", "--model", config.MODEL, "--output-format", "stream-json", "--verbose",
-           "--permission-mode", permission, "--settings", settings()]
-    for d in dirs:  # one flag each, never last: --add-dir takes every word up to the next flag
-        cmd += ["--add-dir", d]
+           "--permission-mode", permission, "--settings", settings(dirs)]
     cmd += ["--append-system-prompt", system_note]
     cmd += ["--session-id", sid] if new else ["--resume", sid]
     env = dict(os.environ, DCBOT_ROOT=config.ROOT, DCBOT_CHANNEL=str(channel_id))  # deploy.sh reports back here

@@ -1,4 +1,6 @@
 """Opening a conversation (3b step 2.4b): the command line, the settings file, the permission modes."""
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -25,12 +27,69 @@ class Command(unittest.TestCase):
             cmd = launch.command("claude", "n", "some-model", mode)
             self.assertEqual((cmd[cmd.index("--model") + 1], cmd[cmd.index("--permission-mode") + 1]), ("some-model", mode))
 
-    def test_folders_to_read_one_flag_each_never_last(self):
-        """--add-dir takes every word up to the next flag: each folder its own flag, and a flag after them (C-151)."""
+    def test_folders_to_read_go_in_the_settings_never_by_add_dir(self):
+        """Claude Code 2.1.326 asks whether to trust a folder given by --add-dir (a channel waits on it); one in the
+        settings it reads without asking. With no settings file: --settings carries the folders alone, as JSON."""
         cmd = launch.command("claude", "NOTE", "opus", "auto", resume="r", dirs=["/a/5", "/b c/5"])
-        self.assertEqual(cmd, ["claude", "--model", "opus", "--permission-mode", "auto", "--add-dir", "/a/5",
-                               "--add-dir", "/b c/5", "--append-system-prompt", "NOTE", "--resume", "r"])
+        self.assertEqual(cmd, ["claude", "--model", "opus", "--settings",
+                               '{"permissions":{"additionalDirectories":["/a/5","/b c/5"]}}', "--permission-mode", "auto",
+                               "--append-system-prompt", "NOTE", "--resume", "r"])
         self.assertNotIn("--add-dir", launch.command("claude", "NOTE", "opus", "auto"))
+        self.assertNotIn("--settings", launch.command("claude", "NOTE", "opus", "auto"), "no folders, no file: nothing")
+
+    def test_with_a_settings_file_the_folders_go_in_a_copy_of_it(self):
+        """Only the last --settings counts (tried on 2.1.326): one --settings, a copy of the file with the folders,
+        the file's rules and hooks kept; the file itself untouched."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base = os.path.join(tmp, "claude-settings.json")
+        launch.write_settings(base, ["Read(x)"], "'/h/dchook'")
+        with open(base) as f:
+            before = f.read()
+        cmd = launch.command("claude", "NOTE", "opus", "auto", settings=base, dirs=["/a/5"])
+        self.assertNotIn("--add-dir", cmd)
+        self.assertEqual(cmd.count("--settings"), 1)
+        copy = cmd[cmd.index("--settings") + 1]
+        self.assertNotEqual(copy, base)
+        self.assertEqual(os.path.dirname(copy), tmp)
+        with open(copy) as f:
+            got = json.load(f)
+        self.assertEqual(got, {"permissions": {"deny": ["Read(x)"], "additionalDirectories": ["/a/5"]},
+                               "hooks": hooks.hooks("'/h/dchook'")})
+        with open(base) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(launch.command("claude", "NOTE", "opus", "auto", settings=base, dirs=["/a/5"]), cmd, "the same copy again")
+        other = launch.command("claude", "NOTE", "opus", "auto", settings=base, dirs=["/a/6"])
+        self.assertNotEqual(other[other.index("--settings") + 1], copy, "another folder, another copy")
+        self.assertEqual(launch.command("claude", "NOTE", "opus", "auto", settings=base),
+                         ["claude", "--model", "opus", "--settings", base, "--permission-mode", "auto", "--append-system-prompt", "NOTE"])
+
+    def test_the_copy_follows_the_file(self):
+        """Written from the file as it is now each time: a rule changed in the file is in the copy at the next opening."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base = os.path.join(tmp, "s.json")
+        launch.write_settings(base, ["Read(x)"], "'/h/dchook'")
+        copy = launch.with_folders(base, ["/a/5"])
+        launch.write_settings(base, ["Read(y)"], "'/h/dchook'")
+        self.assertEqual(launch.with_folders(base, ["/a/5"]), copy)
+        with open(copy) as f:
+            self.assertEqual(json.load(f)["permissions"]["deny"], ["Read(y)"])
+
+    def test_a_file_that_cannot_be_read_opens_without_the_folders(self):
+        """As when the folder cannot be made (attachments.folders): opened all the same, the file as given; said."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for what, text in (("missing", None), ("not JSON", "{"), ("not settings", "[1]")):
+            base = os.path.join(tmp, "s-%d.json" % len(what))
+            if text is not None:
+                with open(base, "w") as f:
+                    f.write(text)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cmd = launch.command("claude", "NOTE", "opus", "auto", settings=base, dirs=["/a/5"])
+            self.assertEqual(cmd[cmd.index("--settings") + 1], base, what)
+            self.assertIn("opened without them", out.getvalue(), what)
 
     def test_a_permission_mode_there_is_not_is_refused(self):
         for mode in ("", None, "bypass", "BYPASSPERMISSIONS", "yolo", "default"):
