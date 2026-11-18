@@ -1,0 +1,24 @@
+#golden spec §15.3
+/archive() → !archive
+/attach(session: Optional[str] = None, project: Optional[str] = None)
+/btw(question: str)
+/cc(command: str, args: Optional[str] = None)
+/commands(refresh: Optional[bool] = False)
+/compact(instructions: Optional[str] = None)
+/context() → /context
+/cwd(path: str)
+/detach() → !detach
+/files(path: Optional[str] = None)
+/key(keys: str)
+/mode(mode: Optional[app_commands.Choice[str]] = None)
+/recap(turns: Optional[app_commands.Range[int, 1, 20]] = None)
+/rename(name: str)
+/reset() → !reset
+/resume(conversation: Optional[str] = None, quiet: bool = False)
+/run(command: str)
+/screen() → !screen
+/setup() → !setup
+/status() → !status
+/stop() → !stop
+/talklimit(limit: Optional[str] = None)
+/usage() → /usage

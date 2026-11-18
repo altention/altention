@@ -24,6 +24,8 @@ import re
 TYPE_CHUNK = 500  # characters at most in one go (and a terminal command has limits of its own)
 TYPE_PAUSE = 0.1  # seconds between two stretches
 ESC_GAP = 1.5     # seconds kept between two Escapes the caller decides on, to the same pane (twice what was measured)
+ENTER_LOOKS = 4         # enter(): looks at the box before it gives up (a screen caught while Claude Code redraws)
+ENTER_LOOK_PAUSE = 0.25  # seconds between them
 NEWLINE = "M-Enter"  # the key that puts a new line into the message instead of sending it
 
 
@@ -95,19 +97,27 @@ async def enter(pane, typed, again=False, others_type=False):
     line followed by another is sometimes sent by the typing itself, seen on 2.1.295); None (not pressed: something
     else). `differed`: pressed although the box was not what was typed (a session nobody else types at: a text
     Claude Code draws in a way the comparison does not know must not keep every message from going; the caller
-    writes it down)."""
+    writes it down). What is not to be pressed on is looked at again, ENTER_LOOKS times in all, ENTER_LOOK_PAUSE
+    apart, before it is given up: 11-10, a message typed whole and right into a pane on another machine (the box held
+    it and nothing else, the same screen read again later compares equal) was left unsent once; what was read the
+    moment Enter was to go was not that. The same rules on every look: only a box that is the message is pressed."""
+    import asyncio
     from . import screen
-    view = await pane.raw_screen()
-    if screen.pane_state(view) != "box":
-        return None, False  # a dialog or ! mode, in whoever's pane
-    if screen.input_text(view) == "":
-        return "empty", False
-    differed = not screen.bot_typed(view, typed, screen.paste_marks(typed))
-    if differed and (others_type or again):
-        return None, False  # `again` (no receipt came): only an Enter that was lost is pressed again, the message
-        # still in the box; the next suggestion standing there was pressed on and counted (#code-review-2)
-    await pane.keys("Enter")
-    return "pressed", differed
+    for look in range(ENTER_LOOKS):
+        if look:
+            await asyncio.sleep(ENTER_LOOK_PAUSE)
+        view = await pane.raw_screen()
+        if screen.pane_state(view) != "box":
+            continue  # a dialog or ! mode, in whoever's pane
+        if screen.input_text(view) == "":
+            return "empty", False
+        differed = not screen.bot_typed(view, typed, screen.paste_marks(typed))
+        if differed and (others_type or again):
+            continue  # `again` (no receipt came): only an Enter that was lost is pressed again, the message
+            # still in the box; the next suggestion standing there was pressed on and counted (#code-review-2)
+        await pane.keys("Enter")
+        return "pressed", differed
+    return None, False
 
 
 async def clear_input(pane):

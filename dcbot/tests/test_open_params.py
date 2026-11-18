@@ -1,6 +1,11 @@
 """Step 2.4b: what a conversation is opened with (model, permission mode: the channel's, the installation's, or as
 it always was), the reasons a conversation could not be opened (a fixed word and what it is about, beside the words
 the channel is told), and the settings file left alone when it says the same."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import os
 import unittest
 from unittest import mock
@@ -344,6 +349,76 @@ class Reasons(Base):
 
     def test_they_are_all_the_error_they_were(self):
         self.assertTrue(issubclass(N, tmux_bridge.BridgeError))
+
+
+class PaneFollowed(Base):
+    """C-163 drill problem A, manager 11-09 (a): an attached pane whose pid is not the one recorded, the same pane
+    number running Claude with the channel's own conversation: the record follows it, said in #audit."""
+    PANE = {"socket": "/tmp/x/default", "id": "%7", "host": "lap", "pid": 111}
+
+    def run(self, result=None):
+        with mock.patch.object(tmux_bridge.tmuxio, "UNANSWERED", set()):
+            return super().run(result)
+
+    def ensure(self, now, sid):
+        self.st.pop("tmux", None)
+        self.st.update({"pane": dict(self.PANE), "session_id": "conv-1"})
+        tmux, audits, asked = Tmux(self), [], []
+
+        async def pane_session_id(pane):
+            asked.append(pane)
+            return sid
+
+        async def audit(text):
+            audits.append(text)
+        self.bridge.host.pane_session_id, self.bridge.host.audit = pane_session_id, audit
+        with mock.patch.object(tmux_bridge.tmuxio, "moved_on", mock.AsyncMock(return_value=now)):
+            err = self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux)
+        return err, audits, asked
+
+    def test_the_same_conversation_in_the_same_pane_is_followed(self):
+        err, audits, asked = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, "conv-1")
+        self.assertIsNone(err)
+        self.assertEqual(self.st["pane"], dict(self.PANE, pid=222))
+        self.assertEqual((asked[0]["id"], asked[0]["session"], asked[0]["host"]), ("%7", "pa", "lap"))
+        self.assertEqual(len(audits), 1)
+        self.assertIn("111 → 222", audits[0])
+        self.assertIn("conv-1", audits[0])
+
+    def test_another_conversation_there_is_the_pane_gone_as_before(self):
+        err, audits, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, "conv-2")
+        self.assertEqual(err.why, N.PANE_GONE)
+        self.assertEqual(self.st["pane"]["pid"], 111, "the record left as it was")
+        self.assertEqual(audits, [])
+
+    def test_a_conversation_not_known_is_the_pane_gone(self):
+        err, _, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, None)
+        self.assertEqual(err.why, N.PANE_GONE)
+
+    def test_no_claude_there_is_the_pane_gone(self):
+        err, _, asked = self.ensure(None, "conv-1")
+        self.assertEqual(err.why, N.PANE_GONE)
+        self.assertEqual(asked, [], "nothing more asked")
+
+
+class MovedOn(unittest.TestCase):
+    def ask(self, pane, out, under=None):
+        import asyncio
+        from bot import tmuxio
+
+        async def tmux(*a, **k):
+            return 0, out
+        with mock.patch.object(tmuxio, "tmux", tmux), mock.patch.object(tmuxio, "claude_under", mock.AsyncMock(return_value=under)), \
+                mock.patch.object(tmuxio, "UNANSWERED", set()):
+            return asyncio.run(tmuxio.moved_on(pane))
+
+    def test_moved_on(self):
+        pane = {"socket": "/tmp/x/default", "id": "%7", "pid": 111}
+        self.assertEqual(self.ask(pane, "claude\t222\tpa\t/w\n"), {"pid": "222", "session": "pa", "cwd": "/w"})
+        self.assertIsNone(self.ask(pane, "claude\t111\tpa\t/w\n"), "the same pid: nothing moved")
+        self.assertIsNone(self.ask(pane, "bash\t222\tpa\t/w\n", under=False), "a shell there")
+        self.assertIsNone(self.ask(dict(pane, pid=None), "claude\t222\tpa\t/w\n"), "no pid recorded")
+        self.assertIsNone(self.ask(dict(pane, shell=True), "claude\t222\tpa\t/w\n"))
 
 
 class SettingsFile(unittest.TestCase):

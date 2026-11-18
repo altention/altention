@@ -23,6 +23,20 @@ import release  # noqa: E402
 AUTHOR = "Altention Release <noreply@example.com>"
 CHANGES = "# Changes\n\nWhat each release brought.\n\n## v0.2.0 — 2026-11-01\n\n- second\n\n## v0.1.0 — 2026-10-20\n\n- first\n- 中文 too\n"
 HASH, SLASH = "# COMPAT" + ":", "// COMPAT" + ":"  # spelt apart, so this file holds no marker of its own
+# ruff for tools/lint: its version, then the rows of FAKE_RUFF_ROWS ({file, code, row}) for the files asked for,
+# in ruff's own JSON shape (tools/tests/test_lint.py has the same stand-in)
+FAKE_RUFF = r'''#!PYTHON
+import json, os, sys
+if sys.argv[1:] == ["--version"]:
+    print("ruff VERSION")
+    sys.exit(0)
+asked = sys.argv[sys.argv.index("--") + 1:]
+rows = json.load(open(os.environ["FAKE_RUFF_ROWS"])) if os.path.exists(os.environ["FAKE_RUFF_ROWS"]) else []
+print(json.dumps([{"code": r["code"], "filename": os.path.join(os.getcwd(), r["file"]), "message": "m",
+                   "location": {"row": r["row"], "column": 1}} for r in rows if r["file"] in asked]))
+'''
+with open(release.LINT, encoding="utf-8") as _f:
+    LINT_VERSION = re.search(r'^RUFF_VERSION = "([^"]+)"', _f.read(), re.M).group(1)
 REGISTER = [{"file": "tool.py", "text": "old place, until after the release", "status": "after-release", "why": "x"},
             {"file": "settings.json", "text": "(json)", "status": "after-release", "why": "no comments in JSON"}]
 
@@ -60,12 +74,27 @@ class Rig(unittest.TestCase):
         self.settings({"repo": self.public, "author": AUTHOR})
         with open(os.path.join(self.inst, "privacy.json"), "w") as f:
             json.dump({"terms": ["secretproject"]}, f)
-        self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst})
+        ruff = os.path.join(self.tmp, "bin", "ruff")
+        os.makedirs(os.path.dirname(ruff))
+        with open(ruff, "w") as f:
+            f.write(FAKE_RUFF.replace("PYTHON", sys.executable).replace("VERSION", LINT_VERSION))
+        os.chmod(ruff, 0o755)
+        self.env = mock.patch.dict(os.environ, {"ALT_INSTANCE": self.inst, "ALT_RUFF": ruff,
+                                                "FAKE_RUFF_ROWS": os.path.join(self.tmp, "rows.json")})
         self.env.start()
         self.engine = mock.patch.object(release, "ENGINE", self.private)
         self.engine.start()
+        # the checks of the release checklist (release_gates.py) are tested on their own (test_release_gates.py) and
+        # through release.py in Gated there
+        self.gated = mock.patch.object(release, "gate", lambda *a, **k: None) if self.GATE_OFF else None
+        if self.gated:
+            self.gated.start()
+
+    GATE_OFF = True
 
     def tearDown(self):
+        if self.gated:
+            self.gated.stop()
         self.engine.stop()
         self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -132,6 +161,55 @@ class Publishes(Rig):
         second = self.public_main()
         self.assertEqual(git(self.public, "show", "-s", "--format=%P", second), first, "on top of the public main")
         self.assertEqual(git(self.public, "rev-list", "--count", second), "2", "nothing of the private history")
+
+    def aged_dry_run(self, version):
+        """A dry run, its commit then made again an hour earlier: the --push that follows cannot match it by being
+        in the same second."""
+        code, out = self.run_("publish", version)
+        self.assertEqual(code, 0, out)
+        made = git(self.private, "rev-parse", release.NEXT_REF)
+        raw = subprocess.run(["git", "-C", self.private, "cat-file", "commit", made], stdout=subprocess.PIPE,
+                             universal_newlines=True, check=True).stdout  # whole: git() strips the last newline
+        old = re.sub(r"(?m)^(author|committer) (.*) ([0-9]+) ([-+][0-9]{4})$",
+                     lambda m: "%s %s %d %s" % (m.group(1), m.group(2), int(m.group(3)) - 3600, m.group(4)), raw)
+        self.assertNotEqual(old, raw)
+        p = subprocess.run(["git", "-C", self.private, "hash-object", "-t", "commit", "-w", "--stdin"], input=old,
+                           stdout=subprocess.PIPE, universal_newlines=True, check=True)
+        aged = p.stdout.strip()
+        git(self.private, "update-ref", release.NEXT_REF, aged)
+        return aged
+
+    def test_the_push_publishes_the_very_commit_the_dry_run_showed(self):
+        """Manager 11-11 (v0.5.3 dry run b68a78b4, pushed cc8f726e): --push makes it again with the dry run's author
+        and times, so the hash #release checked is the one published; the dry run's ref is gone after."""
+        aged = self.aged_dry_run("0.1.0")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.public_main(), aged)
+        self.assertEqual(git(self.public, "rev-parse", "v0.1.0^{commit}"), aged)
+        self.assertNotIn(release.NEXT_REF, git(self.private, "for-each-ref", "--format=%(refname)"))
+        self.write("tool.py", "X = 2  %s old place, until after the release\n" % HASH)
+        self.commit("two")
+        code, out = self.run_("publish", "0.2.0", "--push")
+        self.assertEqual(code, 0, "no dry run: made now and pushed, as before: " + out)
+
+    def test_a_push_unlike_its_dry_run_is_refused_with_both_hashes(self):
+        """The tree changed after the dry run (or the public main moved): nothing pushed, both hashes said, the dry
+        run's ref left for a look."""
+        aged = self.aged_dry_run("0.1.0")
+        self.write("tool.py", "X = 2  %s old place, until after the release\n" % HASH)
+        self.commit("two")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 1, out)
+        self.assertIn(aged[:12], out)
+        made = re.search(r"這次做出來的 ([0-9a-f]{12})", out)
+        self.assertTrue(made and made.group(1) != aged[:12], out)
+        self.assertEqual(self.public_main(), "", "nothing pushed")
+        self.assertEqual(git(self.private, "rev-parse", release.NEXT_REF), aged)
+        code, out = self.run_("publish", "0.1.0")
+        self.assertEqual(code, 0, out)
+        self.assertIn("hash 跟", out, "the dry run says what --push does")
+        self.assertEqual(self.run_("publish", "0.1.0", "--push")[0], 0, "a new dry run, then it goes")
 
     def test_a_release_without_its_own_words_is_reminded_not_refused(self):
         """C-57 U8: no "### For people (zh-TW)" (or one without a point): a reminder; published all the same."""
@@ -209,6 +287,64 @@ class Refuses(Rig):
         self.write("docs/compat.json", json.dumps(reg))
         self.commit("not after-release")
         self.refused(says="不是 after-release")
+
+    def ruff_says(self, rows):
+        with open(os.environ["FAKE_RUFF_ROWS"], "w") as f:
+            json.dump(rows, f)
+
+    def test_lint_finds_something_new(self):
+        self.ruff_says([{"file": "tool.py", "code": "F401", "row": 1}])
+        out = self.refused("check", says="lint 找到新的問題")
+        self.assertIn("tool.py:1 F401", out)
+        self.assertNotIn(self.tmp, out.split("拒絕")[0].replace(self.inst, ""), "the export's folder is not shown")
+
+    def test_lint_held_by_the_baseline_in_the_tree(self):
+        """The baseline copies the line, marker and all: that copy is not a COMPAT: of its own."""
+        self.ruff_says([{"file": "tool.py", "code": "F401", "row": 1}])
+        self.write("tools/lint-baseline.json", json.dumps({"ruff": LINT_VERSION, "items": [
+            {"file": "tool.py", "rule": "F401", "line": "X = 1  %s old place, until after the release" % HASH, "count": 1}]}))
+        self.commit("baseline")
+        code, out = self.run_("check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("lint", out)
+
+    def test_the_baseline_may_not_widen_the_last_releases(self):
+        held = {"file": "tool.py", "rule": "F401", "line": "X = 1  %s old place, until after the release" % HASH, "count": 1}
+        self.ruff_says([{"file": "tool.py", "code": "F401", "row": 1}])
+        self.write("tools/lint-baseline.json", json.dumps({"ruff": LINT_VERSION, "items": [held]}))
+        self.commit("baseline")
+        code, out = self.run_("publish", "0.1.0", "--push")
+        self.assertEqual(code, 0, out)
+        self.write("more.py", "import os\n")
+        self.write("tools/lint-baseline.json", json.dumps({"ruff": LINT_VERSION, "items": [
+            held, {"file": "more.py", "rule": "F401", "line": "import os", "count": 1}]}))
+        self.commit("widened")
+        self.ruff_says([{"file": "tool.py", "code": "F401", "row": 1}, {"file": "more.py", "code": "F401", "row": 1}])
+        code, out = self.run_("check")  # (refused() would want the public repo empty: v0.1.0 is out)
+        self.assertEqual(code, 1, out)
+        self.assertIn("lint 找到新的問題", out)
+        self.assertIn("基準檔比原本的多了 1 筆", out)
+
+    def test_lint_reads_the_tree_not_the_folder(self):
+        self.write("half.py", "import os\n")  # not committed: not what is published
+        self.ruff_says([{"file": "half.py", "code": "F401", "row": 1}])
+        code, out = self.run_("check")
+        self.assertEqual(code, 0, out)
+
+    def test_no_ruff_no_release(self):
+        os.environ["ALT_RUFF"] = os.path.join(self.tmp, "missing")
+        os.environ["PATH"] = os.path.join(self.tmp, "nothing") + os.pathsep + os.path.dirname(shutil.which("git"))
+        out = self.refused(says="沒有 ruff，lint 沒跑，這次不發佈")
+        self.assertIn("tools/lint --install", out)
+
+    def test_an_english_compat_marker_is_matched_too(self):
+        self.write("ops/y.py", "Y = 2  %s the old settings file; after every machine moved\n" % HASH)
+        self.write("docs/compat.json", json.dumps(REGISTER + [
+            {"file": "ops/y.py", "text": "the old settings file; after every machine moved", "status": "after-release",
+             "why": "x"}]))
+        self.commit("english marker")
+        code, out = self.run_("check")
+        self.assertEqual(code, 0, out)
 
     def test_a_register_missing_or_broken(self):
         for text, says in ((None, "不在要發佈的樹裡"), ("{ broken", "不是合法的 JSON"),
@@ -412,6 +548,21 @@ class Plugins(Rig):
         return subprocess.run(["git", "-C", self.plug_public, "rev-parse", "-q", "--verify", "refs/heads/main"],
                               stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
 
+    def test_lint_with_the_plugins_own_baseline(self):
+        self.put("run.py", "import os\n")
+        self.plug_commit("code")
+        with open(os.environ["FAKE_RUFF_ROWS"], "w") as f:
+            json.dump([{"file": "run.py", "code": "F401", "row": 1}], f)
+        code, out = self.run_("check-plugin", "demo")
+        self.assertEqual(code, 1, out)
+        self.assertIn("run.py:1 F401", out)
+        self.assertIn("沒有基準檔", out)
+        self.put("lint-baseline.json", json.dumps({"ruff": LINT_VERSION, "items": [
+            {"file": "run.py", "rule": "F401", "line": "import os", "count": 1}]}))
+        self.plug_commit("baseline")
+        code, out = self.run_("check-plugin", "demo")
+        self.assertEqual(code, 0, out)
+
     def test_check_then_one_public_commit_a_release_tagged_on_both(self):
         code, out = self.run_("check-plugin", "demo")
         self.assertEqual(code, 0, out)
@@ -473,6 +624,18 @@ class Plugins(Rig):
         self.assertIn('拒絕：bin/go.py:2 用到介面 dcctl，plugin.json 的 uses 要寫 "dcctl": 1', out)
         code, out = check(dcctl, {"dcctl": 1})
         self.assertEqual(code, 0, out)
+        # dcremote is two interfaces: its subcommand says which one (C-92 b); one not named in it asks for both
+        far = 'ssh lap "~/altention/engine/dcbot/tools/dcremote %s"\n'
+        code, out = check({"bin/go.sh": far % "tmux-list lap"}, {})
+        self.assertIn('拒絕：bin/go.sh:1 用到介面 dcremote.tmux，plugin.json 的 uses 要寫 "dcremote.tmux": 1', out)
+        self.assertNotIn("dcremote.files", out)
+        code, out = check({"bin/go.sh": far % "tmux-read tmux://lap/s:0.0 20"}, {"dcremote.tmux": 1})
+        self.assertEqual(code, 0, out)
+        code, out = check({"bin/go.sh": far % "files"}, {"dcremote.files": 1})
+        self.assertEqual(code, 0, out)
+        code, out = check({"bin/go.sh": far % "$WHAT"}, {"dcremote.files": 1})
+        self.assertEqual(code, 1, out)
+        self.assertIn('"dcremote.tmux": 1', out)
         code, out = check({"bin/go.sh": "python3 ~/altention/engine/dcbot/bot/main.py\n"}, {})
         self.assertEqual(code, 1, out)
         self.assertIn("拒絕：bin/go.sh:1 用到 dcbot/bot/main.py：不是公開的介面", out)
@@ -543,6 +706,87 @@ class Plugins(Rig):
         self.plug_commit("written")
         code, out = self.run_("check-plugin", "demo")
         self.assertEqual(code, 0, out)
+
+    def test_a_page_that_opens_files_with_the_first_version_is_a_reminder_c116(self):
+        """manager 2026-11-02: activity.pages 2, also 1; a plugin that says 1 still works, without the file buttons."""
+        d = dict(PLUGIN, activity={"pages": [{"id": "home", "opens_files": True}]})
+        opt = lambda v: {"v": v, "optional": True}  # noqa: E731
+        for version, said in ((1, True), (2, False), (opt(1), True), (opt(2), False)):
+            with self.subTest(version=version):
+                more = {"plugin.format": 2} if isinstance(version, dict) else {}
+                self.put("plugin.json", json.dumps(dict(d, uses=dict(more, **{"activity.pages": version}))))
+                self.plug_commit("v%s" % json.dumps(version))
+                code, out = self.run_("check-plugin", "demo")
+                self.assertEqual(code, 0, out)
+                self.assertEqual("不會有它的按鈕" in out, said, out)
+
+    def test_tokens_in_install_need_the_second_version(self):
+        """display-manager 11-03: {plugin}, {python}… in needs[].install are filled in from tokens v2 on; a plugin that
+        says 1 is refused (a v0.5.x engine would show the line as written). Shell braces are no tokens (manager)."""
+        def need(cmd):
+            return [{"name": "tool", "check": "true", "install": {"debian": cmd}}]
+        for cmd, version, refused in (('"{plugin}/bin/x" --install chrome', 1, True),
+                                      ('{python} -m pip install rig', 1, True),
+                                      ('"{plugin}/bin/x" --install chrome', 2, False),
+                                      ('${HOME}/bin/x && cp a.{txt,md} /tmp/rig', 1, False)):
+            with self.subTest(cmd=cmd, version=version):
+                self.put("plugin.json", json.dumps(dict(PLUGIN, needs=need(cmd), uses={"tokens": version})))
+                self.plug_commit("%s %d" % (cmd, version))
+                code, out = self.run_("check-plugin", "demo")
+                self.assertEqual(code, 1 if refused else 0, out)
+                self.assertEqual('引擎要 v0.6.0 以上才會展開；plugin.json 的 uses 要寫 "tokens": 2' in out, refused, out)
+
+    def test_optional_uses_need_the_second_format(self):
+        """plugin.format 2: an optional entry without "plugin.format": 2 is refused (an engine before v0.6.0 misreads
+        it); one nobody here offers is a reminder; a plugin that runs altention plugins uses says plugin.format."""
+        opt = {"v": 1, "optional": True}
+        for uses, code, words in (({"dc.post": opt}, 1, 'uses 裡有 optional 的寫法，要加 "plugin.format": 2'),
+                                  ({"dc.post": opt, "plugin.format": 1}, 1, 'uses 裡有 optional 的寫法，要加 "plugin.format": 2'),
+                                  ({"dc.post": opt, "plugin.format": 2}, 0, None),
+                                  ({"dc.post": opt, "plugin.format": 3}, 0, None),
+                                  ({"rig.nothing": opt, "plugin.format": 2}, 0, "選用的 rig.nothing 這版引擎和官方插件都沒有提供，那一項會一直不能用")):
+            with self.subTest(uses=uses):
+                self.put("plugin.json", json.dumps(dict(PLUGIN, uses=uses)))
+                self.plug_commit("u %s" % json.dumps(uses))
+                c, out = self.run_("check-plugin", "demo")
+                self.assertEqual(c, code, out)
+                if words:
+                    self.assertIn(words, out)
+        self.put("bin/ask.py", 'import subprocess\nsubprocess.run([ALT, "plugins", "uses", "demo", "--json"], timeout=60)\n')
+        self.put("plugin.json", json.dumps(dict(PLUGIN, uses={})))
+        self.plug_commit("asks")
+        c, out = self.run_("check-plugin", "demo")
+        self.assertEqual(c, 1, out)
+        self.assertIn('bin/ask.py:2 用到介面 plugin.format，plugin.json 的 uses 要寫 "plugin.format": 2', out,
+                      "the least it needs, not the newest (C-163 raised it to 3)")
+
+    def test_on_standby_needs_the_third_format(self):
+        """C-163: a step whose "on" says "standby" needs plugin.format 3 (an older engine takes it for a machine)."""
+        setup = [{"name": "tools", "on": ["standby"], "run": "true"}]
+        for uses, code in (({}, 1), ({"plugin.format": 2}, 1), ({"plugin.format": 3}, 0)):
+            with self.subTest(uses=uses):
+                self.put("plugin.json", json.dumps(dict(PLUGIN, uses=uses, setup=setup)))
+                self.plug_commit("s %s" % json.dumps(uses))
+                c, out = self.run_("check-plugin", "demo")
+                self.assertEqual(c, code, out)
+                if code:
+                    self.assertIn('"plugin.format": 3', out)
+
+    def test_standby_true_needs_the_fourth_format_and_machines_one(self):
+        """C-181: "standby": true needs plugin.format 4 (an older engine ignores it), and only goes with machines one."""
+        for uses, code in (({}, 1), ({"plugin.format": 3}, 1), ({"plugin.format": 4}, 0)):
+            with self.subTest(uses=uses):
+                self.put("plugin.json", json.dumps(dict(PLUGIN, uses=uses, machines="one", standby=True)))
+                self.plug_commit("k %s" % json.dumps(uses))
+                c, out = self.run_("check-plugin", "demo")
+                self.assertEqual(c, code, out)
+                if code:
+                    self.assertIn('"plugin.format": 4', out)
+        self.put("plugin.json", json.dumps(dict(PLUGIN, uses={"plugin.format": 4}, machines="all", standby=True)))
+        self.plug_commit("all")
+        c, out = self.run_("check-plugin", "demo")
+        self.assertEqual(c, 1, out)
+        self.assertIn("standby 只能是 true 或 false，而且只配 machines one", out)
 
     def test_an_interface_of_its_own_may_not_take_an_engine_name(self):
         self.put("plugin.json", json.dumps(dict(PLUGIN, interfaces={"dc.post": {"version": 1}, "rig.spend": {"version": 1}})))

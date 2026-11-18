@@ -487,6 +487,23 @@ def forget_before(name):
             pass
 
 
+def write_stamped(path, data):
+    """altention/statefile.write_json's twin (this file imports no other module of the engine): data plus "by_test"
+    (whether a test wrote it, ALT_TEST_ANY_ENGINE), to a file of its own, then renamed over path. The tests' guard
+    lets a file stamped false change in the real home while they run (manager 2026-11-02)."""
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(dict(data, by_test=os.environ.get("ALT_TEST_ANY_ENGINE") == "1"), f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def tell_updated(rnd, start=False):
     """C-55: a machine that moves by itself (release, branch) tells once per release that it now runs it, whoever
     moved HEAD (this round, home-pull, the sync standing in, a push to main here). updated-release: {tag, at}, the
@@ -523,9 +540,7 @@ def tell_updated(rnd, start=False):
         else:
             SAID.append("已推播：引擎更新到 %s" % now)
     os.makedirs(state_dir(), exist_ok=True)
-    with open(path + ".tmp", "w") as f:
-        json.dump({"tag": now, "at": time.time()}, f)
-    os.replace(path + ".tmp", path)
+    write_stamped(path, {"tag": now, "at": time.time()})
 
 
 NOTES_LINES = 6     # bullets of a release's notes in the notice
@@ -1400,6 +1415,9 @@ LOCKED = 75  # update.py --release's exit when the git lock was held and nothing
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if argv not in ([], ["--release"]):
         print(__doc__)
         return 2

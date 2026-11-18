@@ -1,6 +1,11 @@
 """C-87: the server's channel list, read from Discord once a minute for every dcctl on the machine (a file, a lock),
 read again when a name or ID is not in it; a post or notification given by ID reads no list at all. C-80: two
 dcctl making one channel or category at once make it once."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -181,7 +186,8 @@ class ById(Base):
     def test_the_reserved_targets_only_take_posts(self):
         for post in ({"channel": "@audit", "new_claude": "/tmp/x"}, {"channel": "@notify", "move_to": "系統"},
                      {"channel": "@audit", "archive": True}, {"channel": "@audit", "resume": "ab12"},
-                     {"channel": "@notify", "attach": "s:0"}, {"channel": "@audit", "history": True}):
+                     {"channel": "@notify", "attach": "s:0"}, {"channel": "@audit", "history": True},
+                     {"channel": "@audit", "text": "x", "now": True}):  # (C-176: --now is for a Claude's channel)
             with self.assertRaises(SystemExit, msg=post) as e:
                 self.post(post)
             self.assertIn("只能用來貼訊息或通知", str(e.exception.code))

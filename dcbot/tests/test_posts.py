@@ -1,4 +1,9 @@
 """Posting to channels: records, handing posts to a channel's Claude, the loop guard, and dcpost's command line."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import importlib.machinery
@@ -8,7 +13,11 @@ import os
 import re
 import tempfile
 import time
+import types
 import unittest
+
+import discord
+from tests import marks  # noqa: E402  (the quote's marks taken out: C-172a P1c)
 from unittest import mock
 
 from bot import posts
@@ -54,20 +63,38 @@ class Guild(object):
 
 class Tmux(object):
     def __init__(self):
-        self.given = []
+        self.given, self.calls, self.done = [], [], []
 
     async def submit(self, message, text):
         self.given.append((message.channel.id, text))
+
+    async def call(self, ch, key, code, gist=None, about=None, **data):  # the owner's mention (C-103: bot/calls.py)
+        self.calls.append((ch.id, key, code, about, data))
+
+    async def call_done(self, ch, key=None, prefix=None):
+        self.done.append((ch.id, key))
+
+
+class NoButtons(object):
+    """The bot's launcher (bot/activity.py) as far as posted files go: no page opens files (test_activity: some do)."""
+    async def for_files(self, ch, files):
+        return None
 
 
 class Bot(object):
     def __init__(self):
         self.chans, self.channels_state, self.tmux, self.audits = {}, {}, Tmux(), []
+        self.launcher = NoButtons()
         self.guild = Guild(self)
         self.audit_ch = Chan(99, "audit")
 
     def get_channel(self, cid):
         return self.chans.get(cid)
+
+    async def fetch_channel(self, cid):  # (Discord's answer for a channel not in the cache: these know no more, C-191)
+        if cid in self.chans:
+            return self.chans[cid]
+        raise discord.NotFound(types.SimpleNamespace(status=404, reason="Not Found"), {"code": 10003, "message": "x"})
 
     def get_guild(self, gid):
         return self.guild
@@ -102,7 +129,7 @@ class Posts(unittest.TestCase):
         self.assertEqual(cid, 2)
         self.assertIn("這是 #st-1 傳到這個頻道的訊息", text)
         self.assertIn("altention dc post 1 ", text, "the reply goes by ID: still right after a rename")
-        self.assertTrue(text.endswith("我看完了"))
+        self.assertTrue(marks.plain(text).endswith("我看完了"))
 
     def test_records_are_only_kept(self):
         self.post(channel="#notes", text="report", from_name="HostB 上的 Claude（x）")
@@ -348,6 +375,32 @@ class Posts(unittest.TestCase):
         self.assertIn("已接上", self.bot.tmux.given[-1][1])
         self.assertEqual(self.bot.guild.text_channels, [self.a, self.b, self.notes], "no channel called cv was made")
 
+    def test_attach_by_identifier_finds_the_pane_on_the_machine_it_names(self):
+        """C-92: altention dc post --attach tmux://lap/… from another machine: the pane is looked for on lap (the
+        identifier's machine), not on the sender's; one of the bot's own machine is this one's."""
+        from bot import remote, tmuxio
+        asked = []
+
+        async def panes(everywhere=False):
+            return [{"host": "lap", "socket": "/tmp/tmux-1000/default", "id": "%4", "session": "cv", "window": "0"},
+                    {"socket": "/tmp/tmux-1000/default", "id": "%4", "session": "here", "window": "0"}]
+
+        async def attach(ch, ref, project=""):
+            asked.append(ref)
+            return "已接上"
+        old = tmuxio.claude_panes, remote.machine_of, remote.this_machine
+        tmuxio.claude_panes, remote.machine_of, remote.this_machine = panes, lambda h: "mac" if h == "mac-host" else None, lambda: "box"
+        self.bot.attach = attach
+        try:
+            self.post(channel="cv", attach={"socket": "/tmp/tmux-1000/default", "pane": "%4"}, attach_host="lap",
+                      from_host="mac-host", from_channel="2", text="x")
+            self.post(channel="cv", attach={"socket": "/tmp/tmux-1000/default", "pane": "%4"}, attach_host="box",
+                      from_host="mac-host", from_channel="2", text="x")
+        finally:
+            tmuxio.claude_panes, remote.machine_of, remote.this_machine = old
+        self.assertEqual(asked, ["lap|/tmp/tmux-1000/default|%4", "/tmp/tmux-1000/default|%4"],
+                         "the identifier's machine; the bot's own machine named is this one")
+
     def test_new_claude_makes_a_channel_with_its_own_claude(self):
         started = []
 
@@ -372,6 +425,84 @@ class Posts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             self.post(channel="Project6/deep", new_claude=folder, from_channel="2")
         self.assertEqual(self.bot.guild.text_channels[-1].category.name, "Project6", "a missing category is made")
+
+    def new_claude_on(self, info, **kw):
+        """--new-claude with post["on"] (C-111) on a list of the bot's machine, "far" (dcattach) and "plain" (not):
+        (what the sender was told, the folders asked over there, the channels started)."""
+        from bot import remote, setup, tmuxio
+        asked, started = [], []
+
+        async def fake_info(host, folder=None):
+            asked.append((host, folder))
+            return info
+
+        async def sessions(*a, **k):
+            return []
+
+        async def start_now(ch):
+            started.append(ch.id)
+        self.bot.tmux.start_now = start_now
+        self.bot.setup = setup.Setup(self.bot)
+        self.bot.setup.info = fake_info
+        inv = {"machines": {"botbox": {}, "far": {"hostname": "far-host", "roles": ["dcattach"], "ssh": ["FAR"]},
+                            "plain": {"ssh": ["P"]}}}
+        with mock.patch.object(remote, "this_machine", return_value="botbox"), \
+                mock.patch.object(remote, "inventory", return_value=inv), \
+                mock.patch.object(remote, "hosts", return_value={"far": "FAR"}), \
+                mock.patch.object(remote, "problem", None), mock.patch.object(tmuxio, "user_sessions", sessions):
+            self.post(from_channel="2", **kw)
+        return self.bot.tmux.given[-1][1], asked, started
+
+    def test_new_claude_on_another_machine_goes_the_setup_cards_way(self):
+        info = {"socket": "/far/sock", "home": "/h", "folder": "/h/proj"}
+        said, asked, started = self.new_claude_on(info, channel="t/demo", new_claude="~/proj", on="far-host", text="主題")
+        new = self.bot.guild.text_channels[-1]
+        st = self.bot.channels_state[str(new.id)]
+        self.assertEqual(st["home"], {"socket": "/far/sock", "session": "dc-demo-%s" % str(new.id)[-4:], "window": "",
+                                      "host": "far"}, "the owner's tmux over there, a session of its own")
+        self.assertEqual((st["cwd"], st["mode"], st["configured"]), ("/h/proj", "tmux", True))
+        self.assertEqual(asked[0], ("far", "~/proj"), "~ is that machine's")
+        self.assertEqual(started, [new.id])
+        self.assertIn("會開在 far 上你的 tmux `dc-demo-", new.sent[-1])
+        self.assertIn("已建好 #demo", said)
+        self.assertIn("far 上的 /h/proj", said)
+
+    def test_new_claude_on_another_machine_not_made_when_the_folder_is_not_there(self):
+        n = len(self.bot.guild.text_channels)
+        said, asked, started = self.new_claude_on({"socket": "/s", "home": "/h", "folder": None},
+                                                  channel="t/demo", new_claude="/h/nope", on="far")
+        self.assertEqual(said.split("）", 1)[1], "far 上找不到資料夾 /h/nope，頻道沒有建。")
+        self.assertEqual(len(self.bot.guild.text_channels), n, "checked before a channel is made")
+        with mock.patch.dict("bot.remote.TRIED", {"far": ["FAR"]}):
+            said, _, _ = self.new_claude_on({}, channel="t/demo", new_claude="/h/proj", on="far")
+        self.assertEqual(said.split("）", 1)[1], "連不上 far（ssh FAR），頻道沒有建。")
+        self.assertEqual(len(self.bot.guild.text_channels), n)
+        self.assertFalse(started)
+
+    def test_new_claude_on_a_machine_that_cannot_have_one(self):
+        n = len(self.bot.guild.text_channels)
+        said, asked, _ = self.new_claude_on({}, channel="t/demo", new_claude="/x", on="plain")
+        self.assertIn("plain 不能開頻道：機器清單（machines.json）裡它沒有 dcattach 角色或 ssh 別名，頻道沒有建。能開的機器：botbox、far", said)
+        said, _, _ = self.new_claude_on({}, channel="t/demo", new_claude="/x", on="nowhere")
+        self.assertIn("機器清單裡沒有 nowhere，頻道沒有建。能開的機器：botbox、far（用 --on <機器> 指定）。", said)
+        self.assertEqual((asked, len(self.bot.guild.text_channels)), ([], n), "nothing asked, nothing made")
+        from bot import remote
+        def broken():
+            remote.broken(ValueError("machines.json cut short"))
+            return {}
+        with mock.patch.object(remote, "problem", None), mock.patch.object(remote, "inventory", broken), \
+                mock.patch.object(remote, "this_machine", return_value="botbox"):
+            self.assertEqual(posts.place_of("far"), (None, "機器清單讀不出來（machines.json cut short），頻道沒有建。修好 machines.json 再試。"))
+
+    def test_new_claude_on_the_bots_machine_is_as_before(self):
+        with tempfile.TemporaryDirectory() as folder:
+            said, asked, started = self.new_claude_on({}, channel="t/here", new_claude=folder, on="BOTBOX")
+            st = self.bot.channels_state[str(self.bot.guild.text_channels[-1].id)]
+        self.assertEqual((st["cwd"], st.get("home"), asked), (folder, None, []), "the bot's own tmux")
+        self.assertIn("已建好 #here", said)
+        said, _, _ = self.new_claude_on({}, channel="t/x", new_claude="/no/such/folder", on="botbox")
+        self.assertEqual(said.split("）", 1)[1],
+                         "botbox 上找不到資料夾 /no/such/folder，頻道沒有建。資料夾在別台的話，加 --on <機器>。")
 
     def test_resume_and_history_requests(self):
         asked = []
@@ -721,9 +852,11 @@ class Posts(unittest.TestCase):
         from bot import config
         self.bot.channels_state["1"]["busy"] = True
         self.hold_once()
-        self.assertTrue(self.b.sent[-1].startswith("⏸️ <@%d> #st-1 " % config.OWNER_ID), self.b.sent[-1])
-        allowed = self.b.how[-1]["mentions"].to_dict()  # P0-1: the client pings nobody; this line lets the owner through
-        self.assertEqual(allowed, {"parse": [], "users": [config.OWNER_ID]} if config.OWNER_ID else {"parse": []})
+        self.assertTrue(self.b.sent[-1].startswith("⏸️ #st-1 "), self.b.sent[-1])
+        self.assertNotIn("<@%d>" % config.OWNER_ID, self.b.sent[-1], "C-103: the mention is a line of its own, purpose first")
+        (cid, key, code, about, data), = self.bot.tmux.calls
+        self.assertEqual((code, data), ("talk_limit", {"n": posts.LOOP_LIMIT}))
+        self.assertTrue(key.startswith("hold:"))
         self.assertEqual(len(self.bot.tmux.given), posts.LOOP_LIMIT + 1, "the post itself is not handed over")
         cid, text = self.bot.tmux.given[-1]
         self.assertEqual(cid, 1, "the sender is told")
@@ -872,6 +1005,27 @@ class Order(unittest.TestCase):
         self.assertEqual(postbox.waiting(self.spool), [])
         self.assertEqual(self.p.chains, {})
 
+    def test_a_channel_run_in_print_takes_the_post_at_once(self):
+        """C-162 (#code-review on 7c0ac52, manager): a post to a channel run in print or held down is a turn queued
+        on the channel; the post is done (its spool file gone) before that turn ends, so a restart while the turn
+        waits or runs neither shows the post again nor runs the turn again."""
+        from bot import postbox, tmux_bridge
+        queued = []
+        bridge = tmux_bridge.TmuxBridge.__new__(tmux_bridge.TmuxBridge)
+        bridge.host, bridge.rt = self.bot, mock.Mock()
+        self.bot.tmux = bridge
+        self.bot.mode = lambda st: "print"
+        self.bot.chan = lambda ch: self.bot.channels_state[str(ch.id)]
+        self.bot.queue_turn = lambda message, text: queued.append(text)  # the turn: queued, not ended
+        self.write(channel="st-1", text="一", from_channel="2")
+        self.run_ticks(0.4)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(postbox.waiting(self.spool), [], "done: nothing left for a restart to take again")
+        shown = [t for t in self.a.sent]
+        self.p = posts.Posts(self.bot)  # the bot restarted
+        self.run_ticks(0.3)
+        self.assertEqual((len(queued), self.a.sent), (1, shown), "not shown again, not run again")
+
     def test_a_hand_over_that_takes_long_does_not_hold_what_is_shown(self):
         """Manager on the rehearsal: shown in order, at once; handing over is the channel's own queue."""
         stuck = asyncio.Event()
@@ -879,7 +1033,7 @@ class Order(unittest.TestCase):
 
         class Stuck(object):
             async def submit(self, message, text):
-                given.append(text.rsplit("\n", 1)[-1])
+                given.append(marks.plain(text).rsplit("\n", 1)[-1][2:])  # (the post's words, quoted: P0-3)
                 await stuck.wait()  # ssh to a machine that does not answer
         self.bot.tmux = Stuck()
         for t in ("一", "二", "三"):
@@ -1036,9 +1190,10 @@ class Dcpost(unittest.TestCase):
         loader = importlib.machinery.SourceFileLoader("dcpost", path)
         dcpost = importlib.util.module_from_spec(importlib.util.spec_from_loader("dcpost", loader))
         loader.exec_module(dcpost)
-        p = dcpost.build(["#reports", "hello", "there"], "", {"DCBOT_CHANNEL": "55"}, "host-a", "/w/proj")
+        p = dcpost.build(["#reports", "hello", "there"], "", {"DCBOT_CHANNEL": "55"}, "host-a", "/w/proj",
+                         claude={"DCBOT_CHANNEL": "55"})
         self.assertEqual((p["channel"], p["text"], p["from_channel"], p["from_name"]), ("reports", "hello there", "55", "host-a 上的 Claude（proj）"))
-        p = dcpost.build(["logs"], "from stdin\n", {"TMUX": "/s,1,0", "TMUX_PANE": "%7"}, "HostB", "/x")
+        p = dcpost.build(["logs"], "from stdin\n", {}, "HostB", "/x", claude={"TMUX": "/s,1,0", "TMUX_PANE": "%7"})
         self.assertEqual((p["text"], p["pane"]), ("from stdin", "HostB|/s|%7"), "the machine goes along with the pane")
         with tempfile.NamedTemporaryFile(suffix=".md") as f:
             f.write(b"# report")
@@ -1104,6 +1259,28 @@ class Dcpost(unittest.TestCase):
         self.assertEqual((p.get("history"), p["text"]), (True, ""), "--history does not read stdin")
 
 
+    def test_new_claude_names_the_machine_it_opens_on(self):
+        """C-111: this machine by default (its name in the list), --on another; a relative folder is this machine's."""
+        path = os.path.join(os.path.dirname(ROOT), "altention", "dc", "post.py")
+        loader = importlib.machinery.SourceFileLoader("dcpost", path)
+        dcpost = importlib.util.module_from_spec(importlib.util.spec_from_loader("dcpost", loader))
+        loader.exec_module(dcpost)
+        with mock.patch.object(dcpost, "this_machine", lambda host: "lap"):
+            p = dcpost.build(["t/demo", "--new-claude", "~/proj", "主題"], "", {}, "lap-host", "/w")
+            self.assertEqual((p["new_claude"], p["on"], p["text"]), ("~/proj", "lap", "主題"))
+            p = dcpost.build(["t/demo", "--new-claude", "sub/proj"], "", {}, "lap-host", "/w")
+            self.assertEqual((p["new_claude"], p["on"]), ("/w/sub/proj", "lap"), "relative to where it was run")
+            p = dcpost.build(["t/demo", "--on", "far", "--new-claude", "/x/proj"], "", {}, "lap-host", "/w")
+            self.assertEqual((p["new_claude"], p["on"]), ("/x/proj", "far"))
+            for argv in (["t/demo", "--new-claude", "proj", "--on", "far"], ["t/demo", "--on", "far", "hi"],
+                         ["t/demo", "--new-claude", "/x", "--on"]):
+                with self.assertRaises(SystemExit):
+                    dcpost.build(argv, "", {}, "lap-host", "/w")
+            self.assertNotIn("on", dcpost.build(["t", "hi"], "", {}, "lap-host", "/w"))
+        from altention import config as altconfig
+        with mock.patch.object(altconfig, "this_machine", mock.Mock(side_effect=ValueError("no list"))):
+            self.assertEqual(dcpost.this_machine("lap-host"), "lap-host", "no machine list: its hostname")
+
 
 class ServerMap(unittest.TestCase):
     def test_map_shows_categories_kinds_and_the_caller(self):
@@ -1130,6 +1307,107 @@ class ServerMap(unittest.TestCase):
         self.assertNotIn("voice", text)
         self.assertIn("找不到你所在的頻道", dcctl.structure(chans, state, "999"))
         self.assertNotIn("你在", dcctl.structure(chans, state))
+
+
+
+class Now(unittest.TestCase):
+    """C-176: altention dc post --now hands the post with now=True (the owner's !! path); its card is where its ⚡
+    goes; without --now nothing changes."""
+
+    def setUp(self):
+        self.bot = Bot()
+        self.a, self.b = Chan(1, "st-1"), Chan(2, "st-0")
+        self.bot.chans = {1: self.a, 2: self.b}
+        self.bot.guild.text_channels = [self.a, self.b]
+        self.bot.channels_state = {"1": {"pane": {"id": "%1"}}, "2": {"tmux": "dc-x"}}
+        got = self.got = []
+
+        class Now(Tmux):
+            async def submit(self, message, text, now=False):
+                got.append((message, now))
+        self.bot.tmux = Now()
+        self.p = posts.Posts(self.bot)
+
+    def test_now_is_handed_on_with_its_card_and_sender(self):
+        asyncio.run(self.p.handle({"channel": "st-0", "text": "快看", "from_channel": "1", "now": True}))
+        (origin, now), = self.got
+        self.assertTrue(now)
+        self.assertEqual((origin.sender, origin.sender_name, origin.card.id), (1, "#st-1", 1), "the 📨 card it was shown with")
+
+    def test_without_now_as_before(self):
+        asyncio.run(self.p.handle({"channel": "st-0", "text": "x", "from_channel": "1"}))
+        (origin, now), = self.got
+        self.assertFalse(now)
+
+
+
+class AgentAsks(unittest.TestCase):
+    """C-176 batch 2: posts that ask the bot (--waiting, --answer, --talk-continue) are answered through the receipt
+    (replied()), never shown nor handed to a Claude."""
+
+    def setUp(self):
+        self.bot = Bot()
+        self.a, self.b = Chan(1, "st-1"), Chan(2, "st-0")
+        self.bot.chans = {1: self.a, 2: self.b}
+        self.bot.guild.text_channels = [self.a, self.b]
+        self.bot.channels_state = {"1": {"pane": {"id": "%1"}}, "2": {"tmux": "dc-x"}}
+        self.p = posts.Posts(self.bot)
+
+    def handled(self, post):
+        got = {"messages": []}
+
+        async def go():
+            posts.SENT.set(got)
+            await self.p.handle(post)
+        asyncio.run(go())
+        return posts.receipt_of(got)
+
+    def test_waiting_is_answered_not_shown(self):
+        from unittest import mock
+        from bot import agentanswer
+        with mock.patch.object(agentanswer, "waiting_said", lambda bridge, ch: "listed %s" % ch.name):
+            r = self.handled({"channel": "st-0", "waiting": True, "from_channel": "1"})
+        self.assertEqual((r["ok"], r["text"]), (True, "listed st-0"))
+        self.assertEqual((self.b.sent, self.bot.tmux.given), ([], []))
+
+    def test_an_answer_goes_back_ok_or_not(self):
+        from unittest import mock
+        from bot import agentanswer
+
+        async def answer(bridge, ch, sender_ch, post):
+            return False, "沒送：x"
+        with mock.patch.object(agentanswer, "answer", answer):
+            r = self.handled({"channel": "st-0", "answer": "q-1", "pick": ["A"], "why": "w", "from_channel": "1"})
+        self.assertEqual(r, {"ok": False, "text": "沒送：x", "why": "沒送：x"})
+
+    def held(self):
+        self.bot.channels_state["2"]["talk_limit"] = self.bot.channels_state["1"]["talk_limit"] = 1
+        for _ in range(2):
+            asyncio.run(self.p.handle({"channel": "st-0", "text": "again", "from_channel": "1"}))
+        self.assertIn(2, self.p.held)
+
+    def test_talk_continue_twice_a_day_for_a_pair(self):
+        self.held()
+        given = len(self.bot.tmux.given)
+        r = self.handled({"channel": "st-0", "talk_continue": True, "why": "long review", "from_channel": "1"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(self.bot.tmux.given), given + 1, "the held post handed on")
+        self.assertNotIn(2, self.p.held)
+        self.assertIn("#st-1 的 Claude（自稱）讓轉交繼續（今天第 1 次，為什麼：long review）", self.bot.audits[-1])
+        self.held()
+        self.assertTrue(self.handled({"channel": "st-1", "talk_continue": True, "why": "w", "from_channel": "2"})["ok"],
+                        "the other Claude of the pair, naming the sender's channel, as well")
+        self.held()
+        r = self.handled({"channel": "st-0", "talk_continue": True, "why": "w", "from_channel": "1"})
+        self.assertFalse(r["ok"])
+        self.assertIn("今天已經由 Claude 繼續過 2 次", r["text"])
+        self.assertIn(2, self.p.held, "still the owner's to decide")
+        self.assertNotIn("talk_free", self.bot.channels_state["2"], "the limit itself never lifted")
+
+    def test_talk_continue_with_nothing_held(self):
+        r = self.handled({"channel": "st-0", "talk_continue": True, "why": "w", "from_channel": "1"})
+        self.assertFalse(r["ok"])
+        self.assertIn("沒有因為來回次數停住的訊息", r["text"])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import os
 import re
 import time
 
+from altention.connectors.claude_code import process as cc_process
 from altention.connectors.claude_code import screen as cc_screen  # (this module has a screen() of its own)
 from altention.connectors.claude_code import typist as cc_typing
 
@@ -87,8 +88,12 @@ def on(t):
 
 def label(t):
     """How to tell the owner where a target is."""
-    if isinstance(t, dict):
-        return "%stmux -S %s（窗格 %s）" % ("%s 上的 " % t["host"] if t.get("host") else "", t["socket"], t["id"])
+    if isinstance(t, dict):  # (a server's name, as a pane taken over is kept before its window is found, reads -L, and
+        # an id not known yet is said so: drill 11-08 showed "tmux -S dcbot（窗格 ?）")
+        sock, pane_id = str(t.get("socket") or ""), t.get("id")
+        where = ("的 tmux %s %s" % ("-S" if "/" in sock else "-L", sock)) if sock else "機器人的 tmux"
+        return "%s%s（%s）" % ("%s 上" % t["host"] if t.get("host") else "", where if t.get("host") else where.lstrip("的 "),
+                             "窗格 %s" % pane_id if pane_id not in (None, "", "?") else "窗格還沒找到")
     return "tmux -L %s attach -t %s" % (bot_socket(), t)
 
 
@@ -195,8 +200,44 @@ async def alive(t):
         command, _, pid = out.strip().partition("\t")
         if t.get("pid") and pid != str(t["pid"]):
             return False  # pane numbers start over when a tmux server restarts: that is someone else's pane now
-        return code == 0 and cc_screen.is_claude(command)
-    return (await tmux("has-session", "-t", "=" + t))[0] == 0
+        if code != 0:
+            return False
+        if command == "claude" or cc_screen.CLAUDE_VERSION.match(command or ""):  # Claude's own binary
+            return True
+        said = await claude_under(t, pid)  # node (npm's Claude or any Node program), a script's shell: what runs under
+        return cc_screen.is_claude(command) if said is None else said  # it (C-92 b); the name only when not known
+    return (await dead(t)) is False  # a session kept after its Claude ended (start()) is not one that runs
+
+
+async def moved_on(t):
+    """A pane address whose recorded pid is not the pane's now (alive() says no for that alone): what the same pane
+    number runs now, {"pid", "session", "cwd"}, when that is Claude Code; None else (no pid recorded, the pid the
+    same, the pane gone or at a shell, the machine not answering). Whether it is the same conversation is the
+    caller's to tell (C-163 drill problem A: the pid of a pane attached again, never pushed to the standby)."""
+    if not isinstance(t, dict) or t.get("shell") or not t.get("pid"):
+        return None
+    code, out = await tmux("display-message", "-p", "-t", t["id"],
+                           "#{pane_current_command}\t#{pane_pid}\t#{session_name}\t#{pane_current_path}", **on(t))
+    command, pid, session, cwd = (out.strip().split("\t") + ["", "", "", ""])[:4]
+    if code != 0 or not pid or pid == str(t["pid"]):
+        return None
+    if not await alive(dict(t, pid=None)):
+        return None
+    return {"pid": pid, "session": session, "cwd": cwd}
+
+
+async def dead(name):
+    """Session `name` of the bot's server: None when there is none; else whether its pane is dead, and how it ended
+    then ({"status", "signal"} as tmux says them). Asked only of a session that is there: tmux 3.4 answers
+    display-message about a target it does not have with the current session's values."""
+    if (await tmux("has-session", "-t", "=" + name))[0] != 0:
+        return None
+    code, out = await tmux("display-message", "-p", "-t", "=%s:" % name, "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}")
+    flag, _, rest = out.strip("\n").partition("\t")
+    if code != 0 or flag != "1":
+        return False
+    status, _, signal = rest.partition("\t")
+    return {"status": status, "signal": signal}
 
 
 UNANSWERED = set()  # the panes on other machines whose last asking (alive()) got no answer at all
@@ -227,14 +268,36 @@ async def standing(t):
 
 
 async def start(name, cwd, argv, env=None):
-    """Start `argv` in a new detached session. The session ends when the program exits."""
+    """Start `argv` in a new detached session. Until settled() it stays when the program exits, its pane dead, so
+    why it ended can be read (ended(), C-161); a dead one of the same name left from before (the bot restarted in
+    between) is closed first, nothing else being there to keep."""
+    if await dead(name):
+        await kill(name)
     cmd = ["new-session", "-d", "-s", name, "-x", str(WIDTH), "-y", str(HEIGHT), "-c", cwd]
     for k, v in (env or {}).items():
         cmd += ["-e", "%s=%s" % (k, v)]
-    ok = (await tmux(*(cmd + list(argv))))[0] == 0
+    # In the same call: tmux reads the program's end only after both commands ran, so none is missed
+    cmd += list(argv) + [";", "set-option", "-w", "remain-on-exit", "on"]  # no -t: the window new-session just made
+    ok = (await tmux(*cmd))[0] == 0
     if ok:  # what Claude Code copies ("c" in the /btw answer) lands in a tmux buffer the bot can read
         await tmux("set-option", "-s", "set-clipboard", "on")
     return ok
+
+
+async def settled(name):
+    """The session's program came up: from now on the session ends when it does, as it always did."""
+    await tmux("set-option", "-w", "-t", "=%s:" % name, "remain-on-exit", "off")
+
+
+async def ended(name):
+    """Why the program start() began in session `name` ended, read off its dead pane: {"status": its exit code as
+    tmux says it ("" when it ended by a signal), "signal": that signal's number or "", "screen": what the pane
+    showed last, with the rows above it (tmux 3.4 scrolls the screen's first row into them as it writes "Pane is
+    dead", measured 11-04)}; None when the pane is not dead (still running, or no such session)."""
+    how = await dead(name)
+    if not how:
+        return None
+    return dict(how, screen=(await tmux("capture-pane", "-p", "-S", "-%d" % HEIGHT, "-t", "=%s:" % name))[1])
 
 
 async def clipboard(t):
@@ -432,6 +495,27 @@ async def pane_pid(pane):
     return out.strip() if code == 0 else None
 
 
+async def session_command(name):
+    """The command line the first pane of the bot's own session `name` was started with (this machine), None when
+    it cannot be told (no such session, or no way to read a process's command line here)."""
+    code, out = await tmux("display-message", "-p", "-t", "=%s:" % name, "#{pane_pid}")
+    pid = out.strip() if code == 0 else ""
+    if not pid.isdigit():
+        return None
+    try:
+        with open("/proc/%s/cmdline" % pid, "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip() or None
+    except OSError:
+        pass
+    try:  # (macOS: no /proc)
+        proc = await asyncio.create_subprocess_exec("ps", "-o", "command=", "-p", pid, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), 10)
+        return out.decode("utf-8", "replace").strip() or None
+    except (OSError, asyncio.TimeoutError):
+        return None
+
+
 async def exists(pane):
     """Is the pane still there, with the same process? (A shell: whatever runs in it.)"""
     code, out = await tmux("display-message", "-p", "-t", pane["id"], "#{pane_pid}", **on(pane))
@@ -448,6 +532,22 @@ def safe_session(name):
     return re.sub(r"[.:\s]+", "-", name.strip())[:50]
 
 
+async def claude_under(t, pid):
+    """Does Claude Code run in pane `t`, whose process is `pid`, by the command lines under it in its terminal's
+    foreground (a Claude stopped with Ctrl-Z or run in the background does not count)? On another machine its
+    dcremote is asked (claude-at). None when that cannot be told: no process table here, a dcremote too old to know
+    the question (exit 1) or that cannot tell ("?"); alive() then goes by the name, as before. False when ssh itself failed, noted as
+    not answered (standing() says unknown, not gone)."""
+    if t.get("host"):
+        from . import remote
+        code, out = await remote.dcremote(t["host"], "claude-at", pid, timeout=20)
+        if code == 255:  # ssh's own failure: not an answer, so not "gone"
+            asked(t, answered=False)
+            return False
+        return {"1": True, "0": False}.get(out.strip()) if code == 0 else None
+    return await asyncio.get_running_loop().run_in_executor(None, cc_process.runs_claude, "", pid)
+
+
 def socket_dir():
     return os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", "tmux-%d" % os.getuid())
 
@@ -458,11 +558,13 @@ PANE_FORMAT = ("#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{
 
 
 def parse_panes(socket, out):
-    """`tmux list-panes -a -F PANE_FORMAT` output -> the panes running Claude Code."""
-    found = []
+    """`tmux list-panes -a -F PANE_FORMAT` output -> the panes running Claude Code: told from the command lines of
+    the pane's process and those under it (cc_process), not from the name of its foreground program (C-92 b: "node"
+    is any Node program, and a Claude started by a script shows the script's shell)."""
+    found, is_claude = [], cc_process.Lazy()
     for row in out.split("\n"):
         f = row.split("\t")
-        if len(f) == 8 and cc_screen.is_claude(f[4]):
+        if len(f) == 8 and is_claude(f[4], f[7]):
             found.append({"socket": socket, "id": f[0], "session": f[1], "window": f[2], "cwd": f[5],
                           "window_name": f[3] if f[6] == "0" else "", "pid": f[7]})
     return found

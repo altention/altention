@@ -92,16 +92,57 @@ def engine_of(host):
         return DEFAULT_ENGINE
 
 
+EPOCH = None  # C-163: this bot's epoch while it has a standby (main sets it); None: nothing about epochs is sent
+OLD = 75      # a machine refused a request as an older bot's (dcremote's OLD, and fenced_shell()'s)
+on_old = None  # told (the host) when a machine says this bot is an older one: the bot gives the place up
+LEASED = False  # C-163: this bot has a standby (main sets it with the lease): requests wait for EPOCH (run())
+on_stale = None  # told (the host) when a machine refuses this bot, which has no epoch (main: #audit once a machine)
+
+
+def epoch_words():
+    return " --epoch %d" % EPOCH if EPOCH is not None else ""
+
+
+def fenced_shell(command):
+    """`command` for ssh, refused on that machine (exit OLD) when it has seen a newer bot than this one (its
+    dcremote-owner, written by dcremote): what goes to tmux there by ssh (open a window, type, keys, read a
+    screen) is fenced as dcremote's requests are (C-163 section 1.4). Unchanged without an epoch."""
+    if EPOCH is None:
+        return command
+    return ('o=$(cat "$HOME/.local/share/altention/dcremote-owner" 2>/dev/null); case "$o" in ""|*[!0-9]*) o=0;; esac; '
+            '[ "$o" -le %d ] || { echo "an older bot (epoch %d, seen $o)" >&2; exit %d; }; %s' % (EPOCH, EPOCH, OLD, command))
+    # (a file that is not a number is 0, as dcremote's owner() reads it: #code-review on 94f58e5)
+
+
+CLAUDE_AT = {}  # host -> the full path of its claude (dcremote info), once known
+
+
+async def claude_on(host):
+    """The full path of Claude Code on machine `host` (asked once by `dcremote info`, then kept); "claude" when not
+    known (the PATH that remote run sets then, as before)."""
+    if host not in CLAUDE_AT:
+        code, out = await dcremote(host, "info", timeout=20)
+        try:
+            got = json.loads(out).get("claude") if code == 0 else None
+        except (ValueError, AttributeError):
+            got = None
+        if not got:
+            return "claude"  # (not kept: asked again next time)
+        CLAUDE_AT[host] = got
+    return CLAUDE_AT[host]
+
+
 def dcremote_command(host):
-    return "python3 %s/dcbot/tools/dcremote" % engine_of(host)
+    return "python3 %s/dcbot/tools/dcremote%s" % (engine_of(host), epoch_words())
 
 
 def stream_command(host):
     """The one SSH line tmux_bridge.stream() keeps open: bring that machine's engine up to date (and its hooks
     with it), then stream its hook events."""
     return ("cd %s && { if [ -x bin/home-pull ]; then bin/home-pull --quiet; else git pull -q --rebase --autostash; fi; } "
-            ">/dev/null 2>&1; python3 dcbot/tools/dchook --update >/dev/null 2>&1; exec python3 dcbot/tools/dcremote stream"
-            % engine_of(host))
+            ">/dev/null 2>&1; python3 dcbot/tools/dchook --update >/dev/null 2>&1; exec python3 dcbot/tools/dcremote%s stream%s"
+            % (engine_of(host), epoch_words(), " --bot-spool" if host == old_bot_machine() else ""))
+    # (the old bot machine: one stream only, its own spool, where its windows' hooks and its routes write: c1's low)
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15",
        "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/dcbot-ssh-%C", "-o", "ControlPersist=600"]
 
@@ -155,15 +196,42 @@ def unreachable(host):
     return "連不上 %s（試過 %s）" % (host, "、".join(tried)) if tried else "連不上 %s" % host
 
 
-def hosts():
-    """{machine name: the alias to try first} of the machines sessions can be attached from (not this one)."""
+def hosts(channels=None):
+    """{machine name: the alias to try first} of the machines sessions can be attached from (dcattach; not this
+    one), and on a standby that is the bot (C-163) the old bot machine. With `channels` (the bot's channels: only
+    start_streams() passes them, for whose events it reads) also the standbys and any machine a channel's home,
+    pane or files names: conversations a failback leaves on a standby report there (#code-review-2 on 8778f8d);
+    the setup's machine list and posts keep dcattach's meaning (manager on 4844bb5)."""
     machines = inventory().get("machines") or {}
     me = this_machine()
+    named = set()
+    for st in (channels or {}).values():
+        for k in ("home", "pane", "files"):
+            h = (st.get(k) or {}).get("host") if isinstance(st, dict) and isinstance(st.get(k), dict) else None
+            if h:
+                named.add(h)
     out = {}
     for name, m in machines.items():
-        if "dcattach" in m.get("roles", []) and any(a != "local" for a in m.get("ssh", [])) and name != me:
+        from . import lease
+        wanted = "dcattach" in m.get("roles", []) or (channels is not None and (lease.ROLE in m.get("roles", []) or
+                                                                               name in named))
+        if wanted and any(a != "local" for a in m.get("ssh", [])) and name != me:
             out[name] = aliases(name)[0]
+    old = old_bot_machine()
+    if old and old not in out:
+        out[old] = aliases(old)[0]
     return out
+
+
+def old_bot_machine():
+    """C-163: on a standby that is the bot now (it has an epoch), the machine with the role dcbot; else None."""
+    if EPOCH is None:
+        return None
+    machines = inventory().get("machines") or {}
+    me = this_machine()
+    if "dcbot" in ((machines.get(me) or {}).get("roles") or []):
+        return None
+    return next((n for n, m in machines.items() if "dcbot" in (m.get("roles") or []) and n != me), None)
 
 
 # A non-interactive SSH shell on macOS does not have Homebrew's tmux or ~/.local/bin's claude on its PATH
@@ -188,6 +256,13 @@ async def _once(host, alias, command, input, timeout):
         except Exception:
             pass
         return 124, "", "%s 秒沒有結束" % timeout
+    except asyncio.CancelledError:  # the caller gave up on it (C-163 tell_hosts()'s time limit): no ssh left running
+        try:  # unreaped (#code-review on 7377217, manager)
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
     except OSError as e:
         return 255, "", str(e)
 
@@ -204,7 +279,18 @@ async def run(host, command, input=None, timeout=30, err=None):
     `true` can be tried every way, a command cannot: ssh says 255 also when the line dropped after the command ran,
     and a keystroke must never go twice; code-review 2026-10-07). A 255 or a command that runs too long: not run
     again; the next command finds its way afresh. (255, "") when nothing connects (TRIED says what was tried).
-    `err`, a list: why it failed is appended to it (its stderr, or the way not found), for the message."""
+    `err`, a list: why it failed is appended to it (its stderr, or the way not found), for the message.
+    With a standby (LEASED) and no epoch yet (before the bot's first lease round): waits for the epoch, at most
+    `timeout`; past it, nothing is sent (a request without its epoch would be no bot's: C-163, #code-review-2 on
+    f68f24b, manager)."""
+    waited = 0.0
+    while LEASED and EPOCH is None and waited < timeout:
+        await asyncio.sleep(0.5)
+        waited += 0.5
+    if LEASED and EPOCH is None:
+        if err is not None:
+            err.append("機器人剛啟動，還在確認是不是由這台負責，沒有送出；等一下再試。")  # (#release)
+        return 255, ""
     good = LAST_GOOD.get(host)
     alias = good if good and not dropped(host, good) else await reach(host)
     if alias is None:
@@ -212,7 +298,19 @@ async def run(host, command, input=None, timeout=30, err=None):
         if err is not None:
             err.append(unreachable(host))
         return 255, ""
-    code, out, stderr = await _once(host, alias, command, input, timeout)
+    code, out, stderr = await _once(host, alias, fenced_shell(command), input, timeout)
+    if code == OLD and EPOCH is not None:  # that machine has seen a newer bot: this one is old (C-163 section 1.4)
+        print("remote: %s refused this bot as an older one (epoch %d)" % (host, EPOCH), flush=True)
+        if on_old is not None:
+            try:
+                on_old(host)
+            except Exception:
+                pass
+    elif code == OLD and on_stale is not None:  # no epoch here, refused there: that machine remembers a bot with a
+        try:  # standby, this one runs without one (#bot-lease gone, the role taken away): said, not left silent
+            on_stale(host)  # (#code-review-2 on 028f7e0)
+        except Exception:
+            pass
     if code in (124, 255):
         LAST_GOOD.pop(host, None)
         TRIED[host] = [alias]

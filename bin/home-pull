@@ -33,6 +33,13 @@ def unreadable(text):
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
+    odd = [a for a in argv if a not in ("--quiet", "--take-refused")]
+    if odd:
+        print("home-pull：不認得 %s（只有 --quiet、--take-refused；-h 看說明），什麼都沒做" % " ".join(odd))
+        sys.exit(2)
     quiet, take = "--quiet" in argv, "--take-refused" in argv
     repo = sync.Repo(REPO)
     if repo.git_dir() is None:

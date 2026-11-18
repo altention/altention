@@ -1,0 +1,1040 @@
+{
+ "activity.post": [
+  [
+   "send",
+   "c",
+   "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "act:0000000000000000000000000000000b",
+       "打開 Demo 看板",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "act:0000000000000000000000000000000c",
+       "打開 Demo 看板",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   {
+    "embed": {
+     "embed": {
+      "description": "1",
+      "flags": 0,
+      "type": "rich"
+     }
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   {
+    "embed": {
+     "embed": {
+      "description": "2",
+      "flags": 0,
+      "type": "rich"
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "act:0000000000000000000000000000000d",
+       "打開 Demo 看板",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "agents.room_thread_status": [
+  [
+   "send",
+   "c",
+   "🤖 **子代理**（Explore） · 找檔案\n⏳ 執行中，過程在討論串裡",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "create_thread",
+   "c",
+   "🤖 找檔案"
+  ],
+  [
+   "send",
+   "thread",
+   "Read x.py",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "thread",
+   "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "thread",
+   "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🤖 **子代理**（Explore） · 找檔案\n✅ 完成 · 9 秒"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🧩 **Workflow** · r1\n⏳ 執行中，0／0 個代理完成，過程在討論串裡",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "create_thread",
+   "c",
+   "🧩 r1"
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🧩 **Workflow** · r1\n⏳ 執行中，0／1 個代理完成，過程在討論串裡"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🧩 **Workflow** · 整理\n⏳ 執行中，0／1 個代理完成，過程在討論串裡"
+   }
+  ],
+  [
+   "channel.edit",
+   "thread",
+   [
+    "name"
+   ]
+  ],
+  [
+   "channel.edit",
+   "thread",
+   [
+    "archived"
+   ]
+  ]
+ ],
+ "catchup.deliver": [
+  [
+   "send",
+   "c",
+   "-# ⚠️ 機器人離線期間你在這裡發的 2 則訊息超過 30 分鐘了，沒有送給 Claude，需要的話請重發：https://discord.com/x/11 https://discord.com/x/12",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "-# 🔁 補送機器人重啟期間你發的 1 則訊息",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "-# ⏸️ 離線時收到的 `!keys C-c` 沒有執行，要的話再送一次。",
+   {
+    "silent": true
+   }
+  ]
+ ],
+ "cc_watch.remind": [
+  [
+   "send",
+   "c",
+   "⏳ 機器人停在 Claude Code 9.9.8 已經 7 天，新版一直沒通過檢查。要繼續停著，還是改用新版的簡易模式？ <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "ccpin:keep",
+       "繼續停 7 天",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "ccpin:new",
+       "改用新版的簡易模式",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "files.browser_links": [
+  [
+   "send",
+   "c",
+   "📂 `/w`",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "fb:up",
+       "⬆️",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "fb:close",
+       "關掉",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Select",
+       "fb:open",
+       null,
+       "None",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "📂 `/w`",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "fb:up",
+       "⬆️",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "fb:close",
+       "關掉",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Select",
+       "fb:open",
+       null,
+       "None",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "delete",
+   "c"
+  ],
+  [
+   "delete",
+   "c"
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "fbl:0",
+       "📂 bot/a.py:12",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "fbl:1",
+       "📂 b.md",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "history.show_and_remote": [
+  [
+   "send",
+   "c",
+   "📜 **接回對話 `aaaaaaaa`**（這個頻道之前貼過它的紀錄，或就是在這裡進行的），目前的最後幾輪：\n\n> question 0\nanswer 0\n\n> question 1\nanswer 1\n\n> question 2\nanswer 2",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "📜 接回的對話 `bbbbbbbb` 的紀錄在 lap 上，現在連不上，所以沒有貼出來。",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "📜 **接回對話 `bbbbbbbb`**（這個頻道之前貼過它的紀錄，或就是在這裡進行的），目前的最後幾輪：\n\n> q 1\na 1\n\n> q 2\na 2\n\n> q 3\na 3",
+   {
+    "silent": true
+   }
+  ]
+ ],
+ "screens.show_text": [
+  [
+   "send",
+   "c",
+   "```\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\n```",
+   {
+    "mention_author": false,
+    "reference": {
+     "message": 901
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "```\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\n```",
+   {}
+  ],
+  [
+   "send",
+   "c",
+   "```\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\n```",
+   {}
+  ]
+ ],
+ "secretbox.post_and_filled": [
+  [
+   "send",
+   "c",
+   "please fill yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n-# 只有擁有者按得動。值會經過 Discord，輸入時看得到字（Discord 的輸入框不會遮）；不想經過 Discord，就在終端機跑 `altention secret set demo api-token`。",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sec:00000000000000000000000000000001",
+       "填入 API token",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   {
+    "embed": {
+     "embed": {
+      "description": "按下面的按鈕，填入 demo 要的 API token。\n-# 只有擁有者按得動。值會經過 Disc",
+      "flags": 0,
+      "type": "rich"
+     }
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   {
+    "embed": {
+     "embed": {
+      "description": "2",
+      "flags": 0,
+      "type": "rich"
+     }
+    },
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sec:00000000000000000000000000000002",
+       "填入 API token",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sec:00000000000000000000000000000002",
+       "✅ 已填入 API token（再按可以換）",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "setup.offer_done": [
+  [
+   "send",
+   "c",
+   "🛠️ **#c 要拿來做什麼？**\n- 🤖 **Claude 對話**：跟 Claude Code 對話\n- 💻 **終端機**：不開 Claude，這個頻道就是一個 shell，每則訊息是一行指令\n- 📂 **檔案**：瀏覽一台機器上的一個資料夾，打字就是找檔案\n- 📝 **一般頻道**：機器人不回應，拿來記東西；之後要改用 `/setup`\n-# 選 Claude 或終端機之後，下一步選要開在哪裡。工作目錄預設是 `/w`。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "setup:5:claude",
+       "🤖 Claude 對話",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "setup:5:term",
+       "💻 終端機",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "setup:5:files",
+       "📂 檔案",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "setup:5:plain",
+       "📝 一般頻道",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "✅ 終端機",
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "出錯了：no shell",
+   {}
+  ]
+ ],
+ "sources.show": [
+  [
+   "send",
+   "c",
+   "第 1 張：圖，matplotlib 做的\n```python\nplot()\n```",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "mention_author": false,
+    "reference": {
+     "message": 900
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "第 2 張：圖，graphviz 做的",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "file": {
+     "file": "source-2.dot",
+     "sha1": "f212f0ceb6b8"
+    }
+   }
+  ]
+ ],
+ "startup_ask.post_done_pressed": [
+  [
+   "send",
+   "c",
+   "🔔 **Claude Code 啟動前要你決定**\n```\nAllow external CLAUDE.md file imports?\nThis project's CLAUDE.md or .claude/rules imports files outside the current working directory. Never allow this for\nthird-party repositories.\nExternal imports:\n/tmp/claude-1000001/-mnt-nfs-work-someone123-altention-e…tchpad/pc/w/ic-colour-120x50-3410440/base/outside/room.md\nImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks\nhttps://code.claude.com/docs/en/security\n```\n這個資料夾的 CLAUDE.md 引用了資料夾外面的檔案。選 Yes，Claude 會把那些檔案讀進對話（不經過讀檔工具，秘密防護擋不到）；只有你信任那些檔案時才選 Yes。選 No 也可以開始對話，只是不讀那些檔。你決定之前，這個頻道的 Claude 會停在這裡。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sta:1800000000000:0",
+       "No, disable external imports",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "sta:1800000000000:1",
+       "Yes, allow external imports",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 Claude Code 啟動前的問題：對話開起來了",
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔔 **Claude Code 啟動前要你決定**\n```\nAllow external CLAUDE.md file imports?\nThis project's CLAUDE.md or .claude/rules imports files outside the current working directory. Never allow this for\nthird-party repositories.\nExternal imports:\n/tmp/claude-1000001/-mnt-nfs-work-someone123-altention-e…tchpad/pc/w/ic-colour-120x50-3410440/base/outside/room.md\nImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks\nhttps://code.claude.com/docs/en/security\n```\n這個資料夾的 CLAUDE.md 引用了資料夾外面的檔案。選 Yes，Claude 會把那些檔案讀進對話（不經過讀檔工具，秘密防護擋不到）；只有你信任那些檔案時才選 Yes。選 No 也可以開始對話，只是不讀那些檔。你決定之前，這個頻道的 Claude 會停在這裡。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sta:1800000000000:0",
+       "No, disable external imports",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "sta:1800000000000:1",
+       "Yes, allow external imports",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": null,
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔔 **Claude Code 啟動前要你決定**\n```\nAllow external CLAUDE.md file imports?\nThis project's CLAUDE.md or .claude/rules imports files outside the current working directory. Never allow this for\nthird-party repositories.\nExternal imports:\n/tmp/claude-1000001/-mnt-nfs-work-someone123-altention-e…tchpad/pc/w/ic-colour-120x50-3410440/base/outside/room.md\nImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks\nhttps://code.claude.com/docs/en/security\n```\n這個資料夾的 CLAUDE.md 引用了資料夾外面的檔案。選 Yes，Claude 會把那些檔案讀進對話（不經過讀檔工具，秘密防護擋不到）；只有你信任那些檔案時才選 Yes。選 No 也可以開始對話，只是不讀那些檔。你決定之前，這個頻道的 Claude 會停在這裡。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sta:1800000000000:0",
+       "No, disable external imports",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "sta:1800000000000:1",
+       "Yes, allow external imports",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 Claude Code 啟動前的問題：Allow external CLAUDE.md file imports?\n✅ 選了「Yes, allow external imports」",
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔔 **Claude Code 啟動前要你決定**\n```\nAllow external CLAUDE.md file imports?\nThis project's CLAUDE.md or .claude/rules imports files outside the current working directory. Never allow this for\nthird-party repositories.\nExternal imports:\n/tmp/claude-1000001/-mnt-nfs-work-someone123-altention-e…tchpad/pc/w/ic-colour-120x50-3410440/base/outside/room.md\nImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks\nhttps://code.claude.com/docs/en/security\n```\n這個資料夾的 CLAUDE.md 引用了資料夾外面的檔案。選 Yes，Claude 會把那些檔案讀進對話（不經過讀檔工具，秘密防護擋不到）；只有你信任那些檔案時才選 Yes。選 No 也可以開始對話，只是不讀那些檔。你決定之前，這個頻道的 Claude 會停在這裡。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "sta:1800000000000:0",
+       "No, disable external imports",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "sta:1800000000000:1",
+       "Yes, allow external imports",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 Claude Code 啟動前的問題已經不在畫面上了（在終端機答掉了，或 Claude 已經結束），沒有送出。",
+    "view": null
+   }
+  ]
+ ],
+ "terminal.run_watch_failed": [
+  [
+   "send",
+   "c",
+   "```\n$ seq 1 3000\n```\n-# ⏳ 執行中",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "term:5:ctrlc:1",
+       "Ctrl-C",
+       "ButtonStyle.danger",
+       null
+      ],
+      [
+       "Button",
+       "term:5:rerun:1",
+       "🔁 再跑一次",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "term:5:screen:1",
+       "📺 畫面",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "```\n…\n\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n1\n2\n```\n-# ✅ 結束碼 0 · 0 秒",
+    "view": {
+     "view": [
+      [
+       "Button",
+       "term:5:rerun:1",
+       "🔁 再跑一次",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "term:5:screen:1",
+       "📺 畫面",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "完整輸出：",
+   {
+    "file": {
+     "file": "output.txt",
+     "sha1": "66af235496c8"
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "出錯了：no shell",
+   {}
+  ]
+ ],
+ "tmux_bridge.btw_confirm_peer_failed": [
+  [
+   "send",
+   "c",
+   "💬 **/btw**　what is x?",
+   {}
+  ],
+  [
+   "create_thread",
+   "c",
+   "💬 what is x?"
+  ],
+  [
+   "send",
+   "c",
+   "💬 答案在討論串裡：<#800>，在那裡可以繼續追問。",
+   {}
+  ],
+  [
+   "send",
+   "c",
+   "⚠️ `/exit` 會結束這個對話（頻道會對著一個空的終端機）。確定要送進這個對話嗎？",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "00000000000000000000000000000002",
+       "送出",
+       "ButtonStyle.danger",
+       null
+      ],
+      [
+       "Button",
+       "00000000000000000000000000000003",
+       "取消",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   {
+    "embed": {
+     "embed": {
+      "author": {
+       "name": "📨 來自 `st-1`"
+      },
+      "color": 14964566,
+      "description": "hi from st-1",
+      "flags": 0,
+      "type": "rich"
+     }
+    },
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "⚠️ **這一輪中斷了：API 錯誤（529）**\n> Overloaded\n-# 按「再試一次」會請 Claude 從中斷的地方接著做",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "retry:5",
+       "再試一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "⚠️ 這一輪中斷了，要你處理：API 錯誤（529） <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1010 channel_id=5 guild_id=None>"
+   }
+  ]
+ ],
+ "update_cards.show_details_ask": [
+  [
+   "send",
+   "c",
+   "🆕 有新版",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "upd:u1:go",
+       "更新",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:later",
+       "之後再說",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:more",
+       "看要做什麼",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:ask",
+       "請 Claude 幫忙",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🆕 有新版（改過）",
+    "view": {
+     "view": [
+      [
+       "Button",
+       "upd:u1:go",
+       "更新",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:later",
+       "之後再說",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:more",
+       "看要做什麼",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:ask",
+       "請 Claude 幫忙",
+       "ButtonStyle.danger",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "先做 A\n再做 B",
+   {
+    "reference": "<MessageReference message_id=1001 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "要做的事（完整的在附檔）：\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n很長的說明\n…",
+   {
+    "file": {
+     "file": "details.txt",
+     "sha1": "d1b5e9f968f9"
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "把附檔交給任一頻道的 Claude（例如說「請讀這個檔，照 update skill 處理」），它會帶你處理。",
+   {
+    "file": {
+     "file": "for-claude.txt",
+     "sha1": "807fca915150"
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🆕 有新版（改過）\n還沒有 #setup 頻道：要交給 Claude 的內容貼在下面的附檔。",
+    "view": {
+     "view": [
+      [
+       "Button",
+       "upd:u1:go",
+       "更新",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:later",
+       "之後再說",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "upd:u1:more",
+       "看要做什麼",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ]
+}

@@ -1,6 +1,6 @@
 ---
 name: setup
-description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done; also when they ask there to put on a plugin from the official list (「裝 <插件>」) or to finish one (「幫我裝完 <插件>」, 「接著裝 <插件>」). Not for changing settings later in other channels."
+description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done; also when they ask there to put on a plugin from the official list (「裝 <插件>」) or to finish one (「幫我裝完 <插件>」, 「接著裝 <插件>」), or to set up a standby machine for the bot (「設備援」) or the outside notice (「設外部通知」). Not for changing settings later in other channels."
 ---
 
 # Setting up, in #setup
@@ -232,6 +232,14 @@ Ask the tour question that `questions --json` prints now (its only question), as
   it printed it (`<#ID>`).
 - 「之後再說」 or 「不用了」: `answer tour later` or `answer tour no`, and say 「之後任何頻道打 /tour 都能帶你試。」
 
+Then the Claude Code check (C-162: so that a later Claude Code update that breaks the bot has a version to go
+back to). Ask once (AskUserQuestion): 「要不要現在用真的 Claude Code 檢查一次？會跑大約 5 次 Haiku 對話（用掉一點用量），
+要幾分鐘。通過的這一版會留一份，之後 Claude Code 更新後壞了，這台會先退回這一版。」 with 「檢查」 and 「之後再說」.
+
+- 「檢查」: run `cd <ENGINE>/dcbot && .venv/bin/python -m bot.cc_drill --real` (minutes) and tell them plainly
+  what its last line before `done` says.
+- 「之後再說」: say 「之後在任何頻道打 `!cctest` 就能檢查。」
+
 Last line: 「設定做完了；之後要改設定，在任何頻道跟 Claude 說就好。」 This channel stays; nothing more happens here
 unless they write again.
 
@@ -306,3 +314,27 @@ When they say 「幫我裝完 <插件>」 (install.sh and doctor send them here)
 
 Never run an install command or a step's command yourself: only `plugin-tool` and `plugin-run` run them, and only
 after the person said yes to that one.
+
+## 8. A standby for the bot (「設備援」)
+
+When the person asks here for a standby (「設備援」, 「設一台備援」), at any time, setup done or not:
+1. `altention standby status --json`: the machines that could be one. If it prints 「備援功能還在測試，這一版還不能設。」 (exit 1),
+   say exactly that and stop: the standby is not offered yet. None listed: say 「機器清單裡只有機器人這一台，沒有別台可以當備援。」 and stop.
+2. Ask with buttons which machine (each name, and 「先不要」), then how, in these words (#release's):
+   「要不要讓 <那台> 在 <主機> 上的機器人停了時自動接手？要的話，機器人的 token 會多放一份在那台。多一台機器，就多一個可能被偷的地方。不要的話，那台只會在 <主機> 停了時通知你。」
+   (「自動接手」, 「只通知」). <主機> is the bot's machine (`altention standby status` does not list it).
+3. On an answer, run `altention standby setup <那台> auto` or `… notify` and pass on what it prints. It brings that
+   machine's engine up to date, hands it the token (auto: by ssh on stdin, never shown) or a webhook in the
+   notification channel with one test message (notify), only then gives it its role, applies, makes #bot-lease if it
+   is not there, and restarts the bot (「設好了；機器人正在重啟，重啟後就開始把狀態傳給 <那台>。」). Never copy the token or the webhook address
+   yourself, never print them.
+4. It says 設備援沒有做完 with why: tell them, and that they can say 「設備援」 again once that is fixed.
+
+
+## 9. The outside notice (healthchecks.io: question `healthchecks`, or 「設外部通知」)
+
+On 「要」 (or when the person asks later): tell them to make a free check on https://healthchecks.io (period 5
+minutes, grace 10), copy its ping address (https://hc-ping.com/…), and post the box for it:
+`altention dc post <this channel> --secret core/healthchecks-url`. They paste it there; you never see it. Then run
+`python3 <engine>/altention/health.py check` and pass on its line (it refuses anything but https). On 「不要」:
+nothing; they can say 「設外部通知」 here later.

@@ -1,6 +1,11 @@
 """The small line under a reply (#issues 27, stage 3b step 2.2e): what the turn used and how long it took are the
 turn's own. A turn cut short (Esc: Claude Code sends no event) no longer lends its tools and its time to the next
 one; a turn that waited in a dialog for minutes keeps its own."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import unittest
 from unittest import mock

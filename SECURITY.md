@@ -37,12 +37,13 @@ What follows from that:
 
 | Secret | Where | Protection |
 |---|---|---|
-| Discord bot token, `OWNER_ID`, `GUILD_ID` | `~/.config/dcbot/env` on the bot machine | file mode `600`; never in git; see "Keeping Claude away from the token" |
+| Discord bot token, the owner's and the server's IDs | `~/.config/altention/secrets/core/` on the bot machine (`discord-token`, `owner-id`, `guild-id`, one file each) | folder mode `700`, files `600`; never in git, never backed up; see "Keeping Claude away from secrets" |
 | SSH keys | your usual `~/.ssh` | Altention only adds an `Include` line to `~/.ssh/config` (backed up first) |
 | Claude Code login | Claude Code's own files | not read or copied by Altention |
 
 - Enter the token with `./install.sh discord` in your own terminal (it does not echo, does not pass through a Claude
-  conversation, and is sent only to Discord's API), or write the file yourself and `chmod 600` it.
+  conversation, and is sent only to Discord's API), or store one value with `altention secret set core discord-token`
+  (asked in your terminal, not echoed).
 - **Never paste the token into a Discord message or a Claude conversation.** Conversations are kept on disk and may be
   synced (see "Conversation logs" below).
 - If the token leaks: reset it in the Discord developer portal, write the new one with `./install.sh discord`, and
@@ -53,9 +54,10 @@ What follows from that:
 Claude Code runs on the same machine and as the same user as the bot, so the operating system alone does not stop it
 from reading the token file. Altention adds a guard on top.
 
-**What is protected**: the bot's settings folder (`~/.config/dcbot/`, which holds the token), private SSH keys
-(`~/.ssh/id_*`, `~/.ssh/*key*`; public keys `*.pub`, `~/.ssh/config`, `known_hosts` and `authorized_keys` are not),
-and any path you add in the instance's `plugins.json`:
+**What is protected**: the secrets folder (`~/.config/altention/secrets/`, which holds the bot's token and the plugins'
+keys), the bot's old settings folder (`~/.config/dcbot/`: the token lived there before 0.6.0; it is still read while the
+version is 0.x, so it is still protected), private SSH keys (`~/.ssh/id_*`, `~/.ssh/*key*`; public keys `*.pub`,
+`~/.ssh/config`, `known_hosts` and `authorized_keys` are not), and any path you add in the instance's `plugins.json`:
 
 ```json
 "core": {"secret_paths": ["~/.config/my-service/credentials.json"]}

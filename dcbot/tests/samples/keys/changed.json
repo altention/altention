@@ -11,5 +11,16 @@
  "tests.test_safety.Submit.test_the_next_message_waits_for_the_receipt_of_this_one": "C-73: new test (the channel's lock held from typing to receipt); the existing tests' keys are unchanged",
  "tests.test_safety.Submit.test_a_posts_timing_gets_when_its_turn_came": "C-75: new test (a post's Origin gets when its turn came); the existing tests' keys are unchanged",
  "tests.test_menus.Pressed.test_a_narrow_pane_s_countdown_gets_the_key_too": "v0.4.3 narrow-pane countdown: new test (a click on a dialog whose countdown wraps onto three rows sends its key); the existing tests' keys are unchanged",
- "tests.test_screen_words.Ask.test_the_box_some_installations_of_2_1_316_draw_inline": "/btw inline box: new test (the 2.1.316 box drawn without its edge row); the existing tests' keys are unchanged"
+ "tests.test_screen_words.Ask.test_the_box_some_installations_of_2_1_316_draw_inline": "/btw inline box: new test (the 2.1.316 box drawn without its edge row); the existing tests' keys are unchanged",
+ "tests.test_put_away.AnotherConversationSince.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_put_away.HomeWindow.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_put_away.OwnSession.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_put_away.SameWindow.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_put_away.Window.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_whole_turn.AnotherMachine.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_whole_turn.ThisMachine.test_the_reply_waits_for_a_quote_held_up_on_its_way": "pump lanes: new test (a quote held up on its way; the reply after it); the existing tests' keys are unchanged",
+ "tests.test_safety.OwnersPane.test_a_message_not_entered_says_in_the_log_what_the_screen_is": "enter re-look: new test (a message not entered says in the log what the screen is); the existing tests' keys are unchanged",
+ "tests.test_safety.Submit.test_typed_is_said_only_for_a_plain_message_that_went_in": "C-199: new test (submit says typed only for a plain message that went in); the existing tests' keys are unchanged",
+ "tests.test_safety.OwnersPane.test_a_long_message_in_a_scrolled_box_gets_its_enter": "C-202: new test (a long message in a scrolled box, real 2.1.326 screen, gets its Enter); the existing tests' keys are unchanged",
+ "tests.test_safety.OwnersPane.test_a_message_not_entered_keeps_the_screen_masked": "C-202: new test (the screen kept when Enter is not pressed); the existing tests' keys are unchanged"
 }

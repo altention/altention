@@ -4,6 +4,11 @@
 - whatever the input box still holds is cleared before typing in the bot's own sessions (an interrupted /compact
   leaves "/compact " there), but in an attached pane only when it is the command the bot typed last;
 - /logout is refused, and the commands that take the session out of its pane, end it or rewind it ask first."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io
@@ -102,7 +107,7 @@ class Submit(unittest.TestCase):
         self.ch = Ch()
         self.bridge = tmux_bridge.TmuxBridge(Host(self.ch))
 
-    def send(self, text, screens, pane=False, typed_last=None, color=None):
+    def send(self, text, screens, pane=False, typed_last=None, color=None, typed=None):
         st = self.bridge.host.chan(self.ch)
         if pane:
             st["pane"] = {"socket": "/tmp/x", "id": "%1"}
@@ -115,10 +120,30 @@ class Submit(unittest.TestCase):
 
         class Message(object):
             channel, id, content = self.ch, 1, text
-        run(self.bridge.submit(Message(), text), fake, mock.patch.object(self.bridge, "ensure", nothing),
+        run(self.bridge.submit(Message(), text, typed=typed), fake, mock.patch.object(self.bridge, "ensure", nothing),
             mock.patch.object(self.bridge, "close_panel", nothing), mock.patch.object(tmux_bridge, "SUBMIT_DELAY", 0),
             mock.patch.object(tmux_bridge, "RECEIPT_SECS", 0.01))
         return fake.log, "\n".join(m.content for m in self.ch.sent)
+
+    def test_typed_is_said_only_for_a_plain_message_that_went_in(self):
+        """C-199 (#code-review-2 on b7897279, manager 11-17): what a paused channel held goes in only after the owner's
+        message went in as a plain message: not for /exit waiting on its button, /logout, /btw, a "/" command, one
+        not typed in (the owner's half-typed text in an attached pane)."""
+        for text, screens, pane in (("/exit", [box("❯ ")], False), ("/logout", [box("❯ ")], False),
+                                    ("/compact", [box("❯ ")], False), ("hello", [box("❯ 我打到一半的")], True)):
+            said = []
+            self.ch.sent.clear()
+            self.send(text, screens, pane=pane, typed=lambda said=said: said.append(1))
+            self.assertEqual(said, [], text)
+            self.bridge.host.chan(self.ch).pop("pane", None)
+        said = []
+        log, _ = self.send("hello", [box("❯ ")], typed=lambda: said.append(1))
+        self.assertIn(("typed", "hello"), log)
+        self.assertEqual(said, [1])
+        with mock.patch.object(self.bridge, "btw_open", mock.AsyncMock()):
+            said = []
+            self.send("/btw 問一下", [box("❯ ")], typed=lambda: said.append(1))
+            self.assertEqual(said, [], "/btw")
 
     def test_an_own_session_has_a_leftover_cleared_before_typing(self):
         log, _ = self.send("hello", [box("❯ /compact "), box("❯ /compact "), box("❯ ")])
@@ -665,6 +690,70 @@ class OwnersPane(unittest.TestCase):
         self.assertIn("沒有按 Enter", said)
         self.assertEqual(self.st.get("note_next"), "（附註）")
         self.assertEqual(self.bridge.rt(self.ch).pending, [])
+
+    def test_a_message_not_entered_says_in_the_log_what_the_screen_is(self):
+        """11-10 #psro: a message left unsent with nothing in the log about the screen it was left on."""
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            keys, said = self.submit(Screens([box("❯ "), PERMISSION]))
+        self.assertEqual(keys, [])
+        self.assertIn("[enter]", out.getvalue())
+        self.assertIn("not pressed; now: ", out.getvalue())
+
+    def test_a_long_message_in_a_scrolled_box_gets_its_enter(self):
+        """C-202 (2.1.326, real screen): a message taller than the box scrolls it, the rule over it reads "↑ N more";
+        it was read as a dialog and the message left unsent."""
+        from altention.tests.connectors.claude_code import samples
+        text = "\n".join("第 %d 行：這是一段很長的跨頻道訊息內容，用來重現輸入框捲動的情況 abc def" % i for i in range(45))
+        scrolled = samples.extra("M", "more-typed-120x40", version="2.1.326")
+        fake = Screens([box("❯ ")])
+        plain_type, plain_keys = fake.type_text, fake.keys
+
+        async def type_text(name, typed):
+            await plain_type(name, typed)
+            fake.shown = [scrolled]
+
+        async def keys(name, *names):
+            await plain_keys(name, *names)
+            if "Enter" in names:
+                fake.shown = [box("❯ ")]
+        fake.type_text, fake.keys = type_text, keys
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            keys_pressed, said = self.submit(fake, text)
+        self.assertEqual(keys_pressed[:1], ["Enter"])
+        self.assertNotIn("沒有按 Enter", said)
+        self.assertNotIn("not pressed", out.getvalue())
+
+    def test_a_message_not_entered_keeps_the_screen_masked(self):
+        """C-202: the whole screen of the time Enter was not pressed, in state/samples/not-entered/ (the tests':
+        DCBOT_UNENTERED), masked, only this user's, the last UNENTERED_KEPT."""
+        folder = tempfile.mkdtemp(prefix="unentered ")
+        key = "sk-ant-api03-" + "A" * 80
+        screen_now = PERMISSION + "\n " + key
+        with mock.patch.dict(os.environ, {"DCBOT_UNENTERED": folder}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.submit(Screens([box("❯ "), screen_now]))
+            names = os.listdir(folder)
+            self.assertEqual(len(names), 1)
+            self.assertIn("the screen kept in " + os.path.join(folder, names[0]), out.getvalue())
+            path = os.path.join(folder, names[0])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path, encoding="utf-8") as f:
+                kept = json.load(f)
+            self.assertEqual(kept["read_as"], "dialog")
+            self.assertEqual(kept["typed_chars"], len("hello"))
+            self.assertIn("Do you want to proceed?", kept["screen"])
+            self.assertNotIn(key, json.dumps(kept))
+            self.assertEqual(kept["colour"], "", "something masked: the coloured screen is not kept")
+            with mock.patch.object(tmux_bridge, "UNENTERED_KEPT", 2):
+                for i in range(3):
+                    tmux_bridge.keep_unentered("s", "x", "screen %d" % i, "", "dialog", now=time.time() + i + 1)
+            self.assertEqual(len(os.listdir(folder)), 2)
+        shutil.rmtree(folder)
 
     def test_the_turn_asking_permission_after_the_first_enter_gets_no_second_one(self):
         keys, said = self.submit(self.after_enter(PERMISSION))

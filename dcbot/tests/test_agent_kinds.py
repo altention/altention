@@ -2,6 +2,11 @@
 hook's name; a subagent's start has one shape wherever its files were read (the connector's agent(): looked for once,
 the waiting is the caller's). What is posted and when is as it was (held against the tree of before with every
 measured event, a made-up list of each branch, and the relay's seven cases of a subagent's files)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io

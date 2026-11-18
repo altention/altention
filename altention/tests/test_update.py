@@ -587,7 +587,7 @@ class BrokenSomewhere(Rig):
     def broken(self, rel, how):
         if how == "runtime":  # loads fine, throws once at work
             target = {"altention/update.py": "def one_round(force_release=False):\n", "altention/sync.py": "def main(argv):\n",
-                      "altention/cron_update.py": "def main():\n", "altention/cron_sync.py": "def main():\n"}[rel]
+                      "altention/cron_update.py": "def main(argv=()):\n", "altention/cron_sync.py": "def main(argv=()):\n"}[rel]
             with open(os.path.join(self.up, rel)) as f:
                 text = f.read()
             return text.replace(target, target + "    raise RuntimeError('broken at work')\n", 1)
@@ -953,7 +953,8 @@ class UpdatedNotice(Rig):
                 del self.told[:]
                 self.mode(mode)
                 self.round()
-                self.assertEqual(self.record(), {"tag": None, "at": self.record()["at"]} if mode == "branch" else self.record())
+                self.assertEqual(self.record(), {"tag": None, "at": self.record()["at"], "by_test": True}  # written by a test
+                                 if mode == "branch" else self.record())
                 tag = self.release("0.%d.0" % (3 + ("branch", "release").index(mode)), ("Moved by hand.",))
                 git(self.engine, "fetch", "-q", "--tags")
                 git(self.engine, "merge", "-q", "--ff-only", tag)  # home-pull, the sync standing in, a push here
@@ -2484,7 +2485,7 @@ class CronLog(unittest.TestCase):
         mine = {c["name"]: c for c in d["cron"]}
         for name in ("engine-update", "sync", "watch"):
             self.assertIs(mine[name]["scheduler"], False, name)
-        self.assertEqual(mine["watch"]["on"], "bot")
+        self.assertEqual(mine["watch"]["on"], ["bot", "standby"], "C-185: on standbys too, run where the bot is")
         self.assertIn("cron_update.py", mine["engine-update"]["run"])
         self.assertIn("cron_sync.py", mine["sync"]["run"])
 

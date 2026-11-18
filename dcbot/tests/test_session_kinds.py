@@ -2,6 +2,11 @@
 ended, compacted; an event of a kind not known is left alone. Played from the measured runs (the connector's
 hook_payloads/sessions/, both versions), for the three kinds of channel a conversation can be behind. What is posted
 and when is as it was; the one thing that changed is said in its own test."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import copy

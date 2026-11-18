@@ -25,9 +25,11 @@
                                               what this version declares (plugin.json's channels and asks) next to
                                               the instance and the server: filled in when it needs nobody (#update,
                                               #guide, #audit and #guide moved to the system category, #setup's
-                                              folder), asked in #setup when it would add a channel to the main area
-                                              or spend the subscription; --dry-run only says it, --if-changed does
-                                              nothing when the engine is the one last compared (C-57 S3)
+                                              folder, #dashboard: C-181), asked in #setup when it would add a channel
+                                              to the main area or spend the subscription; --dry-run only says it,
+                                              --if-changed does nothing when the engine is the one last compared
+  python3 ops/setup.py board-gone ID          the bot, when a channel is deleted: a board channel made again (at most
+                                              once an hour), said in #audit; any other channel, nothing
   python3 ops/setup.py tutorial               #tutorial opened, its Claude asked to start the tour at step 1
   python3 ops/setup.py plugin-add NAME [vX.Y.Z] [--yes [--hooks-ok]]
                                               a plugin from the official list (C-81 K2, ops/plugins.py add): without
@@ -90,7 +92,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)
 sys.path.insert(0, ENGINE)
 sys.path.insert(0, HERE)
-from altention import config, plugin, text  # noqa: E402
+from altention import config, plugin, statefile, text  # noqa: E402
 import plugins  # noqa: E402
 
 SECRETARY = plugins.SECRETARY
@@ -258,6 +260,18 @@ def flow(answered, found=None):
     settings = read_settings()
     asked += [offers.question(n, d) for n, d in offers.candidates(settings=settings).items()
               if n in offers.due(("install",), settings=settings)]
+    try:  # C-163 d3a: a standby, only with another machine on the list, and only once standby.ready() (the drill)
+        from altention import standby
+        machines = [m for m, _ in standby.candidates()] if standby.ready() else []
+        primary = config.bot_machine()[0]
+    except Exception:
+        machines, primary = [], None
+    if machines and primary:
+        sq = plugins.standby_questions(machines, primary, answered.get("standby"))
+        asked.append(sq[0])
+        if answered.get("standby") in machines:
+            asked.append(sq[1])
+    asked.append(plugins.health_question())  # C-163 d3b: asked of every new installation, off unless yes
     off = {n for n, _, _ in found if not is_on(n, answered, found)}
     backup = plugins.backup_questions(off)
     asked.append(backup[0])
@@ -301,25 +315,6 @@ def channel_gone(key, found):
     return any(set_value(config.setting(s)) for s in asked_channels(key, found))
 
 
-BOARD_NAMES = {"usage.channel": "用量看板", "status.channel": "狀態看板"}
-
-
-def boards_lost(found, there=None):
-    """{setting: "unset" or "gone"} of the board channels (status.channel, usage.channel) that have no channel, for
-    the dashboard question (C-67: two settings on two channels, one deleted, was asked as "#dashboard is gone"). None
-    when Discord cannot be read (then asked as before). `there`: the server's channel IDs, when read already."""
-    values = dict((s, config.setting(s)) for s in asked_channels("dashboard", found))
-    lost = dict((s, "unset") for s, v in values.items() if not set_value(v))
-    if len(lost) < len(values):
-        if there is None:
-            try:
-                there = set(r[0] for r in discord_channels())
-            except Failed:
-                return None
-        lost.update((s, "gone") for s, v in values.items() if set_value(v) and str(v) not in there)
-    return lost
-
-
 def set_value(value):
     return isinstance(value, (str, int)) and not isinstance(value, bool) and bool(str(value).strip())
 
@@ -330,14 +325,6 @@ def question_for(key, found=None, answered=None):
     if found is None:
         found = plugin.discover()[0]
     answered = answered or {}
-    if key == "dashboard":
-        settings, lost = asked_channels(key, found), boards_lost(found)
-        if lost and len(lost) < len(settings):  # one board's channel is still there: only the other is asked about
-            k, how = next(iter(lost.items()))
-            kept = next(s for s in settings if s not in lost)
-            return plugins.dashboard_question(only=(BOARD_NAMES.get(k, k), how == "gone", BOARD_NAMES.get(kept, kept),
-                                                    config.setting(kept)))
-        return plugins.dashboard_question(again=answered.get(key) == "make", gone=channel_gone(key, found))
     if key == "usage.plan":
         return plugins.plan_question()
     if key.startswith("offer."):  # C-64: the reconcile's, or setup.py offer's
@@ -643,6 +630,17 @@ def answer(key, value, out=None):
         if value not in q["values"]:
             raise Refused("進度頻率只能是 %s" % "、".join(q["values"]))
         put(d, "plugins.progress.schedules.run.when", {"every": value})
+    elif key == "standby":
+        if value not in q["values"]:
+            raise Refused("只能是 %s" % "、".join(q["values"]))
+        if value == "no":
+            answered.pop("standby.mode", None)
+    elif key == "healthchecks":
+        if value not in q["values"]:
+            raise Refused("只能是 yes（要）或 no（不要）")
+    elif key == "standby.mode":
+        if value not in q["values"]:
+            raise Refused("只能是 auto（自動接手）或 notify（只通知）")
     elif key == "backup":
         if value not in q["values"]:
             raise Refused("只能是 now（現在設定）或 later（之後再說）")
@@ -658,17 +656,6 @@ def answer(key, value, out=None):
             key, value = None, None
         else:
             value = items
-    elif key == "dashboard":
-        if value not in q["values"]:
-            raise Refused("只能是 make（開）或 off（不要）")
-        there = set(r[0] for r in discord_channels())
-        lost = boards_lost(found, there)
-        for k, p in (("usage.channel", "usage"), ("status.channel", "status")):
-            if value == "off":
-                if k in lost or not lost:  # only the boards without a channel (C-67: "off" took the one still there)
-                    turn(d, p, False, machine)
-            elif config.setting(k) and str(config.setting(k)) not in there:
-                drop(d, k)  # a channel that is not there any more: made again by done
     elif key.startswith("offer."):  # C-64: the person's answer kept in the instance's offers
         from altention import offers
         if value not in offers.ANSWERS:
@@ -832,15 +819,30 @@ def write_channel(key, cid):
         raise Failed("%s 讀回來不是 %s" % (key, cid))
 
 
-def dashboard(out=None):
+BOARD_KEYS = (("usage.channel", "usage"), ("status.channel", "status"))  # usage first: see dashboard()
+
+
+def dashboard(out=None, check_gone=False):
+    """#dashboard made (or the one there used), the board settings not set written, the boards posted. check_gone
+    (C-181: the reconcile, a deleted board channel): a setting whose channel is not on the server any more (a fresh
+    list) is taken away first, so it is made again."""
     out = out or sys.stdout
     rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
-    keys = [k for k, p in (("usage.channel", "usage"), ("status.channel", "status"))
-            if rows.get(p) in ("on", "off") and not config.setting(k)]
+    if check_gone:
+        there = set(cid for cid, _, _ in discord_channels(fresh=True))
+        stale = [k for k, p in BOARD_KEYS if rows.get(p) in ("on", "off") and set_value(config.setting(k))
+                 and str(config.setting(k)) not in there]
+        if stale:
+            d = read_settings()
+            for k in stale:
+                drop(d, k)
+            write_settings(d)
+            commit("setup: board channels gone (%s), made again" % ", ".join(stale))
+    keys = [k for k, p in BOARD_KEYS if rows.get(p) in ("on", "off") and not config.setting(k)]
     if not keys:
         out.write("看板頻道已經設定了，或用量和狀態看板都關掉了\n")
         return 0
-    ids = channel_ids("dashboard")
+    ids = channel_ids("dashboard", fresh=True)  # fresh: a #dashboard deleted a moment ago is not taken
     if len(ids) > 1:
         raise Refused("有 %d 個 #dashboard：問使用者用哪一個，把它的 ID 寫進 %s" % (len(ids), "、".join(keys)))
     if not ids:
@@ -874,6 +876,46 @@ def dashboard(out=None):
             return 0
         out.write("狀態看板貼了\n")
     commit("setup: dashboard")
+    return 0
+
+
+REMADE_WITHIN = 3600  # a board channel deleted is made again at most once an hour (manager 2026-11-12: no chain)
+REMADE_SAY = "#%s 不見了，重新建好"
+UNSET_SAY = "#%s 還沒有，建好了"
+REMADE_FAILED = "#%s 不見了，重新建沒有成功：%s。不會自動再試；要建就在機器人那台的 ~/altention/engine 跑 python3 ops/setup.py dashboard"
+REMADE_WAIT = "#%s 又不見了：一小時內已經重建過一次，這次不重建；要建就在機器人那台的 ~/altention/engine 跑 python3 ops/setup.py dashboard"
+UNMADE_SAY = "#%s 還沒有，這次沒建成（%s），之後會再試"
+
+
+def remade_path():
+    return os.path.join(os.path.expanduser("~/.local/state/altention"), "board-remade.json")
+
+
+def board_gone(cid, out=None):
+    """setup.py board-gone ID (the bot, in the background, when a channel was deleted, C-181): when it held a board
+    (status.channel or usage.channel), #dashboard made again and #audit told, at most once an hour for a setting; a
+    failure is said once and not tried again. Any other channel: nothing (exit 0)."""
+    out = out or sys.stdout
+    keys = [k for k, _ in BOARD_KEYS if set_value(config.setting(k)) and str(config.setting(k)) == str(cid)]
+    if not keys:
+        out.write("不是看板頻道：不用管\n")
+        return 0
+    name = "dashboard"
+    last = config.read_json(remade_path())
+    last = last if isinstance(last, dict) else {}
+    now = time.time()
+    if any(isinstance(last.get(k), (int, float)) and now - last[k] < REMADE_WITHIN for k in keys):
+        say_audit(REMADE_WAIT % name)
+        out.write(REMADE_WAIT % name + "\n")
+        return 0
+    last.update((k, now) for k in keys)  # before trying: a failure is not tried again within the hour either
+    statefile.write_json(remade_path(), last)
+    try:
+        dashboard(out, check_gone=True)
+    except (Failed, Refused) as e:
+        say_audit(REMADE_FAILED % (name, e))
+        raise
+    say_audit(REMADE_SAY % name)
     return 0
 
 
@@ -994,6 +1036,23 @@ def login_check(as_json, out=None):
 
 # --- done ---------------------------------------------------------------------------------------------------------
 
+def standby_done(out):
+    """The standby the answers chose (standby, standby.mode), set up by altention standby (its role, the token or
+    the webhook, apply). Said, never stopping done: it can be done again later (#setup 設備援)."""
+    answered = (setup_state() or {}).get("answered") or {}
+    machine, mode = answered.get("standby"), answered.get("standby.mode")
+    if not machine or machine == "no" or mode not in ("auto", "notify"):
+        return
+    from altention import standby
+    if not standby.ready():  # (asked before the switch went off: nothing done, said)
+        out.write(text.t("standby.failed", why=text.t("standby.not_ready")) + "\n")
+        return
+    try:
+        standby.setup(machine, mode, out)
+    except standby.Failed as e:
+        out.write(text.t("standby.failed", why=e) + "（之後在 #setup 說「設備援」再做一次）\n")
+
+
 def done(out=None):
     out = out or sys.stdout
     d = read_settings()
@@ -1027,6 +1086,7 @@ def done(out=None):
     if r.returncode == 1:
         raise Failed("install.sh 沒跑完（log：~/.local/state/altention/install/last.log）；修好再跑一次 setup.py done")
     rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
+    standby_done(out)  # C-163 d3a: the standby chosen, set up now that this machine is installed
     dashboard(out)  # only the board channels not set yet (none: nothing)
     if not asking:
         guide(out)
@@ -1433,10 +1493,10 @@ def update_name():
 
 
 def say_audit(line):
-    """One line in #audit (dcbot.channels.audit), a notice as say_update's (the system speaking, not a Claude's
+    """One line in #audit (@audit), a notice as say_update's (the system speaking, not a Claude's
     card); not said is not a failure (the instance's commit says the same)."""
     try:
-        altention("dc", "notify", "-c", str(config.setting("dcbot.channels.audit") or "audit"), line)
+        altention("dc", "notify", "-c", "@audit", line)  # by the ID the bot keeps (C-201 6.2), not by its name
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -1484,6 +1544,60 @@ WRITTEN_SAY = "這個安裝之前沒設權限模式，機器人一直用 bypassP
               "這次更新把它寫明了，行為不變。建議到 #setup 改成 auto。"
 
 
+# C-181 (owner 2026-11-11): the boards are always on. An installation whose #setup answered "dashboard: off" (the
+# boards turned off on this machine then) has them turned on again once, at the first reconcile of this version, and
+# the answer becomes "opened": never touched again, so a later `plugins.py lose` stays off. One written by hand (on
+# again, then lose) before this version cannot be told apart from that answer and is turned on too (manager ruled).
+OPENED_SAY = "看板現在一律開著：安裝時你選了不要看板，這次更新把狀態和用量看板打開了（貼在 #dashboard）。" \
+             "真的不要，跟 Claude 說「關掉看板」，它會照關插件的方式關掉 status 和 usage，之後就一直關著。"
+OPENED_NOTHING = "看板現在一律開著：安裝時選的「不要看板」已經不算數，記下（這台的看板本來就開著，不用改）"
+OPENED_COMMIT = "setup: the boards always on (C-181): the #setup answer dashboard off taken back"
+
+
+def boards_to_open(state, found):
+    """None, or the board plugins (the ones declaring a "board" channel) the #setup answer "dashboard: off" turned
+    off on this machine, to turn on again ([] when none is off here any more: only the answer is marked)."""
+    answered = state.get("answered") if isinstance(state, dict) and isinstance(state.get("answered"), dict) else {}
+    if answered.get("dashboard") != "off":
+        return None
+    machine = config.this_machine()
+    names = [n for n, _, d in found if any(isinstance(c, dict) and c.get("kind") == "board" for c in d.get("channels") or [])]
+    entries = config.setting("plugins") if isinstance(config.setting("plugins"), dict) else {}
+    return [n for n in names if isinstance(entries.get(n), dict) and isinstance(entries[n].get("disabled_on"), list)
+            and machine in entries[n]["disabled_on"]]
+
+
+def in_setup(state):
+    """A new installation still in #setup (done not yet true)."""
+    return state is not None and state.get("done") is not True
+
+
+def unask(key):
+    """`key` taken out of setup.ask (an earlier reconcile asked it; no longer a question: C-181's "dashboard")."""
+    d = read_settings()
+    st = setup_state(d)
+    if st is not None and key in asked(st):
+        st["ask"] = [k for k in asked(st) if k != key]
+        write_settings(d)
+        commit("setup: %s is no longer asked" % key)
+
+
+def open_boards(p, out):
+    """The board plugins of boards_to_open() turned on here, the answer marked "opened", #audit told. Their cron lines
+    come with the next install.sh or apply (doctor's plugins.would-apply says it meanwhile); dashboard() posts the
+    boards once now."""
+    d = read_settings()
+    machine = config.this_machine()
+    for n in p["turn"]:
+        turn(d, n, True, machine)
+    node(d, "setup.answered")["dashboard"] = "opened"
+    write_settings(d)
+    commit(OPENED_COMMIT)
+    out.write("%s\n" % p["say"])
+    if p["turn"]:
+        say_audit(p["say"])
+
+
 def permission_unwritten(state):
     """Is this an installation set up already (or from before #setup) that has no permission mode written, the
     case write_permission() is for? A new installation still in #setup is not: it is asked there, and install.sh
@@ -1522,6 +1636,7 @@ def reconcile_plan(chans, before_offers=None):
     found = plugin.discover()[0]
     rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
     channels, asks = declared(found, rows)
+    state = setup_state()
     by_name = {}
     for cid, n, cat in chans:
         by_name.setdefault(n, []).append((cid, cat))
@@ -1555,12 +1670,24 @@ def reconcile_plan(chans, before_offers=None):
             unset = not set_value(value)
             if not (unset or stale):
                 continue
-            key = "dashboard" if kind == "board" else "plugins.%s" % c["plugin"]
+            if kind == "board":  # C-181: #dashboard is always there, never asked; made again when deleted
+                if in_setup(state):
+                    continue  # a new installation still in #setup: done makes it
+                if not any(p["what"] == "dashboard" for p in plan):
+                    plan.append({"kind": "fill", "what": "dashboard",
+                                 "say": (REMADE_SAY if stale else UNSET_SAY) % c["name"]})
+                continue
+            key = "plugins.%s" % c["plugin"]
             if key not in ask:
                 ask.append(key)
                 plan.append({"kind": "ask", "what": key, "say": "%s：%s" % (
                     "#%s" % c["name"], "設定裡的頻道已經不在了" if stale else "還沒有這個頻道") + "（要不要開，到 #setup 問）"})
-    state = setup_state()
+    opening = None if in_setup(state) else boards_to_open(state, found)
+    if opening is not None:
+        plan.append({"kind": "fill", "what": "open-dashboard", "turn": opening,
+                     "say": OPENED_SAY if opening else OPENED_NOTHING})
+        if opening and not any(p["what"] == "dashboard" for p in plan):
+            plan.append({"kind": "fill", "what": "dashboard", "say": UNSET_SAY % "dashboard"})
     if permission_unwritten(state):
         plan.append({"kind": "fill", "what": "permission-written", "say": WRITTEN_AUDIT})
     elif state is not None and state.get("permission_written") and PERMISSION_KEY not in (state.get("answered") or {}) \
@@ -1582,7 +1709,7 @@ def reconcile_plan(chans, before_offers=None):
         if "offer.%s" % n not in ask:
             ask.append("offer.%s" % n)
             plan.append({"kind": "ask", "what": "offer.%s" % n, "say": text.t("offer.reconcile", plugin=n)})
-    order = ("dcbot.default_permission", "plugins.%s" % SECRETARY, "dashboard", "usage.plan")  # #setup's order
+    order = ("dcbot.default_permission", "plugins.%s" % SECRETARY, "usage.plan")  # #setup's order
     rank = lambda p: (p["kind"] != "fill", order.index(p["what"]) if p["what"] in order else len(order))  # noqa: E731
     plan.sort(key=rank)
     _, changed, problem = write_setup_folder(dry=True)
@@ -1668,6 +1795,19 @@ def reconcile(dry, as_json, if_changed, out=None):
             guide(out)
         if any(p["what"] == "setup-folder" for p in fills):
             write_setup_folder()
+        if any(p["what"] == "open-dashboard" for p in fills):
+            open_boards(next(p for p in fills if p["what"] == "open-dashboard"), out)
+        unmade = False  # #dashboard not made: the engine's head is not written, so the next start's --if-changed tries again
+        if any(p["what"] == "dashboard" for p in fills):
+            p = next(p for p in fills if p["what"] == "dashboard")
+            try:
+                dashboard(out, check_gone=True)
+                say_audit(p["say"])
+                unask("dashboard")
+            except (Failed, Refused) as e:  # the rest of the reconcile goes on; the next one tries again
+                out.write("看板頻道沒建好：%s\n" % e)
+                say_audit(UNMADE_SAY % ("dashboard", e))
+                unmade = True
         asks = [p["what"] for p in plan if p["kind"] == "ask"]  # in #setup's order
         if state is not None and state.get("done") is not True:
             asks = []  # a new installation still in #setup: its questions cover these
@@ -1688,9 +1828,8 @@ def reconcile(dry, as_json, if_changed, out=None):
                 p = dcctl("post", inp=json.dumps({"channel": "setup", "open_setup": True, "text": ""}))
                 if p.returncode != 0:
                     out.write("請機器人開 #setup 沒送出去：%s\n" % p.stdout.strip()[-200:])
-        with open(reconcile_state_path() + ".tmp", "w") as f:
-            json.dump({"head": head, "at": time.time()}, f)
-        os.replace(reconcile_state_path() + ".tmp", reconcile_state_path())
+        if not unmade:
+            statefile.write_json(reconcile_state_path(), {"head": head, "at": time.time()})
         return 0
     finally:
         if lock:
@@ -1973,7 +2112,9 @@ def plugin_tool(name, need, out=None):
     out = out or sys.stdout
     folder, d = _plugin_here(name)
     n = next((n for n in d.get("needs", []) if n["name"] == need), None)
-    cmd = ((n or {}).get("install") or {}).get(steps.os_name())
+    cmd, unset = steps.install_for(n or {}, folder, config.settings())  # filled in as shown (tokens v2)
+    if unset:
+        raise Refused(text.t("setup.tool_unset", plugin=name, item=need, error=unset))
     if not cmd:
         raise Refused(text.t("setup.tool_none", plugin=name, item=need))
     if cmd.startswith("sudo "):
@@ -2036,6 +2177,9 @@ def plugin_apply(name, machine, out=None):
 
 
 def main(argv):
+    if [a for a in argv[:2] if a in ("-h", "--help")]:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     args = [a for a in argv if a != "--json"]
     as_json = "--json" in argv
     try:
@@ -2047,6 +2191,8 @@ def main(argv):
             return answer(args[1], args[2])
         if args == ["dashboard"] and not as_json:
             return dashboard()
+        if len(args) == 2 and args[0] == "board-gone" and args[1].isdigit() and not as_json:
+            return board_gone(args[1])
         if args == ["secretary"] and not as_json:
             return secretary()
         if args == ["guide"] and not as_json:

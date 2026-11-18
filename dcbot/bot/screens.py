@@ -11,7 +11,7 @@ import traceback
 
 import discord
 
-from . import masking, tmuxio
+from . import deliver, masking, tmuxio
 from .util import split_message
 
 EMOJI = "📝"
@@ -69,5 +69,6 @@ async def show_text(bot, payload):
         return False
     ref = ch.get_partial_message(payload.message_id)
     for i, part in enumerate(fenced(text)):
-        await (ch.send(part, reference=ref, mention_author=False) if i == 0 else ch.send(part))
+        await (deliver.deliver(ch, part, reference=ref, mention_author=False, intent="status") if i == 0
+               else deliver.deliver(ch, part, intent="status"))
     return True

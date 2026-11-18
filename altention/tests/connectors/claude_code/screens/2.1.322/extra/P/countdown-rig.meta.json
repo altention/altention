@@ -1,0 +1,10 @@
+{
+ "claude_code": "2.1.322 (Claude Code)",
+ "colour": false,
+ "claude_args": "--permission-mode bypassPermissions",
+ "how": "bypass mode, Bash `rm -rf ~` (a scratch HOME): the dangerous-removal check asks with a countdown; 2.1.322 words it 'automatically block this request in 1:53, to avoid holding up an unattended session'. Only the dialog's rows were kept; the path is written <rig>/home",
+ "captured": "2026-11-11",
+ "by": "#code-review-2's rig for C-176 batch 2 (1ad499a)",
+ "files": {"plain": "tmux capture-pane -p, the dialog's rows"},
+ "api": "a stand-in (no real model); scratch HOME and tmux socket"
+}

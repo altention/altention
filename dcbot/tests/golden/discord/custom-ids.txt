@@ -1,0 +1,34 @@
+#golden spec §15.5
+act:{…}
+arch:{d}:back
+arch:{d}:force
+arch:{d}:move
+arch:{d}:new
+arch:{d}:restore
+ask:7-1:0:1
+ask:7-1:0:o
+ask:7-1:0:s
+ask:7-1:0:y
+att:{d}:{pane key, or project:<name>}
+ccpin:keep
+ccpin:new
+failback:{d}
+fb:{s}
+fbl:{d}
+key:{s}:k{s}
+key:{s}:{d}
+key:{s}:{s}
+post:{d}:free
+post:{d}:go
+post:{d}:stop
+resend:{d}:{s}
+retry:{d}
+sec:{…}
+secm:{…}
+setup:{d}:{s}
+setup:{d}:{s}host
+sta:{s}:{d}
+term:{d}:ctrlc:{d}
+term:{d}:rerun:{d}
+term:{d}:screen:{d}
+upd:{s}:{s}

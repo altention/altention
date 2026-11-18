@@ -1,4 +1,9 @@
 """Forwarded messages reach Claude, merged with the comment that follows; dcread finds its way to dcctl."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util
@@ -9,7 +14,7 @@ import unittest
 import discord
 
 from bot import config, util
-from tests import tmuxguard  # noqa: F401,E402  (no test reaches a real tmux server)
+from tests import marks, tmuxguard  # noqa: F401,E402  (no test reaches a real tmux server)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,9 +63,12 @@ class Forward(unittest.TestCase):
         config.STATE = self.old_state
 
     def test_context_text(self):
+        marks.fixed(self)
+        head = util.FORWARDED.format(mark="m0")
         self.assertEqual(util.forward_context("使用者（在 #st-0）", "line a\nline b", "2026-10-13 15:28:13", 5, "https://x/5"),
-                         util.FORWARDED + "\n[2026-10-13 15:28:13] 使用者（在 #st-0） (id 5)\n連結：https://x/5\n> line a\n> line b\n")
-        self.assertEqual(util.forward_context(None, ""), util.FORWARDED + "\n別的頻道的訊息\n> （沒有文字）\n")
+                         head + "\n[2026-10-13 15:28:13] 使用者（在 #st-0） (id 5)\n連結：https://x/5\n"
+                                "<<<原文 m0 開始>>>\n> line a\n> line b\n<<<原文 m0 結束>>>\n")
+        self.assertEqual(util.forward_context(None, ""), head + "\n別的頻道的訊息\n<<<原文 m0 開始>>>\n> （沒有文字）\n<<<原文 m0 結束>>>\n")
         long = util.forward_context("x", "字" * 7000, notes=["（貼圖：a）"])
         self.assertIn("\n（原訊息共 7000 字，這裡是前 6000 字；全文用上面的連結看）\n（貼圖：a）\n", long)
         self.assertEqual(long.count("字" * 6000 + "…"), 1)
@@ -87,8 +95,9 @@ class Forward(unittest.TestCase):
         asyncio.run(go())
 
     def test_forwarded_text_names_the_origin(self):
-        text = asyncio.run(self.bot.forwarded(Msg("", [Snap("hello there")])))
-        self.assertEqual(text, util.FORWARDED + "\n別的頻道 的訊息（查不到是誰說的：原訊息或它的頻道已經不在） (id 5)\n> hello there\n")
+        marks.fixed(self)
+        text = marks.plain(asyncio.run(self.bot.forwarded(Msg("", [Snap("hello there")]))))
+        self.assertEqual(text, util.FORWARDED.format(mark="m0") + "\n別的頻道 的訊息（查不到是誰說的：原訊息或它的頻道已經不在） (id 5)\n> hello there\n")
         self.assertEqual(asyncio.run(self.bot.forwarded(Msg("plain"))), "")
 
 

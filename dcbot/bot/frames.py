@@ -15,6 +15,8 @@ notice of the bot's own), BOT_UNKNOWN (the bot's, a reply or a notice: not to be
 else: `sender`), UNKNOWN (who said it could not be found out: `why`)."""
 import re
 
+from . import senders
+
 REPLY, INTERIM, RELAYED, NOTICE, BOARD, TERMINAL, PROCESS, BOT, BOT_UNKNOWN, OWNER, OTHER, UNKNOWN = (
     "reply", "interim", "relayed", "notice", "board", "terminal", "process", "bot", "bot_unknown", "owner", "other", "unknown")
 CARD = re.compile(r"^📨 來自 (.+?)(?:（(\d+)/(\d+)）)?$")
@@ -22,8 +24,37 @@ HEADED = re.compile(r"^📨 \*\*來自 (.+?)\*\*\n", re.S)
 NOTIFIED = re.compile(r"^🔔 \*\*\[(.*?)\]\*\* ?", re.S)
 BOARDED = re.compile(r"^📌 \*\*(.+?)\*\*\n(?:-# 更新於 ([^\n]*)\n)?", re.S)
 TYPED = "⌨️ **終端機那邊輸入**\n"
+SOURCED = re.compile(r"^-# 📨 來自 ([^\n]*)(?:\n|$)")  # the line on top of a post to another's channel (dc post --json,
+# C-172a P1d: bot/payloads.py writes it); only the bot puts it there
+SOURCE_WORDS = re.compile(r"^📨 來自 ")
 PIECES = ("🧑 **你**", "💬 ", "🔧 **", "❌\n```", "-# ⤵", "…（這一輪太長")  # how the pieces of a turn's thread begin (bot/process.py)
-NOTICES = ("ℹ️", "⚠️", "❓", "📋", "🧩", "🤖", "✅", "⏳", "⌛", "處理中…", "🖥", "📂", "📝", "🔁")  # how the bot's own notices begin
+NOTICES = ("ℹ️", "⚠️", "❓", "📋", "🧩", "🤖", "✅", "⏳", "⌛", "處理中…", "🖥", "📂", "📝", "🔁", "⏸️", "▶️")  # how the bot's
+# own notices begin (⏸️ ▶️: the talk limit's hold, C-184's pause and resume)
+ZWSP = "\u200b"
+
+
+def reserved(text):
+    """The frame a text begins with that only the bot may put there, or None: what reads back as another channel's
+    post (📨 **來自 …**), a notification (🔔 **[…]**), a board (📌 **…**), or what the owner typed at the terminal
+    (messaging review P0-6), or where a post to another's channel comes from (-# 📨 來自 …, C-172a P1d); looked for
+    after a "-# " at the start too. A Claude or a script writing it would be read as one of those."""
+    text = text or ""
+    text = text[3:] if text.startswith("-# ") else text  # (small print first is no way round it: C-172a P1d)
+    for name, hit in (("📨 **來自 …**", HEADED.match(text)), ("🔔 **[…]**", NOTIFIED.match(text)),
+                      ("📌 **…**", BOARDED.match(text)), (TYPED.strip(), text.startswith(TYPED)),
+                      ("-# 📨 來自 …", SOURCE_WORDS.match(text))):
+        if hit:
+            return name
+    return None
+
+
+def defused(text):
+    """A reply of the channel's agent that begins with a reserved frame, shown as it is but no longer read back as
+    that frame: a zero-width space before its first "**"."""
+    if not reserved(text):
+        return text
+    i = text.find("**")
+    return text[:i] + ZWSP + text[i:] if i >= 0 else ZWSP + text
 
 
 STATUS = re.compile(r"^-# (?=.*(×\d+|\d+ 秒|context \d+%|背景工作 \d+ 個進行中|<@\d+>))")  # the line events.footer() makes
@@ -48,17 +79,61 @@ def unquoted(text):
     return "\n".join(line[2:] if line.startswith("> ") else line[1:] if line.startswith(">") else line for line in text.split("\n"))
 
 
-def of(content, embeds=(), by_bot=False, by_owner=False, remembered=False, author=None):
+NOT_LOOKED = object()  # of()'s `entry` when the caller did not ask the ledger (nothing is said of guessing then)
+
+
+def of(content, embeds=(), by_bot=False, by_owner=False, remembered=False, author=None, board=None, entry=NOT_LOOKED,
+       name_of=None):
+    """of_guessed() unless the ledger has the message (`entry`: bot/ledger.py's, C-172a P1a): then what it is, and
+    which frame comes off, is looked up, never guessed from how it looks (a reply's own "-#" small print with "×3 · 10
+    秒" in it stays; a board is told by its name). A bot's message the ledger was asked about and does not have is
+    told by its looks, and says so: "guessed" (「未登記」)."""
+    if not by_bot or not isinstance(entry, dict) or entry.get("intent") not in INTENTS_KNOWN:
+        out = of_guessed(content, embeds, by_bot, by_owner, remembered, author, board)
+        if by_bot and entry is not NOT_LOOKED:
+            out["guessed"] = True
+        return out
+    content, intent, framed = content or "", entry["intent"], set(entry.get("framed") or ())
+    if intent == "reply":
+        return {"kind": REPLY, "text": unfooted(content) if "status" in framed else content, "registered": True}
+    if intent == "board":
+        m = BOARDED.match(content) if "board_head" in framed else None
+        return {"kind": BOARD, "name": entry.get("key") or board or (m.group(1) if m else "?"),
+                "updated": m.group(2) if m else None, "text": content[m.end():] if m else content, "registered": True}
+    if intent == "post" and "source" in framed:  # (dc post --json to another's channel: its line on top comes off)
+        m = SOURCED.match(content)
+        return {"kind": RELAYED, "sender": senders.label(entry.get("from"), name_of) or "?",
+                "text": content[m.end():] if m else content, "registered": True}
+    if intent in ("post", "notify", "talk"):
+        out = of_guessed(content, embeds, by_bot, by_owner, remembered, author, board)
+        if out["kind"] not in (RELAYED, NOTICE):  # (posted into its sender's own channel: no frame round it)
+            out = {"kind": NOTICE if intent == "notify" else RELAYED, "sender": senders.label(entry.get("from"), name_of) or "?",
+                   "text": content}  # (the ledger's key in words: "#name" by `name_of(channel id)`; bot/senders.py)
+        out["registered"] = True
+        return out
+    if "interim" in framed and content.startswith(">>> "):
+        return {"kind": INTERIM, "text": content[4:], "registered": True}
+    return {"kind": BOT, "text": content, "registered": True}
+
+
+INTENTS_KNOWN = ("talk", "post", "notify", "board", "card", "reply", "status")
+
+
+def of_guessed(content, embeds=(), by_bot=False, by_owner=False, remembered=False, author=None, board=None):
     """{"kind", "text"} and, by the kind, "sender", "name", "updated", "part" (i, n: one card of several).
     `content`: the message's text; `embeds`: [{"author", "title", "description", "url"}] (plain values); `by_bot`: the
     bot itself posted it; `by_owner`: the owner did; `remembered`: the bot has it on record as a reply of the
     channel's agent (a plain fact, where there is one: the turn it remembers by that message's id); `author`: the
-    display name of whoever posted it, for somebody else's."""
+    display name of whoever posted it, for somebody else's; `board`: the name of the board the bot has this message on
+    record for (its channel state's "boards"): the parts after the first have no heading of their own."""
     content = content or ""
     if not by_bot:
         return {"kind": OWNER, "text": content} if by_owner else {"kind": OTHER, "sender": author or "?", "text": content}
     if remembered:  # a plain fact, ahead of how it looks: a reply that begins "📌 **重點**" or ">>> " is a reply
         return {"kind": REPLY, "text": unfooted(content)}
+    if board:  # (a plain fact too; the first part's heading is taken off as ever)
+        m = BOARDED.match(content)
+        return {"kind": BOARD, "name": board, "updated": m.group(2) if m else None, "text": content[m.end():] if m else content}
     for e in embeds or ():
         m = CARD.match(str((e or {}).get("author") or ""))
         if m:
@@ -67,6 +142,9 @@ def of(content, embeds=(), by_bot=False, by_owner=False, remembered=False, autho
                 out["part"] = (int(m.group(2)), int(m.group(3)))
             return out
     m = HEADED.match(content)
+    if m:
+        return {"kind": RELAYED, "sender": m.group(1), "text": content[m.end():]}
+    m = SOURCED.match(content)
     if m:
         return {"kind": RELAYED, "sender": m.group(1), "text": content[m.end():]}
     m = NOTIFIED.match(content)

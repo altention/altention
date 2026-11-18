@@ -5,9 +5,14 @@ Standard library only, Python 3.8 is enough: tools/dcremote imports it on the ot
   {"op": "list", "path", "hidden"}            a folder: entries (folders first), git branch and marks
   {"op": "read", "path", "start", "count"}    lines [start, start+count) of a text file, or what kind of file it is
   {"op": "raw", "path"}                       the whole file, base64 (images, attachments; up to RAW_MAX bytes)
+  {"op": "raw", "path", "offset", "length",   a part of it (C-90): `length` bytes (at most PART_MAX) from `offset`, with
+   "same"}                                    the whole file's size, mtime and id and whether it ends there; `same`, the
+                                              {"id", "mtime", "size"} of the part before: a file replaced or changed
+                                              since is refused ("changed": true), never read half old, half new
   {"op": "find", "root", "query", "hidden"}   files and folders under root whose path matches the query, best first
   {"op": "resolve", "cwd", "paths"}           which of these paths (relative to cwd) exist: [[given, absolute, is folder]]
-Every result has "error" when it failed. Secrets are never shown, not even their names (blocked()): nor anything
+Every result has "v" (V: the interface's version, dcremote.files in altention/interfaces.json; an engine of before C-90
+gives none, and reads no parts) and "error" when it failed. Secrets are never shown, not even their names (blocked()): nor anything
 under /proc, /sys or /dev (the environment and command line of every process of this user are read there, tokens
 among them; found by a review on 2026-10-21). Files are read only when they are regular files (open_regular()): no
 FIFO, device or socket, which could hang the read or never end.
@@ -20,6 +25,8 @@ import stat
 import subprocess
 
 RAW_MAX = 8 * 1024 * 1024
+PART_MAX = 512 * 1024  # bytes in one part of raw() (C-90): base64 over SSH and in JSON, a third more
+V = 1  # what every result says it is (dcremote.files)
 FIND_LIMIT = 25
 WALK_LIMIT = 50000
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", ".cache", ".tox"}
@@ -202,6 +209,42 @@ def read(path, start=1, count=60):
     return out
 
 
+def identity(st):
+    """What tells one file from another, and from itself changed: (id, mtime, size) of an fstat."""
+    return "%d:%d" % (st.st_dev, st.st_ino), st.st_mtime_ns, st.st_size
+
+
+def raw_part(path, offset, length, same=None):
+    """Bytes [offset, offset+length) of a file (C-90), every part checked as a whole read is (blocked(), a regular
+    file, open_regular()'s look at what was opened). `same`: what the part before said of the file ({"id", "mtime",
+    "size"}): if it is not that file as it was then, nothing is read ("changed")."""
+    try:
+        offset = 0 if offset is None else int(offset)
+        length = PART_MAX if length is None else int(length)
+    except (TypeError, ValueError):
+        return {"error": "offset 和 length 要是整數"}
+    if offset < 0 or length < 0:
+        return {"error": "offset 和 length 不能是負的"}
+    length = min(length, PART_MAX)
+    path = full(path)
+    if blocked(path):
+        return {"error": "這個檔案不能看（金鑰或 token）"}
+    if not os.path.isfile(path):
+        return {"error": "找不到檔案：%s" % path if not os.path.exists(path) else "這不是一般的檔案，不能看"}
+    try:
+        with open_regular(path) as f:
+            fid, mtime, size = identity(os.fstat(f.fileno()))
+            now = {"id": fid, "mtime": mtime, "size": size}
+            if isinstance(same, dict) and any(same.get(k) != v for k, v in now.items()):
+                return dict(now, error="檔案在讀的途中被換掉或改了，請從頭再讀", changed=True)
+            f.seek(offset)
+            data = f.read(length)
+    except OSError as e:
+        return {"error": "讀不了：%s" % (e.strerror or e)}
+    return dict(now, path=path, name=os.path.basename(path), offset=offset, length=len(data),
+                end=offset + len(data) >= size, b64=base64.b64encode(data).decode())
+
+
 def raw(path):
     path = full(path)
     if blocked(path):
@@ -308,6 +351,14 @@ def human(n):
 
 
 def op(req):
+    """`req` done, its result saying which version of the interface answered (V)."""
+    out = _op(req)
+    if isinstance(out, dict):
+        out.setdefault("v", V)
+    return out
+
+
+def _op(req):
     try:
         what = req.get("op")
         if what == "list":
@@ -315,6 +366,8 @@ def op(req):
         if what == "read":
             return read(req.get("path"), req.get("start", 1), req.get("count", 60))
         if what == "raw":
+            if req.get("offset") is not None or req.get("length") is not None:
+                return raw_part(req.get("path"), req.get("offset", 0), req.get("length", PART_MAX), req.get("same"))
             return raw(req.get("path"))
         if what == "find":
             return find(req.get("root"), req.get("query"), req.get("hidden", False))

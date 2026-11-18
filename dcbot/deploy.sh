@@ -57,6 +57,22 @@ verify() {  # 在目前的資料夾（某棵樹的 dcbot/）跑所有檢查；�
 
   echo "== 語法檢查"
   $PY -m py_compile bot/*.py supervisor.py deploy_candidate.py tools/dcctl
+  echo "== lint"
+  # the whole tree against tools/lint-baseline.json; no ruff of lint's version stops here too, printing the install line.
+  # The baseline may not widen the live one (none there yet: nothing to compare): --commit, the live tree's HEAD
+  # before the move (DEPLOY_SINCE); in place, the upstream (commits made here and not pushed go out too), else HEAD.
+  # In place, only the new files under what this deploy commits (dcbot/ and the paths given) count, not other work.
+  if [ -n "${DEPLOY_SINCE:-}" ]; then LINT_ARGS=(--against-rev "$DEPLOY_SINCE"); else LINT_ARGS=(--against-upstream); fi
+  if [ -z "$REVIEWED" ]; then
+    LINT_ARGS+=(--new-under dcbot)
+    for p in ${EXTRA[@]+"${EXTRA[@]}"}; do
+      LINT_ARGS+=(--new-under "$(/usr/bin/python3 -c 'import os, sys; print(os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath("..")))' "$p")")
+    done
+  fi
+  /usr/bin/python3 ../tools/lint "${LINT_ARGS[@]}" || { echo "✗ lint 沒過，停止部署"; return 1; }
+  # C-148: the golden files (fixed interfaces) this deploy changes, for whoever reads its output
+  GOLDEN_CHANGED="$(/usr/bin/python3 ../tools/golden changed "${DEPLOY_SINCE:-@{u\}}" HEAD 2>/dev/null | paste -sd, - | sed 's/,/、/g' || true)"
+  [ -z "$GOLDEN_CHANGED" ] || echo "這次改了的 golden（固定介面）：$GOLDEN_CHANGED"
   echo "== 測試"
   # 各組測試同時跑（各自用暫存資料夾，互不相干），全部跑完才看結果：部署時間取最慢的那組，不是加總
   TL="$(mktemp -d)"
@@ -87,6 +103,8 @@ verify() {  # 在目前的資料夾（某棵樹的 dcbot/）跑所有檢查；�
     { grep -n -E -A25 '^(FAIL|ERROR):' "$TL/$t" || true; } | head -80  # none (a crash, the home guard): just the tail
     tail -15 "$TL/$t" || true
   done
+  # the tests' guard let a file a live round rewrote meanwhile pass (altention/testing.py): said, never swallowed
+  { grep -h "^✓ 正式程序在測試期間改了" "$TL"/* 2>/dev/null || true; } | sort -u
   rm -rf "$TL"
   [ -z "$FAILED_TESTS" ] || { echo "✗ 測試失敗：$FAILED_TESTS，停止部署"; return 1; }
   if [ -f requirements.txt ] && ! git diff --quiet "${HEAD0:-HEAD}" -- requirements.txt 2>/dev/null; then

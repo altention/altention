@@ -101,10 +101,10 @@ class Order(Rig):
         self.basics()
         self.answer("plugins", "keep")
         self.answer("plugins.planner", "on")
-        self.assertEqual(self.status()["left"], ["planner.times", "usage.plan", "progress.every", "backup"])
+        self.assertEqual(self.status()["left"], ["planner.times", "usage.plan", "progress.every", "healthchecks", "backup"])
         code, out = self.run_("questions", "--json")
         asked = json.loads(out)
-        self.assertEqual([q["key"] for q in asked], ["planner.times", "usage.plan", "progress.every", "backup"])
+        self.assertEqual([q["key"] for q in asked], ["planner.times", "usage.plan", "progress.every", "healthchecks", "backup"])
         self.assertTrue(all(len(q["options"]) == len(q["values"]) for q in asked))
 
     def test_answers_go_in_nested_read_back_and_committed(self):
@@ -240,6 +240,7 @@ class Parts(Rig):
         self.answer("plugins.planner", "off")
         self.answer("usage.plan", "Pro")
         self.answer("progress.every", "10m")
+        self.answer("healthchecks", "no")  # (C-163 d3b: asked of every new installation)
         self.answer("backup", "now")
         q = [x for x in json.loads(self.run_("questions", "--json")[1]) if x["key"] == "backup.items"][0]
         self.assertNotIn("planner", q["values"], "the secretary is off: not offered")
@@ -256,6 +257,7 @@ class Done(Rig):
         self.answer("plugins.planner", "off")
         self.answer("usage.plan", "Pro")
         self.answer("progress.every", "10m")
+        self.answer("healthchecks", "no")  # (C-163 d3b: asked of every new installation)
         self.answer("backup", backup)
 
     def patched(self):
@@ -367,6 +369,25 @@ class Boards(Rig):
         with a, b, self.assertRaises(setup.Failed) as e:
             setup.dashboard(io.StringIO())
         self.assertIn("結束碼 3", str(e.exception))
+
+
+    def test_check_gone_takes_out_a_deleted_channel_and_makes_it_again(self):
+        """C-181: usage.channel names a channel not on the server (a fresh list): taken out, #dashboard's ID written."""
+        d = self.settings()
+        d["usage"] = {"channel": "998"}
+        self.write(d)
+        a, b = self.collect("pass", 0)
+        listed = []
+        with a, b, mock.patch.object(setup, "discord_channels", lambda fresh=False: listed.append(fresh) or [("105", "dashboard", "")]):
+            self.assertEqual(setup.dashboard(io.StringIO(), check_gone=True), 0)
+        self.assertEqual(listed, [True], "read fresh")
+        self.assertEqual(self.settings()["usage"]["channel"], "105")
+        d["usage"] = {"channel": "105"}
+        self.write(d)
+        with a, b, mock.patch.object(setup, "discord_channels", lambda fresh=False: [("105", "dashboard", "")]):
+            out = io.StringIO()
+            setup.dashboard(out, check_gone=True)
+        self.assertIn("看板頻道已經設定了", out.getvalue(), "there: left as it is")
 
 
 class TheBotsClaude(unittest.TestCase):
@@ -638,7 +659,11 @@ class ReconcileRig(Rig):
                   mock.patch("altention.catalog.look_before_asking", side_effect=self.look)):
             p.start()
             self.addCleanup(p.stop)
-        self.guided, self.looked = 0, 0
+        self.guided, self.looked, self.boards = 0, 0, []
+        self.boards_fail = None
+        p = mock.patch.object(setup, "dashboard", self.board)
+        p.start()
+        self.addCleanup(p.stop)
         self.look_said = ("same", "官方插件清單沒有變")
         self.write({"format": 1, "core": {"timezone": "UTC"}, "usage": {"subscription_limits": True},
                     "planner": {"channel": "999"}})  # an installation from before #setup; its secretary's channel gone
@@ -671,6 +696,17 @@ class ReconcileRig(Rig):
         self.guided += 1
         return 0
 
+    def board(self, out=None, check_gone=False):  # setup.dashboard: its own tests are Boards and BoardGone
+        self.boards.append(check_gone)
+        if self.boards_fail:
+            raise setup.Failed(self.boards_fail)
+        self.chans.append(("105", "dashboard", ""))  # as it leaves them: #dashboard there, both settings on it
+        d = self.settings()
+        for k in ("usage", "status"):
+            d.setdefault(k, {})["channel"] = "105"
+        self.write(d)
+        return 0
+
     def plan(self):
         code, out = self.run_("reconcile", "--dry-run", "--json")
         self.assertEqual(code, 0, out)
@@ -689,7 +725,7 @@ class PermissionWritten(ReconcileRig):
         self.assertEqual(d["dcbot"]["default_permission"], "bypassPermissions", "the mode it ran with: nothing changes")
         self.assertEqual(d["setup"]["permission_written"], "bypassPermissions")
         self.assertIn("dcbot.default_permission", d["setup"]["ask"])
-        self.assertIn(("audit", "把原本沒寫明的權限模式 bypassPermissions 寫進設定（行為不變）"), self.said)
+        self.assertIn(("@audit", "把原本沒寫明的權限模式 bypassPermissions 寫進設定（行為不變）"), self.said)
         self.assertIn(("update", "🔐 這個安裝之前沒設權限模式，機器人一直用 bypassPermissions 在跑：Claude 做什麼都不先問你。"
                                  "這次更新把它寫明了，行為不變。建議到 #setup 改成 auto。"), self.said)
         subjects = subprocess.run(["git", "-C", self.inst, "log", "--format=%s"], stdout=subprocess.PIPE,
@@ -778,7 +814,7 @@ class Reconcile(ReconcileRig):
     def test_dry_run_says_and_writes_nothing(self):
         before = self.settings()
         self.assertEqual(self.plan(), {"make-update": "fill", "make-guide": "fill", "move-audit": "fill",
-                                       "permission-written": "fill", "dashboard": "ask", "plugins.planner": "ask", "dcbot.default_permission": "ask",
+                                       "permission-written": "fill", "dashboard": "fill", "plugins.planner": "ask", "dcbot.default_permission": "ask",
                                        "usage.plan": "ask", "setup-folder": "fill"})
         self.assertEqual((self.settings(), self.said, self.moved, self.posted, self.guided), (before, [], [], [], 0))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "state", "altention")), "not even a lock")
@@ -787,18 +823,20 @@ class Reconcile(ReconcileRig):
         code, out = self.run_("reconcile")
         self.assertEqual(code, 0, out)
         self.assertIn(("update", setup.UPDATE_HELLO), self.said, "#update made, and says what it is first")
-        self.assertEqual([w for w, _ in self.said if w not in ("update", "audit")], [], "every line a notice, none a Claude's card")
+        self.assertEqual([w for w, _ in self.said if w not in ("update", "@audit")], [], "every line a notice, none a Claude's card")
         self.assertEqual(self.moved, [("audit", "系統")])
         said = [t for _, t in self.said]
         self.assertLess(said.index(setup.UPDATE_HELLO), [i for i, t in enumerate(said) if t.startswith("📦")][0])
         self.assertEqual(self.guided, 1)
         self.assertEqual(self.settings()["setup"], {"done": True, "since": "reconcile", "permission_written": "bypassPermissions",
-                                                    "ask": ["dcbot.default_permission", "plugins.planner", "dashboard", "usage.plan"]})
+                                                    "ask": ["dcbot.default_permission", "plugins.planner", "usage.plan"]})
+        self.assertEqual(self.boards, [True], "C-181: #dashboard made, not asked")
+        self.assertIn(("@audit", "#dashboard 還沒有，建好了"), self.said)
         opened = [json.loads(i) for a, i in self.posted if a == ("post",)]
         self.assertEqual(opened, [{"channel": "setup", "open_setup": True, "text": ""}])
         told = [t for t in said if t.startswith("📝 ")]
         self.assertEqual(len(told), 1)
-        self.assertTrue(told[0].startswith("📝 有 4 件事要你決定：權限、秘書、看板頻道、方案。"), told[0])
+        self.assertTrue(told[0].startswith("📝 有 3 件事要你決定：權限、秘書、方案。"), told[0])
         self.assertNotIn("例如", told[0], "what is really asked, never a fixed example")
         self.assertTrue(os.path.islink(os.path.join(self.home, ".local", "state", "altention", "setup", ".claude", "skills", "setup")))
         n = len(self.said)
@@ -809,9 +847,9 @@ class Reconcile(ReconcileRig):
 
     def test_the_questions_then_done(self):
         self.run_("reconcile")
-        self.assertEqual(self.status()["left"], ["dcbot.default_permission", "plugins.planner", "dashboard", "usage.plan"])
+        self.assertEqual(self.status()["left"], ["dcbot.default_permission", "plugins.planner", "usage.plan"])
         self.answer("core.timezone", "UTC", code=1)  # not asked
-        self.answer("dashboard", "make")
+        self.answer("dashboard", "make", code=1)  # C-181: never a question any more
         self.answer("plugins.planner", "on")
         self.assertNotIn("channel", self.settings().get("planner", {}), "the gone channel taken out: opened again")
         self.answer("dcbot.default_permission", "manual")
@@ -837,7 +875,7 @@ class Reconcile(ReconcileRig):
         """C-68: the reconcile's questions are taken away only once done got through; a run again after a step
         failed is the same older installation's: no #guide again, no #chat opened, and the ✅ said."""
         self.run_("reconcile")
-        for key, value in (("dashboard", "make"), ("plugins.planner", "off"), ("dcbot.default_permission", "manual"),
+        for key, value in (("plugins.planner", "off"), ("dcbot.default_permission", "manual"),
                            ("usage.plan", "Pro")):
             self.answer(key, value)
         guided = self.guided
@@ -856,45 +894,49 @@ class Reconcile(ReconcileRig):
         self.assertIn(("update", "✅ 你在 #setup 回答的都設定好了。"), self.said)
         self.assertNotIn("ask", self.settings()["setup"])
 
-    def test_turning_the_boards_off(self):
-        self.run_("reconcile")
-        self.answer("dashboard", "off")
-        plugins_ = self.settings()["plugins"]
-        self.assertEqual((plugins_["usage"], plugins_["status"]), ({"disabled_on": ["box"]}, {"disabled_on": ["box"]}))
-
     def test_one_board_channel_gone_the_other_there(self):
-        """C-67: status.channel on #dashboard (there), usage.channel on a channel deleted: asked of the usage board
-        alone, not "#dashboard 已經不在了"; "off" turns off that board only, "make" leaves #dashboard's setting."""
+        """C-181: usage.channel on a deleted channel, status.channel on #dashboard: made again (dashboard() puts the
+        lost board in #dashboard), never asked; #audit says it."""
         self.chans.append(("105", "dashboard", ""))
         d = self.settings()
         d["status"], d["usage"]["channel"] = {"channel": "105"}, "998"
         self.write(d)
+        self.assertEqual(self.plan()["dashboard"], "fill")
         self.run_("reconcile")
-        self.assertIn("dashboard", self.status()["left"])
-        asked = self.settings()
-        q = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}["dashboard"]
-        self.assertEqual(q["question"], "用量看板的頻道已經不在了（狀態看板還在 <#105>）。要把用量看板放回看板頻道嗎？")
-        self.assertEqual(q["options"][1]["description"], "只關掉用量看板，狀態看板照舊")
-        self.assertEqual(q["values"], ["make", "off"])
-        self.answer("dashboard", "off")
-        d = self.settings()
-        self.assertEqual(d["plugins"], {"usage": {"disabled_on": ["box"]}}, "the status board stays on")
-        self.assertEqual(d["status"], {"channel": "105"})
-        self.write(asked)  # asked again, answered the other way
-        self.answer("dashboard", "make")
-        d = self.settings()
-        self.assertEqual((d["status"].get("channel"), d["usage"].get("channel")), ("105", None), "the gone one made again by done")
+        self.assertNotIn("dashboard", self.settings()["setup"]["ask"])
+        self.assertEqual(self.boards, [True], "check_gone: the gone setting is taken out and made again")
+        self.assertIn(("@audit", "#dashboard 不見了，重新建好"), self.said)
 
-    def test_both_board_channels_gone_is_asked_as_before(self):
+    def test_both_board_channels_gone_are_made_again(self):
         d = self.settings()
         d["status"], d["usage"]["channel"] = {"channel": "997"}, "998"
         self.write(d)
         self.run_("reconcile")
-        q = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}["dashboard"]
-        self.assertEqual(q["question"], "#dashboard 已經不在了，要重新建一個嗎？")
-        self.answer("dashboard", "off")
-        plugins_ = self.settings()["plugins"]
-        self.assertEqual((plugins_["usage"], plugins_["status"]), ({"disabled_on": ["box"]}, {"disabled_on": ["box"]}))
+        self.assertEqual(self.boards, [True])
+        self.assertIn(("@audit", "#dashboard 不見了，重新建好"), self.said)
+        self.assertNotIn("plugins", self.settings(), "never turned off")
+
+    def test_making_it_failing_is_said_and_the_rest_goes_on(self):
+        self.boards_fail = "建不出 #dashboard：x"
+        code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        self.assertIn(("@audit", "#dashboard 還沒有，這次沒建成（建不出 #dashboard：x），之後會再試"), self.said)
+        self.assertIn("plugins.planner", self.settings()["setup"]["ask"], "the questions asked all the same")
+        self.boards_fail = None  # #code-review of a2f3d98: the next start (--if-changed, the same engine) tries again
+        code, out = self.run_("reconcile", "--if-changed")
+        self.assertNotIn("引擎沒換過", out)
+        self.assertEqual(self.boards, [True, True])
+        self.assertIn(("@audit", "#dashboard 還沒有，建好了"), self.said)
+        code, out = self.run_("reconcile", "--if-changed")
+        self.assertIn("引擎沒換過", out, "made: the head written this time")
+
+    def test_dashboard_asked_by_an_older_reconcile_is_taken_out(self):
+        d = self.settings()
+        d["setup"] = {"done": True, "since": "reconcile", "ask": ["dashboard"]}
+        self.write(d)
+        self.assertEqual(json.loads(self.run_("questions", "--json")[1]), [], "not a question any more")
+        self.run_("reconcile")
+        self.assertNotIn("dashboard", self.settings()["setup"].get("ask", []))
 
     def test_a_new_installation_in_setup_gets_no_extra_questions(self):
         d = self.settings()
@@ -903,6 +945,7 @@ class Reconcile(ReconcileRig):
         self.run_("reconcile")
         self.assertEqual(self.settings()["setup"], {"done": False})
         self.assertFalse([1 for a, i in self.posted if a == ("post",)])
+        self.assertEqual(self.boards, [], "done makes #dashboard")
 
     def test_all_in_place(self):
         self.chans = [("101", "audit", "系統"), ("103", "guide", "系統"), ("104", "update", ""), ("105", "dashboard", ""),
@@ -933,6 +976,126 @@ class Reconcile(ReconcileRig):
         self.assertEqual(self.posted, [])
 
 
+class OpenedBoards(ReconcileRig):
+    """C-181 (owner 2026-11-11): an installation whose #setup answered "dashboard: off" has the boards turned on once,
+    at the first reconcile of this version; the answer becomes "opened" and is never touched again, so a later
+    `plugins.py lose` (disabled_on written by hand) stays off. #audit says how to turn them off again."""
+
+    def off(self, disabled, answer="off", done=True):
+        d = self.settings()
+        d["setup"] = {"done": done, "answered": {"dashboard": answer, "core.timezone": "UTC"}}
+        d["dcbot"] = {"default_permission": "auto"}
+        d["plugins"] = dict((n, {"disabled_on": list(m)}) for n, m in disabled.items())
+        self.write(d)
+
+    def test_answered_off_is_turned_on_once(self):
+        self.off({"usage": ["box"], "status": ["box"]})
+        self.assertEqual(self.plan()["open-dashboard"], "fill")
+        code, out = self.run_("reconcile")
+        self.assertEqual(code, 0, out)
+        d = self.settings()
+        self.assertNotIn("plugins", d, "both on again here (the empty lists taken away)")
+        self.assertEqual(d["setup"]["answered"]["dashboard"], "opened")
+        self.assertIn(("@audit", setup.OPENED_SAY), self.said)
+        self.assertIn("關掉看板", setup.OPENED_SAY, "says how to turn them off again")
+        self.assertEqual(self.boards, [True], "#dashboard made and the boards posted")
+        self.assertIn("引擎沒換過", self.run_("reconcile", "--if-changed")[1])
+        log = subprocess.run(["git", "-C", self.inst, "log", "--format=%s"], stdout=subprocess.PIPE,
+                             universal_newlines=True).stdout
+        self.assertIn(setup.OPENED_COMMIT, log)
+        d["plugins"] = {"usage": {"disabled_on": ["box"]}, "status": {"disabled_on": ["box"]}}  # turned off by hand later
+        self.write(d)
+        n = len(self.said)
+        self.run_("reconcile")
+        self.assertEqual(self.settings()["plugins"], d["plugins"], "an answer marked opened is never acted on again")
+        self.assertNotIn("open-dashboard", self.plan())
+        self.assertFalse([t for _, t in self.said[n:] if t == setup.OPENED_SAY])
+
+    def test_turned_on_but_not_made_is_made_at_the_next_start(self):
+        """#code-review of a2f3d98: the answer marked opened and #dashboard not made: the next start makes it."""
+        self.off({"usage": ["box"], "status": ["box"]})
+        self.boards_fail = "建不出 #dashboard：x"
+        self.run_("reconcile")
+        self.assertEqual(self.settings()["setup"]["answered"]["dashboard"], "opened")
+        self.boards_fail = None
+        self.run_("reconcile", "--if-changed")
+        self.assertEqual(self.boards, [True, True])
+
+    def test_only_this_machine_is_taken_out(self):
+        self.off({"usage": ["box", "lap"], "status": ["box"], "chatlog": ["box"]})
+        self.run_("reconcile")
+        self.assertEqual(self.settings()["plugins"], {"usage": {"disabled_on": ["lap"]}, "chatlog": {"disabled_on": ["box"]}},
+                         "another machine's choice and other plugins stay")
+
+    def test_answered_off_but_on_here_already_is_only_marked(self):
+        self.off({"usage": ["lap"]})
+        self.run_("reconcile")
+        d = self.settings()
+        self.assertEqual(d["setup"]["answered"]["dashboard"], "opened", "a later lose would otherwise be undone")
+        self.assertEqual(d["plugins"], {"usage": {"disabled_on": ["lap"]}})
+        self.assertFalse([t for _, t in self.said if t.startswith("看板現在一律開著")], "nothing changed: not said in #audit")
+
+    def test_turned_off_by_lose_with_no_off_answer_stays(self):
+        for answer in ("make", "opened"):
+            self.off({"usage": ["box"], "status": ["box"]}, answer=answer)
+            self.assertNotIn("open-dashboard", self.plan(), answer)
+            self.run_("reconcile")
+            self.assertEqual(self.settings()["plugins"], {"usage": {"disabled_on": ["box"]}, "status": {"disabled_on": ["box"]}})
+            self.assertFalse([t for _, t in self.said if t == setup.OPENED_SAY], answer)
+
+    def test_a_new_installation_in_setup_is_left(self):
+        self.off({"usage": ["box"], "status": ["box"]}, done=False)
+        self.assertNotIn("open-dashboard", self.plan())
+
+
+class BoardGone(Rig):
+    """C-181: the bot runs setup.py board-gone ID in the background when a channel is deleted. A board channel is
+    made again at most once an hour (manager 2026-11-12: no chain); a failure is said once and not tried again."""
+
+    def setUp(self):
+        super().setUp()
+        self.write({"format": 1, "usage": {"channel": "105"}, "status": {"channel": "105"}})
+        self.said, self.made = [], []
+        self.fail = None
+        self.now = 1000000.0
+        for p in (mock.patch.object(setup, "say_audit", self.said.append),
+                  mock.patch.object(setup, "dashboard", self.dash),
+                  mock.patch.object(setup.time, "time", lambda: self.now)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def dash(self, out=None, check_gone=False):
+        self.made.append(check_gone)
+        if self.fail:
+            raise setup.Failed(self.fail)
+        return 0
+
+    def test_another_channel_starts_nothing(self):
+        code, out = self.run_("board-gone", "106")
+        self.assertEqual((code, self.made, self.said), (0, [], []), out)
+
+    def test_made_again_at_most_once_an_hour(self):
+        self.assertEqual(self.run_("board-gone", "105")[0], 0)
+        self.assertEqual(self.made, [True])
+        self.assertEqual(self.said, ["#dashboard 不見了，重新建好"])
+        self.now += 1800
+        self.assertEqual(self.run_("board-gone", "105")[0], 0)
+        self.assertEqual(self.made, [True], "not again within the hour")
+        self.assertEqual(self.said[-1], setup.REMADE_WAIT % "dashboard")
+        self.now += 1801
+        self.run_("board-gone", "105")
+        self.assertEqual(self.made, [True, True], "an hour on: made again")
+
+    def test_a_failure_is_said_once_and_not_tried_again(self):
+        self.fail = "建不出 #dashboard：x"
+        code, out = self.run_("board-gone", "105")
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(self.said, [setup.REMADE_FAILED % ("dashboard", "建不出 #dashboard：x")])
+        self.now += 60
+        self.run_("board-gone", "105")
+        self.assertEqual(self.made, [True], "not tried again")
+
+
 class AskedAgain(Rig):
     """Z trial (manager 2026-10-20): they chose to open #secretary or #dashboard, setup.py done did not get to making
     it, and the reconcile asks again: the question says so ("上次你選了開"), not as if new; the values stay."""
@@ -946,12 +1109,13 @@ class AskedAgain(Rig):
 
     def test_chosen_before_is_said(self):
         qs = self.questions({"plugins.planner": "on", "dashboard": "make"})
-        for key, chan in (("plugins.planner", "#secretary"), ("dashboard", "#dashboard")):
+        self.assertNotIn("dashboard", qs, "C-181: never asked")
+        for key, chan in (("plugins.planner", "#secretary"),):
             self.assertIn("上次你選了開", qs[key]["question"], key)
             self.assertIn(chan, qs[key]["question"], key)
             self.assertIn("還沒建好", qs[key]["question"], key)
             self.assertEqual(qs[key]["options"][0]["label"], "建好它（建議）", key)
-        self.assertEqual((qs["plugins.planner"]["values"], qs["dashboard"]["values"]), (["on", "off"], ["make", "off"]))
+        self.assertEqual(qs["plugins.planner"]["values"], ["on", "off"])
 
     def test_a_channel_deleted_is_asked_as_gone(self):
         """#code-review of e51ad8d: the setting names a channel the server has not (stale): "已經不在了", not "還沒建好"."""
@@ -960,11 +1124,11 @@ class AskedAgain(Rig):
                        "answered": {"plugins.planner": "on", "dashboard": "make"}}}
         self.write(d)
         qs = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}
-        for key, chan in (("plugins.planner", "#secretary"), ("dashboard", "#dashboard")):
+        for key, chan in (("plugins.planner", "#secretary"),):
             self.assertEqual(qs[key]["question"], "%s 已經不在了，要重新建一個嗎？" % chan, key)
             self.assertEqual(qs[key]["options"][0]["label"], "重新建（建議）", key)
             self.assertNotIn("還沒建好", qs[key]["question"], key)
-        self.assertEqual((qs["plugins.planner"]["values"], qs["dashboard"]["values"]), (["on", "off"], ["make", "off"]))
+        self.assertEqual(qs["plugins.planner"]["values"], ["on", "off"])
         del d["setup"]["answered"]
         self.write(d)
         qs = {q["key"]: q for q in json.loads(self.run_("questions", "--json")[1])}
@@ -974,7 +1138,7 @@ class AskedAgain(Rig):
     def test_first_time_or_said_no_before_is_asked_as_new(self):
         for answered in ({}, {"plugins.planner": "off", "dashboard": "off"}):
             qs = self.questions(answered)
-            for key in ("plugins.planner", "dashboard"):
+            for key in ("plugins.planner",):
                 self.assertNotIn("上次", qs[key]["question"], (key, answered))
                 self.assertEqual(qs[key]["options"][0]["label"], "開（建議）", (key, answered))
 
@@ -1513,6 +1677,23 @@ class FinishingAPlugin(Rig):
         code, out = self.run_("plugin-tool", "demo", "bare")
         self.assertIn("沒有寫 bare 在這個系統上怎麼裝", out)
 
+    def test_tool_runs_the_command_filled_in_c77(self):
+        """display-manager 11-03 (tokens v2): plugin-tool runs needs[].install with {plugin} filled in, as shown; a
+        value it names that is not set here: refused with why, nothing run."""
+        self.d["needs"] += [{"name": "rel", "check": 'test -e "{plugin}/rel-tool"',
+                             "install": {"debian": 'cd / && touch "{plugin}/rel-tool"'}},
+                            {"name": "unset", "check": "false", "install": {"debian": 'touch "{setting:nope.dir}/x"'}},
+                            {"name": "rootp", "check": "false", "install": {"debian": 'sudo "{plugin}/bin/root"'}}]
+        code, out = self.run_("plugin-tool", "demo", "rel")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.exists(os.path.join(self.folder, "rel-tool")), "run from / too: the full path")
+        code, out = self.run_("plugin-tool", "demo", "unset")
+        self.assertEqual(code, 1, out)
+        self.assertIn("demo 的 unset 裝法還不能跑：設定 nope.dir 還沒設", out)
+        code, out = self.run_("plugin-tool", "demo", "rootp")
+        self.assertEqual(code, 1, out)
+        self.assertIn('rootp 要用 sudo 裝，請使用者在自己的終端機跑：sudo "%s/bin/root"' % self.folder, out)
+
     def test_all_asks_the_other_machines(self):
         here = {"left": 0, "guide": [], "needs": []}
         seen = []
@@ -1691,7 +1872,7 @@ class Offers(ReconcileRig):
         self.assertEqual(code, 0, out)
         self.assertEqual(seen, [setup.WRITTEN_MODE], "written when the list was looked at")
         self.assertEqual(out.count(setup.WRITTEN_AUDIT), 2, "the plan's line and the write's, as before: written once")
-        self.assertEqual(len([c for c in self.said if c == ("audit", setup.WRITTEN_AUDIT)]), 1, self.said)
+        self.assertEqual(len([c for c in self.said if c == ("@audit", setup.WRITTEN_AUDIT)]), 1, self.said)
         self.assertIn("offer.rig-pdf", self.settings()["setup"]["ask"])
 
     def test_dry_run_looks_at_nothing(self):

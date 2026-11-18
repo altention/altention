@@ -26,7 +26,7 @@ import traceback
 
 import discord
 
-from . import config, posts
+from . import config, deliver, posts
 
 PREFIX = "upd"
 FOLDER = os.path.join(config.STATE, "update-cards")
@@ -166,12 +166,12 @@ class Cards(object):
         msg = None
         if card.get("message") and str(card.get("channel")) == str(ch.id):
             try:
-                msg = await ch.get_partial_message(int(card["message"])).edit(content=content, view=v)
+                msg = await deliver.deliver(ch, content=content, view=v, intent="card", key=card_id, edit=int(card["message"]))
                 msg = msg or card["message"]
             except discord.NotFound:
                 msg = None
         if msg is None:
-            sent = await ch.send(content, view=v)
+            sent = await deliver.deliver(ch, content, view=v, intent="card", key=card_id)
             card["message"] = sent.id
         if v is not None:
             v.stop()
@@ -224,11 +224,12 @@ class Cards(object):
         text = (card.get("details") or "").strip() or "（沒有更多說明）"
         ch = self.bot.get_channel(int(card["channel"]))
         if len(text) <= 1900:
-            await ch.send(text, reference=discord.MessageReference(message_id=int(card["message"]), channel_id=ch.id,
-                                                                   fail_if_not_exists=False))
+            await deliver.deliver(ch, text, reference=discord.MessageReference(message_id=int(card["message"]), channel_id=ch.id,
+                                                                               fail_if_not_exists=False),
+                                  intent="status")
         else:
-            await ch.send("要做的事（完整的在附檔）：\n" + text[:600] + "…",
-                          file=discord.File(io.BytesIO(text.encode("utf-8")), "details.txt"))
+            await deliver.deliver(ch, "要做的事（完整的在附檔）：\n" + text[:600] + "…",
+                                  file=discord.File(io.BytesIO(text.encode("utf-8")), "details.txt"), intent="status")
 
     async def do_ask_claude(self, interaction, card_id, card, b):
         text = (b.get("arg") or "").strip()
@@ -247,8 +248,8 @@ class Cards(object):
             notes.append("已經交給 <#%d> 的 Claude，請到那裡跟它一起處理。" % setup.id)
             return await self.put(card_id, card)
         ch = self.bot.get_channel(int(card["channel"]))
-        await ch.send("把附檔交給任一頻道的 Claude（例如說「請讀這個檔，照 update skill 處理」），它會帶你處理。",
-                      file=discord.File(io.BytesIO(text.encode("utf-8")), "for-claude.txt"))
+        await deliver.deliver(ch, "把附檔交給任一頻道的 Claude（例如說「請讀這個檔，照 update skill 處理」），它會帶你處理。",
+                              file=discord.File(io.BytesIO(text.encode("utf-8")), "for-claude.txt"), intent="status")
         notes.append(("#%s 頻道還沒有可以交給的 Claude" if named else "還沒有 #%s 頻道") % config.SETUP_CHANNEL
                      + "：要交給 Claude 的內容貼在下面的附檔。")
         await self.put(card_id, card)

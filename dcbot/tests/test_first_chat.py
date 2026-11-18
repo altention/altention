@@ -1,5 +1,10 @@
 """The bot's own channels: their names come from the instance's settings, and a new installation's first start makes
 #chat, a conversation in the instance folder that needs no settings card. No channel for changing the bot is made."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os

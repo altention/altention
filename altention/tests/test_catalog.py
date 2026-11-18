@@ -132,15 +132,14 @@ class Takes(Rig):
                          "nothing read of what is not taken by its row")
         self.assertEqual(len(self.asked(catalog.API)), 1)
 
-    def test_a_plugin_for_a_newer_engine_is_left_out_saying_so(self):
-        """manager 11-03: a plugin.json with v0.6.0's optional uses is left out as needing a newer engine."""
+    def test_a_plugin_with_optional_uses_is_taken_here(self):
+        """v0.5.1 leaves a plugin.json with v0.6.0's optional uses out as needing a newer engine; this one takes it."""
         self.publish("plugin-newer", plugin_json("newer", uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}}), ["v0.1.0"])
         self.publish("plugin-quiz", plugin_json("quiz"), ["v0.1.0"])
         catalog.refresh()
         d = catalog.load()
-        self.assertEqual(sorted(d["plugins"]), ["quiz"])
-        why = dict((x["repo"], x["why"]) for x in d["left_out"])
-        self.assertEqual(why["plugin-newer"], "v0.1.0 要比較新的引擎（plugin.json 用了 v0.6.0 起的寫法），先更新引擎")
+        self.assertEqual(sorted(d["plugins"]), ["newer", "quiz"])
+        self.assertNotIn("plugin-newer", [x["repo"] for x in d["left_out"]])
 
     def test_words_cut_short(self):
         self.assertEqual(catalog.plain("a\n b   c", 10), "a b c")

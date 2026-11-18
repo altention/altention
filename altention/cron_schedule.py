@@ -700,6 +700,12 @@ def compare(hours, out=sys.stdout, now=None):
 def main(argv=()):
     """One round, its stdout and stderr taken over (file descriptors 1 and 2 too, so a child's or a module's
     writing is caught): what turns up there is said once an hour, never left for cron to append every minute."""
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
+    if argv and argv[:1] not in (["--sample"], ["--compare"]):  # cron gives none: a mistake, never a round
+        print("不認得 %s（這支平常由排程呼叫，只收 --sample、--compare；-h 看說明），什麼都沒做" % " ".join(argv))
+        return 2
     if argv[:1] == ["--sample"]:  # the child of a round's sampling: its output goes back to the round
         return sample_main()
     if argv[:1] == ["--compare"]:  # a person's command: prints

@@ -9,6 +9,7 @@
   altention dc post <頻道> "…"               post to a Discord channel       (altention/dc/post.py)
   altention dc read <頻道> [則數]             read a channel                  (altention/dc/read.py)
   altention dc notify "…"                    push a notification             (altention/dc/notify.py)
+  altention tmux list [機器] | read <識別碼>   tmux panes by tmux:// id        (altention/tmux.py)
 
 The tools under it (ops/*.py) can also be run directly. In scripts, cron lines and instructions for
 Claude, write the full path or `altention`, not `alt` (alt is only linked where nothing else has that name).
@@ -20,7 +21,7 @@ import sys
 
 ENGINE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 TOP = {"doctor": "ops/doctor.py", "apply": "ops/apply.py", "plugins": "ops/plugins.py", "update": "altention/update_go.py",
-       "secret": "altention/secret_store.py"}
+       "secret": "altention/secret_store.py", "tmux": "altention/tmux.py", "standby": "altention/standby.py"}
 DC = {"post": "altention/dc/post.py", "read": "altention/dc/read.py", "notify": "altention/dc/notify.py"}
 
 

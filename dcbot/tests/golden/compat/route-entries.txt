@@ -1,0 +1,5 @@
+#golden spec §17.5
+s|%1 '111' → channel '111', routed (pid 9) '111', routed (pid 8) '111'
+s|%2 {'channel': '222', 'pid': '9'} → channel '222', routed (pid 9) '222', routed (pid 8) None
+s|%3 {'channel': '333', 'pid': '9', 'session': 'ab12'} → channel '333', routed (pid 9) '333', routed (pid 8) None
+s|%4 None → channel None, routed (pid 9) None, routed (pid 8) None

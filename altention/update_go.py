@@ -70,7 +70,7 @@ ENGINE_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ENGINE_HERE not in sys.path:
     sys.path.insert(0, ENGINE_HERE)
 
-from altention import catalog, config, plugin_update, sync, update  # noqa: E402
+from altention import botmove, catalog, config, plugin_update, sync, update  # noqa: E402
 from altention.dc import card as cards  # noqa: E402
 
 GO_KINDS = ("clean", "commits")  # what go takes on by itself
@@ -1471,6 +1471,13 @@ def _undo():
             print("更新之後這台的引擎又有變動，直接回去會丟掉那些變動，這次先不回去，你的東西都沒動。"
                   "請 Claude 帶你處理。（細節：%s 之後是 %s，現在是 %s）" % (name, str(rec.get("after"))[:12], head[:12]))
             return 1
+        restored = ""
+        if not botmove.reads_new(name, engine()):  # C-110 (manager 2026-11-03, A): that version reads the bot's old
+            # settings file alone: written back first, read back; not written, not gone back to
+            ok, restored = botmove.restore_old()
+            if not ok:
+                print("這次先不回去，你的東西都沒動：%s。" % restored)
+                return 1
         repo.git("update-index", "-q", "--refresh", timeout=60)  # a file rewritten as it was is no edit (stat only)
         r = repo.git("reset", "-q", "--keep", name, timeout=120)
         if r.returncode != 0:
@@ -1482,8 +1489,8 @@ def _undo():
         restart = update.after_move(rnd, head, rec["before"])
     update.install_pending()
     code, out = run([os.path.join(engine(), "install.sh")], "install", holder_env())
-    print("已經回到更新前的版本%s，你自己改過的檔都還在。%s%s%s" % (
-        "（%s）" % back if back else "", "機器人會自己重啟換回這個版本。" if restart else "",
+    print("已經回到更新前的版本%s，你自己改過的檔都還在。%s%s%s%s" % (
+        "（%s）" % back if back else "", "機器人會自己重啟換回這個版本。" if restart else "", restored,
         "" if code in (0, 2) else "但安裝這一步沒做完：%s；跟 Claude 說「跑 ./install.sh」。" % last_line(out),
         undo_plugins(last) if last and last.get("mark") == name else ""))
     return 0
@@ -1671,6 +1678,9 @@ def applied(version):
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if argv[:1] == ["check"] and set(argv[1:]) <= {"--json"}:
         f = check()
         if "--json" in argv:

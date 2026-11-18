@@ -1,0 +1,18 @@
+{
+ "claude_code": "2.1.326 (Claude Code)",
+ "colour": true,
+ "TERM": "tmux-256color",
+ "pane": [
+  80,
+  24
+ ],
+ "claude_args": "--permission-mode default",
+ "how": "the same, then Up 12 times: rules over and under the box both say 'more'",
+ "captured": "2026-11-18",
+ "by": "#bot-dev's rig for C-202 (bot.cc_drill World: scratch HOME, its own tmux server)",
+ "files": {
+  "plain": "tmux capture-pane -p",
+  "esc": "tmux capture-pane -p -e"
+ },
+ "api": "a stand-in on 127.0.0.1 (no real model); scratch HOME, theme dark"
+}

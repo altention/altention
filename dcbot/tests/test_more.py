@@ -1,6 +1,11 @@
 """📋 on a message that ends cut short (stage 3b step 2.3b). A turn's thread shows the beginning of each long piece;
 a piece that was cut now ends its message (one cut a message at most, at its end), and a 📋 on that message posts
 the next 10000 characters of it into the same thread, cut short in its turn while there is more."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util

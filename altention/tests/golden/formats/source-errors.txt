@@ -1,0 +1,8 @@
+#golden spec §13.5
+a list → 不是一個物件
+kind a number → kind 要是一段字
+kind too long → kind 超過 40 字
+lang odd → lang 只能是英數字、+、-（最多 20 字）
+source a number → source 要是一段字
+source too big → source 超過 64 KB
+good → ok

@@ -29,7 +29,7 @@ import time
 
 import discord
 
-from . import config, messages
+from . import config, deliver, messages
 from .util import split_message
 
 KEEP, KEEP_DAYS = 20, 7          # buttons remembered in a channel's state
@@ -98,9 +98,12 @@ def found(st, token, now=None):
     return b
 
 
-def button(label, token):
+def button(label, token, filled=False):
+    """The 填入 button; `filled`: the secret was stored with it (notice-design §7 bug 5): it says so, and may still be
+    pressed to put in another value (the same token, so nothing a client sends changes which secret it writes)."""
     v = discord.ui.View(timeout=None)
-    v.add_item(discord.ui.Button(label=say("button", label=label)[:80], style=discord.ButtonStyle.primary,
+    v.add_item(discord.ui.Button(label=say("filled" if filled else "button", label=label)[:80],
+                                 style=discord.ButtonStyle.secondary if filled else discord.ButtonStyle.primary,
                                  custom_id="sec:" + token))
     return v
 
@@ -129,13 +132,19 @@ def typed(data):
 
 
 async def store(plugin, name, value):
-    """Hand `value` to the core's store. The line for the owner (its own, or why it did not answer)."""
+    """Hand `value` to the core's store. (stored, the line for the owner: its own, or why it did not answer)."""
+    line, code = await _store(plugin, name, value)
+    return code == 0, line
+
+
+async def _store(plugin, name, value):
+    """(the line for the owner, the store's exit code or None)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, STORE, "set", plugin, name, "--stdin", "--via", "discord",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     except OSError as e:
-        return say("failed", why=type(e).__name__)
+        return say("failed", why=type(e).__name__), None
     try:
         out, _ = await asyncio.wait_for(proc.communicate(value.encode("utf-8")), STORE_SECS)
     except asyncio.TimeoutError:
@@ -144,11 +153,11 @@ async def store(plugin, name, value):
         except ProcessLookupError:
             pass
         await proc.wait()
-        return say("slow", secs=STORE_SECS)
+        return say("slow", secs=STORE_SECS), None
     lines = [x for x in out.decode("utf-8", "replace").splitlines() if x.strip()]
     if proc.returncode in (0, 1) and lines:
-        return "\n".join(lines)[:REPLY_MAX]  # its lines as it printed them: 存好了, and which other machines use the plugin
-    return say("failed", why=say("exit_code", code=proc.returncode))
+        return "\n".join(lines)[:REPLY_MAX], proc.returncode  # its lines as printed: 存好了, which other machines use it
+    return say("failed", why=say("exit_code", code=proc.returncode)), None
 
 
 class Secrets(object):
@@ -171,12 +180,13 @@ class Secrets(object):
         if embeds_of is not None:
             embeds = embeds_of(whole)
             for i, e in enumerate(embeds):
-                message = await (ch.send(embed=e, view=view) if i == len(embeds) - 1 else ch.send(embed=e))
+                message = await (deliver.deliver(ch, embed=e, view=view, intent="card") if i == len(embeds) - 1
+                                 else deliver.deliver(ch, embed=e, intent="card"))
         else:
             parts = split_message(whole)
             for i, part in enumerate(parts):
-                message = await ch.send(part, view=view if i == len(parts) - 1 else None,
-                                        allowed_mentions=discord.AllowedMentions.none())
+                message = await deliver.deliver(ch, part, view=view if i == len(parts) - 1 else None,
+                                                allowed_mentions=discord.AllowedMentions.none(), intent="card")
         return None, message
 
     async def on_interaction(self, interaction):
@@ -220,7 +230,13 @@ class Secrets(object):
             return await alone(say("failed", why=say("no_value")))
         await interaction.response.defer(ephemeral=True, thinking=True)  # the store may take longer than Discord's 3 s
         try:
-            line = await store(b["plugin"], b["name"], value)
+            stored, line = await store(b["plugin"], b["name"], value)
         finally:
             value = None
         await interaction.followup.send(line, ephemeral=True)
+        message = getattr(interaction, "message", None)  # (the message whose button opened the box)
+        if stored and message is not None:
+            try:
+                await deliver.deliver(None, view=button(b["label"], token, filled=True), intent="card", edit=message)
+            except Exception as e:  # (only the kind, as on_interaction)
+                print("[secret] the card not marked filled (%s)" % type(e).__name__, flush=True)

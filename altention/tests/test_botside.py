@@ -167,14 +167,15 @@ import sys
 sys.path.insert(0, %(engine)r)
 from altention.dc import botside
 botside.bot_machine = lambda cache=None, prog="": %(bot)r
+botside.sender_here = lambda: %(sender)r  # (who runs it, as looked up here: the tests' word, not this run's Claude)
 botside.hand_over(sys.argv[1:])
 print("went on here")
 '''
 
 
 class HandOver(Fake):
-    def hand_over(self, args, bot=("botbox", {"ssh": ["A"]}, False), stdin=None, close=True, env=None):
-        p = subprocess.Popen([sys.executable, "-c", HAND_OVER % {"engine": ENGINE, "bot": bot}] + args,
+    def hand_over(self, args, bot=("botbox", {"ssh": ["A"]}, False), stdin=None, close=True, env=None, sender="w0rd"):
+        p = subprocess.Popen([sys.executable, "-c", HAND_OVER % {"engine": ENGINE, "bot": bot, "sender": sender}] + args,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=dict(os.environ, **(env or {})))
         try:
@@ -198,7 +199,18 @@ class HandOver(Fake):
         code, out, err = self.hand_over(["channels"], close=False)
         self.assertEqual(code, 0, err)
         self.assertNotIn("went on here", out)
-        self.assertEqual(self.commands()[0][1:], ["%s=1 ~/'altention/engine'/dcbot/tools/dcctl 'channels'" % botside.HANDED, ""])
+        self.assertEqual(self.commands()[0][1:], ["%s=1 ALTENTION_SENDER='w0rd' ~/'altention/engine'/dcbot/tools/dcctl "
+                                                  "'channels'" % botside.HANDED, ""])
+
+    def test_who_runs_it_goes_along_when_it_was_looked_up(self):
+        """C-172a P1d: ALTENTION_SENDER, quoted for the shell there; none looked up, none sent (that dcctl takes it
+        for a program of its own machine: dcbot/tests/test_dcctl_sender_handed.py)."""
+        self.answers("A")
+        self.runs_with(0)
+        self.hand_over(["channels"], sender="a'b")
+        self.hand_over(["channels"], sender=None)
+        self.assertEqual([c[1].split(" ~/")[0] for c in self.commands()],
+                         ["%s=1 ALTENTION_SENDER='a'\"'\"'b'" % botside.HANDED, "%s=1" % botside.HANDED])
 
     def test_post_and_edit_take_their_stdin_along_and_the_status_comes_back(self):
         self.answers("A")
@@ -207,6 +219,13 @@ class HandOver(Fake):
         self.assertEqual(code, 4)
         self.assertEqual(self.commands()[0][2], "改成這樣")
         self.assertIn("ran ", out, "its output as it is")
+
+    def test_send_json_takes_its_stdin_along(self):  # C-156 a: the payload is on stdin
+        self.answers("A")
+        self.runs_with(0)
+        code, out, err = self.hand_over(["send-json", "chan"], stdin=b'{"content": "x"}')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.commands()[0][2], '{"content": "x"}')
 
     def test_on_the_bots_machine_dcctl_goes_on_here(self):
         code, out, err = self.hand_over(["channels"], bot=("me", {}, True))
@@ -230,6 +249,23 @@ class HandOver(Fake):
         self.assertNotEqual(code, 0)
         self.assertIn("別台轉來的", err)
         self.assertEqual(self.log(), [])
+
+
+class SenderHere(unittest.TestCase):
+    def test_a_machine_with_a_given_name_its_hostname_not_listed(self):
+        """C-172a P1d (#code-review-2 on 48807c35): what dcctl on another machine sends along names that machine as
+        altention dc post does (altention.config.this_machine(): the given name first), not by its hostname."""
+        from altention import config
+        from altention.dc import sender
+        with mock.patch.object(config, "stated_name", lambda: "named"), \
+                mock.patch.object(config, "inventory", lambda: {"machines": {"other": {"hostname": "elsewhere"}}}), \
+                mock.patch.object(config, "hostname", lambda: "host-a"), \
+                mock.patch("socket.gethostname", lambda: "host-a.lan"), \
+                mock.patch.object(sender, "claude_env", lambda: {"DCBOT_CHANNEL": "66"}), \
+                mock.patch.object(os, "getcwd", lambda: "/w/proj"):
+            got = sender.decoded(botside.sender_here())
+        self.assertEqual({k: got[k] for k in ("machine", "host", "folder", "channel", "claude")},
+                         {"machine": "named", "host": "host-a", "folder": "proj", "channel": "66", "claude": True})
 
 
 class TheRealDcctl(Fake):

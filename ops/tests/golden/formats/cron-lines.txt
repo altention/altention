@@ -1,0 +1,5 @@
+#golden spec §16.1
+*/10 * * * * /usr/bin/python3 "/p/demo/x.py" --at \%H >/dev/null 2>&1  # altention:demo/run
+0 3 * * * LANG="C.UTF-8" /p/demo/y.sh >>"/d/y.log" 2>&1  # altention:demo/logged
+0 8 * * * "<ENGINE>/bin/altention" dc post 123 '早安 100\%'  # altention:demo/say
+0 * * * * true  # altention:demo

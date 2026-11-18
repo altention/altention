@@ -47,24 +47,38 @@ class Check(unittest.TestCase):
         self.assertEqual([w for w, _ in plugin.retired(d)], ["commands", "requires[].data"])
         self.assertEqual(plugin.retired(good(requires=[{"plugin": "a"}])), [])
 
-    def test_a_uses_entry_written_for_a_newer_engine_says_so(self):
-        """manager 11-03: v0.6.0's optional entry {"v": N, …} is "needs a newer engine", not unreadable; any other
-        wrong value is unreadable as before (this is v0.5.x's own check, run on such a plugin.json)."""
-        with self.assertRaises(plugin.NewerEngine) as e:
-            plugin.check(good(uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}}), "x/plugin.json")
-        self.assertEqual(str(e.exception), "x/plugin.json：這個插件要比較新的引擎（uses.dc.post 是 v0.6.0 起的寫法），先更新引擎")
+    def test_a_uses_entry_v05x_called_newer_is_taken_here(self):
+        """v0.5.1 (manager 11-03) says v0.6.0's optional entry needs a newer engine; this engine reads it: taken,
+        and any other wrong value is refused as before (never NewerEngine here)."""
+        d = good(uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}})
+        self.assertIs(plugin.check(d), d)
         for v in ({"x": 1}, {"v": 0}, {"v": True}, {"v": "1"}, [1]):
             with self.subTest(v=v):
                 with self.assertRaises(plugin.PluginError) as e:
                     plugin.check(good(uses={"dc.post": v}), "x/plugin.json")
                 self.assertNotIsInstance(e.exception, plugin.NewerEngine)
-                self.assertIn("uses.dc.post 要是 1 以上的整數", str(e.exception))
+
+    def test_standby_only_true_or_false_and_only_with_machines_one_c181(self):
+        plugin.check(good(machines="one", standby=True))
+        plugin.check(good(standby=False))
+        self.bad(good(standby=True), "standby 只能是 true 或 false，而且只配 machines one")
+        for v in ("yes", 1, 0):  # (1 == True in Python: a hand-written 1 is refused, never read as off)
+            self.bad(good(machines="one", standby=v), "standby 只能是")
 
     def test_uses_c94(self):
         plugin.check(good(uses={"dc.post": 1, "anything": 3}))
         self.bad(good(uses=["dc.post"]), "uses 要是物件")
         for v in (0, True, "1", 1.0):
             self.bad(good(uses={"dc.post": v}), "uses.dc.post 要是 1 以上的整數")
+
+    def test_optional_uses_shape(self):
+        """plugin.format 2 (#activity-manager 11-03): an entry may be {"v": N, "optional": true/false}."""
+        plugin.check(good(uses={"plugin.format": 2, "rig.spend": {"v": 1, "optional": True}, "dc.post": {"v": 1}}))
+        for v in ({"v": 0, "optional": True}, {"optional": True}, {"v": 1, "optional": "yes"}, {"v": 1, "x": 1},
+                  {"v": True}):
+            self.bad(good(uses={"rig.spend": v}), 'uses.rig.spend 要是 1 以上的整數，或 {"v": 版本, "optional": true}')
+        self.assertEqual([plugin.want_of(v) for v in (3, {"v": 2}, {"v": 1, "optional": True})],
+                         [(3, False), (2, False), (1, True)])
 
     def test_interfaces_of_its_own(self):
         plugin.check(good(interfaces={"rig.spend": {"version": 1, "what": "x", "paths": ["bin/x"], "also": []}}))
@@ -100,13 +114,17 @@ class Check(unittest.TestCase):
         plugin.check(good(activity={"pages": [{"id": "files", "title": "看檔案"}, {"id": "quiz", "access": "guild"},
                                               {"id": "monitor", "access": "owner", "dir": "web/monitor", "calls": ["x"]}]}))
         plugin.check(good(activity={}))
+        plugin.check(good(activity={"pages": [{"id": "files", "opens_files": True, "file_button": "在這裡打開"}]}))  # C-116
         for activity, words in (("x", "activity 要是物件"), ({"pages": "files"}, "pages 要是清單"),
                                 ({"pages": ["files"]}, "pages[0] 要是物件"), ({"pages": [{"title": "x"}]}, "pages[0].id"),
                                 ({"pages": [{"id": "Files"}]}, "pages[0].id"), ({"pages": [{"id": "a/b"}]}, "pages[0].id"),
                                 ({"pages": [{"id": "a"}, {"id": "a"}]}, "兩頁都叫 a"),
                                 ({"pages": [{"id": "a", "title": 3}]}, "title 要是文字"),
                                 ({"pages": [{"id": "a", "access": "everyone"}]}, "access 要是 owner"),
-                                ({"pages": [{"id": "a", "access": None}]}, "access 要是 owner")):
+                                ({"pages": [{"id": "a", "access": None}]}, "access 要是 owner"),
+                                ({"pages": [{"id": "a", "opens_files": "yes"}]}, "opens_files 要是 true 或 false"),
+                                ({"pages": [{"id": "a", "file_button": 3}]}, "file_button 要是 80 字以內"),
+                                ({"pages": [{"id": "a", "file_button": "x" * 81}]}, "file_button 要是 80 字以內")):
             self.bad(good(activity=activity), words)
 
     def test_what_is_wrong_is_named(self):
@@ -308,6 +326,21 @@ class Placement(unittest.TestCase):
         self.assertEqual(self.where("planner", "one", "host-a"), "on", "not in the instance: the bot's machine")
         self.assertEqual(self.where("planner", "one", "host-b"), "off")
 
+    def test_one_with_standby_true_runs_on_the_standby_machines_too_c181(self):
+        def where(name, machine, standby=True, bot="host-a"):
+            d = good(name=name, machines="one", standby=standby)
+            with mock.patch.object(plugin, "standby_machines", lambda: {"host-b"}):
+                return plugin.placement(name, d, machine, self.SETTINGS, bot, ("host-a", "host-b", "host-c"))
+        self.assertEqual([where("planner", m) for m in ("host-a", "host-b", "host-c")], ["on", "on", "off"])
+        self.assertEqual(where("planner", "host-b", standby=False), "off", "without it: the bot's machine alone")
+        self.assertEqual(where("progress", "host-a"), "off", "the instance's on says where: as before")
+        self.assertEqual(where("planner", "host-b", bot=None), "unknown")
+        with mock.patch.object(plugin, "standby_machines", lambda: {"host-b"}), \
+                mock.patch.object(plugin.config, "machines", lambda: {"host-a": {}, "host-b": {}, "host-c": {}}), \
+                mock.patch.object(plugin.config, "bot_machine", lambda: ("host-a", None, True)):
+            self.assertEqual(plugin.machines_for("planner", {}, good(machines="one", standby=True)), ["host-a", "host-b"])
+            self.assertEqual(plugin.machines_for("planner", {}, good(machines="one")), ["host-a"])
+
     def test_what_cannot_be_read_is_unknown_never_off(self):
         """A broken plugins.json or machines.json (pushed to every machine) must not take cron lines away."""
         self.assertEqual(self.where("progress", "one", "host-b", settings=None), "unknown")
@@ -495,6 +528,101 @@ class ExternalHere(unittest.TestCase):
         self.assertNotIn("C-9", json.dumps(plugin.interfaces(), ensure_ascii=False), "words shown to authors: no ticket ids")
         self.assertEqual(here["draw"], ("on", ""), "one without uses does not need the list")
 
+    def test_tokens_two_is_blocked_on_an_engine_that_has_only_one(self):
+        """display-manager 11-03: a plugin that fills in needs[].install says tokens 2; on a v0.5.x engine (tokens 1
+        only) it is blocked, never shown a line that does not run; 1 still works on this one."""
+        self.settings({"demo": {"local": True}, "draw": {"local": True}})
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"tokens": 2}))
+        self.assertEqual(self.rows()[0]["demo"], ("on", ""))
+        with mock.patch.object(plugin, "interfaces", return_value={"tokens": {"version": 1}}):
+            here, _, _ = self.rows()
+        self.assertEqual(here["demo"][0], "blocked")
+        self.assertIn("它需要 tokens v2，這版引擎提供的是 v1", here["demo"][1])
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"tokens": 1}))
+        self.assertEqual(self.rows()[0]["demo"], ("on", ""), "1 is still offered (also)")
+
+    def test_an_optional_use_never_blocks_and_says_why_c120(self):
+        """#activity-manager 11-03: an optional use whose provider is off, that the engine lacks or at another version
+        leaves the plugin on; optional_lines and uses_now say which and why. A required one still blocks."""
+        offer = {"rig.spend": {"version": 2, "what": "spend", "also": [1]}}
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"), good(name="rigp", interfaces=offer))
+        uses = {"plugin.format": 2, "rig.spend": {"v": 1, "optional": True}, "no.such": {"v": 1, "optional": True},
+                "dc.post": {"v": 99, "optional": True}}
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses=uses))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True, "disabled_on": ["host-a"]}, "draw": {"local": True}})
+        here, rows, problems = self.rows()
+        self.assertEqual((here["demo"], problems), (("on", ""), []))
+        lines = dict(plugin.optional_lines(rows))
+        self.assertEqual(sorted(w for n, w in plugin.optional_lines(rows) if n == "demo"),
+                         ["選用的 dc.post 不能用：它需要 dc.post v99，這版引擎提供的是 v1",
+                          "選用的 no.such 不能用：它需要的介面 no.such，這版引擎沒有",
+                          "選用的 rig.spend 不能用：rig.spend 由插件 rigp 提供，但 rigp 在這台沒開"])
+        self.assertIn("demo", lines)
+        where, got = plugin.uses_now("demo", "host-a", root=self.root)
+        self.assertEqual(where, "on")
+        self.assertEqual(got["plugin.format"], {"ok": True, "optional": False})
+        self.assertEqual(got["rig.spend"], {"ok": False, "optional": True,
+                                            "why": "rig.spend 由插件 rigp 提供，但 rigp 在這台沒開"})
+        self.assertIsNone(plugin.uses_now("nope", "host-a", root=self.root))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        _, rows, _ = self.rows()
+        _, got = plugin.uses_now("demo", "host-a", root=self.root)
+        self.assertEqual(got["rig.spend"], {"ok": True, "optional": True}, "worked out now: the provider is on again")
+        self.assertNotIn("rig.spend", " ".join(w for _, w in plugin.optional_lines(rows)))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"), good(name="demo", uses={"rig.spend": 1}))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True, "disabled_on": ["host-a"]}, "draw": {"local": True}})
+        self.assertEqual(self.rows()[0]["demo"][0], "blocked", "a required one blocks as before")
+
+    def test_a_provider_whose_place_is_not_known_c155(self):
+        """#activity-manager 11-03: on a machine the machine list does not name, every plugin's place is unknown, the
+        provider's too: uses_now said the engine lacks the interface. It says why the provider's place is not known."""
+        offer = {"rig.spend": {"version": 1, "what": "spend"}}
+        write(os.path.join(self.root, "plugins", "rigp", "plugin.json"), good(name="rigp", interfaces=offer))
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"),
+              good(name="demo", uses={"plugin.format": 2, "rig.spend": {"v": 1, "optional": True},
+                                      "no.such": {"v": 1, "optional": True}}))
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        where, got = plugin.uses_now("demo", "host-zz", root=self.root)
+        self.assertEqual(where, "unknown")
+        self.assertFalse(got["rig.spend"]["ok"])
+        self.assertIn("由插件 rigp 提供，但不知道 rigp 在這台開不開", got["rig.spend"]["why"])
+        self.assertIn("不在機器清單上", got["rig.spend"]["why"])
+        self.assertNotIn("這版引擎沒有", got["rig.spend"]["why"])
+        self.assertIn("這版引擎沒有", got["no.such"]["why"], "one nobody offers: the engine's words, as before")
+        _, got = plugin.uses_now("demo", "host-a", root=self.root)
+        self.assertEqual(got["rig.spend"], {"ok": True, "optional": True}, "a machine on the list: as before")
+
+    def test_a_plugin_json_that_cannot_be_read_c155(self):
+        """#code-review on d938ab3, manager 11-03: with a plugin.json here that cannot be read, an interface the engine
+        does not have may be that plugin's: plugins uses, and the optional lines of list and doctor, say so (as a
+        plugin blocked by it is said to be), not that the engine lacks it."""
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"),
+              good(name="demo", uses={"plugin.format": 2, "rig.spend": {"v": 1, "optional": True},
+                                      "dc.post": {"v": 99, "optional": True}}))
+        os.makedirs(os.path.join(self.root, "plugins", "rigp"), exist_ok=True)
+        with open(os.path.join(self.root, "plugins", "rigp", "plugin.json"), "w") as f:
+            f.write("{ not json")
+        self.settings({"demo": {"local": True}, "rigp": {"local": True}, "draw": {"local": True}})
+        here, rows, _ = self.rows()
+        self.assertEqual(here["demo"][0], "on")
+        _, got = plugin.uses_now("demo", "host-a", root=self.root)
+        maybe = "它需要的介面 rig.spend 可能是 plugin.json 讀不出來的插件（rigp）提供的"
+        self.assertIn(maybe, got["rig.spend"]["why"])
+        self.assertIn("這版引擎提供的是 v1", got["dc.post"]["why"], "the engine's own interface: its words, as before")
+        lines = [w for n, w in plugin.optional_lines(rows) if n == "demo"]
+        self.assertTrue(any(maybe in w for w in lines), lines)
+        self.assertFalse(any("這版引擎沒有" in w for w in lines), lines)
+
+    def test_an_engine_without_the_second_format_blocks_it(self):
+        """plugin.format 2 is how an older engine (it has none) blocks a plugin it would misread."""
+        write(os.path.join(self.root, "plugins", "demo", "plugin.json"),
+              good(name="demo", uses={"plugin.format": 2, "dc.post": {"v": 1, "optional": True}}))
+        self.settings({"demo": {"local": True}, "draw": {"local": True}})
+        with mock.patch.object(plugin, "interfaces", return_value={"dc.post": {"version": 1}}):
+            here, _, _ = self.rows()
+        self.assertEqual(here["demo"][0], "blocked")
+        self.assertIn("它需要的介面 plugin.format，這版引擎沒有", here["demo"][1])
+
     def test_interfaces_a_plugin_offers_count_where_it_is_on(self):
         """manager 2026-10-24: a plugin's own "interfaces" join the engine's where it is on; off, its users are blocked
         with its name; a user of a provider that is itself blocked goes too; a name the engine has is not taken."""
@@ -672,7 +800,7 @@ class Overrides(unittest.TestCase):
                                     "sync": {"when": {"every": "1h"}}, "supervisor": {"enabled": False}}, self.CORE, "core")
         self.assertEqual((items["watch"]["source"], items["sync"]["source"], items["supervisor"].get("enabled", True)),
                          ("instance", "instance", True))
-        self.assertEqual(problems, ["core.schedules.supervisor：這一版還不能改（核心只開放 watch、sync、engine-update）"])
+        self.assertEqual(problems, ["core.schedules.supervisor：這一版還不能改（核心只開放 watch、sync、engine-update、standby-watch、healthchecks）"])
         items, _ = self.eff({"sync": {"enabled": False}}, self.CORE, "core")
         self.assertIn("不能關", items["sync"]["unknown"])
         items, _ = self.eff({"watch": {"when": {"at": "03:00"}}}, self.CORE, "core")

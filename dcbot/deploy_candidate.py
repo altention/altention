@@ -23,6 +23,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -209,6 +210,20 @@ def behind(landing=False):
 NEWER = "origin 比這台的 main 新（%d 個 commit）：先 bin/home-pull 把它們接進來，再部署（接進來之後的樹才是檢查要跑的那棵）"
 
 
+GOLDEN_LINE = re.compile(r"^golden:\s*\S.*$", re.M)
+
+
+def golden_lines(way, message=""):
+    """The "golden: <case>, … — <why>" lines of the commits in `way` (tools/golden check-commits), each once, in
+    their order, but for those the message has already."""
+    out = []
+    for h in way:
+        for line in GOLDEN_LINE.findall(git("log", "-1", "--format=%B", h).stdout):
+            if line.strip() not in out and line.strip() not in message:
+                out.append(line.strip())
+    return out
+
+
 def prepare(message, commits):
     head = git("rev-parse", "HEAD").stdout.strip()
     listed = []
@@ -266,6 +281,9 @@ def prepare(message, commits):
         git("rm", "-q", "--", *gone, cwd=cand)
     if "reviewed" not in message or any(h[:7] not in message for h in way):
         message = "%s (reviewed %s)" % (message.rstrip(), ", ".join(h[:7] for h in way))
+    said = golden_lines(way, message)
+    if said:  # C-148: the reviewed commits' golden lines go on, so lint's check sees them and main's history keeps them
+        message = "%s\n\n%s" % (message.rstrip(), "\n".join(said))
     git("commit", "-q", "-m", message, cwd=cand)
     c = git("rev-parse", "HEAD", cwd=cand).stdout.strip()
     # Checked without the list of paths (a list made wrongly passed every check made from it):

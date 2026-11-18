@@ -1,5 +1,10 @@
 """The buttons of a numbered menu (what reads the menu off the screen is the connector's: its tests are in
 altention/tests/connectors/claude_code/test_panels.py since stage 3b step 1.3)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import unittest
 
 from bot import menus
@@ -37,7 +42,7 @@ class Pressed(unittest.TestCase):
         class Message(object):
             id = 5
 
-            async def edit(self, content=None, view=None):
+            async def edit(self, content=None, view=None, **kw):
                 edits.append((content, view))
 
         async def send(content, view=None, **kw):
@@ -79,6 +84,14 @@ class Pressed(unittest.TestCase):
         with self.screens(), self.mock.patch.object(self.asyncio, "sleep", self.mock.AsyncMock()), \
                 self.mock.patch.object(self.bridge.host, "audit", self.mock.AsyncMock(), create=True):
             self.asyncio.run(self.menus.act(Click(), token, what))
+
+    def test_a_dialog_holds_the_channel_up_until_its_buttons_go(self):
+        """C-101: a menu shown is `blocked` (kind dialog); dropping its buttons takes it away."""
+        self.post()
+        st = self.bridge.host.chan(self.ch)
+        self.assertEqual((st["blocked"]["kind"], st["blocked"]["detail"]), ("dialog", "Claude needs your permission"))
+        self.asyncio.run(self.menus.resolve(self.ch))
+        self.assertNotIn("blocked", st)
 
     def test_a_press_waits_while_a_message_is_being_typed(self):
         """C-73: the channel's lock is its queue for everything typed into the pane; a button's key waits for it."""
@@ -254,10 +267,12 @@ class Pressed(unittest.TestCase):
             return type("M", (), {"id": 5})()
         self.ch.send = send
         token = self.post()
-        due = re.search(r"<t:(\d+):R> 自動拒絕", sent[-1])
-        self.assertIsNotNone(due, sent[-1])
+        menu, mention = sent  # (C-103: the dialog, then the owner's mention under it)
+        self.assertTrue(mention.startswith("🔐 要你允許："), mention)
+        due = re.search(r"<t:(\d+):R> 自動拒絕", menu)
+        self.assertIsNotNone(due, menu)
         self.assertAlmostEqual(int(due.group(1)), time.time() + 118, delta=5)
-        self.assertNotIn("automatically deny", sent[-1], "a time read once would be wrong a second later")
+        self.assertNotIn("automatically deny", menu, "a time read once would be wrong a second later")
         self.menus.open[token]["deadline"] = int(time.time()) - 1  # it ran out
         self.press(token, "1", [self.countdown("auto-denied-nocolor-80x24")])
         self.assertEqual(self.pressed, [], "nothing lands in the input box")

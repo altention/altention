@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""golden: the golden files of the fixed interfaces (C-148), changed only on purpose.
+
+  golden update <case>…            run the tests that hold these cases and write what they make now into their
+                                   golden files (named one by one: no "all", no wildcard), then show the diff
+  golden changed <base> [<rev>]    the cases whose golden files differ between two commits (rev: HEAD)
+  golden check-commits <base> [<head>]
+                                   every commit in base..head (merges aside) that changes a golden file says so in a
+                                   line "golden: <case>, <case> — <why the interface changed>" naming exactly those
+
+A case is the path of its file under <suite>/tests/golden/, without .txt or .json (cli/markers). Tests only read
+golden files (altention.testing.golden); this tool is the one thing that writes them: it runs the test modules whose
+source names a case, with ALT_GOLDEN_OUT pointing at a scratch folder where golden() leaves what it saw, and copies
+those cases alone. The tests run as always, in a throwaway home (their guard_home).
+
+Exit status: 0 done / nothing wrong; 1 a case not made, a test module that failed for another reason, or a commit
+without its golden line; 2 wrong usage. Standard library only, Python 3.8.
+"""
+import difflib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ENGINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SUITES = ("altention", "ops", "bin", "tools", "chatlog", "progress", "dcbot")
+GOLDEN_FILE = re.compile(r"^(?:[^/]+/)*tests/golden/(.+)\.(?:txt|json)$")
+LINE = re.compile(r"^golden:\s*(.+?)\s+(?:—|--|-)\s+\S", re.M)
+HEAD = "#golden "
+CASE = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$")
+
+
+def git(*args, cwd=None):
+    return subprocess.run(["git", "-C", cwd or ENGINE] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True, timeout=120)
+
+
+def modules_naming(case):
+    """[(suite, python module)] of the test files whose source names `case` in quotes."""
+    out = []
+    for suite in SUITES:
+        folder = os.path.join(ENGINE, suite, "tests")
+        if not os.path.isdir(folder):
+            continue
+        for name in sorted(os.listdir(folder)):
+            if name.startswith("test_") and name.endswith(".py"):
+                with open(os.path.join(folder, name), encoding="utf-8") as f:
+                    if re.search(r"[\"']%s[\"']" % re.escape(case), f.read()):
+                        out.append((suite, name[:-3]))
+    return out
+
+
+def run_module(suite, module, out):
+    """Run one test module as deploy.sh runs its suite, with golden() leaving what it saw in `out`."""
+    env = dict(os.environ, ALT_GOLDEN_OUT=out)
+    if suite == "dcbot":  # as deploy.sh: in dcbot/, with the bot's venv (a worktree has none: ALT_DCBOT_PYTHON)
+        venv = os.path.join(ENGINE, "dcbot", ".venv", "bin", "python")
+        venv = venv if os.path.exists(venv) else os.environ.get("ALT_DCBOT_PYTHON") or sys.executable
+        cmd = [venv, "-m", "unittest", "discover", "-s", "tests", "-p", module + ".py"]
+        cwd = os.path.join(ENGINE, "dcbot")
+    else:  # discover from the suite's tests, the top level the engine when the suite is a package
+        top = ["-t", "."] if os.path.exists(os.path.join(ENGINE, suite, "__init__.py")) else []
+        cmd = [sys.executable, "-m", "unittest", "discover", "-s", "%s/tests" % suite, "-p", module + ".py"] + top
+        cwd = ENGINE
+    return subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True, timeout=1800)
+
+
+def update(cases):
+    bad = [c for c in cases if c == "all" or not CASE.match(c)]
+    if not cases or bad:
+        print("golden update：要一個一個寫出情況（例如 cli/markers），不接受 all 或萬用字元%s" %
+              ("：%s" % "、".join(bad) if bad else ""))
+        return 2
+    out = tempfile.mkdtemp(prefix="golden-out-")
+    try:
+        for case in cases:
+            mods = modules_naming(case)
+            if not mods:
+                print("找不到寫了 %s 的測試" % case)
+                return 1
+            for suite, module in mods:
+                r = run_module(suite, module, out)
+                failed = len(re.findall(r"^(?:FAIL|ERROR): ", r.stdout, re.M))
+                if r.returncode != 0 and failed != len(re.findall(r"^AssertionError: golden ", r.stdout, re.M)):
+                    print("%s 的 %s 沒跑完（不是 golden 的差異）：\n%s" % (suite, module, r.stdout[-3000:]))
+                    return 1
+        for case in cases:
+            seen = os.path.join(out, case.replace("/", "__"))
+            if not os.path.exists(seen):
+                print("%s 沒有被測試產生（測試裡的 golden() 有沒有用這個名字？）" % case)
+                return 1
+            with open(seen, encoding="utf-8") as f:
+                got = json.load(f)
+            if not write(got):
+                return 1
+    finally:
+        shutil.rmtree(out, True)
+    return 0
+
+
+def write(got):
+    folder = os.path.join(got["folder"], "golden")
+    path = next((os.path.join(folder, got["case"] + e) for e in (".txt", ".json")
+                 if os.path.exists(os.path.join(folder, got["case"] + e))), os.path.join(folder, got["case"] + got["ext"]))
+    head, old = [], ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        head = [l for l in lines if l.startswith(HEAD)]
+        old = "".join(l for l in lines if not l.startswith(HEAD))
+    head = head or ["%sspec %s\n" % (HEAD, got["spec"])]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(head) + got["text"])
+    rel = os.path.relpath(path, ENGINE)
+    diff = "".join(difflib.unified_diff(old.splitlines(True), got["text"].splitlines(True), rel + "（舊）", rel + "（新）"))
+    print("寫了 %s%s" % (rel, "（沒有變）" if old == got["text"] else "：\n" + diff))
+    if git("check-ignore", "-q", rel).returncode == 0:  # a folder name .gitignore leaves out (dcbot's state/)
+        print("✗ %s 被 .gitignore 略過，不會進 commit：換一個情況名稱" % rel)
+        return False
+    return True
+
+
+def changed_cases(base, rev):
+    r = git("diff", "--name-only", base, rev, "--")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return sorted(set(m.group(1) for m in (GOLDEN_FILE.match(p) for p in r.stdout.split("\n")) if m))
+
+
+def named_in(message):
+    """The cases a commit message's golden lines name."""
+    out = set()
+    for m in LINE.finditer(message):
+        out |= set(x.strip() for x in re.split(r"[,、\s]+", m.group(1)) if x.strip())
+    return out
+
+
+def check_commits(base, head):
+    r = git("rev-list", "--no-merges", "%s..%s" % (base, head))
+    if r.returncode != 0:
+        print("golden check-commits：%s" % r.stderr.strip())
+        return 2
+    problems = []
+    for c in r.stdout.split():
+        cases = changed_cases(c + "^", c)
+        if not cases:
+            continue
+        said = named_in(git("log", "-1", "--format=%B", c).stdout)
+        if said != set(cases):
+            problems.append("%s 改了 golden %s，但 commit 訊息的 golden: 那一行寫的是%s" % (
+                c[:12], "、".join(cases), (" " + "、".join(sorted(said))) if said else "（沒有這一行）"))
+    for p in problems:
+        print("✗ " + p)
+    if problems:
+        print("每個改到 golden 的 commit 要有一行：golden: <情況>, <情況> — <為什麼介面變了>")
+    return 1 if problems else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if argv[0] == "update":
+        return update(argv[1:])
+    if argv[0] == "changed" and len(argv) in (2, 3):
+        try:
+            for case in changed_cases(argv[1], argv[2] if len(argv) == 3 else "HEAD"):
+                print(case)
+        except RuntimeError as e:
+            print("golden changed：%s" % e, file=sys.stderr)  # stdout is the cases alone (deploy.sh prints it)
+            return 2
+        return 0
+    if argv[0] == "check-commits" and len(argv) in (2, 3):
+        return check_commits(argv[1], argv[2] if len(argv) == 3 else "HEAD")
+    print("用法：golden update <情況>… | changed <base> [<rev>] | check-commits <base> [<head>]（golden --help）")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

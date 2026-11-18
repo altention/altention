@@ -167,3 +167,18 @@ def install():
 
 if "_real_run" not in globals():
     install()
+# C-162: no test goes by the running bot's Claude Code health (state/cc_health.json): a machine held to print
+# while a deploy runs the tests would change what every test of a turn sees. A file that is not there: layer 1.
+os.environ.setdefault("DCBOT_CC_HEALTH", os.path.join(tempfile.gettempdir(), "dcbot-tests-no-cc-health-%d.json" % os.getuid()))
+if "DCBOT_UNENTERED" not in os.environ:  # (C-202: the screens kept when Enter was not pressed, never the bot's)
+    _unentered_dir = tempfile.mkdtemp(prefix="dcbot-tests-unentered-")
+    os.environ["DCBOT_UNENTERED"] = os.path.join(_unentered_dir, "not-entered")
+    import atexit as _atexit
+    import shutil as _shutil
+    _atexit.register(_shutil.rmtree, _unentered_dir, True)
+if "DCBOT_LEDGER" not in os.environ:  # (C-172a: never the running bot's state/ledger.json, wherever the tests run)
+    _ledger_dir = tempfile.mkdtemp(prefix="dcbot-tests-ledger-")  # (each run its own, taken away at its end)
+    os.environ["DCBOT_LEDGER"] = os.path.join(_ledger_dir, "ledger.json")
+    import atexit as _atexit
+    import shutil as _shutil
+    _atexit.register(_shutil.rmtree, _ledger_dir, True)

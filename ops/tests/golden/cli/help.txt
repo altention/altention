@@ -1,0 +1,46 @@
+#golden spec §11.1
+bin/altention --help → 0, 說明在 stdout
+bin/altention -h → 0, 說明在 stdout
+bin/altention dc post --help → 0, 說明在 stdout
+bin/altention dc read --help → 0, 說明在 stdout
+bin/altention dc notify --help → 0, 說明在 stdout
+bin/home-git --help → 0, 說明在 stdout
+dcbot/tools/dcctl --help → 0, 說明在 stdout
+dcbot/tools/dcremote --help → 0, 說明在 stdout
+tools/lint --help → 0, 說明在 stdout
+tools/golden --help → 0, 說明在 stdout
+bin/altention doctor --help → 0, 說明在 stdout
+bin/altention apply --help → 0, 說明在 stdout
+bin/altention plugins --help → 0, 說明在 stdout
+bin/altention plugins show --help → 0, 說明在 stdout
+bin/altention update --help → 0, 說明在 stdout
+ops/doctor.py --help → 0, 說明在 stdout
+ops/apply.py -h → 0, 說明在 stdout
+ops/plugins.py list --help → 0, 說明在 stdout
+ops/instance.py --help → 0, 說明在 stdout
+ops/remote.py --help → 0, 說明在 stdout
+ops/release.py check --help → 0, 說明在 stdout
+ops/setup.py --help → 0, 說明在 stdout
+ops/setup.py answer --help → 0, 說明在 stdout
+altention/update.py --help → 0, 說明在 stdout
+altention/update_go.py go --help → 0, 說明在 stdout
+-m altention.sync --help → 0, 說明在 stdout
+usage/spend.py --json --help → 0, 說明在 stdout
+install.sh --help → 0, 說明在 stdout
+bin/home-pull --help → 0, 說明在 stdout
+tools/privacy-scan --help → 0, 說明在 stdout
+planner/remind.py --help → 0, 說明在 stdout
+altention/cron_update.py --help → 0, 說明在 stdout
+altention/cron_sync.py --help → 0, 說明在 stdout
+altention/cron_schedule.py --help → 0, 說明在 stdout
+usage/collect.py --help → 0, 說明在 stdout
+status/boards.py --help → 0, 說明在 stdout
+bin/altention no-such-command → 2
+bin/altention dc no-such-command → 2
+tools/golden no-such → 2
+altention/cron_update.py --now → 2
+altention/cron_sync.py x → 2
+altention/cron_schedule.py --nope → 2
+usage/collect.py --nope → 2
+status/boards.py --nope → 2
+bin/home-pull --nope → 2

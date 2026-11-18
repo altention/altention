@@ -2,6 +2,11 @@
 never bear a name of Claude Code's own (manager 2026-10-11, after the pane written into "source" hid SessionStart's
 own "source": a /resume inside a window no longer had its history posted). Held against real payloads of
 Claude Code 2.1.296 (the connector's samples: altention/tests/connectors/claude_code/hook_payloads)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import importlib.machinery
 import importlib.util
 import json

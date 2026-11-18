@@ -1,0 +1,33 @@
+#golden spec §13.4
+{
+ "ends": "長長長長長長長長\n…（太長，後面截掉了）",
+ "length": 1782,
+ "shape": {
+  "card": {
+   "at": "number",
+   "buttons": [
+    {
+     "action": "update_go",
+     "arg": "v0.6.0",
+     "id": "go",
+     "label": "str",
+     "style": "primary"
+    },
+    {
+     "action": "later",
+     "arg": null,
+     "id": "later",
+     "label": "str",
+     "style": "secondary"
+    }
+   ],
+   "close": false,
+   "details": "str",
+   "id": "update-v0.6.0",
+   "text": "str"
+  },
+  "channel": "update",
+  "from_host": "str",
+  "from_name": "str"
+ }
+}

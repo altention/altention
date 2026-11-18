@@ -1,4 +1,9 @@
 """Tmux mode: key planning, hook events, and (when tmux is installed) a real session running `cat`."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io
@@ -268,6 +273,41 @@ class RealTmux(unittest.TestCase):
         tmuxio._set.clear()
         tmuxio._set.update(self.was)
 
+    def test_c161_a_program_that_ends_at_once_is_kept_dead_to_be_read_then_closed(self):
+        async def ended(name, field, secs=10):
+            """ended(), once tmux has written `field`, or the pane dead for `secs`. Measured 11-07 (tmux 3.4, 25 runs
+            alone): now and then the pane is dead and tmux never writes either value (both "" after 10 seconds); a
+            fixed wait failed it in two whole runs (#bot-dev-support 11-04, 11-07). ended() says what tmux says:
+            the words for the channel cope with neither (ended_words())."""
+            end = None
+            for _ in range(int(secs / 0.1)):
+                end = await tmuxio.ended(name)
+                if end and end.get(field):
+                    break
+                await asyncio.sleep(0.1)
+            return end
+
+        async def go():
+            self.assertTrue(await tmuxio.start("dc-end", "/tmp", ["sh", "-c", "sleep 1; printf 'top\\nError: gone\\n' >&2; exit 3"]))
+            end = await ended("dc-end", "status")
+            self.assertFalse(await tmuxio.alive("dc-end"), "a dead pane is not a session that runs")
+            self.assertIn((end["status"], end["signal"]), (("3", ""), ("", "")), end)
+            self.assertIn("Error: gone", end["screen"])
+            self.assertIn("top", end["screen"], "the first row too (tmux 3.4 scrolls it above the screen)")
+            self.assertIsNone(await tmuxio.ended("dc-none"), "no such session: nothing (not another session's values)")
+            self.assertTrue(await tmuxio.start("dc-sig", "/tmp", ["sh", "-c", "kill -9 $$"]))
+            sig = await ended("dc-sig", "signal")
+            self.assertIn((sig["status"], sig["signal"]), (("", "9"), ("", "")), sig)
+            self.assertTrue(await tmuxio.start("dc-end", "/tmp", ["sleep", "5"]), "a dead one of that name is closed first")
+            self.assertTrue(await tmuxio.alive("dc-end"))
+            self.assertIsNone(await tmuxio.ended("dc-end"), "running: nothing to read")
+            self.assertTrue(await tmuxio.start("dc-up", "/tmp", ["sleep", "0.5"]))
+            await tmuxio.settled("dc-up")
+            await asyncio.sleep(2)
+            self.assertNotEqual(subprocess.run(["tmux", "-L", self.name, "has-session", "-t", "=dc-up"]).returncode, 0,
+                                "settled: the session ends with its program, as it always did")
+        asyncio.run(go())
+
     def test_type_and_read_back(self):
         async def go():
             self.assertFalse(await tmuxio.alive("dc-t"))
@@ -412,7 +452,18 @@ class NeverTheRunningBotsServer(unittest.TestCase):
                                   and getattr(n.func.value, "id", None) == "tmuxio"]
                 found += [(f, "<module>") for n in tree.body for c in ast.walk(n) if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                           and isinstance(c, ast.Call) and getattr(c.func, "attr", None) == "configure"]
-        self.assertEqual(found, [("main.py", "main")])
+        drill = [x for x in found if x[0] == "cc_drill.py"]
+        self.assertEqual([x for x in found if x[0] != "cc_drill.py"], [("main.py", "main")])
+        # The C-162 drill (a program of its own, never imported by the bot) names a server of its own: only ever a
+        # "dcbot-test-" one, written where it is named
+        with open(os.path.join(folder, "cc_drill.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        names = [kw.value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "configure"
+                 for kw in n.keywords if kw.arg == "socket"]
+        self.assertEqual(len(names), len(drill))
+        for v in names:
+            left = v.left if isinstance(v, ast.BinOp) else v
+            self.assertTrue(isinstance(left, ast.Constant) and left.value.startswith("dcbot-test-"), ast.dump(v))
 
     def test_importing_all_of_the_bot_tells_tmuxio_nothing(self):
         code = ("import importlib, os, sys\n"

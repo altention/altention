@@ -9,7 +9,8 @@ Checked against Discord's documentation (docs.discord.com/developers, 2026-10-16
   owner (partial user), team (null, or a team object: owner_user_id, members[] of {membership_state (1 invited,
   2 accepted), user, role}), integration_types_config ("0" guild install, "1" user install).
 - GET /users/@me/guilds: partial guilds {id, name, ...}, 200 at most per call (a bot just made is in a few).
-- The bot authorization flow: https://discord.com/oauth2/authorize?client_id=…&scope=bot…&permissions=…
+- The bot authorization flow: https://discord.com/oauth2/authorize?client_id=…&scope=bot…&permissions=… (the
+  permissions asked for: altention/dc/invite.py)
 - Every call needs "User-Agent: DiscordBot ($url, $versionNumber)" or Cloudflare may refuse it; 401, 403 and 429
   answers count towards a ban at 10,000 in 10 minutes, so the polling here is every few seconds.
 """
@@ -19,18 +20,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from altention.dc.invite import PERMISSIONS, PERMISSION_BITS, WITH_ADMIN  # noqa: F401  (C-191: one list, the bot's too)
+
 API = "https://discord.com/api/v10"
 AGENT = "DiscordBot (altention, 1) install"
 MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 ACCEPTED = 2
-# The 14 permissions the bot asks for (docs.discord.com/developers/topics/permissions), by Discord's names.
-PERMISSIONS = (
-    ("VIEW_CHANNEL", 10), ("MANAGE_CHANNELS", 4), ("VIEW_AUDIT_LOG", 7), ("SEND_MESSAGES", 11),
-    ("SEND_MESSAGES_IN_THREADS", 38), ("CREATE_PUBLIC_THREADS", 35), ("MANAGE_THREADS", 34), ("MANAGE_MESSAGES", 13),
-    ("PIN_MESSAGES", 51), ("EMBED_LINKS", 14), ("ATTACH_FILES", 15), ("READ_MESSAGE_HISTORY", 16),
-    ("ADD_REACTIONS", 6), ("USE_APPLICATION_COMMANDS", 31),
-)
-PERMISSION_BITS = sum(1 << bit for _, bit in PERMISSIONS)
 POLL = 3      # seconds between two looks at the bot's servers
 WAIT = 600    # seconds of looking before asking whether to go on
 LONGEST = 600  # seconds: a 429 asking to wait longer than this ends the command instead
@@ -93,10 +88,10 @@ def get(token, path, base=API, sleep=time.sleep, timeout=15):
 
 
 def invite_url(app_id):
-    """The link that adds the bot to a server the user picks: both scopes, the 14 permissions, a server install."""
-    return "https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
-        [("client_id", app_id), ("scope", "bot applications.commands"), ("permissions", str(PERMISSION_BITS)),
-         ("integration_type", "0")])
+    """The link that adds the bot to a server the user picks: both scopes, the 14 permissions and Administrator
+    (C-191, altention/dc/invite.py), a server install."""
+    from altention.dc import invite
+    return invite.url(app_id)
 
 
 def problems(app):

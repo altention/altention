@@ -94,7 +94,7 @@
 
 1. <https://discord.com/developers/applications> → **新建應用程式（New Application）**，名字隨意。
 2. **機器人（Bot）** 頁：**Privileged Gateway Intents** 底下打開 **Message Content Intent**；把 **公開機器人（Public Bot）** 關掉（預設開著，別人拿到應用程式的 ID 就能把你的機器人邀進他的伺服器）；按 **儲存變更（Save Changes）**。如果 Discord 不讓關、顯示「Private application cannot have a default authorization link」，先到 **安裝（Installation）** 頁把 **安裝連結（Install Link）** 改成 **無（None）**、存檔，再回來關。
-3. 在你自己的終端機跑 `~/altention/engine/install.sh discord`。它問 token 時，到 **機器人（Bot）** 頁按 **重設權杖（Reset Token）**，把新的 token 直接貼進去。它會用 token 查出應用程式的 ID 和擁有者（就是你；應用程式屬於團隊的話，從成員裡選你自己），說 機器人（Bot）頁還有什麼要改，再印出一個連結，裡面已經帶好要的 scope 和 14 個權限。打開連結、選你的伺服器（最好是新的、空的）。它會等機器人進伺服器（在好幾個伺服器裡就問你用哪個），再把 token、你的使用者 ID 和伺服器 ID 寫進 `~/.config/dcbot/env`（權限 600）。接著直接安裝這台需要的全部（跟 `./install.sh` 一樣），等最後一行說「安裝跑完了」。
+3. 在你自己的終端機跑 `~/altention/engine/install.sh discord`。它問 token 時，到 **機器人（Bot）** 頁按 **重設權杖（Reset Token）**，把新的 token 直接貼進去。它會用 token 查出應用程式的 ID 和擁有者（就是你；應用程式屬於團隊的話，從成員裡選你自己），說 機器人（Bot）頁還有什麼要改，再印出一個連結，裡面已經帶好要的 scope、功能要用的 14 個權限和「管理員」（之後的功能要用，例如把伺服器設成社群伺服器；之後拿掉，機器人照常能用）。打開連結、選你的伺服器（最好是新的、空的）。它會等機器人進伺服器（在好幾個伺服器裡就問你用哪個），再把 token、你的使用者 ID 和伺服器 ID 存進 `~/.config/altention/secrets/core/`（一樣一個檔，權限 600）。接著直接安裝這台需要的全部（跟 `./install.sh` 一樣），等最後一行說「安裝跑完了」。
 
 可能會遇到的兩件事：
 
@@ -155,7 +155,7 @@ python3 ops/remote.py status                                                   #
 
 `set` 會拒絕不用登入就讀得到的 repo、引擎自己的 repo，以及裝著別種資料的 repo。每次推送都會經過 pre-push hook，再檢查一次是不是公開的。系統檢查（`altention doctor`）列出每一樣的備份狀態，公開的 repo 是 fail；判斷不了時（離線、只能用 SSH 連的主機）說「沒辦法確認」，這種照樣推。
 
-不在備份裡的：機器人的 token（`~/.config/dcbot/env`；換新機器時 `install.sh discord` 會要一個新的）、機器人的頻道狀態（哪個頻道接哪個對話：還沒有）、用量看板的歷史（`~/.local/share/usage`：會從零開始），以及 Claude Code 自己的對話檔（對話紀錄是它們看得懂的副本）。
+不在備份裡的：機器人的 token（`~/.config/altention/secrets/core/`；換新機器時 `install.sh discord` 會要一個新的）、機器人的頻道狀態（哪個頻道接哪個對話：還沒有）、用量看板的歷史（`~/.local/share/usage`：會從零開始），以及 Claude Code 自己的對話檔（對話紀錄是它們看得懂的副本）。
 
 **換到新機器**：照上面「安裝」那一節把引擎 clone 下來，在裡面開 Claude Code，`/install` 問的時候選「從備份還原」。它會帶你做下面這幾步，不會再問一次安裝的設定問題（那些答案會蓋掉從備份回來的設定）。自己做的話，在引擎裡：
 
@@ -209,7 +209,7 @@ python3 ops/doctor.py          # 系統檢查，每一台
   - `bypassPermissions`：從不問也不擋；你的 Discord 帳號等於這台機器的 shell。
 
   按鈕是從畫面讀出來做的，它保證不了什麼，見 SECURITY.md。
-- token 只放在 `~/.config/dcbot/env`（權限 600）。一個守門的 hook 擋住你機器上每個 Claude Code 讀、搜尋或在指令裡寫出它和 SSH 私鑰；這是盡力而為，擋不到哪些情況 SECURITY.md 有寫。機器人貼出的內容裡的金鑰和 token 會先遮掉。
+- token 只放在 `~/.config/altention/secrets/core/`（權限 600）。一個守門的 hook 擋住你機器上每個 Claude Code 讀、搜尋或在指令裡寫出它和 SSH 私鑰；這是盡力而為，擋不到哪些情況 SECURITY.md 有寫。機器人貼出的內容裡的金鑰和 token 會先遮掉。
 - 引擎預設不自動更新（`core.update` 是 `"notify"`：有新版時在 Discord 推播一次，系統檢查和狀態看板也會提醒）。設成 `"release"` 會自動跟發佈的 tag；這代表信任能發佈上游 repo 的人，SECURITY.md 有寫。
 - 插件沒有隔離。只裝你信任的插件。
 

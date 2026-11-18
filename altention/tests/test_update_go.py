@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -523,6 +524,39 @@ class SafetyNet(GoRig):
         self.assertEqual(self.ran, ["install"])
         self.assertEqual(self.undo(), 1, "nothing further back")
         self.assertIn("沒有更新前的記號", self.out)
+
+    def test_undo_writes_the_bots_old_settings_back_first_or_does_not_go(self):
+        """C-110 (manager 2026-11-03, A): the version gone back to reads the bot's old settings file alone (no
+        altention/botmove.py in this rig's commits): written back from the store before, or no undo at all."""
+        home = tempfile.mkdtemp(prefix="家 undo ")
+        self.addCleanup(shutil.rmtree, home, True)
+        env = mock.patch.dict(os.environ, {"HOME": home})
+        env.start()
+        self.addCleanup(env.stop)
+        store = os.path.join(home, ".config", "altention", "secrets", "core")
+        os.makedirs(store, mode=0o700)
+        for name, value in (("discord-token", "rig-NOT-A-TOKEN.x.y"), ("owner-id", "42"), ("guild-id", "7")):
+            with open(os.path.join(store, name), "w") as f:
+                f.write(value)
+        old_file = os.path.join(home, ".config", "dcbot", "env")
+        reads = mock.patch.object(update_go.botmove, "reads_new", side_effect=lambda rev, engine=None: False)
+        reads.start()  # this rig's engine is made from the real tree: every commit of it has botmove.py
+        self.addCleanup(reads.stop)
+        self.start()
+        self.release("0.2.0")
+        self.assertEqual(self.go("v0.2.0"), 0, self.out)
+        head = self.head()
+        with mock.patch.object(update_go.botmove, "restore_old", return_value=(False, "機器人的設定寫不回 x（OSError）")):
+            self.assertEqual(self.undo(), 1)
+        self.assertIn("這次先不回去，你的東西都沒動：機器人的設定寫不回 x（OSError）", self.out)
+        self.assertEqual(self.head(), head, "not gone back")
+        self.assertEqual(self.tags(), ["altention/before-v0.2.0"], "the mark kept")
+        self.assertEqual(self.undo(), 0, self.out)
+        self.assertIn(update_go.botmove.t("botmove.restored"), self.out)
+        self.assertNotIn("rig-NOT-A-TOKEN", self.out)
+        with open(old_file) as f:
+            self.assertEqual(f.read(), "DISCORD_TOKEN=rig-NOT-A-TOKEN.x.y\nOWNER_ID=42\nGUILD_ID=7\n")
+        self.assertTrue(os.path.exists(os.path.join(store, "discord-token")), "the store stays")
 
     def test_undo_keeps_edits_and_refuses_what_would_lose_them(self):
         self.start()

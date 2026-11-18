@@ -169,9 +169,31 @@ def context_share(ctx):
     return "context %d%%" % round(100.0 * ctx[0] / transcript.window(ctx[1])) if ctx else ""
 
 
-def footer(tools, seconds, background=0, ctx=None):
+ID_TAIL = re.compile(r"· ([0-9a-f]{8})\s*$")  # the turn's id at the end of a reply's footer (with a standby)
+
+
+def footer_tail(machine, pid):
+    """With a standby (C-163 1.4, points 4 and 5): the machine that answered, then the first 8 characters of the
+    turn's id, last in the footer: a reply a takeover left unposted is found by it. Without a turn id the machine
+    alone (#release 11-08: it tells the owner which one answered)."""
+    return " · ".join([b for b in (machine, (pid or "")[:8]) if b])
+
+
+def posted_ids(texts):
+    """The turn ids at the end of the footers of `texts` (the bot's messages in a channel)."""
+    out = set()
+    for t in texts:
+        for line in reversed((t or "").splitlines()[-3:]):
+            m = ID_TAIL.search(line)
+            if m:
+                out.add(m.group(1))
+                break
+    return out
+
+
+def footer(tools, seconds, background=0, ctx=None, tail=""):
     """The small grey line under a reply: tools used, time taken, background work still running, how full
-    the context window is."""
+    the context window is; `tail` last (footer_tail(): with a standby, the machine and the turn's id)."""
     bits = []
     if tools:
         bits.append(", ".join("%s×%d" % kv for kv in sorted(tools.items(), key=lambda kv: -kv[1])))
@@ -181,6 +203,8 @@ def footer(tools, seconds, background=0, ctx=None):
         bits.append("背景工作 %d 個進行中" % background)
     if ctx:
         bits.append(context_share(ctx))
+    if tail:
+        bits.append(tail)
     return "-# " + " · ".join(bits) if bits else ""
 
 

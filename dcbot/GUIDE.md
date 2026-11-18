@@ -26,7 +26,9 @@
 - `/recap`, `!recap`: 顯示這個頻道的對話最近幾輪（預設 3 輪，最多 20）。
 - `/screen`, `!screen`: 看 Claude 的終端機畫面（圖片，按 📝 看文字）。
 - `/key`, `!key`: 送按鍵到終端機，例如 `Escape`、`Enter`、`Down Enter`。
-- `/mode`, `!mode`: 切換 `tmux`（預設，常駐對話）或 `print`（每則訊息跑一次，備用）。
+- `/mode`, `!mode`: 切換 `tmux`（預設，常駐對話）或 `print`（每則訊息跑一次，備用）；`!mode retry` 再試一次一般模式。
+- `!cctest`：用真的 Claude Code 檢查一次，通過的版本留一份，之後新版壞了會退回它。
+- `!agentanswers on|off`：別的頻道的 Claude 能不能替你回答這個頻道的提問、終端機選單和計畫（預設開著；不加字是看現在的設定）。
 - `/cwd`, `!cwd`: 設定這個頻道的工作目錄，會開新對話。
 - `/files`, `!files`: 檔案瀏覽器（見「終端機和檔案」）。
 - `/rename`, `!rename`: 頻道和 Claude Code 的對話一起改名。
@@ -64,6 +66,7 @@ Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字
 - **對話亂了**：`/reset`。
 - **tmux 出問題**：`!mode print` 切到備用的 print 模式。
 - **新版壞掉**：3 分鐘沒上線會自動退回，也可以 `!rollback`。
+- **備援**：在 #setup 說「設備援」，指定另一台機器。機器人那台停了，那台大約 5 分鐘後接手；原本那台回來、連續 30 分鐘都正常，就自動切回（也可以設成按按鈕才切回，或只通知不接手）。
 
 ## 秘密
 - token 和 SSH 私鑰不讓任何 Claude 讀；貼到 Discord 的金鑰、token 會遮成 `[REDACTED]`。

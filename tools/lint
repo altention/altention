@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""lint: the bug-catching lint of a tree, held to a baseline that only shrinks (owner 2026-10-24).
+
+  lint [--root DIR] [--baseline FILE] [--against OLD | --against-rev REV | --against-upstream] [--new-under PATH…]
+                                        check DIR (default: this engine): a problem the baseline does not hold fails
+  lint --shrink                         drop from the baseline what is no longer found (it never adds)
+  lint --init                           write the baseline of what is found now; only when there is none
+  lint --install                        put ruff RUFF_VERSION into ~/.local/share/altention/dev/ruff (a venv)
+
+Checked: the Python files of the tree (git's files and the new ones it does not ignore when DIR is a repository: an
+in-place deploy commits new files after this check; with --new-under, only the new ones under those paths, the ones
+the deploy commits: another channel's work in progress elsewhere is not its matter; else every file; *.py and files
+whose first line is a python #!), symbolic links and .venv, node_modules aside:
+- ruff RUFF_VERSION with RULES (C901 is only counted, never fails);
+- ALT001: subprocess.run/check_output/call/check_call without timeout=, outside tests (a folder named tests).
+With --against-rev or --against-upstream, also C-148: each commit in that rev..HEAD (merges aside) that changes a
+golden file (<suite>/tests/golden/) has a line "golden: <case>, … — <why>" naming exactly those (tools/golden).
+  A call whose lines say "# no-timeout: <why>" (one waiting for a person) is not counted. Only the module's
+  attribute is seen: "from subprocess import run" or "import subprocess as sp" are not (none outside tests yet).
+A problem is its file, its rule and the text of its line (stripped), not its line number: code added above it
+does not make it new, and a line changed is new again, so code written or changed must pass.
+The baseline (tools/lint-baseline.json, or --baseline) holds the old problems with how many of each; an item
+the review found to be no bug carries "false": "<why>" and is said so. Without a baseline everything must pass.
+When RUFF_VERSION changes, the baseline is measured again: delete it, --init, and say both numbers in review.
+--against OLD (the baseline of the live tree's HEAD, or of the last release): an item the baseline holds beyond OLD
+fails as well, so a commit cannot widen it; when OLD was measured with another ruff version, the items added are
+listed for the review and pass (manager 10-24). --against-rev REV takes OLD from that commit of DIR (none there:
+not compared); --against-upstream from DIR's upstream (@{u}), or HEAD without one: an in-place deploy also pushes
+commits made here and not pushed yet, so HEAD may already hold a widened baseline (#code-review of 84c8f3e).
+
+ruff: only those who change the code and run deploy.sh install it; those who use Altention do not. `tools/lint
+--install` puts it in their home, no sudo. Found as $ALT_RUFF, then the --install folder, then PATH, of exactly
+RUFF_VERSION (another version finds other things).
+
+Exit status: 0 nothing new; 1 new problems; 2 wrong usage or the check itself failed; 3 no ruff RUFF_VERSION.
+Standard library only, Python 3.8.
+"""
+import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+RUFF_VERSION = "0.17.0"
+RULES = "F,E9,B006,B012,B015,B018,B023"
+COUNTED = "C901"  # counted and said, never a failure
+TARGET = "py38"
+SUBPROCESS_CALLS = ("run", "check_output", "call", "check_call")
+EXEMPT = "# no-timeout:"
+SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__"}
+ENGINE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+OK, NEW, FAILED, NO_RUFF = 0, 1, 2, 3
+
+
+def install_dir():
+    return os.path.expanduser("~/.local/share/altention/dev/ruff")
+
+
+def install_line():
+    """Relative: deploy.sh runs lint from a throwaway candidate tree, whose path is no place to install from."""
+    return "tools/lint --install（在引擎資料夾裡跑）"
+
+
+class Failed(Exception):
+    pass
+
+
+def ruff_version(path):
+    try:
+        p = subprocess.run([path, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    words = p.stdout.split()
+    return words[1] if p.returncode == 0 and len(words) >= 2 and words[0] == "ruff" else None
+
+
+def find_ruff():
+    """(path of ruff RUFF_VERSION or None, what was found instead)."""
+    seen = []
+    places = [os.environ.get("ALT_RUFF"), os.path.join(install_dir(), "bin", "ruff")]
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if folder:
+            places.append(os.path.join(folder, "ruff"))
+    for path in places:
+        if not path or not os.path.isfile(path) or not os.access(path, os.X_OK):
+            continue
+        version = ruff_version(path)
+        if version == RUFF_VERSION:
+            return path, seen
+        seen.append("%s（%s）" % (path, version or "讀不出版本"))
+    return None, seen
+
+
+def no_ruff(seen):
+    print("✗ lint：沒有 ruff %s%s。只有改程式、跑 deploy.sh 的人要裝，用的人不用；裝法（裝在自己的家目錄，不需要 sudo）：" % (
+        RUFF_VERSION, "（找到的版本不對：%s）" % "、".join(seen) if seen else ""))
+    print("    " + install_line())
+    print("  或自己裝好再用 ALT_RUFF=<ruff 的路徑> 指給它")
+    return NO_RUFF
+
+
+def is_python(path):
+    if path.endswith(".py"):
+        return True
+    if "." in os.path.basename(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            first = f.readline(200)
+    except OSError:
+        return False
+    return first.startswith(b"#!") and b"python" in first
+
+
+def git_files(root, *which):
+    try:
+        p = subprocess.run(["git", "-C", root, "ls-files", "-z"] + list(which), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Failed("git ls-files 失敗：%s" % e)
+    if p.returncode != 0:
+        raise Failed("git ls-files 失敗：%s" % p.stderr.decode(errors="replace").strip()[:200])
+    return [n for n in p.stdout.decode(errors="surrogateescape").split("\0") if n]
+
+
+def under(name, paths):
+    return any(p in (".", "") or name == p or name.startswith(p.rstrip("/") + "/") for p in paths)
+
+
+def files(root, new_under=None):
+    """The tree's Python files, relative to root, sorted. new_under: the paths whose new (untracked) files count."""
+    if os.path.exists(os.path.join(root, ".git")):
+        new = git_files(root, "--others", "--exclude-standard")
+        names = git_files(root, "--cached") + (new if new_under is None else [n for n in new if under(n, new_under)])
+    else:
+        names = []
+        for folder, dirs, found in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            names += [os.path.relpath(os.path.join(folder, n), root) for n in found]
+    out = []
+    for name in names:
+        if set(name.split("/")) & SKIP_DIRS:
+            continue
+        path = os.path.join(root, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        if is_python(path):
+            out.append(name)
+    return sorted(out)
+
+
+def source_lines(root, name, cache):
+    if name not in cache:
+        try:
+            with open(os.path.join(root, name), encoding="utf-8", errors="replace") as f:
+                cache[name] = f.read().splitlines()
+        except OSError:
+            cache[name] = []
+    return cache[name]
+
+
+def run_ruff(ruff, root, names):
+    """[(file, rule, row, message)] of RULES and COUNTED."""
+    if not names:
+        return []
+    cmd = [ruff, "check", "--no-cache", "--isolated", "--target-version", TARGET, "--select", RULES + "," + COUNTED,
+           "--output-format", "json", "--exit-zero", "--"] + names
+    try:
+        p = subprocess.run(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                           timeout=300, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Failed("ruff 沒跑完：%s" % e)
+    if p.returncode != 0:
+        raise Failed("ruff 結束碼 %d：%s" % (p.returncode, p.stderr.strip()[:300]))
+    try:
+        rows = json.loads(p.stdout or "[]")
+    except ValueError:
+        raise Failed("ruff 的輸出讀不懂：%s" % p.stdout[:200])
+    real_root = os.path.realpath(root)
+    out = []
+    for r in rows:
+        name = os.path.relpath(os.path.realpath(r["filename"]), real_root).replace(os.sep, "/")
+        out.append((name, r.get("code") or "E999", (r.get("location") or {}).get("row") or 0, r.get("message", "")))
+    return out
+
+
+def no_timeout(root, names, cache):
+    """[(file, "ALT001", row, message)]: subprocess calls without timeout=."""
+    out = []
+    for name in names:
+        if "tests" in name.split("/"):
+            continue
+        lines = source_lines(root, name, cache)
+        try:
+            tree = ast.parse("\n".join(lines))
+        except (SyntaxError, ValueError):
+            continue  # ruff says E999
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+                    and node.func.attr in SUBPROCESS_CALLS):
+                continue
+            if any(k.arg in ("timeout", None) for k in node.keywords):  # None: **kwargs may carry it
+                continue
+            end = getattr(node, "end_lineno", node.lineno) or node.lineno
+            if any(EXEMPT in line for line in lines[node.lineno - 1:end]):
+                continue
+            out.append((name, "ALT001", node.lineno, "subprocess.%s 沒有 timeout=（等人打字的寫 %s 原因）"
+                        % (node.func.attr, EXEMPT)))
+    return out
+
+
+def found(root, ruff, new_under=None):
+    """(problems as [(file, rule, row, message, text)], how many COUNTED)."""
+    names = files(root, new_under)
+    cache = {}
+    rows = run_ruff(ruff, root, names) + no_timeout(root, names, cache)
+    problems, counted = [], 0
+    for name, rule, row, message in rows:
+        if rule == COUNTED:
+            counted += 1
+            continue
+        lines = source_lines(root, name, cache)
+        text = lines[row - 1].strip() if 0 < row <= len(lines) else ""
+        problems.append((name, rule, row, message, text))
+    problems.sort(key=lambda p: (p[0], p[2], p[1]))
+    return problems, counted
+
+
+def read_baseline(path):
+    """The baseline, or None without one."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Failed("基準檔讀不出來：%s（%s）" % (path, e))
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise Failed("基準檔的格式不對：%s（要有 items 清單）" % path)
+    if data.get("ruff") != RUFF_VERSION:
+        raise Failed("基準檔是用 ruff %s 量的，這裡用的是 %s：換版本時刪掉基準檔、--init 重量，送審時寫新舊數字"
+                     % (data.get("ruff"), RUFF_VERSION))
+    return data
+
+
+def key(item):
+    return item["file"], item["rule"], item["line"]
+
+
+def write_baseline(path, items, counted):
+    items = sorted(items, key=key)
+    head = {"ruff": RUFF_VERSION, "rules": RULES, COUNTED: counted}
+    lines = ['  "%s": %s,' % (k, json.dumps(v, ensure_ascii=False)) for k, v in head.items()]
+    body = ",\n".join("    " + json.dumps(i, ensure_ascii=False, sort_keys=True) for i in items)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("{\n%s\n  \"items\": [\n%s\n  ]\n}\n" % ("\n".join(lines), body) if items else
+                "{\n%s\n  \"items\": []\n}\n" % "\n".join(lines))
+    os.replace(tmp, path)
+
+
+def compare(problems, baseline):
+    """(new problems, [(baseline item, how many no longer found)])."""
+    left = {}
+    for item in (baseline or {}).get("items", []):
+        left[key(item)] = left.get(key(item), 0) + int(item.get("count", 1))
+    new = []
+    for p in problems:
+        k = (p[0], p[1], p[4])
+        if left.get(k, 0) > 0:
+            left[k] -= 1
+        else:
+            new.append(p)
+    gone = [(i, left[key(i)]) for i in (baseline or {}).get("items", []) if left.get(key(i), 0) > 0]
+    return new, gone
+
+
+def command(root, path):
+    """This tool's command line for root and path."""
+    words = [os.path.join(ENGINE, "tools", "lint")]
+    if os.path.realpath(root) != ENGINE:
+        words += ["--root", root]
+    if path != os.path.join(root, "tools", "lint-baseline.json"):
+        words += ["--baseline", path]
+    return " ".join(words)
+
+
+def widened(baseline, against):
+    """(items the baseline holds beyond the one at `against` as [(item, how many more)], that one's ruff version)."""
+    try:
+        with open(against, encoding="utf-8") as f:
+            old = json.load(f)
+        items = old["items"]
+        had = {}
+        for i in items:
+            had[key(i)] = had.get(key(i), 0) + int(i.get("count", 1))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        raise Failed("比對用的基準檔讀不出來：%s（%s）" % (against, e))
+    now, first = {}, {}
+    for i in (baseline or {}).get("items", []):
+        now[key(i)] = now.get(key(i), 0) + int(i.get("count", 1))
+        first.setdefault(key(i), i)
+    more = [(first[k], n - had.get(k, 0)) for k, n in now.items() if n > had.get(k, 0)]
+    return sorted(more, key=lambda m: key(m[0])), old.get("ruff")
+
+
+def resolved(root, rev):
+    """rev, with @{u} as root's upstream (HEAD without one)."""
+    if rev != "@{u}":
+        return rev
+    try:
+        p = subprocess.run(["git", "-C", root, "rev-parse", "-q", "--verify", "@{u}"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, universal_newlines=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Failed("git rev-parse 失敗：%s" % e)
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else "HEAD"
+
+
+def golden_lines(root, rev):
+    """C-148: every commit in rev..HEAD (merges aside) that changes a golden file names those cases in a "golden:"
+    line (tools/golden check-commits). OK, or NEW with its words printed; a tree without tools/golden: OK."""
+    tool = os.path.join(root, "tools", "golden")
+    if not os.path.exists(tool):
+        return OK
+    try:
+        p = subprocess.run([sys.executable, tool, "check-commits", rev, "HEAD"], cwd=root, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=300, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Failed("tools/golden check-commits 失敗：%s" % e)
+    if p.stdout.strip():
+        print(p.stdout.rstrip())
+    if p.returncode == 2:
+        raise Failed("tools/golden check-commits 沒辦法檢查")
+    return OK if p.returncode == 0 else NEW
+
+
+def baseline_at(root, path, rev):
+    """A temporary copy of the baseline (path, in root's repository) at commit rev, or None when it has none."""
+    rev = resolved(root, rev)
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    try:
+        p = subprocess.run(["git", "-C", root, "show", "%s:%s" % (rev, rel)], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Failed("git show 失敗：%s" % e)
+    if p.returncode != 0:
+        return None
+    fd, tmp = tempfile.mkstemp(prefix="lint-baseline-", suffix=".json")
+    with os.fdopen(fd, "wb") as f:
+        f.write(p.stdout)
+    return tmp
+
+
+def check(root, path, ruff, against=None, new_under=None, against_rev=None):
+    made = None
+    if against_rev:
+        against = made = baseline_at(root, path, against_rev)
+    try:
+        code = checked(root, path, ruff, against, new_under)
+        if against_rev and golden_lines(root, resolved(root, against_rev)) != OK:
+            code = NEW
+        return code
+    finally:
+        if made:
+            os.remove(made)
+
+
+def checked(root, path, ruff, against=None, new_under=None):
+    baseline = read_baseline(path)
+    problems, counted = found(root, ruff, new_under)
+    new, gone = compare(problems, baseline)
+    held = len(problems) - len(new)
+    false = sum(int(i.get("count", 1)) for i in (baseline or {}).get("items", []) if i.get("false"))
+    was = (baseline or {}).get(COUNTED)
+    print("lint（ruff %s，%s＋ALT001）：基準裡的舊問題 %d 處%s；%s 太複雜 %d 處%s" % (
+        RUFF_VERSION, RULES, held, "（其中 %d 處審查判為誤判）" % false if false else "", COUNTED, counted,
+        "（基準 %d）" % was if isinstance(was, int) else ""))
+    if baseline is None:
+        print("（沒有基準檔 %s：全部都要過；第一次可以 --init）" % path)
+    if gone:
+        print("可以從基準拿掉 %d 處（已經修掉了）：%s --shrink" % (sum(n for _, n in gone), command(root, path)))
+    code = OK
+    if against:
+        more, was_ruff = widened(baseline, against)
+        if more and was_ruff != RUFF_VERSION:
+            print("基準因升版重量（ruff %s → %s），新增 %d 筆（請審查看）：" % (was_ruff, RUFF_VERSION, sum(n for _, n in more)))
+        elif more:
+            print("✗ lint：基準檔比原本的多了 %d 筆（基準只能減；確定是誤判的，在那一行加 # noqa: <規則>）：" % sum(n for _, n in more))
+            code = NEW
+        for i, n in more:
+            print("    %s %s ×%d：%s" % (i["file"], i["rule"], n, i["line"][:120]))
+    if new:
+        print("✗ lint：%d 個新問題（新寫或改到的程式碼要過；基準只能減）：" % len(new))
+        for name, rule, row, message, _ in new:
+            print("    %s:%d %s %s" % (name, row, rule, message))
+        code = NEW
+    return code
+
+
+def shrink(root, path, ruff):
+    baseline = read_baseline(path)
+    if baseline is None:
+        raise Failed("沒有基準檔 %s，沒有東西可以拿掉" % path)
+    problems, counted = found(root, ruff)
+    _, gone = compare(problems, baseline)
+    less = dict((key(i), n) for i, n in gone)
+    items = []
+    for item in baseline["items"]:
+        n = int(item.get("count", 1)) - less.pop(key(item), 0)
+        if n > 0:
+            items.append(dict(item, count=n))
+    write_baseline(path, items, counted)
+    print("基準拿掉 %d 處，還有 %d 處" % (sum(n for _, n in gone), sum(i["count"] for i in items)))
+    return OK
+
+
+def init(root, path, ruff):
+    if os.path.exists(path):
+        raise Failed("基準檔已經有了：%s（基準只能減：修掉之後用 --shrink）" % path)
+    problems, counted = found(root, ruff)
+    items = {}
+    for name, rule, _, _, text in problems:
+        k = (name, rule, text)
+        items[k] = items.get(k, 0) + 1
+    write_baseline(path, [{"file": f, "rule": r, "line": t, "count": n} for (f, r, t), n in items.items()], counted)
+    print("寫了基準 %s：%d 處（%s 太複雜 %d 處，只記數字）" % (path, len(problems), COUNTED, counted))
+    return OK
+
+
+def install():
+    folder = install_dir()
+    ruff = os.path.join(folder, "bin", "ruff")
+    if os.path.isfile(ruff) and ruff_version(ruff) == RUFF_VERSION:
+        print("已經裝好了：%s" % ruff)
+        return OK
+    for cmd in ([sys.executable, "-m", "venv", folder],
+                [os.path.join(folder, "bin", "pip"), "install", "-q", "ruff==" + RUFF_VERSION]):
+        try:
+            p = subprocess.run(cmd, timeout=600, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print("✗ 沒裝好（%s）：%s" % (" ".join(cmd[:3]), e))
+            return FAILED
+        if p.returncode != 0:
+            print("✗ 沒裝好：%s 結束碼 %d" % (" ".join(cmd[:3]), p.returncode))
+            return FAILED
+    print("裝好了 ruff %s：%s" % (RUFF_VERSION, ruff))
+    return OK
+
+
+def main(argv):
+    args = list(argv)
+    root, path, action, against, new_under, against_rev = ENGINE, None, "check", None, None, None
+    try:
+        while args:
+            a = args.pop(0)
+            if a in ("-h", "--help"):
+                print(__doc__)
+                return OK
+            if a == "--against" and not against_rev:
+                against = os.path.abspath(args.pop(0))
+            elif a in ("--against-rev", "--against-upstream") and not (against or against_rev):
+                against_rev = args.pop(0) if a == "--against-rev" else "@{u}"
+            elif a == "--new-under":
+                new_under = (new_under or []) + [args.pop(0).strip("/") or "."]
+            elif a == "--root":
+                root = os.path.abspath(args.pop(0))
+            elif a == "--baseline":
+                path = os.path.abspath(args.pop(0))
+            elif a in ("--shrink", "--init", "--install") and action == "check":
+                action = a[2:]
+            else:
+                raise IndexError
+    except IndexError:
+        print(__doc__.split("\n\n")[1])
+        return FAILED
+    if action == "install":
+        return install()
+    if action != "check" and (against or against_rev or new_under is not None):
+        print(__doc__.split("\n\n")[1])
+        return FAILED
+    path = path or os.path.join(root, "tools", "lint-baseline.json")
+    ruff, seen = find_ruff()
+    if not ruff:
+        return no_ruff(seen)
+    try:
+        if action == "check":
+            return check(root, path, ruff, against, new_under, against_rev)
+        return {"shrink": shrink, "init": init}[action](root, path, ruff)
+    except Failed as e:
+        print("✗ lint 沒做完：%s" % e)
+        return FAILED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

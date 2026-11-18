@@ -20,7 +20,7 @@ import traceback
 
 import discord
 
-from . import config, masking, remote, tmuxio
+from . import config, deliver, masking, remote, tmuxio
 from .termrc import done_count, rc_files, shell  # noqa: F401  (shared with tools/dcremote)
 
 PREFIX = "term"
@@ -160,7 +160,7 @@ class Terminal(object):
             try:
                 pane = await self.ensure(ch, st)
             except Exception as e:
-                return await ch.send("出錯了：%s" % e)
+                return await deliver.deliver(ch, "出錯了：%s" % e, intent="status")
             folder, done = self.paths(ch.id)
             lines = [line for line in text.split("\n") if line.strip()]
             seq = remember(st, text.strip())
@@ -171,7 +171,7 @@ class Terminal(object):
                 await tmuxio.tmux("send-keys", "-t", pane["id"], "-l", "--", line, **tmuxio.on(pane))
                 await tmuxio.tmux("send-keys", "-t", pane["id"], "Enter", **tmuxio.on(pane))
             v = self.view(ch.id, seq, True)
-            msg = await ch.send(body("$ " + text.strip(), "\n-# ⏳ 執行中"), view=v)
+            msg = await deliver.deliver(ch, body("$ " + text.strip(), "\n-# ⏳ 執行中"), view=v, intent="card")
             v.stop()
             self.running[ch.id] = {"msg": msg, "seq": seq}
         asyncio.ensure_future(self.watch(ch, pane, start, before, len(lines), msg, seq, text.strip()))
@@ -201,13 +201,13 @@ class Terminal(object):
                         shown = (text, status)
                         v = self.view(ch.id, seq, not finished)
                         try:
-                            await msg.edit(content=body(text, status), view=v)
+                            await deliver.deliver(ch, content=body(text, status), view=v, intent="card", edit=msg)
                         except discord.HTTPException:
                             pass
                         v.stop()
                     if finished:
                         if len(text) > SHOWN:  # the whole output, as a file
-                            await ch.send("完整輸出：", file=full_output(text))
+                            await deliver.deliver(ch, "完整輸出：", file=full_output(text), intent="status")
                         return
                 await asyncio.sleep(0.5)
         except Exception:

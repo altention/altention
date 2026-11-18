@@ -49,6 +49,8 @@ def rj(p):
         return {}
 o = {"hostname": socket.gethostname(), "python": sys.version.split()[0]}
 ch = H(ENGINE)
+sys.path.insert(0, ch)  # C-158: before any `from altention`: ssh starts this in ~, where ~/altention (not a package) would
+# be taken for it as a namespace package and kept, and every later `from altention import …` failed
 if os.path.lexists(ch + "/.git"):  # a clone (or a worktree): its commit; "" when git cannot read it
     o["code"] = sh("git -C %s rev-parse --short HEAD" % shlex.quote(ch))
 elif os.path.isfile(os.path.join(ch, "altention", "config.py")):  # unpacked from an archive: no commit to read
@@ -163,6 +165,7 @@ _u = rj("~/.cache/usage/state.json")  # usage/collect.py's notes
 o["usage_last_run"] = _u.get("last_run") if isinstance(_u.get("last_run"), str) else None
 o["usage_failed"] = _u.get("last_failed") if isinstance(_u.get("last_failed"), dict) else None
 o["usage_errors"] = [str(_e)[:200] for _e in _u.get("last_errors")][:5] if isinstance(_u.get("last_errors"), list) else []
+o["usage_names"] = _u.get("names_problem") if isinstance(_u.get("names_problem"), str) else None  # usage.project_names miswritten
 o["usage_log_tail"] = None
 try:  # the schedule's output (plugin.json do.log)
     with open(H("~/.cache/usage.out"), "rb") as f:
@@ -192,7 +195,15 @@ try:  # a link to the engine's (no instance), or the file the sync composes from
     o["global_md"] = o["global_md_state"] in ("link", "composed")
 except OSError:
     o["global_md"], o["global_md_state"] = False, "missing"
-o["bot_env"] = os.path.exists(H("~/.config/dcbot/env"))  # only whether it is there: never opened (C-109)
+o["bot_env"] = os.path.exists(H("~/.config/altention/secrets/core/discord-token")) or \
+    os.path.exists(H("~/.config/dcbot/env"))  # the bot's token, new place (C-110) or old: only whether it is there, never opened
+try:  # C-110: the old settings file still here, and why it has not moved (altention/botmove.py's own checks, nothing written)
+    from altention import botmove as _botmove
+    _old = _botmove.pending()
+    if _old:
+        o["bot_old"] = list(_old)
+except Exception:  # an engine without it
+    pass
 _bot = globals().get("IS_BOT")  # given by check(): this machine runs the bot (None: not said, nothing asked)
 if _bot and o["bot_env"]:  # does Discord take its token now: dcctl asks, the token is read by it alone
     try:
@@ -204,6 +215,38 @@ elif _bot is False:  # another machine: can its dcctl hand commands to the bot's
         o["bot_reach"] = json.loads(sh("python3 %s/altention/dc/botside.py --reach" % shlex.quote(H(ENGINE))).splitlines()[-1])
     except (ValueError, IndexError):
         o["bot_reach"] = None
+try:  # C-163: the biggest bot epoch this machine has seen (dcremote's fencing); 0 or none: never a standby's bot
+    o["fence_owner"] = int(open(H("~/.local/share/altention/dcremote-owner")).read().strip() or 0)
+except Exception:
+    o["fence_owner"] = None
+if globals().get("IS_STANDBY"):  # C-163 section 8: can this machine take over (dclease check, with the bot's Python)
+    _py = os.path.join(H(ENGINE), "dcbot/.venv/bin/python")
+    if not os.path.exists(_py):
+        o["standby"] = {"venv": False}
+    else:
+        try:
+            o["standby_discord"] = subprocess.run([_py, "-c", "import discord"], stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL, timeout=60).returncode == 0
+        except Exception:
+            o["standby_discord"] = False
+        try:
+            o["standby"] = json.loads(sh("%s %s check" % (shlex.quote(_py), shlex.quote(os.path.join(H(ENGINE), "dcbot/tools/dclease")))).splitlines()[-1])
+        except (ValueError, IndexError):
+            o["standby"] = None
+if _bot:  # C-163 d3b: the outside dead man's switch (healthchecks): whether set, 600, https; never its value
+    try:
+        sys.path.insert(0, H(ENGINE))
+        from altention import health as _health, secret_store as _ss
+        _fp = _ss.fingerprint("core", "healthchecks-url")
+        o["health"] = None if _fp is None else {"mode_ok": _fp["mode"] & 0o077 == 0, "https": _health.allowed(_health.address() or "")}
+    except Exception:
+        pass
+if globals().get("LEASE_ON") and _bot:  # the bot's machine: how its pushes to the standbys went (bot/standby.py)
+    try:
+        with open(os.path.join(H(ENGINE), "dcbot/state/standby-sync.json")) as _f:
+            o["standby_sync"] = json.load(_f)
+    except Exception:
+        o["standby_sync"] = None
 o["bot_cron"] = any("supervisor.py" in l and not l.lstrip().startswith("#") for l in cron)
 o["bot_supervisor"] = False
 sl = os.path.join(H(ENGINE), "dcbot/state/supervisor.lock")
@@ -238,7 +281,6 @@ try:  # how the bot's last run ended and whether one is going, from the supervis
 except Exception:  # no such file yet, or lines this engine does not write: nothing is said from them
     pass
 try:  # this machine's instance, and a stray bot setting
-    sys.path.insert(0, ch)
     from altention import config as altconfig
     o["instance"] = altconfig.instance_dir()
     if o["instance"]:  # a local instance (install.sh made it) has none: a hint, not a problem
@@ -474,10 +516,43 @@ bad = os.path.join(H(ENGINE), "dcbot/state/events-bad")
 o["events_bad"] = len([n for n in os.listdir(bad) if n.endswith(".json")]) if os.path.isdir(bad) else 0
 bad = os.path.join(H(ENGINE), "dcbot/state/posts-bad")  # the bot: posts shown whose handing to a Claude broke (C-73)
 o["posts_bad"] = len([n for n in os.listdir(bad) if n.endswith(".json")]) if os.path.isdir(bad) else 0
+o["bot_permissions"] = rj(os.path.join(H(ENGINE), "dcbot/state/permissions.json"))  # the bot: its own permissions (C-191)
 o["ownerless"] = rj(os.path.join(H(ENGINE), "dcbot/state/ownerless-sessions.json"))  # the bot: sessions of deleted channels it did not close
 _rt = rj(os.path.join(H(ENGINE), "dcbot/state/routes.json"))  # routes written before a route carried its pane's process
 o["routes_without_pid"] = sorted(str((v if isinstance(v, str) else (v or {}).get("channel")) if isinstance(v, (str, dict)) else "?")
                                  for v in (_rt.values() if isinstance(_rt, dict) else []) if not isinstance(v, dict) or not v.get("pid"))
+def _pane_gone(sock, pid_now, pane):
+    """A pane of this machine's tmux that is plainly not there (C-201 6.1): its server's socket is gone, tmux says it
+    has no such pane, or the pane number runs another process than the one recorded. None when that cannot be told
+    (no tmux, no answer in time, any other refusal): only listed when it is a fact."""
+    if not os.path.exists(sock):
+        return True
+    try:
+        r = subprocess.run(["tmux", "-S", sock, "display-message", "-p", "-t", pane, "#{pane_pid}"], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode == 0:
+        return bool(pid_now) and r.stdout.strip() != str(pid_now)
+    said = r.stderr.lower()
+    return True if ("can't find pane" in said or "no server running" in said) else None
+try:  # routes and the bot's channels that point at a pane that is no longer there (C-201 6.1): listed, never removed
+    _gone = {"routes": [], "channels": []}
+    for _k, _v in (_rt.items() if isinstance(_rt, dict) else []):
+        _parts = _k.split("|") if isinstance(_k, str) else []
+        if len(_parts) == 2 and isinstance(_v, dict) and _v.get("pid"):  # this machine's, with its process (old ones: above)
+            if _pane_gone(_parts[0], _v["pid"], _parts[1]):
+                _gone["routes"].append(str(_v.get("channel") or "?"))
+    _cs = os.path.join(H(ENGINE), "dcbot/state/channels.json")
+    for _cid, _st in (rj(_cs).items() if os.path.exists(_cs) and isinstance(rj(_cs), dict) else []):
+        _pn = _st.get("pane") if isinstance(_st, dict) else None
+        if isinstance(_pn, dict) and not _pn.get("host") and isinstance(_pn.get("socket"), str) and isinstance(_pn.get("id"), str) \
+                and _pn.get("pid") and not _st.get("archived"):  # this machine's panes; another machine's are its own to say
+            if _pane_gone(_pn["socket"], _pn["pid"], _pn["id"]):
+                _gone["channels"].append(str(_cid))
+    o["panes_gone"] = {k: sorted(v) for k, v in _gone.items()}
+except Exception:
+    pass
 _pf = os.path.join(H(ENGINE), "dcbot/state/posts-failed")  # the bot: notifications it could show nowhere
 o["posts_failed"], o["cards_failed"] = 0, 0  # an update card ("card", C-57 D2) is the bot's to retry: said once it kept failing
 for _n in (os.listdir(_pf) if os.path.isdir(_pf) else []):
@@ -566,10 +641,38 @@ def listed(found):
     return rows, False
 
 
+def bot_permissions(name, st):
+    """The bot's own permissions as it last saw them (dcbot/bot/perms.py, state/permissions.json; C-191): shown, not
+    told. No Administrator: a warn that says why it is wanted and that the bot works without it, with the link that
+    grants it (the #update card says it once; this goes on saying it); any of the 14 its features use missing: a warn
+    of its own; Administrator: ok, with the link that takes it back. Nothing written yet (a bot not started since):
+    no record."""
+    if not isinstance(st, dict) or not isinstance(st.get("bits"), int) or isinstance(st.get("bits"), bool):
+        return []
+    grant, revert = st.get("grant_url") or "（連結：機器人上線後會記）", st.get("revert_url") or "（連結：機器人上線後會記）"
+    out = []
+    gone = [m for m in st.get("missing") or [] if isinstance(m, str)]
+    if gone and not st.get("admin"):
+        out.append(record("dcbot.permissions-missing", name, "warn",
+                          "機器人少了 %d 項它的功能要用的權限：%s；用到的功能會失敗" % (len(gone), "、".join(gone)),
+                          "打開這個連結按「授權」（伺服器已選好，畫面寫「新增至伺服器」，不是重裝）：%s；"
+                          "或伺服器設定 → 身分組 → 機器人的身分組把它們打開" % grant, len(gone)))
+    if st.get("admin"):
+        out.append(record("dcbot.administrator", name, "ok",
+                          "機器人有「管理員」權限（要收回：用 %s 再授權一次，只會回到原本的 14 項；或在身分組關掉「管理者」）" % revert))
+    else:
+        out.append(record("dcbot.administrator", name, "warn",
+                          "機器人沒有「管理員」權限：之後的功能（例如社群伺服器設定）需要它；不給也照常能用，現在的功能都只用原本的 14 項",
+                          "要給的話打開這個連結按「授權」（伺服器已選好，畫面寫「新增至伺服器」，不是重裝，機器人不會被踢掉；伺服器開了"
+                          "管理員兩步驟驗證的話帳號要先開）：%s；或伺服器設定 → 身分組 → 機器人的身分組打開「管理者」。不想給就不用理這一行" % grant))
+    return out
+
+
 def bot_notes(name, o):
     """The records for what the bot wrote down in its state for somebody to look at, and for the settings it opens
     conversations with (3b 2.6e): `o` is the probe of the bot's machine. Shown, not told, but for the settings."""
     out = []
+    out.extend(bot_permissions(name, o.get("bot_permissions")))
     if "turn_ends_late" in o:  # shown for a week after the last time, not told
         late = o.get("turn_ends_late") if isinstance(o.get("turn_ends_late"), dict) else {}
         at = _time(late.get("at"))
@@ -694,7 +797,7 @@ def tidy(o):
     num = lambda v: _num(v) is not None  # noqa: E731
     note = lambda v: isinstance(v, list) and len(v) >= 5 and isinstance(v[3], str) and (v[4] is None or num(v[4]))  # noqa: E731
     for key in ("code", "chatlog_last_sync", "chatlog_error", "chatlog_host", "config_error", "instance",
-                "instance_remote", "this_machine", "global_md_state", "usage_last_run", "usage_log_tail", "backup_error"):
+                "instance_remote", "this_machine", "global_md_state", "usage_last_run", "usage_log_tail", "usage_names", "backup_error"):
         fix(o, key, text)
     for key in ("uptime", "slept", "progress_log_mtime", "progress_code_mtime", "usage_log_mtime", "usage_code_mtime"):
         fix(o, key, num)
@@ -721,7 +824,7 @@ def tidy(o):
     fix(o, "skills_expected", texts)
     for key in ("sync", "last_ok", "cron_logs", "update_skipped", "update_blocked", "timezone", "schedule_record", "instance_held",
                 "fallbacks", "engine_paths", "typed_as_paste", "enter_differs", "ownerless", "cron_added", "usage_failed", "planner_secretary",
-                "entry_links"):
+                "entry_links", "bot_permissions"):
         fix(o, key, obj, dict)
     fix(o, "intervals", obj)
     fix(o, "chatlog_big", lambda v: isinstance(v, list) and all(isinstance(i, (list, tuple)) and len(i) == 2 and text(i[0]) and num(i[1])
@@ -1022,12 +1125,142 @@ def backup_records(name, o, on):
     return out
 
 
-def token_records(name, eng, is_bot, o):
+def standby_ready():
+    try:
+        from altention import standby
+        return standby.ready()
+    except Exception:
+        return False
+
+
+def lease_records(name, eng, m, o, is_bot):
+    """C-163 section 8: a standby must really be able to take over, said as todos, never failing quietly; and what
+    a standby left behind once there is none (the fencing's owner file: a bot without a lease would be refused)."""
+    out = []
+    lease_on = bool(m.get("_lease_on"))
+    others = [n for n, x in (m.get("_all") or {}).items() if n != name and any(a != "local" for a in (x or {}).get("ssh") or [])]
+    if not lease_on and is_bot and others and standby_ready():  # C-163 d3a: a note (shown, not a problem), once the
+        # drill has passed (manager: not before)
+        out.append(record("lease.offer", name, "warn", "還沒有備援：%s 停了沒有別台接手或通知你" % name,
+                          "要的話在 #setup 說「設備援」（或 altention standby setup <機器> auto|notify）；不需要就不用管"))
+    owner = o.get("fence_owner")
+    health = o.get("health")
+    if isinstance(health, dict):  # C-163 d3b: set: it must be https and 600 (not set: nothing to say, it is optional)
+        if not health.get("https"):
+            out.append(record("health.url", name, "fail", "healthchecks 的網址不是 https，不會連（外部通知等於沒開）",
+                              "到 healthchecks.io 複製 https://hc-ping.com/ 開頭的網址，在 #setup 說「設外部通知」重新存"))
+        elif not health.get("mode_ok"):
+            out.append(record("health.url", name, "fail", "healthchecks 的網址別的帳號讀得到（應該是 600）",
+                              "在 %s 上跑 altention secret fix-mode" % name))
+        else:
+            out.append(record("health.url", name, "ok", ""))
+    if not lease_on and isinstance(owner, int) and owner > 0:
+        out.append(record("lease.owner-left", name, "fail",
+                          "%s 還記得之前有備援時的機器人（第 %d 次換機器時的），現在的機器人送給它的東西都會被當成過時的拒收，"
+                          "那台的頻道收不到東西" % (name, owner),
+                          "在 %s 上跑 python3 %s/dcbot/tools/dcremote owner-clear" % (name, eng)))
+    if lease_on and is_bot and "standby_sync" in o:
+        got = o.get("standby_sync")
+        for host in sorted(n for n, x in (m.get("_all") or {}).items() if "dcbot-standby" in (x.get("roles") or [])):
+            row = (got or {}).get(host) if isinstance(got, dict) else None
+            at = _num((row or {}).get("at"))
+            late = at is None or not (row or {}).get("ok") or time.time() - at > 3600
+            out.append(record("lease.push", name, "fail" if late else "ok",
+                              "%s 的狀態沒有傳到 %s%s" % (name, host, "（%s）" % row.get("why") if row and row.get("why") else
+                                                         "：還沒傳過" if at is None else "超過 1 小時") if late else "",
+                              "看 %s 的機器人在不在、ssh %s 通不通；傳送記在 %s 的 dcbot/state/standby-sync.json" % (name, host, name),
+                              host))
+    if "dcbot-standby" not in (m.get("roles") or []) or "standby" not in o:
+        return out
+    got = o.get("standby") or {}
+    primary = next((n for n, x in (m.get("_all") or {}).items() if "dcbot" in (x.get("roles") or [])), "主機")
+
+    def say(check_id, problem, fix, value=None):
+        out.append(record(check_id, name, "fail" if problem else "ok", problem, fix if problem else "", value))
+    if got.get("venv") is False or o.get("standby_discord") is False:
+        say("lease.venv", "備援 %s 的機器人 Python 環境%s" % (name, "不在" if got.get("venv") is False else "載不進 discord.py"),
+            "python3 ops/apply.py %s" % name)
+        return out
+    say("lease.venv", "", "")
+    if not o.get("standby"):
+        say("lease.check", "沒辦法檢查 %s 的備援狀態（dclease check 沒有回答）" % name, "在 %s 上跑 %s/dcbot/.venv/bin/python %s/dcbot/tools/dclease check 看它說什麼"
+            % (name, eng, eng))
+        return out
+    if got.get("timed_out"):
+        out.append(record("lease.check", name, "warn", "%s 的備援檢查沒在 %d 秒內做完，下面只有查到的部分" % (name, got["timed_out"]),
+                          "過一下再跑一次 doctor；一直這樣就看 %s 連 Discord 和 ssh 快不快" % name))
+    token = got.get("token")  # (dclease check: {"mode_ok"} or None; never the value)
+    retype = "在 %s 自己的終端機跑 %s/install.sh discord，輸入跟 %s 同一個 token" % (name, eng, primary)
+    notify = got.get("mode") == "notify"  # the owner chose "only tell, no token" there: never told to put one
+    missing = [n for n in got.get("missing") or [] if n in ("guild-id", "owner-id")]
+    named = "、".join({"guild-id": "伺服器 ID（guild-id）", "owner-id": "擁有者 ID（owner-id）"}[n] for n in missing)
+    send_ids = "在 %s 上跑 %s" % (primary, " 和 ".join("python3 ops/setup.py secret-send core %s %s" % (n, name) for n in missing))
+    # (#code-review-2 on 1917441, manager: doctor never leads anyone to undo that choice)
+    if notify:  # only what a notify standby needs: its webhook (there, 600, a Discord one) and ssh to the primary
+        hook = got.get("webhook") or {}
+        say("lease.webhook", "只通知的備援 %s 存的不是 Discord 的 webhook 網址" % name if not hook.get("discord") else
+            "只通知的備援 %s 的 webhook 網址別的帳號讀得到（應該是 600）" % name if not hook.get("mode_ok") else "",
+            "在 #setup 說「設備援」，選 %s、只通知（會重新建好 webhook）" % name if not hook.get("discord") else
+            "在 %s 上跑 altention secret fix-mode" % name)
+        say("lease.ssh", "" if got.get("ssh_primary") is not False else "備援 %s 用 ssh 連不到 %s" % (name, primary),
+            "確認在 %s 上 ssh <%s 的別名> 不用密碼就連得上" % (name, primary))
+        say("lease.ids", "只通知的備援 %s 少了擁有者 ID（owner-id），用 webhook 通知時沒辦法 @ 你" % name
+            if "owner-id" in missing else "", send_ids)  # (no token there: not "next to the token"; #release 11-11)
+        return out  # (its webhook's @ needs owner-id: #code-review on b6fb3f9)
+    if not isinstance(token, dict):  # (neither the token nor a webhook: which kind the owner wanted is not known here;
+        # never told to put the token there: #code-review-2 on e01a8c2, manager)
+        say("lease.token", "%s 設了備援，可是機器人的 token 和 webhook 都沒有" % name,
+            "在 #setup 說「設備援」，重新選 %s 要自動接手還是只通知" % name)
+    elif not token.get("mode_ok"):
+        say("lease.token", "備援 %s 的 token 別的帳號讀得到（應該是 600）" % name,
+            "在 %s 上跑 altention secret fix-mode（把存的祕密權限改回 600）" % name)
+    elif got.get("token_same") is False:
+        say("lease.token", "備援 %s 的 token 跟 %s 的不一樣（只比對雜湊，不看 token 本身）" % (name, primary), retype)
+    else:
+        say("lease.token", "", "")
+    say("lease.ids", "備援 %s 少了%s（跟 token 放在一起的機器人設定）" % (name, named) if missing else "",
+        send_ids)  # (go-live 11-11, manager, #release's words; owner-id alone: the lease is read, its @ and owner checks not)
+    if got.get("lease") == "missing" and missing:
+        say("lease.read", "備援 %s 讀不到 #bot-lease：少了%s" % (name, named), send_ids)
+    else:
+        say("lease.read", "" if got.get("lease") == "ok" else "備援 %s 讀不到 #bot-lease：%s" % (name, {
+            "no-channel": "頻道不在"}.get(got.get("lease"), got.get("lease"))),
+            "在 %s 上跑 altention standby setup %s auto（會建好 #bot-lease，跑完會重啟機器人一次），或看 %s 連不連得上 Discord" % (primary, name, name))
+    say("lease.ssh", "" if got.get("ssh_primary") is not False else "備援 %s 用 ssh 連不到 %s" % (name, primary),
+        "確認在 %s 上 ssh <%s 的別名> 不用密碼就連得上" % (name, primary))
+    if got.get("health_same") is False and not notify:  # (the primary's address changed, or never handed over;
+        # a notify standby never gets it: it is never the bot)
+        say("lease.health-same", "備援 %s 存的 healthchecks 網址跟 %s 的不一樣（只比對雜湊）：%s 接手時，外部通知會連錯網址或不連"
+            % (name, primary, name), "再跑一次 altention standby setup %s auto（會照 %s 現在的網址交過去）" % (name, name))
+    missing = got.get("primary_missing")
+    if isinstance(missing, int) and missing >= 600:  # (manager on 5f1addf: the primary never wrote there for 10 minutes)
+        say("lease.primary-missing", "%s 已經 %d 分鐘沒在 #bot-lease 留下紀錄，備援沒辦法判斷它還在不在，所以 %s 停了也不會接手"
+            % (primary, missing // 60, primary),  # (#release)
+            "看 %s 的機器人在不在跑、#bot-lease 是不是被刪過；機器人一跑起來就會寫進去" % primary)
+    pushed = got.get("pushed")
+    say("lease.pushed", "" if isinstance(pushed, int) and pushed <= 3600 else "備援 %s %s" % (
+        name, "還沒收到 %s 傳來的狀態" % primary if pushed is None else "的狀態落後 %d 分鐘（超過 1 小時）" % (pushed // 60)),
+        "看 %s 的機器人在不在、%s ssh 得到 %s 嗎" % (primary, primary, name), pushed)
+    bad = [w for k, w in (("protocol", "引擎差太多，沒辦法互相接手"), ("requirements", "套件需求")) if got.get(k) is False]
+    if got.get("settings"):
+        bad.append("機器人設定（%s）" % "、".join(got["settings"]))
+    say("lease.same", "備援 %s 跟 %s 不一樣：%s" % (name, primary, "、".join(bad)) if bad else "",
+        "兩台都更新到最新的發佈版本（python3 altention/update.py --release），設定照 %s 的改" % primary)
+    if got.get("role_file") not in (None, "standby"):
+        say("lease.role-file", "備援 %s 的機器人現在不是用備援的身分在跑（記的是 %s）" % (name, got.get("role_file")),
+            "在 %s 上重啟一次 supervisor（它每次啟動前會重寫）" % name)
+    return out
+
+
+def token_records(name, eng, is_bot, o, standby=False):
     """C-109: the token is kept only where the bot runs. There: does Discord take it now (dcctl check), not first
     found out by a 401 when it is used. Elsewhere: can dcctl hand its commands to that machine; and a bot settings
     file left here is said (whether it is there only, never opened), not as a fault: a standby machine (C-53) keeps
-    one."""
+    one. C-110: the old settings file not moved yet is said with why (botmove's last reason), on any machine."""
     out = []
+    old = o.get("bot_old")
+    if isinstance(old, list) and len(old) == 2 and all(isinstance(x, str) for x in old):  # C-110, manager 2026-11-03
+        out.append(record("dcbot.old-settings", name, "warn", "%s：%s" % (name, old[0]), old[1]))
     if is_bot and o.get("bot_env") and "bot_token" in o:  # (not there: a probe that was not asked)
         got = o.get("bot_token")
         if not got:
@@ -1063,7 +1296,7 @@ def token_records(name, eng, is_bot, o):
                           "python3 ops/apply.py %s" % bot))
     else:
         out.append(record("dcbot.forward", name, "ok", "", value=bot))
-    if o.get("bot_env"):
+    if o.get("bot_env") and not standby:  # (a standby's own token: lease_records says what of it)
         out.append(record("dcbot.standby-token", name, "warn", "%s：這台沒有在跑機器人，dcctl 會轉給 %s；這份 token 只有這台當待命機器時才用得到。"
                           % (name, bot), "不用處理（之後待命接手時，這台要靠它連上 Discord）"))
     return out
@@ -1082,8 +1315,12 @@ def check(name, m, head, instance_repo=None):
     chatlog_it = "在 %s 上跑 python3 %s/chatlog/chatlog.py sync（紀錄在 ~/.cache/chatlog/chatlog.log）" % (name, eng)
     is_bot = True if "dcbot" in m.get("roles", []) or m.get("_bot_unlisted") else \
         None if m.get("_single") or m.get("_bot_nowhere") else False
+    is_standby = "dcbot-standby" in (m.get("roles") or [])  # C-163: the bot's token and its supervisor are meant there
     alias, rc, stdout, err = run_on(m, "ENGINE = %r  # this machine's engine (its entry in the list)\n" % engine_raw(m)
                                     + "IS_BOT = %r  # runs the bot (C-109: its token is checked, others' way to it)\n" % is_bot
+                                    + "IS_STANDBY = %r  # C-163: a standby (can it take over: section 8)\n" % (
+                                        "dcbot-standby" in (m.get("roles") or []))
+                                    + "LEASE_ON = %r  # C-163: the list has a standby\n" % bool(m.get("_lease_on"))
                                     + PROBE, timeout=120)
     # what runs here: the plugins placed on it, and the list's two roles that are not plugins (the bot, attaching)
     placed = plugins_on(name)
@@ -1170,8 +1407,7 @@ def check(name, m, head, instance_repo=None):
         where = "寫進實例 plugins.json 的 \"%s\": {\"%s\": \"<頻道 ID>\"}" % (section, field)
         if kind == "board":
             out.append(record("%s.channel" % plugin_name, name, "warn", "看板頻道沒設定：%s（%s 的看板不會貼出來）" % (key, plugin_name),
-                              "在機器人那台的引擎跑 python3 ops/setup.py reconcile：它會在 #setup 問要不要開看板頻道；"
-                              "或直接跑 python3 ops/setup.py dashboard（建 #dashboard、寫好 ID、貼看板）"))
+                              "在機器人那台的引擎跑 python3 ops/setup.py dashboard（建 #dashboard、寫好 ID、貼看板）"))
         elif plugin_name == "planner":  # the secretary has a channel of its own, working in its folder
             out.append(record("%s.channel" % plugin_name, name, "warn", "對話頻道沒設定：%s（%s 要叫醒的頻道，沒設就不會叫）" % (key, plugin_name),
                               SECRETARY_FIX))
@@ -1439,10 +1675,11 @@ def check(name, m, head, instance_repo=None):
                           % (len(o["alerts"]), last[0], last[1], last[3][:160]),
                           "在 %s 上看 ~/.local/state/altention/alerts（更早的也留在裡面；超過 24 小時就不再列在這裡）" % name,
                           len(o["alerts"])))
-    if "stray_bot" in o:
-        say("dcbot.stray-settings", "這台有機器人的設定（~/.config/dcbot/env），但機器清單說機器人在別台。如果機器人其實就在這台，表示它認不出自己"
+    if "stray_bot" in o and not is_standby:  # (a standby keeps the token: lease_records says what of it)
+        say("dcbot.stray-settings", "這台有機器人的 token，但機器清單說機器人在別台。如果機器人其實就在這台，表示它認不出自己"
             "在清單上的名字（它現在認為自己叫 %s；檢查 ~/.config/altention/host 或清單的 hostname 欄位）" % o.get("this_machine")
-            if o["stray_bot"] else "", "先確認機器人在哪台：在這台的話，把清單上的名字寫進 ~/.config/altention/host；確定不在這台，再刪掉這台的 ~/.config/dcbot/env")
+            if o["stray_bot"] else "", "先確認機器人在哪台：在這台的話，把清單上的名字寫進 ~/.config/altention/host；確定不在這台，再在自己的終端機刪掉這台的 "
+            "~/.config/altention/secrets/core/discord-token（還沒搬的話是 ~/.config/dcbot/env）")
     for part, label in (("engine", "引擎同步"), ("instance", "實例同步")):
         if part in sy:
             err = (sy.get(part) or {}).get("error")
@@ -1527,6 +1764,16 @@ def check(name, m, head, instance_repo=None):
                           "路由表（dcbot/state/routes.json）有 %d 筆舊格式的路由沒有記窗格的行程（頻道 %s）：tmux server 重啟後窗格編號"
                           "重排，別的窗格可能被當成它" % (len(_old), "、".join(_old[:5])) if _old else "",
                           "在那些頻道 /detach 再 /attach 一次（%s 上的窗格），路由會照現在的格式重寫" % name if _old else ""))
+    if isinstance(o.get("panes_gone"), dict):  # shown, not told (C-201 6.1): nothing removes them, nothing is failing
+        _r = [c for c in (o["panes_gone"].get("routes") or []) if isinstance(c, str)]
+        _c = [c for c in (o["panes_gone"].get("channels") or []) if isinstance(c, str)]
+        out.append(record("dcbot.panes-gone", name, "warn" if (_r or _c) else "ok",
+                          "有紀錄指向已經不在的 tmux 窗格：%s" % ("；".join(
+                              ([("路由表（dcbot/state/routes.json）%d 筆（頻道 %s）" % (len(_r), "、".join(_r[:5])))] if _r else []) +
+                              ([("機器人的頻道紀錄 %d 個（頻道 %s）" % (len(_c), "、".join(_c[:5])))] if _c else [])))
+                          if (_r or _c) else "",
+                          "只列出，沒有刪：還要的頻道在新的窗格 /attach 接回；不要的在那個頻道 /detach 卸下" if (_r or _c) else "",
+                          {"routes": len(_r), "channels": len(_c)}))
     if "ownerless" in o and "dcbot" in roles:  # shown, not told: for the owner to decide, nothing is failing
         kept = (o.get("ownerless") or {}).get("kept")
         kept = [k for k in kept if isinstance(k, dict) and isinstance(k.get("name"), str)] if isinstance(kept, list) else []
@@ -1610,7 +1857,7 @@ def check(name, m, head, instance_repo=None):
         "要留的內容併進實例的 CLAUDE.global.md，刪掉 global-notes-edited/ 裡看過的檔，再刪掉 ~/.claude/CLAUDE.md")
     if "dcbot" in roles:  # each step only means something once the one before it holds
         beat = o["bot_heartbeat_age"]
-        steps = (("dcbot.settings", o["bot_env"], "機器人：還沒有 ~/.config/dcbot/env（token），不會啟動",
+        steps = (("dcbot.settings", o["bot_env"], "機器人：還沒有 token（~/.config/altention/secrets/core/discord-token），不會啟動",
                   "在 %s 上，在自己的終端機跑 %s/install.sh discord（只問 token，其他的自己查；寫好就接著安裝那台）" % (name, eng)),
                  ("dcbot.cron", o["bot_cron"], "機器人：沒有排程", apply_it),
                  ("dcbot.supervisor", o["bot_supervisor"], "機器人：supervisor 沒在跑",
@@ -1630,9 +1877,10 @@ def check(name, m, head, instance_repo=None):
             say(check_id, "" if holds else said, how)
             if not holds:
                 break
-    elif o.get("bot_cron") and not single:
+    elif o.get("bot_cron") and not single and not is_standby:  # (a standby's supervisor: core's on [bot, standby])
         say("dcbot.not-listed", "清單上不負責 dcbot，卻有機器人排程", "%s 會移除；機器人要搬來這台就先改機器清單" % apply_it)
-    out.extend(token_records(name, eng, is_bot, o))
+    out.extend(token_records(name, eng, is_bot, o, standby="dcbot-standby" in (m.get("roles") or [])))
+    out.extend(lease_records(name, eng, m, o, is_bot))
     if "progress" in roles and "progress" not in sched_off:
         problem = ""
         if o["cron_progress_paused"] and not o["cron_progress"]:
@@ -1697,6 +1945,9 @@ def check(name, m, head, instance_repo=None):
         if o.get("usage_errors"):
             out.append(record("usage.errors", name, "warn", "用量統計上次有 %d 台讀不到：%s" % (len(o["usage_errors"]), "；".join(o["usage_errors"][:3])),
                               "照上面那句修（別台要先在那台跑一次 usage/install-node.sh）", ""))
+        if o.get("usage_names"):
+            out.append(record("usage.project-names", name, "warn", o["usage_names"][:300],
+                              '改好實例 plugins.json 的 usage.project_names（例如 {"old-folder": "my-project"}），或拿掉它；下一輪收集就照新的設定', ""))
     if o.get("crontab_missing"):  # a whole fix of its own, never apply.py's command put inside another sentence
         for rec in out:
             if rec["id"] != "core.crontab" and rec["status"] == "fail" and apply_it in (rec.get("fix") or ""):
@@ -1744,6 +1995,9 @@ def collect(names, watch=False):
     for m in machines.values():  # no list, or a list of one: nothing to place elsewhere
         m["_alone"] = len(machines) == 1
     nobody = not any("dcbot" in (m.get("roles") or []) for m in machines.values())
+    lease_on = any("dcbot-standby" in (m.get("roles") or []) for m in machines.values())
+    for m in machines.values():  # C-163: whether the list has a standby, and the list (lease_records)
+        m["_lease_on"], m["_all"] = lease_on, machines
     for m in machines.values():  # no machine given the bot: it runs where its settings are (config.bot_machine)
         m["_bot_unlisted"] = nobody and "local" in (m.get("ssh") or [])
         m["_bot_nowhere"] = nobody
@@ -1873,12 +2127,17 @@ def external_records(needs=True):
         for item, words in plugin_update.stuck(n, f, d, plugin_update.head(f) if os.path.isdir(os.path.join(f, ".git")) else "", settings):
             out.append(record("plugin.%s.setup" % n, me, "warn", words, "照上面的「手動跑」那行跑，跑好之後就恢復"))
     out += catalog_records(me, settings)
+    said = {}
+    for n, words in altplugin.optional_lines(rows):  # plugin.format 2: an optional use that cannot be used is no fault
+        said.setdefault(n, []).append(words)
+    for n, words in sorted(said.items()):
+        out.append(record("plugin.%s.optional" % n, me, "ok", "%s：%s" % (n, "；".join(words)), ""))
     from altention import plugin_steps, text
     for n, f, d, where, _ in rows:  # C-61 E2, C-77: the system tools it looks for and its guide steps, on this machine only
         if not needs or where != "on" or d is None or not (d.get("needs") or d.get("guide")) or not altplugin.external(f):
             continue
         p = plugin_steps.plan(n, f, d, settings, time.time() + plugin_steps.DOCTOR_LIMIT)
-        missing = [(x["name"], x["install"] or x["hint"]) for x in p["needs"] if x["state"] == "todo" and not x["optional"]]
+        missing = [(x["name"], plugin_steps.how_short(x)) for x in p["needs"] if x["state"] == "todo" and not x["optional"]]
         extras = [x for x in p["needs"] if x["state"] == "todo" and x["optional"]]  # said as install says them: no warn
         if d.get("needs"):
             out.append(record("plugin.%s.needs" % n, me, "warn" if missing else "ok",
@@ -2219,7 +2478,8 @@ def check_errors_told(altupdate, errors, looked_at, unreachable=()):
 
 
 def _watch(records, whole=True):
-    """--watch (the bot's machine, its own core cron line from 3a.10 on, never the scheduler): every machine whose
+    """--watch (the machine that is the bot now, its own core cron line from 3a.10 on, never the scheduler; with a
+    standby the line is there too and runs only while it is the bot: watch_elsewhere(), C-185): every machine whose
     sync or engine updater has not worked for three rounds (the updater not yet enabled does not count), or that
     cannot be reached, is told from here, once in 6 hours each, so
     someone hears of it even when every machine's own telling is down (manager 2026-10-06)."""
@@ -2250,11 +2510,34 @@ def _watch(records, whole=True):
     return 1 if bad else 0
 
 
+def watch_elsewhere():
+    """C-185: the core's watch line is on the bot's machine and on standbys, and a round runs only on the machine that
+    is the bot now (config.bot_machine(): bot-host, which the bot writes on every machine at each takeover and
+    failback, else the list's dcbot machine), so one machine tells, never two. Returns None to run here, else that
+    machine's name. Without a standby nothing changes (the line is on the bot's machine only, which is the bot's).
+    The machine list not readable: run (as before C-185; doctor says what is wrong with the list)."""
+    try:
+        from altention import config as altconfig
+        name, _entry, here = altconfig.bot_machine()
+    except Exception:
+        return None
+    return None if here or not name else name
+
+
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     flags = [a for a in argv if a.startswith("--")]
     unknown = [f for f in flags if f not in ("--json", "--fix", "--watch")]
     if unknown:
         sys.exit("doctor：不認得 %s（可以用 --json、--fix、--watch）" % " ".join(unknown))
+    if "--watch" in flags and not [a for a in argv if not a.startswith("--")]:
+        other = watch_elsewhere()
+        if other:  # (before asking any machine: the bot's machine does this round)
+            print("%s 這台現在不是機器人（%s 是），系統檢查由那台跑" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), other),
+                  flush=True)
+            return 0
     records = collect([a for a in argv if not a.startswith("--")], watch="--watch" in flags)
     if "--watch" in flags:
         return watch(records, whole=not [a for a in argv if not a.startswith("--")])

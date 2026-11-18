@@ -1,8 +1,15 @@
 """C-74: a message not handed over for now (a dialog open: a temporary code) gets a 「再送一次」 button; a post (its
 sender is another Claude) is handed again by itself once the channel moves on and its screen shows the input box."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import time
 import unittest
+
+from tests import marks  # noqa: E402  (the quote's marks taken out: C-172a P1c)
 from unittest import mock
 
 import discord
@@ -457,7 +464,7 @@ class PostsBehind(unittest.TestCase):
         self.assertEqual(b.tmux.given, [], "not typed ahead of the one waiting")
         waiting = [e["text"] for _, e in b.tmux.unsent.waiting_posts(b.channels_state["2"])]
         self.assertEqual(waiting[0], "first")
-        self.assertTrue(waiting[1].endswith("second"))
+        self.assertTrue(marks.plain(waiting[1]).endswith("second"))
         self.assertEqual(moved, [2])
 
 

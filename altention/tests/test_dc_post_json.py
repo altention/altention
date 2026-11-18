@@ -1,0 +1,89 @@
+"""C-172a P1d: altention dc post --json on the command line (altention/dc/post.py build()): one message's payload from
+a file or stdin ("-"), and the flags that go with it; what is refused before anything is queued."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py)
+import contextlib
+import io
+import os
+import shutil
+import tempfile
+import unittest
+
+from altention.dc import post
+
+
+class Build(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        with open(os.path.join(self.dir, "p.json"), "w") as f:
+            f.write('{"content": "hi"}')
+
+    def build(self, *argv, stdin=""):
+        read = []
+
+        def stdin_text():
+            read.append(1)
+            return stdin
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = post.build(list(argv), stdin_text, {}, "host-a", self.dir, machine="lap", claude={"DCBOT_CHANNEL": "5"})
+        return got, read
+
+    def refused(self, *argv, stdin=""):
+        with self.assertRaises(SystemExit) as e:
+            self.build(*argv, stdin=stdin)
+        return str(e.exception.code)
+
+    def test_a_file_or_stdin(self):
+        got, read = self.build("lab", "--json", "p.json")
+        self.assertEqual((got["json"], got["wait"], got["text"], read), ({"content": "hi"}, post.JSON_WAIT, "", []))
+        got, read = self.build("lab", "--json", "-", "--wait", "5", stdin='{"flags": 32768, "components": []}')
+        self.assertEqual((got["json"]["flags"], got["wait"], read), (32768, 5, [1]))
+
+    def test_what_goes_with_it(self):
+        got, _ = self.build("lab", "--json", "p.json", "--mention", "owner", "--mention", "user:7", "--silent",
+                            "--no-embeds", "--reply-to", "555", "--thread-new", "題目")
+        self.assertEqual({k: got[k] for k in ("ping", "silent", "no_embeds", "reply_to", "thread_new")},
+                         {"ping": ["owner", "user:7"], "silent": True, "no_embeds": True, "reply_to": "555",
+                          "thread_new": "題目"})
+        got, _ = self.build("lab", "--json", "p.json", "--edit", "900")
+        self.assertEqual(got["edit_message"], "900")
+
+    def test_refused_before_anything_is_queued(self):
+        for argv, words in ((("lab", "--json", "p.json", "more words"), "不能再帶文字"),
+                            (("lab", "--json", "p.json", "--board", "b", "--mention", "owner"), "不 @ 人"),
+                            (("lab", "--json", "p.json", "--history"), "--history"),
+                            (("lab", "--json", "nope.json"), "讀不到"),
+                            (("lab", "--json", "p.json", "--edit", "x"), "--edit 要給訊息 ID"),
+                            (("lab", "--json", "p.json", "--edit", "9", "--reply-to", "8"), "只改內容"),
+                            (("lab", "--thread-new", "t", "x"), "只跟 --json 一起用"),
+                            (("lab", "--mention", "owner", "x"), "只跟 --json 一起用"),
+                            (("lab", "--reply-to", "abc", "x"), "--reply-to 要給訊息 ID"),
+                            (("lab", "--reply-to", "5", "--board", "b", "x"), "只用在貼訊息"),
+                            (("lab", "--json"), "--json 要給值")):
+            self.assertIn(words, self.refused(*argv), argv)
+        self.assertIn("不是 JSON", self.refused("lab", "--json", "-", stdin="{oops"))
+        self.assertIn("JSON 物件", self.refused("lab", "--json", "-", stdin="[1]"))
+        self.assertIn("JSON 物件", self.refused("lab", "--json", "-", stdin="{}"))
+        self.assertIn("1 到 10", self.refused("lab", "--board", "b", "--json", "-", stdin="[]"))
+        self.assertIn("1 到 10", self.refused("lab", "--board", "b", "--json", "-", stdin='[{"content": "a"}, {}]'))
+
+    def test_a_framed_board_a_payload_or_a_list(self):
+        got, _ = self.build("lab", "--board", "本週", "--json", "-", stdin='[{"content": "a"}, {"content": "b"}]')
+        self.assertEqual((got["board"], len(got["json"]), got["wait"]), ("本週", 2, post.JSON_WAIT))
+        got, _ = self.build("lab", "--board", "本週", "--json", "p.json", "--wait", "5")
+        self.assertEqual((got["json"], got["wait"]), ({"content": "hi"}, 5))
+
+    def test_a_plain_post_may_answer_a_message_and_go_silently(self):
+        got, _ = self.build("lab", "--reply-to", "555", "--silent", "報告")
+        self.assertEqual((got["text"], got["reply_to"], got["silent"]), ("報告", "555", True))
+        self.assertNotIn("json", got)
+        self.assertNotIn("wait", got, "not waited for unless asked, as before")
+
+
+if __name__ == "__main__":
+    unittest.main()

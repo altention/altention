@@ -275,9 +275,9 @@ class Identity(unittest.TestCase):
         wt = os.path.join(self.home, "wt")
         git(self.main, "worktree", "add", "-q", wt)
         for path, code, word in ((self.main, 0, "ok"), (wt, 1, "other")):
-            with mock.patch.object(self.sup, "ENGINE", path), mock.patch.object(self.sup.sys, "argv", ["supervisor.py", "--check-engine"]), \
+            with mock.patch.object(self.sup, "ENGINE", path), \
                     mock.patch.object(self.sup.os, "makedirs") as made, mock.patch("builtins.print") as said:
-                self.assertEqual(self.sup.main(), code)
+                self.assertEqual(self.sup.main(["--check-engine"]), code)  # the command line, as __main__ passes it
             made.assert_not_called()
             self.assertTrue(said.call_args[0][0].startswith(word))
 

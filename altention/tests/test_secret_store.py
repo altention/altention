@@ -143,5 +143,30 @@ class Fields(unittest.TestCase):
         self.assertEqual(plugin.retired(core), [], "the core's secrets lie elsewhere")
 
 
+
+class Fingerprint(Rig):
+    """C-163 section 8: two machines' copies compared without the value leaving secret_store."""
+
+    def test_mode_and_hash_only(self):
+        self.assertIsNone(ss.fingerprint("demo", "rig-token"), "none stored")
+        ss.write("demo", "rig-token", "abc\n")
+        got = ss.fingerprint("demo", "rig-token")
+        self.assertEqual(got["mode"], 0o600)
+        import hashlib
+        self.assertEqual(got["hash"], hashlib.sha256(b"abc").hexdigest()[:16], "the trailing newline is no part of it")
+        self.assertNotIn("abc", repr(got))
+        self.assertIsNone(ss.fingerprint("../x", "rig-token"), "a bad name: none")
+
+    def test_fix_mode(self):
+        ss.write("demo", "rig-token", "abc")
+        p = ss.path("demo", "rig-token")
+        os.chmod(p, 0o644)
+        os.chmod(os.path.dirname(p), 0o755)
+        out = io.StringIO()
+        self.assertEqual(ss.fix_mode_cmd(out), 0)
+        self.assertEqual((os.stat(p).st_mode & 0o777, os.stat(os.path.dirname(p)).st_mode & 0o777), (0o600, 0o700))
+        self.assertIn("改了 2 個", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

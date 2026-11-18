@@ -14,7 +14,7 @@ import time
 from altention import background
 from altention.connectors.claude_code import commands as cc_commands
 
-from . import config
+from . import cc_health, config
 
 CACHE = os.path.join(config.STATE, "catalog.json")
 MAX_AGE = 24 * 3600
@@ -61,7 +61,7 @@ def clean_env():
 
 async def ask_claude(cwd, timeout=60):
     """{"slash_commands": [...], "skills": [...]} for a session started in `cwd`, or None."""
-    return await cc_commands.ask(config.CLAUDE, cwd, clean_env(), timeout)
+    return await cc_commands.ask(cc_health.binary(), cwd, clean_env(), timeout)  # the file the bot runs (C-162)
 
 
 def build(found, descriptions, reserved=()):

@@ -22,19 +22,29 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
   dcremote attach CHANNEL MESSAGE ATTACHMENT NAME
                                     keep an attachment sent from the bot's machine (base64 on stdin) under
                                     state/attachments/CHANNEL/; prints its path (bot/attachcore.py)
+  dcremote tmux-list MACHINE        every pane of this user's tmux servers here, by its tmux:// identifier (C-92;
+                                    MACHINE: this machine's name, for the identifiers): JSON
+  dcremote tmux-read ID [LINES]     a pane's last LINES rows (bot/tmuxref.py: refused when the pane at that place is
+                                    not the #% the ID names): JSON {"text"} or {"error", "code"}
+  dcremote tmux-at ID               the {"socket", "pane"} the ID names, checked as tmux-read checks it (--attach)
+  dcremote tmux-send ID             type into that pane (bot/tmuxsend.py: checked, written to #audit, checked again);
+                                    what to type as JSON on stdin {"text" | "keys", "enter", "caller", "reason"}
+  dcremote claude-at PID            1 when Claude Code runs as process PID or under it in its terminal's foreground
+                                    (by the command lines), 0 when not, ? when that cannot be told
   dcremote attachdir CHANNEL        make state/attachments/CHANNEL/ and print its path (handed to the channel's
                                     Claude when the bot opens it here, in its settings)
 """
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from bot import attachcore, envfile, events, filecore, routecore, termrc, tmuxio  # noqa: E402  (these import nothing outside the standard library)
+from bot import attachcore, envfile, events, filecore, routecore, termrc, tmuxio, tmuxref  # noqa: E402  (these import nothing outside the standard library)
 from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
 from altention.connectors.claude_code import transcript as cc_transcript  # noqa: E402
 from altention.connectors.claude_code import hooks as cc_hooks  # noqa: E402  (after bot: it puts the engine on the path)
@@ -64,10 +74,63 @@ def command_of(pid):
     return r.stdout
 
 
-def stream():
+OLD = 75  # C-163: a request of a bot older (a smaller epoch) than one this machine has seen: refused
+NOT_THE_BOTS = ("tmux-list", "tmux-read", "tmux-send", "tmux-at", "claude-at", "owner-clear", "-h", "--help")  # what the altention
+# command line asks of this machine (the owner's, a Claude's), never a bot: no epoch to send, never refused for it
+
+
+def owner_path():
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "altention", "dcremote-owner")
+
+
+def owner():
+    """The biggest epoch of a bot this machine has seen (C-163 section 1.4: fencing); 0 when none."""
+    try:
+        with open(owner_path()) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def fenced(epoch):
+    """`epoch` (a request's, None when it has none: a bot without a standby) against the biggest seen: True when it
+    is older (refused); a newer one is written down. Without an epoch: refused once this machine has seen a bot with
+    a standby (its owner file above 0: a bot that left the epoch out, before its first lease round, is no newer one;
+    #code-review on abc07b3, manager); on a machine that never has, nothing is checked or written."""
+    if epoch is None:
+        return owner() > 0
+    seen = owner()
+    if epoch < seen:
+        return True
+    if epoch > seen:
+        os.makedirs(os.path.dirname(owner_path()), exist_ok=True)
+        tmp = "%s.%d" % (owner_path(), os.getpid())
+        with open(tmp, "w") as f:
+            f.write(str(epoch))
+        os.replace(tmp, owner_path())
+    return False
+
+
+def bot_host(machine, epoch):
+    """C-163 section 4.4: the bot runs on `machine` since epoch `epoch` (written by that bot); an older epoch does
+    not overwrite a newer one."""
+    from altention import config as engine_config
+    if not engine_config.write_bot_host(machine, epoch):
+        print(json.dumps({"error": "epoch %s is older than the one written" % epoch, "code": OLD}))
+        sys.exit(OLD)
+
+
+def stream(epoch=None, bot_spool=False):
     """Events as they come, one JSON line each. A transcript is read here, where it is, so the bot gets what
-    Claude said along with the event (the bot's machine cannot read this machine's files)."""
-    pidfile = os.path.join(STATE, "stream.pid")
+    Claude said along with the event (the bot's machine cannot read this machine's files). With an epoch (C-163):
+    a stream of an older bot is not started and stops another nothing; one running stops once a newer bot's
+    epoch is seen (the old bot reads no events after a takeover). `bot_spool`: the stream the bot that took over
+    keeps to the old bot machine's own spool (section 1.4: its windows' hooks write there), under its own pid file."""
+    if fenced(epoch):
+        print(json.dumps({"error": "an older bot (epoch %s; this machine has seen %s)" % (epoch, owner()), "code": OLD}))
+        sys.exit(OLD)
+    pidfile = os.path.join(STATE, "stream.pid")  # (one for both kinds: they read the same spool, and two at once
+    # would each send what the other sends: #code-review-2 on 94f58e5)
     try:  # a stream left over from a bot that has gone would take the events: stop it
         with open(pidfile) as f:
             old = int(f.read().strip() or 0)
@@ -82,6 +145,8 @@ def stream():
     sys.stdout.flush()
     pos, last = {}, time.time()
     while True:
+        if epoch is not None and owner() > epoch:  # a newer bot took over: this old one reads no more
+            sys.exit(OLD)
         if relay(SPOOL, pos, sys.stdout):
             last = time.time()
         if time.time() - last > 20:  # tells the bot the line is alive
@@ -194,6 +259,19 @@ def turn(path, start, own):
     print(out)
 
 
+def replies(cwd, session_id, since):
+    """C-163: the replies of a conversation of this machine (its cwd and session id) since an ISO time, each with
+    its turn's id (transcript.replies_since), for the bot that took over to post what it finds unposted. Only read."""
+    path = cc_sessions.transcript(cwd, session_id)
+    real = cc_transcript.own(path, cc_sessions.config_dir()) if path else None
+    try:
+        out = cc_transcript.replies_since(real, since) if real and os.path.isfile(real) else []
+    except Exception as e:  # (as turn(): never exit code 1 with a traceback)
+        sys.stderr.write("dcremote replies：讀不出來（%s: %s）\n" % (type(e).__name__, e))
+        sys.exit(4)
+    print(json.dumps(out, ensure_ascii=False))
+
+
 def history(path, session_id=""):
     """The turns of a conversation of this machine, named by its transcript (the file an event said the pane now
     shows: after /resume in a pane the bot is told the file, and need not guess the conversation from the screen as
@@ -285,6 +363,95 @@ def attach(channel, message, attachment, name):
     print(path)
 
 
+def tmux_list(machine):
+    table = routecore.load()
+    from altention.connectors.claude_code import process
+    print(json.dumps(tmuxref.list_panes(machine, process.Lazy(), lambda key, pid: routecore.routed_channel(table, key, pid)),
+                     ensure_ascii=False))
+
+
+TMUX_COMMANDS = {"tmux-list": "機器名", "tmux-read": "識別碼", "tmux-at": "識別碼", "claude-at": "行程編號",
+                 "tmux-send": "識別碼"}
+
+
+def tmux_ref(text):
+    """The identifier parsed, or exit 2 saying why (bad identifier)."""
+    try:
+        return tmuxref.parse(text)
+    except tmuxref.BadId as e:
+        print(json.dumps({"error": str(e), "code": 2}, ensure_ascii=False))
+        sys.exit(2)
+
+
+def tmux_read(text, lines):
+    ref = tmux_ref(text)
+    try:
+        lines = int(lines)
+    except ValueError:
+        print(json.dumps({"error": "行數要是數字：%s" % lines, "code": 2}, ensure_ascii=False))
+        sys.exit(2)
+    out = tmuxref.read(ref, lines)
+    print(json.dumps(out, ensure_ascii=False))
+    if "error" in out:
+        sys.exit(out.get("code", 3))
+
+
+def tmux_at(text):
+    ref = tmux_ref(text)
+    path, now = tmuxref.at(ref)
+    if now is None or (ref.get("pane_id") and ref["pane_id"] != now):
+        print(json.dumps({"error": "那個位置沒有窗格" if now is None else "那個位置現在是窗格 %s，不是 %s：請重新 list" % (now, ref["pane_id"]),
+                          "code": 3}, ensure_ascii=False))
+        sys.exit(3)
+    print(json.dumps({"socket": path, "pane": now}))
+
+
+def audit_here(line):
+    """A line in the bot's #audit from this machine (altention dc post @audit --wait 30): whether it got there, True;
+    None when that is not known (no answer in time: still queued, exit 3, or the post did not end), False when not."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(ROOT), "bin", "altention"), "dc", "post",
+                            "@audit", "--wait", "30", line], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError:
+        return False
+    return True if r.returncode == 0 else None if r.returncode == 3 else False
+
+
+def audit_nowait(line):
+    """A line for #audit, posted in the background: this command does not wait for it (nor for its end)."""
+    try:
+        subprocess.Popen([sys.executable, os.path.join(os.path.dirname(ROOT), "bin", "altention"), "dc", "post", "@audit", line],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def tmux_send(text):
+    """C-92 b-1: type into the pane the ID names (bot/tmuxsend.py), what to type as JSON on stdin: {"text" or
+    "keys", "enter", "caller", "reason"}. Prints {"sent", "pane"} or {"error", "code"}, exits with the code."""
+    from bot import tmuxsend
+    from altention.connectors.claude_code import process, screen, typist
+    ref = tmux_ref(text)
+    try:
+        asked = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(asked, dict):
+            raise ValueError
+    except ValueError:
+        print(json.dumps({"error": "stdin 要是 JSON 物件", "code": 2}, ensure_ascii=False))
+        sys.exit(2)
+    out = tmuxsend.send(ref, text, asked.get("text"), asked.get("keys") or [], bool(asked.get("enter")),
+                        str(asked.get("caller") or ""), str(asked.get("reason") or ""), audit=audit_here, audit_later=audit_nowait,
+                        is_claude=lambda c, pid: process.Lazy()(c, pid),  # read anew at each look
+                        pane_state=screen.pane_state, pace=(typist.TYPE_CHUNK, typist.TYPE_PAUSE),
+                        box_text=tmuxsend.box_check(screen))
+    print(json.dumps(out, ensure_ascii=False))
+    if "error" in out:
+        sys.exit(out["code"])
+
+
 def attachdir(channel):
     """The attachments folder of a channel whose Claude is opened here (attachcore.folder), made: its path printed, to
     be handed to that Claude (in its settings: permissions.additionalDirectories, C-151). Refused, with a word on stderr and exit 2, for an id that is not
@@ -296,17 +463,117 @@ def attachdir(channel):
         sys.exit(2)
 
 
+def claude_here():
+    """This machine's Claude Code by its full path (a window the bot opens here runs it by that, not by a PATH a
+    non-interactive ssh may not have: drill 11-08, the low the manager ruled); None when there is none."""
+    import shutil
+    extra = [os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+    return shutil.which("claude", path=os.pathsep.join([os.environ.get("PATH", "")] + extra))
+
+
+SPOOL_NAME = re.compile(r"^\d{20}-\d+\.json$")  # bot/postbox.py write()'s names (the time first: oldest first)
+
+
+def spool_dir():
+    return os.path.join(STATE, "posts")  # (state/posts only: these three touch nothing else)
+
+
+def spool_out():
+    """C-188: [{name, post}] of the posts waiting in this machine's spool (state/posts), oldest first, left in place
+    (spool_drop() once the bot elsewhere has them). A file not readable as JSON is left out and left alone."""
+    out = []
+    try:
+        names = sorted(n for n in os.listdir(spool_dir()) if SPOOL_NAME.match(n))
+    except OSError:
+        return out
+    for name in names:
+        try:
+            with open(os.path.join(spool_dir(), name)) as f:
+                post = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(post, dict):
+            out.append({"name": name, "post": post})
+    return out
+
+
+def spool_drop(names):
+    """C-188: the posts of those names taken away from state/posts (only names of the spool's own shape)."""
+    gone = 0
+    for name in names:
+        if SPOOL_NAME.match(name):
+            try:
+                os.remove(os.path.join(spool_dir(), name))
+                gone += 1
+            except FileNotFoundError:
+                pass
+    return gone
+
+
+def spool_in(items):
+    """C-188: posts from the bot elsewhere written into state/posts under their own names (whole files: a temporary
+    name, then renamed), so that their order among this spool's own stays. How many were written."""
+    os.makedirs(spool_dir(), exist_ok=True)
+    n = 0
+    for item in items if isinstance(items, list) else []:
+        name = item.get("name") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not SPOOL_NAME.match(name) or not isinstance(item.get("post"), dict):
+            continue
+        tmp = os.path.join(spool_dir(), "." + name)
+        with open(tmp, "w") as f:
+            json.dump(item["post"], f, ensure_ascii=False)
+        os.rename(tmp, os.path.join(spool_dir(), name))
+        n += 1
+    return n
+
+
 def main(argv):
     # this tool has no tmux server of a bot's: it reads the owner's, and leaves alone that of a bot installed here
     tmuxio.configure(socket=None, skip=(envfile.bot_server(),))
+    epoch = None
+    if "--epoch" in argv:  # C-163: every request of a bot with a standby says its epoch; an older one is refused
+        i = argv.index("--epoch")
+        epoch, argv = int(argv[i + 1]), argv[:i] + argv[i + 2:]
+    if argv and (argv[0] not in NOT_THE_BOTS or epoch is not None) and argv[0] != "stream" and fenced(epoch):
+        # (the command line's own requests carry no epoch; one that does is a bot's, and compared: c1's low)
+        print(json.dumps({"error": "an older bot (epoch %s; this machine has seen %s)" % (epoch, owner()), "code": OLD}))
+        sys.exit(OLD)
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
     elif argv[0] == "panes":
         panes()
+    elif argv[0] == "owner-clear":  # C-163: the standby taken out of the list: no epoch to remember (doctor says when)
+        from altention import config as engine_config
+        if any("dcbot-standby" in ((m or {}).get("roles") or []) for m in engine_config.machines().values()):
+            print(json.dumps({"cleared": False, "error": "這邊還開著備援，不能清。要清就先在機器清單拿掉 dcbot-standby 角色。"},
+                             ensure_ascii=False))  # (the fencing would be
+            sys.exit(2)  # gone here while a standby can still take over: #code-review-2 on f68f24b, manager)
+        try:
+            os.remove(owner_path())
+            print(json.dumps({"cleared": True}))
+        except FileNotFoundError:
+            print(json.dumps({"cleared": False}))
+    elif argv[0] == "replies" and len(argv) >= 4:
+        replies(argv[1], argv[2], argv[3])
+    elif argv[0] == "bot-panes":  # C-163 4.1: the panes of this machine's bot tmux server (for the bot that took over)
+        from bot import standby
+        print(json.dumps(standby.bot_panes(envfile.bot_server())))
+    elif argv[0] == "state-in":  # C-163 3.1: the bot's state for a takeover, base64 of a gzip tar on stdin
+        from bot import standby
+        names = standby.unpack(sys.stdin.read().strip(), os.path.join(os.path.dirname(STATE), "state-standby"))
+        print(json.dumps({"files": len(names)}))
+    elif argv[0] == "spool-out":  # C-188: the posts waiting in this machine's spool, as they are, left in place
+        print(json.dumps(spool_out(), ensure_ascii=False))
+    elif argv[0] == "spool-drop":  # C-188: those the bot elsewhere took (spool-out first), by name only
+        print(json.dumps({"dropped": spool_drop(argv[1:])}))
+    elif argv[0] == "spool-in":  # C-188: posts handed over by the bot elsewhere ([{name, post}] on stdin), names kept
+        print(json.dumps({"posts": spool_in(json.loads(sys.stdin.read() or "[]"))}))
+    elif argv[0] == "bot-host" and len(argv) >= 3:
+        bot_host(argv[1], argv[2])
     elif argv[0] == "stream":
-        stream()
+        stream(epoch, bot_spool="--bot-spool" in argv[1:])
     elif argv[0] == "bind":
-        routecore.bind_key(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
+        routecore.bind_key(argv[1], argv[2], argv[3] if len(argv) > 3 else "", epoch=epoch)
     elif argv[0] == "unbind":
         routecore.unbind(argv[1])
     elif argv[0] == "answer":
@@ -320,11 +587,26 @@ def main(argv):
     elif argv[0] == "info":
         folder = os.path.abspath(os.path.expanduser(argv[1])) if len(argv) > 1 else None
         print(json.dumps({"socket": os.path.join(tmuxio.socket_dir(), "default"), "home": os.path.expanduser("~"),
-                          "folder": folder if folder and os.path.isdir(folder) else None}))
+                          "folder": folder if folder and os.path.isdir(folder) else None, "claude": claude_here()}))
     elif argv[0] == "files":
         print(json.dumps(filecore.op(json.loads(sys.stdin.read() or "{}")), ensure_ascii=False))
     elif argv[0] == "attach" and len(argv) >= 5:
         attach(*argv[1:5])
+    elif argv[0] in TMUX_COMMANDS and len(argv) < 2:  # a word missing: exit 2, so that 1 means only "too old"
+        print(json.dumps({"error": "%s 要給%s" % (argv[0], TMUX_COMMANDS[argv[0]]), "code": 2}, ensure_ascii=False))
+        sys.exit(2)
+    elif argv[0] == "tmux-list" and len(argv) >= 2:
+        tmux_list(argv[1])
+    elif argv[0] == "tmux-read" and len(argv) >= 2:
+        tmux_read(argv[1], argv[2] if len(argv) > 2 else str(tmuxref.LINES))
+    elif argv[0] == "claude-at" and len(argv) >= 2:
+        from altention.connectors.claude_code import process
+        said = process.runs_claude("", argv[1])
+        print("?" if said is None else "1" if said else "0")
+    elif argv[0] == "tmux-send" and len(argv) >= 2:
+        tmux_send(argv[1])
+    elif argv[0] == "tmux-at" and len(argv) >= 2:
+        tmux_at(argv[1])
     elif argv[0] == "attachdir" and len(argv) >= 2:
         attachdir(argv[1])
     elif argv[0] == "turn" and len(argv) >= 3:

@@ -1,4 +1,9 @@
 """The setup card of a new channel, and windows the bot opens in the owner's tmux."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import shutil
@@ -279,3 +284,57 @@ class OtherMachine(unittest.TestCase):
         finally:
             setup.remote.problem = None
         self.assertEqual(s.machine.get(5), "far")
+
+    def remote_choose(self, info, sessions=(), new=True, terminal=False, folder="/far/proj"):
+        """Setup.choose() with "far" picked on the card: (bot, channel, click)."""
+        async def fake_info(host, folder=None):
+            return info
+
+        async def fake_sessions(*a, **kw):
+            return list(sessions)
+
+        async def go():
+            bot, ch = FakeBot(), FakeChannel()
+            s = setup.Setup(bot)
+            s.machine[ch.id] = "far"
+            s.info = fake_info
+            click = Click(ch, "new")
+            with self.mock.patch.object(setup.tmuxio, "user_sessions", fake_sessions):
+                await s.choose(click, ch, "sess", "win", folder, new=new, terminal=terminal)
+            return bot, ch, click
+        return asyncio.run(go())
+
+    def test_another_machine_that_does_not_answer(self):
+        with self.mock.patch.object(setup.remote, "TRIED", {"far": ["FAR"]}):
+            bot, ch, click = self.remote_choose({})
+        self.assertEqual(click.followup.sent, ["連不上 far（試過 FAR）。"])
+        self.assertNotIn("home", bot.chan(ch))
+        self.assertFalse(bot.tmux.started)
+
+    def test_a_folder_not_found_on_another_machine_names_it(self):
+        bot, ch, click = self.remote_choose({"socket": "/far/sock", "home": "/h", "folder": None})
+        self.assertEqual(click.followup.sent, ["far 上找不到資料夾：`/far/proj`"])
+        self.assertNotIn("home", bot.chan(ch))
+
+    def test_a_new_session_whose_name_is_taken_over_there(self):
+        info = {"socket": "/far/sock", "home": "/h", "folder": "/far/proj"}
+        bot, ch, click = self.remote_choose(info, sessions=[("sess", "/x")])
+        self.assertIn("far 的 tmux 裡已經有叫 `sess` 的 session 了", click.followup.sent[0])
+        self.assertNotIn("home", bot.chan(ch))
+        bot, ch, click = self.remote_choose(info, sessions=[("sess", "/x")], new=False)
+        self.assertEqual(bot.chan(ch)["home"]["session"], "sess", "adding to it is fine")
+
+    def test_set_up_on_another_machine(self):
+        info = {"socket": "/far/sock", "home": "/h", "folder": "/h/proj"}
+        bot, ch, click = self.remote_choose(info, folder="~/proj")
+        st = bot.chan(ch)
+        self.assertEqual(st["home"], {"socket": "/far/sock", "session": "sess", "window": "win", "host": "far"})
+        self.assertEqual((st["cwd"], st["mode"], st["configured"]), ("/h/proj", "tmux", True))
+        self.assertNotIn("kind", st)
+        self.assertEqual(bot.tmux.started, [ch.id])
+        self.assertIn("會開在 far 上你的 tmux `sess` 的第一個視窗「win」，工作目錄 `~/proj`。在 far 上用 `tmux attach -t sess` 就看得到。",
+                      bot.audits[-1])
+        self.assertEqual(setup.Setup(bot).machine.get(ch.id), None, "the pick is cleared")
+        bot, ch, click = self.remote_choose(info, folder="~/proj", terminal=True, new=False)
+        self.assertEqual(bot.chan(ch)["kind"], "terminal")
+        self.assertIn("💻 終端機會開在 far 上你的 tmux `sess` 的新視窗「win」", bot.audits[-1])

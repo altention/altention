@@ -4,6 +4,11 @@ A window the bot opened on this machine keeps reporting after the detach: DCBOT_
 the bot's hooks in its --settings. Every turn it ran afterwards (a background task ending, the owner typing at the
 terminal) was posted into the archived channel, and the archived state grew a session, a turn, a context again.
 Played here on the whole road (tests/test_whole_turn.py: the real dchook, the spool, pump_once)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import copy
 import json

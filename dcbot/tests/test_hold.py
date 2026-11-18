@@ -4,6 +4,11 @@ event brings those words with it; before, they came one event late (after the to
 turn was interrupted (#issues 26). What may wait and for how long is the connector's (hooks.awaits, held against
 recorded runs there); here: the bot's round and the relay on another machine leave the event where it is, keep the
 order of its conversation, and go on with every other one."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util
@@ -101,7 +106,14 @@ class Pump(unittest.TestCase):
         self.now += later
 
         async def go():
+            ran = set(id(rt.lane.task) for rt in self.bridge.rts.values() if rt.lane is not None)
             await self.bridge.pump_once()
+            await self.bridge.lanes_done()  # (what a tool call shows goes out from its lane: lanes.py)
+            if os.listdir(self.spool) and any(rt.lane is not None and id(rt.lane.task) not in ran for rt in self.bridge.rts.values()):
+                # a lane posted in this round: what ends that channel's turn waited for it, and goes in the next
+                # round (in the bot a moment later: a round with an event held comes early)
+                await self.bridge.pump_once()
+                await self.bridge.lanes_done()
             for rt in self.bridge.rts.values():
                 if rt.typing is not None:
                     rt.typing.cancel()
@@ -506,7 +518,8 @@ class PumpEnds(Pump):
         self.fire(5, "Stop", prompt_id="p1")
         self.assertEqual(self.round(0.03), [])
         self.fire(5, "UserPromptSubmit", prompt="again", prompt_id="p2")
-        self.fire(5, "StopFailure", error="rate_limit", last_assistant_message="API Error", prompt_id="p2")
+        self.fire(5, "StopFailure", error="server_error", last_assistant_message="API Error", prompt_id="p2")  # (a usage
+        # limit is said after a look at the screen, in a task of its own: C-99a, tests/test_quota.py)
         self.assertEqual(self.round(0.03), [])
         self.assertTrue(any("這一輪中斷了" in p for p in self.posted(5)))
 

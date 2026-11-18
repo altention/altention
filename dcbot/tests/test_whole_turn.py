@@ -9,6 +9,11 @@ footer, where the turn lies in the file for 📋.
 Stage 3b moves the reading of the conversation file out of handle() into one step both roads share. These tests say
 what must come out the same; they name no function that will move, only submit(), pump_once() and stream().
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import importlib.machinery
@@ -378,6 +383,38 @@ class World(object):
             await self.settled()
             self.assertEqual(len(self.ch.sent), 4)
             self.assertTrue(self.ch.sent[3].content.startswith("好了。\n-# Bash×3"))
+        self.play(turns)
+
+    def test_the_reply_waits_for_a_quote_held_up_on_its_way(self):
+        """lanes.py (#code-review on 15115ec): Discord slow on a quote. The reply comes after it, and the "working…"
+        update not sent yet is dropped, never left behind. On this machine the pump keeps the Stop in the spool
+        (lane_waits()); on another, the channel's events are kept aside (from_stream(), C-174)."""
+        async def turns():
+            await self.send("go")
+            self.bridge.rt(self.ch).turn.t0 -= 60  # a minute in: its tool calls show the "working…" message
+            gate, send = asyncio.Event(), self.ch.send
+
+            async def slow(content, *a, **kw):
+                if content.startswith(">>> "):
+                    await gate.wait()
+                return await send(content, *a, **kw)
+            self.ch.send = slow
+            self.claude.say(A)
+            self.claude.tool("Bash", {"command": "ls"})
+            self.claude.stop("好了。")
+            for _ in range(60):
+                await real_sleep(0.01)
+            self.assertFalse(any(text.startswith("好了。") for text, _ in self.said()), "the reply waits for the quote on its way")
+            gate.set()
+            await self.settled()
+            for _ in range(60):
+                if any(text.startswith("好了。") for text, _ in self.said()):
+                    break
+                await real_sleep(0.01)
+            texts = [text for text, _ in self.said()]
+            self.assertEqual(texts[0], ">>> " + A)
+            self.assertTrue(texts[1].startswith("好了。"), texts)
+            self.assertFalse(any(text.startswith("處理中") for text in texts), "the update not sent was dropped")
         self.play(turns)
 
 

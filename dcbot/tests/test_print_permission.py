@@ -1,6 +1,11 @@
 """C-121 in print mode (claude_bridge.py, `claude -p` per message): it had bypassPermissions written into its command
 line. Now it takes the mode tmux_bridge.permission_of() gives (the channel's, else the installation's), and with
 none nothing is run and the channel is told how to set one."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import types
@@ -28,8 +33,12 @@ class Ch(object):
 class Turn(unittest.TestCase):
     def turn(self, st, settings):
         ch = Ch()
+        async def chosen_for(s):  # the bridge's own reading (C-162: the model too)
+            return tmux_bridge.TmuxBridge.with_(None, s)
         host = types.SimpleNamespace(chan=lambda c: st, note=lambda c, s: "you are in #c", active=0, procs={},
-                                     save=lambda: None)
+                                     save=lambda: None, tmux=types.SimpleNamespace(chosen_for=chosen_for))
+        host.mode = lambda s: main.Bot.mode(host, s)
+        host.held = lambda s: main.Bot.held(host, s)
         ran = mock.AsyncMock(return_value=claude_bridge.TurnResult("done", "s1"))
         with mock.patch.object(tmux_bridge, "installation", lambda name: settings.get(name)), \
                 mock.patch.object(main, "run_turn", ran), \

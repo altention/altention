@@ -2,7 +2,9 @@
 
 Discord does not replay what a bot missed, so the bot remembers, per channel, the newest owner message it has
 handled (state/seen.json). After connecting it reads each such channel's history after that message and
-hands what it missed to on_message, oldest first, as if it had just arrived. Only recent ones (WINDOW): after
+hands what it missed to on_message, oldest first, as if it had just arrived. The same after the gateway
+connection was lost and a new session opened (on_ready again, C-170: a network outage longer than Discord keeps a
+session for; a resumed session gets its missed events from Discord, so on_resumed drops the cut). Only recent ones (WINDOW): after
 a long outage an old instruction acted on out of the blue would do more harm than good; those are listed
 instead. A message that arrives live while the catch-up runs is not handled twice (mark()).
 
@@ -19,15 +21,18 @@ import datetime
 import json
 import os
 import re
+import time
 import traceback
 
 import discord
 
 from . import config
+from . import deliver as outgoing  # (C-172a P1b; this class has a deliver() of its own)
 
 SEEN = os.path.join(config.STATE, "seen.json")
 WINDOW = 30 * 60   # seconds: older missed messages are only pointed out
 LIMIT = 30         # per channel
+NEW_SECS = 24 * 3600  # a channel made this long before the bot went down, with no message seen yet, is read too
 REPLAYED = ("!help", "!status", "!recap", "!screen", "/btw")  # the commands done from a catch-up: they only show
 NOT_DONE = "-# ⏸️ 離線時收到的 %s 沒有執行，要的話再送一次。"
 NOT_DONE_MANY = "-# ⏸️ 離線時收到的 %d 則沒有執行，要的話再送一次：%s"
@@ -61,6 +66,17 @@ def held(message, terminal=False):
     return " ".join(text.split()[:3])[:60]
 
 
+def went_down():
+    """When the bot went down, as well as it can be told: its heartbeat's last write (state/heartbeat, every 20
+    seconds while it runs), else seen.json's; WINDOW ago when neither is there."""
+    for path in (os.path.join(config.STATE, "heartbeat"), SEEN):
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            continue
+    return time.time() - WINDOW
+
+
 class Catchup(object):
     def __init__(self, bot):
         self.bot = bot
@@ -69,9 +85,24 @@ class Catchup(object):
                 self.seen = {k: int(v) for k, v in json.load(f).items()}
         except (OSError, ValueError, AttributeError):
             self.seen = {}
-        self.at_start = dict(self.seen)  # where each channel stood when the bot went down (live messages move seen on)
+        self.at_start = dict(self.seen)  # where each channel stood when the bot went down (live messages move seen on);
+        # None once a catch-up has taken it, until the next cut() (the connection lost)
+        self.down_at = went_down()  # (for a channel seen.json does not have yet: from when the bot went down)
         self.handled = collections.deque(maxlen=1000)
-        self.done = False
+        self.lock = None  # one catch-up at a time (made on the loop that runs it)
+
+    def cut(self):
+        """The gateway connection was lost (on_disconnect): where each channel stands now is where the next
+        catch-up reads from. Kept if one is already waiting (the connection dropped again before on_ready): the
+        older point misses nothing, and what was handled since is skipped (handled, mark())."""
+        if self.at_start is None:
+            self.at_start = dict(self.seen)
+            self.down_at = time.time()
+
+    def resumed(self):
+        """The session was resumed (on_resumed): Discord replays what was missed, so no catch-up is owed. A
+        point left waiting would later read messages handled long ago as missed ones."""
+        self.at_start = None
 
     def save(self):
         tmp = SEEN + ".tmp"
@@ -94,13 +125,36 @@ class Catchup(object):
         return True
 
     async def run(self):
-        """Once per process, after connecting: deliver what was missed."""
-        if self.done:
-            return
-        self.done = True
+        """After each on_ready (the first, and every new session after a lost connection): deliver what was
+        missed since the point cut() or the start took. One at a time; nothing to do when no point waits."""
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        async with self.lock:
+            start, self.at_start = self.at_start, None
+            if start is not None:
+                await self.deliver(self.with_unseen(start))
+
+    def with_unseen(self, start):
+        """`start` and every channel of the bot's that seen.json has no message of yet (a channel made a moment
+        before, its first message just as the bot went down: 11-08 #train-dashboard, manager), read from when the bot
+        went down; WINDOW and LIMIT hold for them as for any."""
+        out = dict(start)
+        if self.down_at is None:
+            return out
+        down = datetime.datetime.fromtimestamp(self.down_at, datetime.timezone.utc)
+        point = discord.utils.time_snowflake(down)
+        for cid, st in list((getattr(self.bot, "channels_state", None) or {}).items()):
+            if not (str(cid).isdigit() and isinstance(st, dict)) or str(cid) in out:
+                continue
+            if discord.utils.snowflake_time(int(cid)) < down - datetime.timedelta(seconds=NEW_SECS):
+                continue  # (an old channel never written in: not read at every start, one request each)
+            out[str(cid)] = point
+        return out
+
+    async def deliver(self, start):
         now = datetime.datetime.now(datetime.timezone.utc)
         total, held_total = 0, []
-        for cid, last in list(self.at_start.items()):
+        for cid, last in list(start.items()):
             ch = self.bot.get_channel(int(cid))
             if ch is None or isinstance(ch, discord.Thread) or not hasattr(ch, "history"):
                 continue
@@ -121,16 +175,17 @@ class Catchup(object):
             skipped = [(m, h) for m, h in kept if h is not None]
             try:
                 if stale:
-                    await ch.send("-# ⚠️ 機器人離線期間你在這裡發的 %d 則訊息超過 %d 分鐘了，沒有送給 Claude，需要的話請重發：%s"
-                                  % (len(stale), WINDOW // 60, " ".join(m.jump_url for m in stale[:5])), silent=True)
+                    await outgoing.deliver(ch, "-# ⚠️ 機器人離線期間你在這裡發的 %d 則訊息超過 %d 分鐘了，沒有送給 Claude，需要的話請重發：%s"
+                                  % (len(stale), WINDOW // 60, " ".join(m.jump_url for m in stale[:5])), silent=True,
+                                          intent="status")
                     for m in stale:
                         self.mark(m)
                 if fresh:
-                    await ch.send("-# 🔁 補送機器人重啟期間你發的 %d 則訊息" % len(fresh), silent=True)
+                    await outgoing.deliver(ch, "-# 🔁 補送機器人重啟期間你發的 %d 則訊息" % len(fresh), silent=True, intent="status")
                 for m, _ in skipped:
                     self.mark(m)
                 for line in told([h for _, h in skipped]):
-                    await ch.send(line, silent=True)
+                    await outgoing.deliver(ch, line, silent=True, intent="status")
                 held_total.extend(h for _, h in skipped)
             except Exception:
                 traceback.print_exc()

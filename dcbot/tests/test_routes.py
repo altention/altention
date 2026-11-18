@@ -1,4 +1,9 @@
 """Routing between channels and the owner's own tmux panes: the table, the hook's lookup, discovery."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os
@@ -149,6 +154,9 @@ class Table(unittest.TestCase):
         self.assertEqual(tmuxio.at({"socket": "/s", "id": "%1"}), ("/s", "%1"))
 
     def test_parse_panes_keeps_only_claude(self):
+        table = mock.patch.object(tmuxio.cc_process, "table", lambda: {})  # the zsh pane: no process of this machine's
+        table.start()
+        self.addCleanup(table.stop)
         out = ("%1\tmain\t0\tzsh\tzsh\t/home/u\t1\t10\n%2\tmain\t1\tclaude\tclaude\t/home/u/p\t1\t20\n"
                "%3\tmain\t2\tbacktest\tclaude\t/home/u/p\t0\t30\n\nbroken line\n")
         self.assertEqual(tmuxio.parse_panes("/s", out),
@@ -156,6 +164,21 @@ class Table(unittest.TestCase):
                            "cwd": "/home/u/p", "pid": "20"},
                           {"socket": "/s", "id": "%3", "session": "main", "window": "2", "window_name": "backtest",
                            "cwd": "/home/u/p", "pid": "30"}])
+
+    def test_parse_panes_by_what_runs_under_the_pane(self):
+        """C-92 b: a Node dev server is not Claude; Claude installed with npm (tmux names it node) is; Claude started
+        by a script (tmux names the script's shell) is; one stopped with Ctrl-Z is not (#code-review-2 on 6e93ae2). The
+        process table is read once for the whole listing."""
+        procs = {40: (1, ["node", "/home/u/web/node_modules/.bin/vite"], 40, 40),  # (parent, words, group, foreground)
+                 50: (1, ["node", "/home/u/.npm-global/lib/node_modules/@anthropic-ai/claude-code/cli.js"], 50, 50),
+                 60: (1, ["bash", "/home/u/bin/cc-work"], 60, 60), 61: (60, ["/home/u/.local/bin/claude"], 60, 60),
+                 70: (1, ["-bash"], 70, 70), 71: (70, ["/home/u/.local/bin/claude"], 71, 70)}  # stopped (Ctrl-Z)
+        reads = []
+        out = ("%4\tmain\t0\tweb\tnode\t/home/u/web\t1\t40\n%5\tmain\t1\tnpm\tnode\t/home/u/p\t1\t50\n"
+               "%6\tmain\t2\twrap\tbash\t/home/u/p\t1\t60\n%7\tmain\t3\tstopped\tbash\t/home/u/p\t1\t70\n")
+        with mock.patch.object(tmuxio.cc_process, "table", lambda: reads.append(1) or procs):
+            self.assertEqual([p["id"] for p in tmuxio.parse_panes("/s", out)], ["%5", "%6"])
+        self.assertEqual(reads, [1])
 
     def test_terminal_prompts(self):
         self.assertTrue(events.from_terminal("fix the bug"))

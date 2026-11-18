@@ -3,6 +3,11 @@
 command, so every remote tmux command naming a session by "=name" failed with "zsh:1: name not found" and the
 window was never opened. Checked through a real `zsh -c` (skipped where there is no zsh), and the remote path of
 open_window end to end: a fake ssh running the command with zsh, a real tmux server."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import importlib.machinery

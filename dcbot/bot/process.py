@@ -24,7 +24,7 @@ import discord
 
 from altention.connectors.claude_code import transcript
 
-from . import masking
+from . import deliver, masking
 from .util import split_message
 
 EMOJI = "📋"
@@ -409,14 +409,14 @@ async def expand(bot, payload, thread, st):
             marked = bool(MARK.search((await thread.fetch_message(payload.message_id)).content or ""))
         except Exception:
             marked = False
-        return await thread.send("📋 這則的紀錄已經不在了。" if marked else "📋 這則沒有被省略的內容。", **said)
+        return await deliver.deliver(thread, "📋 這則的紀錄已經不在了。" if marked else "📋 這則沒有被省略的內容。", intent="status", keep=False, **said)
     reply, item, field, offset, done = rec[:5]
     if done:
-        return await thread.send("📋 這則已經展開過，接下去的在下面：https://discord.com/channels/%s/%d/%d"
-                                 % (getattr(payload, "guild_id", None) or "@me", thread.id, done), **said)
+        return await deliver.deliver(thread, "📋 這則已經展開過，接下去的在下面：https://discord.com/channels/%s/%d/%d"
+                                 % (getattr(payload, "guild_id", None) or "@me", thread.id, done), intent="status", keep=False, **said)
     key = (thread.id, str(payload.message_id))
     if key in EXPANDING:  # pressed again while its stretch is still on its way (reading another machine, posting
-        return await thread.send("📋 這則正在展開，稍等一下。", **said)  # several messages): not posted twice
+        return await deliver.deliver(thread, "📋 這則正在展開，稍等一下。", intent="status", keep=False, **said)  # several messages): not posted twice
     EXPANDING.add(key)
     try:
         return await expand_now(bot, payload, thread, st, rec, said)
@@ -429,25 +429,25 @@ async def expand_now(bot, payload, thread, st, rec, said):
     reply, item, field, offset, done = rec[:5]
     turn = (st.get("turns") or {}).get(str(reply))
     if turn is None:
-        return await thread.send("📋 這一輪的對話紀錄已經不在了。", **said)
+        return await deliver.deliver(thread, "📋 這一輪的對話紀錄已經不在了。", intent="status", keep=False, **said)
     host = (st.get("turn_hosts") or {}).get(str(reply))
     if host:
         got, why = await remote_part(host, st, reply, item, field, offset)
         if why:  # the record stays as it is: asked again later
-            return await thread.send({UNREACHABLE: "📋 這一輪在 %s 上，現在連不上，等它回來再按一次。",
+            return await deliver.deliver(thread, {UNREACHABLE: "📋 這一輪在 %s 上，現在連不上，等它回來再按一次。",
                                       BEHIND: "📋 這一輪在 %s 上，那台的程式還沒更新到能讀它，稍後再按一次。",
-                                      UNREADABLE: "📋 這一輪在 %s 上，那台回來的內容讀不出來。"}[why] % host, **said)
+                                      UNREADABLE: "📋 這一輪在 %s 上，那台回來的內容讀不出來。"}[why] % host, intent="status", keep=False, **said)
     else:
         path, start, end = turn[:3]
         items = transcript.turn(path, start, turn_end(path, start, end, (st.get("turn_ids") or {}).get(str(reply))))
         got = None if items is None else transcript.piece(items, item, field, offset, EXPAND)
     if got is None or not got["text"]:
-        return await thread.send("📋 這一輪的對話紀錄已經不在了。", **said)
+        return await deliver.deliver(thread, "📋 這一輪的對話紀錄已經不在了。", intent="status", keep=False, **said)
     left = got["total"] - got["next"]
     top, end = head(got, got["next"] - len(got["text"]), field), MORE % left if left > 0 else foot(got, field)
     parts = stretch(got, first=len(top) + 1, last=len(end) + 1)
     if not parts:
-        return await thread.send("📋 這一輪的對話紀錄已經不在了。", **said)
+        return await deliver.deliver(thread, "📋 這一輪的對話紀錄已經不在了。", intent="status", keep=False, **said)
     parts[-1] = (parts[-1][0] + "\n" + end, parts[-1][1])
     parts[0] = (top + "\n" + parts[0][0], parts[0][1])
     parts = fitting(parts)
@@ -456,8 +456,8 @@ async def expand_now(bot, payload, thread, st, rec, said):
         for body, _ in parts:
             # The first of them is sent as a reply to the message it goes on from (no ping): Discord then shows
             # which message it answers, and a click on that goes back to the piece.
-            sent.append(await thread.send(masking.masked(body, cut=True), silent=True,
-                                          **(answering(thread, payload.message_id) if not sent else {})))
+            sent.append(await deliver.deliver(thread, masking.masked(body, cut=True), silent=True, intent="status",
+                                                  **(answering(thread, payload.message_id) if not sent else {})))
     finally:
         if sent:
             first = (rec[5] if len(rec) > 5 else None) or sent[0].id  # (of the first press, when this one goes on after a failure)
@@ -493,21 +493,21 @@ async def show(bot, payload):
     if ch is None:
         return
     if rec is None:
-        return await ch.send("📋 這則沒有記下過程（不是 Claude 的回覆，或是這個功能上線前的回覆）。", delete_after=15)
+        return await deliver.deliver(ch, "📋 這則沒有記下過程（不是 Claude 的回覆，或是這個功能上線前的回覆）。", delete_after=15, intent="status", keep=False)
     path, start, end, thread_id = rec
     if thread_id and bot.get_channel(thread_id) is not None:
-        return await ch.send("📋 這則的過程在 <#%d>。" % thread_id, delete_after=15)
+        return await deliver.deliver(ch, "📋 這則的過程在 <#%d>。" % thread_id, delete_after=15, intent="status", keep=False)
     host = (st.get("turn_hosts") or {}).get(str(payload.message_id))
     if host:
         got, why = await remote_pieces(host, st, payload.message_id)
         if why:  # the record stays as it is: asked again later
-            return await ch.send({UNREACHABLE: "📋 這一輪在 %s 上，現在連不上，等它回來再按一次。",
+            return await deliver.deliver(ch, {UNREACHABLE: "📋 這一輪在 %s 上，現在連不上，等它回來再按一次。",
                                   BEHIND: "📋 這一輪在 %s 上，那台的程式還沒更新到能讀它，稍後再按一次。",
-                                  UNREADABLE: "📋 這一輪在 %s 上，那台回來的內容讀不出來。"}[why] % host, delete_after=15)
+                                  UNREADABLE: "📋 這一輪在 %s 上，那台回來的內容讀不出來。"}[why] % host, delete_after=15, intent="status", keep=False)
     else:
         got = pieces_of(st, payload.message_id)
     if got is None:
-        return await ch.send("📋 這一輪的對話紀錄已經不在了。", delete_after=15)
+        return await deliver.deliver(ch, "📋 這一輪的對話紀錄已經不在了。", delete_after=15, intent="status", keep=False)
     try:
         msg = await ch.fetch_message(payload.message_id)
         first = next((p for p in got if p.startswith("🧑")), "過程")
@@ -520,7 +520,7 @@ async def show(bot, payload):
     bot.save()
     messages, noted = messages_of(got), False
     for part, more in messages[:MAX_MESSAGES]:
-        sent = await thread.send(masking.masked(part, cut=bool(more)), silent=True)
+        sent = await deliver.deliver(thread, masking.masked(part, cut=bool(more)), silent=True, intent="status")
         if more and getattr(sent, "id", None) is not None:  # it ends cut short: a 📋 on it goes on from there (expand())
             note_more(st, sent.id, payload.message_id, more)
             noted = True
@@ -529,5 +529,6 @@ async def show(bot, payload):
     messages = [part for part, _ in messages]
     if len(messages) > MAX_MESSAGES:
         rest = masking.masked("\n".join(messages[MAX_MESSAGES:]))
-        await thread.send("後面還有 %d 則的量，放在檔案裡：" % (len(messages) - MAX_MESSAGES),
-                          file=discord.File(io.BytesIO(rest.encode("utf-8")), "process.md"), silent=True)
+        await deliver.deliver(thread, "後面還有 %d 則的量，放在檔案裡：" % (len(messages) - MAX_MESSAGES),
+                                  file=discord.File(io.BytesIO(rest.encode("utf-8")), "process.md"), silent=True,
+                                  intent="status")

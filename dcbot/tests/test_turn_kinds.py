@@ -2,6 +2,11 @@
 are, a tool call, a message sent to another conversation, the turn's end, its failure, a dialog on the screen. What
 is posted and when is as it was. (Held against the tree of before with every measured event and a made-up list of
 each branch, 896 events: the same; here the rules themselves.)"""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import glob
@@ -51,9 +56,13 @@ async def nap(seconds, result=None):
 
 
 class Channel(Ch):
-    async def send(self, content=None, embed=None, **kw):
+    async def send(self, content=None, embed=None, view=None, **kw):
         self.sent.append(Sent(len(self.sent) + 1, content, embed))
+        self.sent[-1].view = view
         return self.sent[-1]
+
+    def get_partial_message(self, mid):
+        return next(m for m in self.sent if m.id == mid)
 
 
 class Typed(object):
@@ -71,7 +80,11 @@ def P(prompt, **more):
     return dict({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "s1"}, **more)
 
 
-def play(events, typed=(), asking=(), state=None, keyed=()):
+async def nothing(st):
+    return "", ""  # (no screen: Claude Code's wait for a usage limit is not seen)
+
+
+def play(events, typed=(), asking=(), state=None, keyed=(), screens=None, settle=None):
     """For each event: (what was posted with it: text, or "embed: author | description"), then the bridge's own doings
     beside posting, the channel's state and runtime, what was printed."""
     async def go():
@@ -95,16 +108,21 @@ def play(events, typed=(), asking=(), state=None, keyed=()):
         with mock.patch.object(asyncio, "sleep", nap), mock.patch.object(bridge, "watch", lambda *a, **k: None), mock.patch.object(bridge.menus, "post", post), \
                 mock.patch.object(bridge.menus, "resolve", resolve), mock.patch.object(bridge.asks, "cancel", cancel), \
                 mock.patch.object(ask, "waiting", lambda cid: asking), mock.patch.object(peers, "directory", lambda cs: {"st-1": 5}), \
-                mock.patch.object(peers, "who", lambda name, cs: "#" + str(name)):
+                mock.patch.object(peers, "who", lambda name, cs: "#" + str(name)), \
+                mock.patch.object(bridge.quota, "screens", screens or nothing):
             for ev in events:
                 ev = dict(ev, channel=str(ch.id))
                 st["own_panel"] = "the bot's"
                 del did[:]
                 before = len(ch.sent)
                 await bridge.handle(ev)
+                await bridge.lanes_done()  # (what a tool call shows goes out from its lane: lanes.py)
                 await real_sleep(0)
+                if settle is None or len(rows) in settle:  # (a usage limit is worked on in a task of its own; `settle`:
+                    await asyncio.gather(*bridge.quota.working)  # after which events it is waited for, as the pump does not)
                 shown = [m.content if m.embed is None else "embed: %s | %s" % (m.embed.author.name, m.embed.description) for m in ch.sent[before:]]
                 rows.append((shown, list(did), "own_panel" in st, rt.turn.prompt if rt.turn else None))
+        await asyncio.gather(*bridge.quota.working)
         return rows, st, rt, bridge
     printed = io.StringIO()
     with contextlib.redirect_stdout(printed):

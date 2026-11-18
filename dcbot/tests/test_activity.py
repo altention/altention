@@ -1,5 +1,10 @@
 """C-54a: the 打開 button of a plugin's Activity page (bot/activity.py): who may open what, what a press writes for
 the plugin, and what a forged or stale button does."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util
@@ -18,6 +23,7 @@ from bot import activity, config, posts
 from tests import tmuxguard  # noqa: F401,E402  (no test reaches a real tmux server)
 from tests.test_posts import Bot, Chan
 
+REAL_PAGES = activity.pages  # (Base puts a stand-in in its place)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OWNER, OTHER, GUILD = 42, 7, 500
 PAGES = {("demo", "files"): {"title": "看檔案", "access": "owner"}, ("quiz", "play"): {"title": "測驗", "access": "guild"},
@@ -101,8 +107,9 @@ class Declared(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": tempfile.gettempdir()}):
             got = activity.pages(rows(demo={"pages": [{"id": "files", "title": "看檔案"}, {"id": "quiz", "access": "guild"}]},
                                       plain={"pages": []}))
-        self.assertEqual(got, {("demo", "files"): {"title": "看檔案", "access": "owner"},
-                               ("demo", "quiz"): {"title": "quiz", "access": "guild"}}, "owner by default; off plugins' pages left out")
+        self.assertEqual(got, {("demo", "files"): {"title": "看檔案", "access": "owner", "opens_files": False, "file_button": "看檔案"},
+                               ("demo", "quiz"): {"title": "quiz", "access": "guild", "opens_files": False, "file_button": "quiz"}},
+                         "owner by default; off plugins' pages left out")
 
     def test_a_value_that_got_past_the_check_opens_for_nobody_but_the_rules(self):
         got = activity.pages(rows(a={"pages": [{"id": "x", "access": "everyone"}]}))
@@ -412,6 +419,98 @@ class CommandLine(unittest.TestCase):
                      ["st-1", "--activity", "a/b", "--arg", "k=" + "x" * 3000]):
             with self.assertRaises(SystemExit, msg=argv):
                 mod.build(argv, "", {}, "h", "/x")
+
+
+class Files(Base):
+    """C-116: files posted with altention dc post --file get a button for each page that opens files."""
+    def setUp(self):
+        super().setUp()
+        self.declared[("demo", "files")] = {"title": "看檔案", "access": "owner", "opens_files": True, "file_button": "開這個檔"}
+        self.other = Chan(2, "st-0")
+        self.bot.chans[2] = self.other
+        self.bot.guild.text_channels.append(self.other)
+        self.bot.channels_state["2"] = {"tmux": "dc-y"}
+        self.p = posts.Posts(self.bot)
+
+    def post(self, n=1, where=True, **kw):
+        import base64
+        files = [{"name": "r%d.pdf" % i, "b64": base64.b64encode(b"x").decode(),
+                  **({"where": {"machine": "lap", "path": "/home/u/r%d.pdf" % i}} if where else {})} for i in range(n)]
+        post = {"channel": "st-1", "text": "報告", "from_channel": "2", "from_name": "x",
+                "file_name": files[0]["name"], "file_b64": files[0]["b64"], "more_files": files[1:], **kw}
+        if where:
+            post["file_where"] = files[0]["where"]
+        asyncio.run(self.p.handle(post))
+        return self.ch.views[-1]
+
+    def labels(self, view):
+        return [b.label for b in view.children] if view is not None else []
+
+    def test_declared_by_a_plugin_that_uses_the_second_version(self):
+        page = {"id": "files", "opens_files": True, "file_button": "開這個檔"}
+        got = REAL_PAGES([("a", "/p/a", {"name": "a", "uses": {"activity.pages": 2}, "activity": {"pages": [page]}}, "on", ""),
+                              ("b", "/p/b", {"name": "b", "uses": {"activity.pages": 1}, "activity": {"pages": [page]}}, "on", ""),
+                              ("c", "/p/c", {"name": "c", "activity": {"pages": [dict(page, file_button=" ")]}}, "on", "")])
+        self.assertEqual((got[("a", "files")]["opens_files"], got[("a", "files")]["file_button"]), (True, "開這個檔"))
+        self.assertFalse(got[("b", "files")]["opens_files"], "a plugin that says version 1 still works, without the buttons")
+        self.assertEqual((got[("c", "files")]["opens_files"], got[("c", "files")]["file_button"]), (False, "files"))
+
+    def test_one_file_one_button_that_opens_it_where_it_is(self):
+        view = self.post()
+        self.assertEqual(self.labels(view), ["開這個檔"])
+        token = view.children[0].custom_id[4:]
+        kept = self.bot.channels_state["1"]["activity"][token]
+        self.assertEqual((kept["plugin"], kept["page"], kept["args"]), ("demo", "files", {"machine": "lap", "path": "/home/u/r0.pdf"}))
+        self.assertEqual(self.bot.tmux.given[-1][0], 1, "still handed to the channel's Claude")
+        r = self.go(press("act:" + token))
+        self.assertEqual(r.launched, 1)
+        self.assertEqual(self.intents()[-1]["args"], {"machine": "lap", "path": "/home/u/r0.pdf"})
+
+    def test_in_its_own_channel_too(self):
+        view = self.post(from_channel="1")
+        self.assertEqual(self.labels(view), ["開這個檔"])
+        self.assertFalse(self.ch.how[-1]["embed"])
+
+    def test_several_files_say_which_and_one_row_at_most(self):
+        self.declared[("rigact", "files")] = {"title": "看檔案", "access": "owner", "opens_files": True, "file_button": "另一頁"}
+        self.assertEqual(self.labels(self.post(n=2)), ["開這個檔：r0.pdf", "另一頁：r0.pdf", "開這個檔：r1.pdf", "另一頁：r1.pdf"])
+        view = self.post(n=10)
+        self.assertEqual(len(view.children), activity.FILE_BUTTONS)
+        self.assertEqual(self.labels(view)[-1], "開這個檔：r2.pdf", "the files' order first, then the pages'")
+
+    def test_none_without_where_a_page_that_opens_files_or_activities_on(self):
+        self.assertIsNone(self.post(where=False))
+        with mock.patch.dict(activity.embedded, {"on": False}):
+            self.assertIsNone(self.post())
+        self.declared[("demo", "files")]["opens_files"] = False
+        self.assertIsNone(self.post())
+        self.assertEqual(len(self.ch.sent), 3, "the files are posted all the same")
+
+    def test_declarations_that_cannot_be_read_post_the_files_without(self):
+        def broken(rows=None):
+            raise ValueError("plugins.json")
+        with mock.patch.object(activity, "pages", broken):
+            self.assertIsNone(self.post())
+        self.assertEqual(len(self.ch.sent), 1)
+
+
+class CommandLineFiles(unittest.TestCase):
+    def test_each_file_says_its_machine_and_absolute_path(self):
+        mod = CommandLine.load(self)
+        d = tempfile.mkdtemp(prefix="dcpost files ")
+        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
+        for n in ("a.txt", "b.txt"):
+            with open(os.path.join(d, n), "w") as f:
+                f.write("x")
+        cwd = os.getcwd()
+        os.chdir(d)
+        self.addCleanup(os.chdir, cwd)
+        p = mod.build(["st-1", "--file", "a.txt", "--file", os.path.join(d, "b.txt"), "x"], "", {}, "h", d, "lap")
+        self.assertEqual(p["file_where"], {"machine": "lap", "path": os.path.join(d, "a.txt")})
+        self.assertEqual(p["more_files"][0]["where"], {"machine": "lap", "path": os.path.join(d, "b.txt")})
+        self.assertEqual(mod.build(["st-1", "--file", "a.txt", "x"], "", {}, "h", d)["file_where"]["machine"], "h")
+        self.assertIsNone(mod.where_of("lap", "/" + "x" * 2100, "/"), "over 2048 bytes: no button")
+        self.assertIsNotNone(mod.where_of("lap", "/" + "x" * 2000, "/"))
 
 
 if __name__ == "__main__":

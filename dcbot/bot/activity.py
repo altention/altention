@@ -28,7 +28,14 @@ time), mode 600, written whole through a temporary file:
                   "access": "owner" | "guild", "at": <unix seconds>}]}
 oldest first; the last INTENTS_KEPT, of the last INTENTS_SECS. A plugin reads only its own file and never writes it.
 What is in it is no secret (who pressed what, where): every program of the owner's user can read the owner's files,
-so a file mode keeps out other users, not other plugins."""
+so a file mode keeps out other users, not other plugins.
+
+Files posted with `altention dc post --file` (C-116): a page that declares `"opens_files": true` (and its plugin uses
+activity.pages 2 or later: one that says 1 still works, without these buttons) gets a button for each file, its words
+the page's `file_button` (else its title), with the file's name when there are several. The button opens that page with
+{"machine", "path"} of the file (what altention dc post said; a file without them gets none). One row at most:
+FILE_BUTTONS buttons on a message, the files' order first, then the pages'; the rest get none (said in usage.md).
+None either while the application's Activities are known off."""
 import asyncio
 import json
 import os
@@ -40,7 +47,7 @@ import traceback
 
 import discord
 
-from . import config
+from . import config, deliver
 from .util import split_message
 
 KEEP, KEEP_DAYS = 50, 7          # buttons remembered in a channel's state
@@ -49,6 +56,7 @@ READ_SECS = 2                    # the declarations read again on a press, at mo
 FLAGS_EVERY = 600                # the application's flags read again (watch())
 NOT_EMBEDDED = 50234             # Discord's error code: LAUNCH_ACTIVITY without the EMBEDDED flag
 embedded = {"on": None}          # are the application's Activities on: True, False, or None (not known)
+FILE_BUTTONS = 5                 # buttons for posted files on one message: Discord's one row
 TOKEN = re.compile(r"^[0-9a-f]{32}$")
 NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 NOT_SET_UP = "Activity 還沒設好，打不開：到 #setup 跟 Claude 說「幫我裝完 %s」。"
@@ -72,9 +80,31 @@ def pages(rows=None):
         for p in d["activity"].get("pages") or []:
             if isinstance(p, dict) and isinstance(p.get("id"), str):
                 access = p.get("access", "owner")
-                out[(name, p["id"])] = {"title": p.get("title") if isinstance(p.get("title"), str) else p["id"],
-                                        "access": access if access in ("owner", "guild") else None}
+                title = p.get("title") if isinstance(p.get("title"), str) and p["title"].strip() else p["id"]
+                out[(name, p["id"])] = {"title": title, "access": access if access in ("owner", "guild") else None,
+                                        "opens_files": p.get("opens_files") is True and uses_v2(d),
+                                        "file_button": p["file_button"] if isinstance(p.get("file_button"), str)
+                                        and p["file_button"].strip() else title}
     return out
+
+
+def uses_v2(d):
+    """Does a plugin.json say it uses activity.pages 2 or later (what opens_files came with)?"""
+    v = (d.get("uses") or {}).get("activity.pages") if isinstance(d.get("uses"), dict) else None
+    v = v.get("v") if isinstance(v, dict) else v  # {"v": N, "optional": …} (plugin.format 2)
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 2
+
+
+def file_buttons(found, files):
+    """[(plugin, page, label, where)] for files posted with --file: `files` [(name, where or None)] in their order,
+    `found` pages(). Each file with a where, each page that opens files (sorted), FILE_BUTTONS at most."""
+    opening = sorted(k for k, v in found.items() if v.get("opens_files"))
+    out = []
+    for name, where in files:
+        for plugin, page in opening if isinstance(where, dict) else ():
+            label = found[(plugin, page)]["file_button"]
+            out.append((plugin, page, label if len(files) == 1 else "%s：%s" % (label, name), where))
+    return out[:FILE_BUTTONS]
 
 
 async def pages_now(rows=None):
@@ -98,6 +128,17 @@ def remember(st, plugin, page, args, now=None):
     token = secrets.token_hex(16)
     kept[token] = {"plugin": plugin, "page": page, "args": dict(args or {}), "at": now}
     return token
+
+
+def file_view(st, buttons):
+    """A view with the buttons file_buttons() gave, each remembered in the channel's state `st`; None for none."""
+    if not buttons:
+        return None
+    v = discord.ui.View(timeout=None)
+    for plugin, page, label, where in buttons:
+        token = remember(st, plugin, page, {"machine": where.get("machine"), "path": where.get("path")})
+        v.add_item(discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, custom_id="act:" + token))
+    return v
 
 
 def button(title, token):
@@ -159,6 +200,19 @@ class Activity(object):
                       "kept as %s" % embedded["on"] if embedded["on"] is not None else "not known"), flush=True)
             await asyncio.sleep(FLAGS_EVERY)
 
+    async def for_files(self, ch, files):
+        """The view with the buttons for files posted with --file (`files`: [(name, where or None)]), or None: no page
+        opens files, the application's Activities are known off, or the declarations cannot be read."""
+        if embedded["on"] is False or not any(isinstance(w, dict) for _, w in files):
+            return None
+        found = await pages_now()
+        buttons = file_buttons(found or {}, files)
+        if not buttons:
+            return None
+        view = file_view(self.bot.chan(ch), buttons)
+        self.bot.save()
+        return view
+
     async def post(self, ch, text, post, embeds=None):
         """Post `text` (split at Discord's 2000), or `embeds` (cards), whole, with the 打開 button for post["activity"]
         ("<plugin>/<page>") on the last message. (None, that message) or (why it was not posted, None)."""
@@ -178,12 +232,13 @@ class Activity(object):
         view, message = button(spec["title"], token), None
         if embeds:
             for i, e in enumerate(embeds):
-                message = await (ch.send(embed=e, view=view) if i == len(embeds) - 1 else ch.send(embed=e))
+                message = await (deliver.deliver(ch, embed=e, view=view, intent="card") if i == len(embeds) - 1
+                                 else deliver.deliver(ch, embed=e, intent="card"))
         else:
             parts = split_message(text) or ["打開 %s" % spec["title"]]
             for i, part in enumerate(parts):
-                message = await ch.send(part, view=view if i == len(parts) - 1 else None,
-                                        allowed_mentions=discord.AllowedMentions.none())
+                message = await deliver.deliver(ch, part, view=view if i == len(parts) - 1 else None,
+                                                allowed_mentions=discord.AllowedMentions.none(), intent="card")
         return None, message
 
     async def on_interaction(self, interaction):

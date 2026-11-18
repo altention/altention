@@ -12,10 +12,17 @@ Two kinds of numbers:
   ccusage, Claude Code and Codex, priced like the API). Not what the subscription costs, but proportional. Not set
   (what an install leaves): this machine alone, the one collecting, where usage/install.sh put ccusage; other
   machines are added by listing them (each needs usage/install-node.sh run there once).
-Each run also appends a sample to ~/.local/share/usage/samples.jsonl, so weeks can be compared later.
+Each run also appends a sample to ~/.local/share/usage/samples.jsonl, so weeks can be compared later, and leaves
+every machine's conversations (what each cost in the last 7 and 30 days) in ~/.local/share/usage/spend.json for
+usage/spend.py (C-98).
 Each round notes in ~/.cache/usage/state.json when it last posted the boards ("last_run"), why the last round that
 stopped did ("last_failed": when, why; cleared by a round that ends), and the machines it could not read
 ("last_errors"): doctor reads them (a round that failed every hour was silent before: owner's re-install 2026-10-15).
+Project names: the projects board and the chart name a project by its folder (usage/remote.py). The instance's
+usage.project_names, {"folder name": "shown name"}, shows folders under another name; folders given the same name are
+one row, their costs added (a project whose folder moved or was renamed: 11-12). Folders not in it are shown as before;
+a value that is not such a map is noted ("names_problem", for doctor) and the folder names are shown. spend.json keeps
+the folder names.
 """
 import datetime
 import getpass
@@ -90,6 +97,54 @@ def note(**fields):
         pass
 
 
+def spend_path():
+    return os.path.expanduser("~/.local/share/usage/spend.json")
+
+
+DAILY_KEPT = 35  # days of each machine's spend kept for spend.py --v 2 (it shows 30)
+
+
+def daily_kept(daily, today):
+    """[[date, dollars]] of ccusage's daily rows (one per agent and day) for the last DAILY_KEPT days to `today`."""
+    try:
+        first = (datetime.date.fromisoformat(today) - datetime.timedelta(days=DAILY_KEPT - 1)).isoformat()
+    except (TypeError, ValueError):
+        return []
+    days = {}
+    for d in daily:
+        if isinstance(d, dict) and isinstance(d.get("date"), str) and first <= d["date"] <= today \
+                and isinstance(d.get("cost"), (int, float)):
+            days[d["date"]] = days.get(d["date"], 0.0) + d["cost"]
+    return [[k, round(v, 4)] for k, v in sorted(days.items())]
+
+
+def save_spend(results, today, now=None):
+    """spend.json: {"v": 1, "at", "today", "machines": [{"machine", "sessions" (remote.py's), "since" and "daily"
+    ([[date, dollars]] of its last DAILY_KEPT days, every agent together: spend.py --v 2's "days"), or "error", or
+    "old": true for a remote.py from before C-98}]}, rewritten whole (a temporary file, then a rename) in the samples'
+    private folder. Never raises: a round's boards matter more."""
+    machines = []
+    for r in results:
+        m = {"machine": r["machine"]}
+        if r.get("error"):
+            m["error"] = r["error"]
+        elif isinstance(r.get("sessions"), list):
+            m["sessions"], m["since"] = r["sessions"], r.get("since")
+            m["daily"] = daily_kept(r.get("daily") or [], today)
+        else:
+            m["old"] = True
+        machines.append(m)
+    path = spend_path()
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"v": 1, "at": time.time() if now is None else now, "today": today, "machines": machines}, f,
+                      ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    except OSError as e:
+        print("%s usage：spend.json 寫不了：%s" % (time.strftime("%F %T"), e), file=sys.stderr)
+
+
 def default_sources(config):
     """plugins.usage.sources when it is not set: this machine, the one collecting (the install put ccusage here)."""
     return [config.this_machine()]
@@ -103,6 +158,45 @@ def switched_off(value):
         return ("關掉了（實例 plugins.json 的 usage.subscription_limits 是 false）。要看就跟 Claude 說「打開訂閱額度看板」，"
                 "或把它改成 true：每小時用 haiku 送一個最小的請求去讀，會算進 5 小時的額度")
     return "%s 要是 true 或 false，現在是 %s，當成沒打開" % (SWITCH, json.dumps(value, ensure_ascii=False))
+
+
+NAMES = "usage.project_names"  # {folder name: shown name}, for the projects board and the chart
+
+
+def project_names(value):
+    """(names, problem) from NAMES' value: ({}, None) when it is not set; a value that is not {text: text} (neither
+    side empty) is not used at all, and problem says so."""
+    if value is None:
+        return {}, None
+    if isinstance(value, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+                                       for k, v in value.items()):
+        return {k: v.strip() for k, v in value.items()}, None
+    return {}, ('實例 plugins.json 的 usage.project_names 要是 {"資料夾名": "顯示名"}（兩邊都是文字），現在是 %s，'
+                "看板先照資料夾名顯示" % json.dumps(value, ensure_ascii=False)[:150])
+
+
+def merged(results, names):
+    """`results` with each machine's projects shown by `names`: rows that come to share a name and agent are one, cost
+    and tokens added, the latest last; sorted by cost again. Other fields and the input are left as they are."""
+    if not names:
+        return results
+    out = []
+    for r in results:
+        if not isinstance(r.get("projects"), list):
+            out.append(r)
+            continue
+        rows = {}
+        for p in r["projects"]:
+            name = names.get(p.get("project"), p.get("project"))
+            q = rows.get((p.get("agent"), name))
+            if q is None:
+                rows[(p.get("agent"), name)] = dict(p, project=name)
+                continue
+            q["cost"] = (q.get("cost") or 0) + (p.get("cost") or 0)
+            q["tokens"] = (q.get("tokens") or 0) + (p.get("tokens") or 0)
+            q["last"] = max(q.get("last") or "", p.get("last") or "")
+        out.append(dict(r, projects=sorted(rows.values(), key=lambda p: -(p.get("cost") or 0))))
+    return out
 
 
 CHANNEL, PLAN = None, None  # set by main() from load_settings(); PLAN None: usage.plan not set
@@ -181,10 +275,15 @@ def reset_text(ts, now, with_date, zone=None):
     return hm
 
 
+RESETS = {}  # the last limits_from_stream's {window key: resetsAt, epoch seconds}: the samples keep it (C-98)
+
+
 def limits_from_stream(text, now=None, zone=None):
     """(limits, why) from `claude -p --output-format stream-json` output: limits [[title, percent, reset text]] as
     the samples keep them, without a window the event does not have, or [] and why not. A window that is there in a
-    shape not as measured, or no window at all, is said, never guessed."""
+    shape not as measured, or no window at all, is said, never guessed. RESETS is left with the reset time of each
+    window read, when the limits were read."""
+    RESETS.clear()
     now = now or (zone.local(time.time()) if zone else datetime.datetime.now())
     info, failed = None, None
     for line in text.split("\n"):
@@ -220,6 +319,7 @@ def limits_from_stream(text, now=None, zone=None):
         out.append([title, int(round(u * 100)), reset_text(at, now, key != "five_hour", zone)])
     if not out:
         return [], "%s（unifiedWindows 裡沒有 %s）" % (CHANGED, "、".join(key for key, _ in WINDOWS))
+    RESETS.update((key, windows[key].get("resetsAt")) for key, _ in WINDOWS if key in windows)
     return out, None
 
 
@@ -403,6 +503,13 @@ def main(show_only=False):
     today = zone.local(time.time()).date().isoformat()
     known = inv.get("machines") or config.machines()  # without a machine list: this machine alone
     results = [machine_usage(n, known[n]) for n in sources if n in known]
+    save_spend(results, today)
+    names, names_why = project_names(config.setting(NAMES))
+    if names_why:
+        print("%s usage：%s" % (time.strftime("%F %T"), names_why), file=sys.stderr)
+    note(names_problem=names_why)
+    shown = merged(results, names)
+    RESETS.clear()  # only this round's (read_limits fills it)
     if limits_on is not True:
         limits, why = [], switched_off(limits_on)
     else:
@@ -418,8 +525,9 @@ def main(show_only=False):
     os.makedirs(os.path.dirname(SAMPLES), mode=0o700, exist_ok=True)
     os.chmod(os.path.dirname(SAMPLES), 0o700)  # private in plugin.json: no other account reads the samples
     with open(SAMPLES, "a") as f:
-        f.write(json.dumps({"t": time.time(), "limits": limits, "week": week[0], "week_reset": week[1],
-                            "cost7": round(cost7, 2)}, ensure_ascii=False) + "\n")
+        f.write(json.dumps(dict({"t": time.time(), "limits": limits, "week": week[0], "week_reset": week[1],
+                                 "cost7": round(cost7, 2)}, **({"resets": dict(RESETS)} if limits and RESETS else {})),
+                           ensure_ascii=False) + "\n")
     samples = []
     with open(SAMPLES) as f:
         for line in f:
@@ -428,8 +536,8 @@ def main(show_only=False):
             except ValueError:
                 pass
     boards = [("訂閱額度", limits_board(limits, why, off=limits_on is not True)), ("這個帳號", mine_board(results, today)),
-              ("每天", daily_board(results, today)), ("專案", projects_board(results)), ("每週", weeks_board(samples))]
-    png = chart(today, results, samples, zone.offset_at(time.time()))
+              ("每天", daily_board(results, today)), ("專案", projects_board(shown)), ("每週", weeks_board(samples))]
+    png = chart(today, shown, samples, zone.offset_at(time.time()))
     unposted = []
     for name, text in boards:
         if show_only:
@@ -454,4 +562,10 @@ def main(show_only=False):
 
 
 if __name__ == "__main__":
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        sys.exit(0)
+    if [a for a in sys.argv[1:] if a != "--print"]:  # cron gives none: a mistake, never a round
+        print("不認得 %s（這支平常由排程呼叫，只收 --print；-h 看說明），什麼都沒做" % " ".join(a for a in sys.argv[1:] if a != "--print"))
+        sys.exit(2)
     main_noted("--print" in sys.argv[1:])

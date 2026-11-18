@@ -11,8 +11,11 @@ Files the real sync rewrites every round (it may run during the tests) are only 
 changing; a plugin's own folder, ~/.local/state/altention/<its name>/, is not checked at all (a plugin that runs
 here, like one serving pages, writes there whenever it likes: manager 2026-11-02). Which names those are comes from
 the plugins this engine knows when the guard starts (altention.plugin.candidates: the built-in and the external
-ones), never from a list written here; the core's own files and folders are checked as before; the instance's contents are not checked (the real sync pulls into it), only its top level. TMPDIR points into
-the throwaway home too, so temporary folders a test does not remove are removed with it.
+ones), never from a list written here; the core's own files and folders are checked as before, but for one a live
+round rewrote meanwhile with altention/statefile.write_json (stamped "by_test": false): that one is said in a line
+starting LIVE_LINE (deploy.sh shows it) and does not stop the run; stamped by a test, or not stamped, it does.
+The instance's contents are not checked (the real sync pulls into it), only its top level. TMPDIR points into the
+throwaway home too, so temporary folders a test does not remove are removed with it.
 Standard library only, Python 3.8.
 """
 import atexit
@@ -44,6 +47,7 @@ RUNTIME_SCHEDULER = ("dry.", "files-dry.", "round-dry.", "said-dry.", "would-run
 # there only while a round samples: may come and go during the tests, never compared
 PASSING_SCHEDULER = ("trace-sample.", "apply-reporting.")
 _started = None
+LIVE_LINE = "✓ 正式程序在測試期間改了"  # deploy.sh shows these lines of a run that passed
 
 
 def plugin_names():
@@ -70,7 +74,8 @@ def plugin_names():
 def _snapshot(home, plugins=()):
     """plugins: the names whose folders in ~/.local/state/altention are not looked into (plugin_names())."""
     seen = {}
-    for rel in (".local/state/altention", ".cache/altention", ".config/altention"):
+    for rel in (".local/state/altention", ".cache/altention", ".config/altention", ".local/share/altention"):  # (share:
+        # dcremote-owner and bot-host, 11-08: a dcbot test left a real dcremote-owner)
         top = os.path.join(home, rel)
         for folder, dirs, files in os.walk(top):
             if folder == top and rel == ".local/state/altention":
@@ -90,6 +95,10 @@ def _snapshot(home, plugins=()):
                     pass
             for name in dirs:
                 seen[os.path.join(folder, name) + "/"] = None
+    try:  # the hooks of every Claude Code of the machine (dchook --install/--update) (manager 11-08)
+        seen[os.path.join(home, ".claude", "settings.json")] = os.stat(os.path.join(home, ".claude", "settings.json")).st_mtime
+    except OSError:
+        pass
     for top in (os.path.join(home, "altention"), os.path.join(home, "altention", "instance")):
         try:
             for name in os.listdir(top):
@@ -104,6 +113,11 @@ def _check(home, before, plugins=()):
     new = sorted(set(after) - set(before))
     gone = sorted(set(before) - set(after))
     changed = sorted(k for k in set(after) & set(before) if before[k] is not None and after[k] != before[k])
+    from altention import statefile  # standard library only, nothing read at import
+    live = [k for k in new + changed if not k.endswith("/") and statefile.written_live(k)]
+    for item in live:
+        sys.stderr.write("%s：%s（不是測試寫的，放行）\n" % (LIVE_LINE, item))
+    new, changed = [k for k in new if k not in live], [k for k in changed if k not in live]
     if new or gone or changed:
         sys.stderr.write("\n✗ 測試動到了真的家目錄（%s）：\n" % home)
         for label, items in (("新增", new), ("不見", gone), ("改過", changed)):
@@ -135,3 +149,75 @@ def guard_home():
     atexit.register(shutil.rmtree, fake, True)  # runs first (last registered): the throwaway home goes away
     _started = fake
     return fake
+
+
+# C-148: golden tests, the fixed interfaces (spec chapters 10-17) held to files a person changes on purpose.
+# golden(case, actual) compares `actual` (text, or a JSON value written as sorted, indented JSON) with
+# <suite>/tests/golden/<case>.txt|.json, the folder beside the test calling it. It only ever reads that file: on a
+# difference, or when there is none yet, the test fails with the diff and the one line that updates it (tools/golden
+# update <case>), and with ALT_GOLDEN_OUT set (by tools/golden alone) the actual text is also left in that folder for
+# the tool to copy. Lines at the top starting "#golden " are the file's header (the spec section it holds), not
+# compared. Paths of the throwaway home and of the engine read <HOME> and <ENGINE>; times and ids are made fixed by
+# the test itself, never wiped by a pattern here.
+GOLDEN_HEAD = "#golden "
+
+
+def shape(value, keep=()):
+    """A JSON value as its form: an object's keys with the form of each value, a list as the forms of its items (once
+    each, in order of appearance), and "str", "number", "bool", "null" for the rest; a key in `keep` keeps its
+    value as it is (a version, a fixed word)."""
+    if isinstance(value, dict):
+        return {k: (v if k in keep else shape(v, keep)) for k, v in value.items()}
+    if isinstance(value, list):
+        out = []
+        for x in value:
+            s = shape(x, keep)
+            if s not in out:
+                out.append(s)
+        return out
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    return "number" if isinstance(value, (int, float)) else "str" if isinstance(value, str) else repr(type(value))
+
+
+def golden_text(actual):
+    text = actual if isinstance(actual, str) else json.dumps(actual, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+    engine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path, word in ((os.environ.get("HOME", ""), "<HOME>"), (engine, "<ENGINE>")):
+        if path and path != "/":
+            text = text.replace(path, word)
+    return text
+
+
+def golden_path(case, folder):
+    for ext in (".txt", ".json"):
+        p = os.path.join(folder, "golden", case + ext)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def golden(case, actual, spec, folder=None):
+    """Fail unless `actual` is what <folder>/golden/<case>.* holds (folder: the calling test's own). `spec`: the spec
+    section, written in the header when tools/golden makes the file."""
+    import difflib
+    import inspect
+    folder = folder or os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
+    text = golden_text(actual)
+    path = golden_path(case, folder)
+    out = os.environ.get("ALT_GOLDEN_OUT")
+    if out:
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, case.replace("/", "__")), "w", encoding="utf-8") as f:
+            json.dump({"case": case, "folder": folder, "spec": spec,
+                       "ext": ".txt" if isinstance(actual, str) else ".json", "text": text}, f, ensure_ascii=False)
+    if path is None:
+        raise AssertionError("golden %s 還沒有（spec %s）：確定這就是介面之後，跑 tools/golden update %s" % (case, spec, case))
+    with open(path, encoding="utf-8") as f:
+        want = "".join(line for i, line in enumerate(f) if not line.startswith(GOLDEN_HEAD))
+    if want != text:
+        diff = "".join(difflib.unified_diff(want.splitlines(True), text.splitlines(True), "golden", "now"))
+        raise AssertionError("golden %s 變了（spec %s）：\n%s\n介面真的要改：tools/golden update %s，commit 訊息寫一行 "
+                             "golden: %s — <為什麼>" % (case, spec, diff, case, case))

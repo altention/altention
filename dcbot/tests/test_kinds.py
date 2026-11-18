@@ -1,6 +1,11 @@
 """What a channel is, said in one place (bot/kinds.py, stage 3b step 2.5): the kind, the connector, archived and
 why; and that the two places which each worked it out for themselves (posts.listens, dcctl's kind_of) answer as
 they did."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import ast
 import importlib.machinery
 import importlib.util
@@ -133,7 +138,7 @@ class Stamped(unittest.TestCase):
     def test_every_save_stamps_every_channel(self):
         written = {}
         bot = mock.Mock(channels_state={"1": {"tmux": "dc-x"}, "2": {"plain": True}, "3": {"cwd": "/w"}, "4": {"kind": "terminal", "home": {}}})
-        with mock.patch.object(main, "save_json", lambda path, data: written.update(data)):
+        with mock.patch.object(main, "save_later", lambda path, data: written.update(data)):
             main.Bot.save(bot)
         self.assertEqual({k: (v.get("kind"), v.get("connector")) for k, v in written.items()},
                          {"1": ("conversation", "claude_code"), "2": ("record", None), "3": (None, None), "4": ("terminal", None)})
@@ -153,7 +158,7 @@ class Stamped(unittest.TestCase):
                     for node in ast.walk(fn):
                         if isinstance(node, ast.Call) and any(isinstance(a, ast.Name) and a.id == "CHANNELS" for a in node.args):
                             writes.append((name, fn.name, getattr(node.func, "id", getattr(node.func, "attr", "?"))))
-        self.assertEqual([w for w in writes if w[2] not in ("load_json", "exists")], [("main.py", "save", "save_json")])  # reads: not writers
+        self.assertEqual([w for w in writes if w[2] not in ("load_json", "exists")], [("main.py", "save", "save_later")])  # reads: not writers
         self.assertIn(("main.py", "__init__", "load_json"), writes, "(the walk does see calls that name the file)")
 
     def test_reset_cwd_mode_and_a_print_turn_leave_the_file_as_the_flags_say(self):
@@ -162,7 +167,7 @@ class Stamped(unittest.TestCase):
         written = {}
         st = {"session_id": "abc", "cwd": "/w", "mode": "print", "configured": True}
         bot = mock.Mock(channels_state={"1": st})
-        with mock.patch.object(main, "save_json", lambda path, data: written.update(json.loads(json.dumps(data)))):
+        with mock.patch.object(main, "save_later", lambda path, data: written.update(json.loads(json.dumps(data)))):
             main.Bot.save(bot)
             self.assertEqual((written["1"]["kind"], written["1"]["connector"]), ("conversation", "claude_code"))
             st.pop("session_id")  # !reset, !cwd

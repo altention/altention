@@ -1,0 +1,9 @@
+#golden spec §17.4
+*/10 * * * * /usr/bin/python3 /p/x.py  # altention:demo/run → ours=True marked=demo name=run
+0 * * * * true  # altention:demo → ours=True marked=demo name=None
+0 8 * * * /usr/bin/python3 /e/altention/engine/planner/remind.py  # planner → ours=True marked=None name=None
+5 * * * * /usr/bin/python3 /e/altention/engine/usage/collect.py # usage → ours=True marked=None name=None
+5 * * * * echo '# planner' > /tmp/x → ours=False marked=None name=None
+0 3 * * * /usr/bin/python3 /e/altention/engine/altention/cron_update.py → ours=True marked=None name=None
+0 4 * * * backup.sh  # mine → ours=False marked=None name=None
+SHELL=/bin/bash → ours=False marked=None name=None

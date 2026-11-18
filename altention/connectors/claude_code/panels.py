@@ -112,8 +112,10 @@ MENU_RULE = re.compile(r"^[\s─━═╌▔▁-]*$")  # a row of a menu that is
 # goes and the call is denied. Only rows inside a dialog count, below its full-width
 # top rule and below the command's own dashed rules (a reply above or the command may quote the words; #code-review of
 # ac72a14), and only the whole sentence with a time in it.
-AUTO_DENY = re.compile(r"⚠ Claude Code will automatically deny this request in (?:(\d+):([0-5]\d)|about (\d+) (minute|second)s?), "
-                       r"to avoid blocking progress on an unattended session")
+AUTO_DENY = re.compile(r"⚠ Claude Code will automatically (?:deny|block) this request in (?:(\d+):([0-5]\d)|about (\d+) "
+                       r"(minute|second)s?), to avoid (?:blocking progress on|holding up) an unattended session")
+# (2.1.322 words it "…automatically block this request in 1:53, to avoid holding up an unattended session": C-176's rig,
+# #code-review-2 2026-11-11; both are read)
 AUTO_DENY_START = re.compile(r"^\s*⚠ Claude Code will\b")  # (its first row: where the rest wraps varies with the width)
 AUTO_DENY_ROWS = 5  # rows the sentence may take (128 characters: 5 rows down to about 30 columns)
 DASHED = re.compile(r"^\s*╌{8,}\s*$")  # the rule above and below a permission's command

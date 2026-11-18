@@ -17,15 +17,47 @@
                                           stays at the bottom when another one is moved
   dcctl archive CHANNEL                   archive it as /archive does (the bot does it: queued while it is offline)
   dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
-  dcctl send CHANNEL TEXT [--mentions]    post a message, straight to Discord (not through the bot); mentions in it
-                                          ping nobody; --mentions pings the owner alone (never @everyone, a
-                                          role or anyone else); over 2000 characters is refused (exit 4),
-                                          never cut or split
-  dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off)
-  dcctl edit CHANNEL MESSAGE_ID           replace the text of a message the bot itself posted with what stdin
-                                          holds; over 2000 characters is refused, never cut or split
+  dcctl send CHANNEL TEXT [--mentions]    post a message, straight to Discord (not through the bot; CHANNEL @notify:
+                                          the default notification channel, by its name); mentions in it
+                                          ping nobody; --mentions lets the owner's <@ID> in it ping (never a role
+                                          or anyone else; one more #audit line when it does); @everyone or @here written in it
+                                          is refused; over 2000 characters is refused, never cut or split;
+                                          a text beginning with a frame only the bot uses (📨 **來自 …**,
+                                          🔔 **[…]**, 📌 **…**, ⌨️ 終端機那邊輸入) is refused; refused: exit 4
+                                          (sending it again will not help); logged to #audit. A Claude's to
+                                          another's channel (not its own, nor a thread of it) gets "-# 📨 來自
+                                          #its-channel" on top, as altention dc post --json; a program's never
+  dcctl send-json CHANNEL [--mention owner|user:ID|role:ID]…
+                                          the same as `altention dc post CHANNEL --json -` (C-172a P1d): post the
+                                          message payload (JSON) stdin holds as it is, through the bot (in another's
+                                          channel with "-# 📨 來自 #you" on top; see altention dc post --help); its
+                                          allowed_mentions is replaced so that it pings nobody but whom --mention
+                                          names (owner: one more #audit line when the payload's words do
+                                          ping the owner, <@ID>: --mention alone pings nobody; a user or a role only when the
+                                          instance's dcbot.json_mentions is "any"); @everyone or @here in its words is
+                                          refused; every custom_id must begin "user:" (link buttons have none;
+                                          pressing one says it has no handler yet); refused: exit 4; it only posts (never edits or
+                                          deletes); logged to #audit; waits up to 20 seconds for the bot: not
+                                          running, it says the message is queued and exits 3 (do not send again)
+  dcctl pin CHANNEL MESSAGE_ID [--unpin]  pin a message of that channel (--unpin: take the pin off); a message dcctl
+                                          posted stays editable while pinned, however old (50 a channel): only one
+                                          the bot's ledger has (機器人紀錄裡有的才算); one it does not have is
+                                          pinned all the same, and said so
+  dcctl edit CHANNEL MESSAGE_ID           replace the text of a message the caller posted with dcctl send / send-json,
+                                          as the bot's ledger has it (the same channel's Claude or the same script;
+                                          the newest 500 of a channel, and the pinned ones; never the bot's cards,
+                                          questions, plans, boards or replies, nor one with buttons) with what stdin
+                                          holds; over 2000 characters is refused, never cut or split; a reserved
+                                          frame, @everyone, or a message not the caller's is refused with exit 4;
+                                          logged to #audit; through the bot, as send-json
+  dcctl whoami                            who dcctl takes you for: the key the bot's ledger keeps (channel:<id>,
+                                          claude:<machine>:<folder>, program:<machine>:<folder>) and the words
+                                          #audit writes; looked up from the Claude Code above this command (its own
+                                          environment, not this command's), on the machine you run it on
   dcctl threads [CHANNEL]                 threads (subagents, workflows, /btw), active and archived, with IDs
   dcctl post                              (for altention dc post) a post as JSON on stdin, left for the bot to deliver
+  dcctl paused                            the channels paused until a time (altention dc post --pause-until): who
+                                          paused each, why, until when, how many posts are kept for it
   dcctl recap CHANNEL [N]                 the last N turns (default 5) of the Claude conversation behind a channel
   dcctl history CHANNEL [N] [--chars K] [--before MESSAGE_ID]
                                           the last N messages (default 30), oldest first; each is cut to
@@ -51,6 +83,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 import urllib.error
@@ -62,7 +95,7 @@ sys.path.insert(1, os.path.dirname(ROOT))  # the engine: altention/ (shared sett
 if __name__ == "__main__":  # the bot runs on another machine: the command goes there, before this one's settings are read
     from altention.dc import botside  # noqa: E402
     botside.hand_over(sys.argv[1:])
-from bot import config, kinds, util  # noqa: E402
+from bot import config, kinds, ledger, payloads, pending, rawpost, rules, senders, sentids, util  # noqa: E402
 from altention.connectors.claude_code import sessions as cc_sessions  # noqa: E402
 
 API = "https://discord.com/api/v10"
@@ -378,7 +411,8 @@ def notify_target(post, chans, sender_category=None):
 
 
 RESERVED = ("@audit", "@notify")  # targets the bot finds from its own settings: its #audit, the default notification channel
-NOT_RESERVED = ("attach", "new_claude", "resume", "history", "move_to", "archive")  # these name a channel to change
+NOT_RESERVED = ("attach", "new_claude", "resume", "history", "move_to", "archive", "now", "waiting", "answer",
+                "talk_continue")  # these name a channel to change
 
 
 def reserved(post):
@@ -389,6 +423,13 @@ def reserved(post):
 NO_WAIT = ("attach", "new_claude", "resume", "history", "move_to", "archive", "board", "card", "open_chat", "open_setup")
 WAIT_MAX = 600
 QUEUED, NOT_SENT = 3, 4  # --wait's exit codes: still in the queue when the time was up; the bot said it was not shown
+
+
+def refusal(lead, why):
+    """The line for a post the bot refused: its reason as it is when it already names the command (bot/util.tool():
+    "dcctl edit：沒有改：…"), else after `lead` ("dcctl：沒有送出："); never two of them (C-191)."""
+    why = why or "不知道原因"
+    return why if why.startswith(("dcctl ", "altention dc ")) else lead + why
 
 
 def wait_for(post, secs, moved=None):
@@ -403,15 +444,23 @@ def wait_for(post, secs, moved=None):
             break
         time.sleep(0.2)
     if got is None:
+        if bot_moving():  # (C-188: a takeover or failback under way, not the bot down)
+            print("altention dc post：" + MOVING, file=sys.stderr)
+            sys.exit(QUEUED)
         age = postbox.heartbeat_age()
         why = "機器人沒在跑（%s）" % ("%d 秒沒有心跳" % age if age is not None else "沒有心跳") if age is None or age > 90 \
             else "機器人還沒處理到它"
         print("altention dc post：等了 %g 秒還沒送出：%s。這則還在佇列裡，之後會送出，不用重送" % (secs, why), file=sys.stderr)
         sys.exit(QUEUED)
+    if "text" in got:  # C-176: a post the bot answers (--waiting, --answer, --talk-continue): its answer, as it is
+        print(got["text"], file=sys.stdout if got.get("ok") else sys.stderr)
+        sys.exit(0 if got.get("ok") else NOT_SENT)
     if not got.get("ok"):
-        print("altention dc post：沒有送出：%s" % (got.get("why") or "不知道原因"), file=sys.stderr)
+        print(refusal("altention dc post：沒有送出：", got.get("why")), file=sys.stderr)
         sys.exit(NOT_SENT)
     print(moved or "已送出到 #%s" % str(post.get("channel", "")).lstrip("#"))
+    if post.get("thread_new") and got.get("channel_id"):  # (--thread-new: the thread it opened, C-172a P1d)
+        print("討論串 %s" % got["channel_id"])
     print(got.get("message_id") or "")
 
 
@@ -458,6 +507,39 @@ def message_id(ref):
     return str(ref)
 
 
+def paused_said(state=None, names=None, now=None):
+    """`dcctl paused` (altention dc read --paused, C-184): the paused channels from the bot's channel state."""
+    from altention.dc import pausetime
+    if state is None:
+        try:
+            with open(os.path.join(config.STATE, "channels.json")) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+    now = time.time() if now is None else now
+    rows = [(cid, st["paused"]) for cid, st in sorted((state or {}).items())
+            if isinstance(st, dict) and isinstance(st.get("paused"), dict) and st["paused"].get("until")]
+    if not rows:
+        return "目前沒有暫停中的頻道"
+    if names is None:
+        try:
+            names = {str(c["id"]): c["name"] for c in channels()}
+        except Exception:
+            names = {}
+    out = ["暫停中的頻道："]
+    for cid, p in rows:
+        held, when = len(p.get("held") or []), pausetime.shown(p["until"], now)
+        if p.get("resumed"):
+            what = "已恢復，留著的 %d 則還在交給它" % held
+        elif p["until"] <= now:
+            what = "應該在 %s 恢復，機器人上線後會補叫" % when
+        else:
+            what = "到 %s 恢復" % when
+        out.append("- #%s（%s）· %s · %s：%s%s" % (names.get(str(cid), "?"), cid, what, p.get("by") or "?", p.get("why") or "",
+                                                 " · 留著 %d 則" % held if held and not p.get("resumed") else ""))
+    return "\n".join(out)
+
+
 EDIT_LIMIT = 2000  # Discord's, counted the way Discord counts: UTF-16 units (most emoji are two)
 SEND_TOO_LONG = 4  # `dcctl send`'s exit code for a text over EDIT_LIMIT (nothing sent)
 
@@ -481,6 +563,186 @@ def send_body(words, pings=False):
     return {"content": text, "allowed_mentions": dict({"parse": []}, **({"users": owner} if owner else {}))}
 
 
+def json_body(raw, ping=()):
+    """What `dcctl send-json CHANNEL` posts, from what stdin held (C-156 a, for #discord-lab's samples): a message
+    payload as JSON, posted as it is, flags included (IS_COMPONENTS_V2, 1<<15, is Discord's to take or refuse), except
+    that its allowed_mentions is always {"parse": []}: whatever the payload says, nobody is pinged (the bot lets
+    through whom `ping`, --mention, names: rules.mentions()). Exits, nothing sent, when it is not one JSON object with
+    something in it, or bot/rules.py refuses it (C-172a P1c)."""
+    try:
+        body = json.loads(raw)
+    except ValueError as e:
+        sys.exit("dcctl send-json：stdin 不是 JSON（%s），沒有送出" % e)
+    if not isinstance(body, dict) or not body:
+        sys.exit("dcctl send-json：stdin 要是一個有內容的 JSON 物件（一則訊息的 payload），沒有送出")
+    refuse(rawpost.refused(body, "send-json") or rules.refused(body, ping, json_mentions(), "send-json"))  # (the bot
+    return rawpost.quiet(body)                                                                          # checks again)
+
+
+def json_mentions():
+    """The instance's dcbot.json_mentions: "any" lets a tool's message ping a user or a role (rules.ping_refused())."""
+    try:
+        from altention import config as altconfig
+        return rules.allow_of(altconfig.setting("dcbot.json_mentions"))
+    except Exception:
+        return "owner"
+
+
+def mentions_asked(args):
+    """(the --mention values, the other words) of send-json's arguments."""
+    ping, rest, it = [], [], iter(args)
+    for a in it:
+        if a == "--mention":
+            ping.append(next(it, ""))
+        else:
+            rest.append(a)
+    return ping, rest
+
+
+MOVING = "機器人正在換主機，這則已經排著，切換完會處理，不用重送"  # (manager 11-16, C-188)
+
+
+def bot_moving():
+    """C-188: this machine's bot-host written within altention.config.BOT_HOST_NEW (a takeover, a failback, or one
+    waiting for posts on their way): a post queued and not answered yet is waiting for the switch, not lost."""
+    try:
+        from altention import config as altconfig
+        return altconfig.bot_host_moving()
+    except Exception:
+        return False
+
+
+SENT_KEEP = sentids.SENT_KEEP  # message IDs dcctl send / send-json remember: the only ones dcctl edit changes (P0-4)
+state_file, sent_path, pinned_path = sentids.state_file, sentids.sent_path, sentids.pinned_path  # (bot/sentids.py: the
+sent_ids, remember_sent = sentids.sent_ids, sentids.remember_sent  # bot writes it too)
+
+
+HANDED = "ALTENTION_HANDED"  # (altention/dc/botside.py's: set on a command another machine's dcctl handed here)
+_sender = []  # sender_of()'s answer, looked up once a run
+
+
+def sender_of(env=None, claude=None, looked=False):
+    """Who runs this dcctl, looked up (C-186 for dcctl, C-172a P1d, manager 11-17): {"key" (bot/senders.py's: what
+    the ledger keeps, what dcctl edit compares), "words" (for #audit)}. Here: the Claude Code above this command, by
+    that Claude's own environment (altention.dc.sender.claude_env(); `claude`, `looked`: the tests' answer instead),
+    never this command's. Handed over from another machine (ALTENTION_HANDED): what that machine's dcctl looked up
+    there (ALTENTION_SENDER); none, or not readable (an older engine there), and it is a program of this machine
+    (program:<this machine>:?), never a channel's Claude. Its channel from its tmux pane by routes.json and
+    channels.json, as altention dc post's (sender_channel()). Same system account: a program set on it can write
+    ALTENTION_HANDED and ALTENTION_SENDER itself; this guards against mistakes, not forgery (C-186 P0-2)."""
+    env = os.environ if env is None else env
+    from altention.dc import sender as looked_up
+    me = this_machine()
+    via = None
+    if env.get("ALTENTION_AS_PROGRAM"):  # (a program saying it is one: the supervisor. It becomes a program: no line
+        folder = os.path.basename(os.getcwd().rstrip("/")) or "?"  # of where it comes from, edits by its key (that
+        # machine's and folder's). One account: anyone may set it; a guard against mistakes only, as P0-2's)
+        return {"key": senders.key(machine=me, folder=folder), "words": "%s 上的程式（%s）" % (me, folder)}
+    if env.get(HANDED):
+        desc = looked_up.decoded(env.get(looked_up.ENV))
+        if desc is None:
+            return {"key": senders.key(machine=me, folder="?"), "words": "%s 上的程式（別台轉來，沒帶寄件人）" % me}
+        via = desc["machine"]
+    else:
+        host = socket.gethostname().split(".")[0]
+        desc = looked_up.describe(claude if looked else looked_up.claude_env(), host, os.getcwd(), me)
+    channel = desc.get("channel") or (sender_channel(desc["pane"]) if desc.get("pane") else None)
+    key = senders.key(channel=channel, machine=desc["machine"], folder=desc["folder"], claude=desc["claude"])
+    words = senders.who(key)
+    notes = (["查證過"] if desc["claude"] else []) + (["從 %s 轉來" % via] if via else [])
+    return {"key": key, "words": words + ("（%s）" % "，".join(notes) if notes else "")}
+
+
+def source_of(cid):
+    """What dcctl send puts on top of a message to `cid` (C-172a P1d, manager 11-17), or None: a Claude's (channel:,
+    claude:) to a channel not its home (its own channel, or a thread of it: asked of Discord then) says where it
+    comes from, as altention dc post --json does; a program's (program: the supervisor, cron, scripts) never: its
+    notices would only get noise, and its edits go by its key alone (Posts.edited())."""
+    got = senders.parse(who_says())
+    if not got or got[0] == "program":
+        return None
+    if got[0] == "claude":
+        return senders.label(who_says())
+    if str(cid) == got[1] or str((call("GET", "/channels/%s" % cid) or {}).get("parent_id") or "") == got[1]:
+        return None
+    return "<#%s>" % got[1]
+
+
+def as_dc_post():
+    """Who runs this, as the fields altention dc post sends (C-172a P1d: send-json goes its way, Posts.from_json):
+    its channel (from_channel), or the machine and folder; verified when a Claude Code was found above it."""
+    got = senders.parse(who_says())
+    out = {"from_name": senders.label(who_says()), "from_host": socket.gethostname().split(".")[0]}
+    if got and got[0] == "channel":
+        return dict(out, from_channel=got[1], verified=True)
+    if got:
+        out.update(from_machine=got[1], from_folder=got[2])
+        if got[0] == "claude":
+            out["verified"] = True
+    return out
+
+
+def sender():
+    """sender_of(), looked up the first time it is asked in this run."""
+    if not _sender:
+        _sender.append(sender_of())
+    return _sender[0]
+
+
+def who_says():
+    """The key of who runs this (sender()), as the ledger keeps it."""
+    return sender()["key"]
+
+
+def who_words():
+    """Who runs this, in words for #audit (sender())."""
+    return sender()["words"]
+
+
+REFUSED = 4  # dcctl send / send-json / edit's exit code for what the rules refuse (a reserved frame, @everyone or
+# @here, a custom_id, a ping): nothing sent, and sending it again will not help, as with SEND_TOO_LONG (manager 11-16)
+
+
+def refuse(why):
+    """Exit REFUSED, nothing sent, saying why (on stderr), when there is a why."""
+    if why:
+        print(why, file=sys.stderr)
+        sys.exit(REFUSED)
+
+
+def refuse_reserved(text, how):
+    """Exit, nothing sent, when the text begins with a frame only the bot uses (P0-6): it would read back as
+    another channel's post, a notification, a board or what the owner typed at the terminal."""
+    refuse(rawpost.reserved_said(text, how))
+
+
+QUEUE_WAIT = 20  # seconds dcctl send-json / edit wait for the bot to say it is done (manager 11-16)
+QUEUED_SAID = "機器人還沒處理到，已排著，會送，不用重送（ID 到時記在 #audit）"  # (one wording, the bot down or busy: #code-review on e41c4b2e)
+
+
+def queue(post, done):
+    """C-172a P1b batch 4: send-json and edit go through the bot's post queue (deliver() sends, notes it in the
+    ledger and writes #audit). Waits QUEUE_WAIT seconds for its receipt: there, done(receipt); the bot said it was
+    not shown, exit NOT_SENT with why; no receipt in time (the bot not running, or switching machines), exit QUEUED
+    with words that keep a Claude from sending it again (it stays queued and goes once the bot is back)."""
+    from bot import postbox
+    post = dict(post, receipt=secrets.token_hex(8))
+    postbox.write(post)
+    deadline = time.time() + QUEUE_WAIT
+    while True:
+        got = postbox.take_receipt(post["receipt"])
+        if got is not None or time.time() >= deadline:
+            break
+        time.sleep(0.2)
+    if got is None:
+        print("dcctl：" + (MOVING if bot_moving() else QUEUED_SAID), file=sys.stderr)
+        sys.exit(QUEUED)
+    if not got.get("ok"):
+        print(refusal("dcctl：沒有送出：", got.get("why")), file=sys.stderr)
+        sys.exit(NOT_SENT)
+    done(got)
+
+
 def edit_text(raw):
     """What `dcctl edit` puts in the message, from what stdin held: the newlines a heredoc or echo adds at the end
     are not part of it. Exits when there is nothing, or more than one message holds: an edit is one message, the
@@ -500,14 +762,10 @@ def format_message(m, chars=600):
     a = m.get("author") or {}
     who = "機器人" if a.get("bot") else (a.get("global_name") or a.get("username") or "?")
     marks = "".join((r.get("emoji") or {}).get("name") or "" for r in m.get("reactions") or [])
-    text = m.get("content") or ""
-    for snap in m.get("message_snapshots") or []:  # a forward: the original is here, not in content
-        inner = snap.get("message") or {}
-        text += ("\n" if text else "") + "[轉發] " + (inner.get("content") or "（沒有文字）")
-        m = dict(m, attachments=(m.get("attachments") or []) + (inner.get("attachments") or []))
-    for e in m.get("embeds") or []:  # the 📨 cards of dcpost: heading and body
-        card = "\n".join(x for x in ((e.get("author") or {}).get("name"), e.get("title"), e.get("description")) if x)
-        text += ("\n" if text and card else "") + card
+    from bot import msgtext  # (C-172a P1a: content, embeds, Components V2, stickers, polls, forwards, as every reader)
+    text = msgtext.text_of(m)
+    for snap in m.get("message_snapshots") or []:  # a forward: its attachments are listed with the message's own
+        m = dict(m, attachments=(m.get("attachments") or []) + ((snap.get("message") or {}).get("attachments") or []))
     if chars and len(text) > chars:
         text = "%s…（共 %d 字，--chars 0 看全文）" % (text[:chars], len(text))
     for att in m.get("attachments") or []:
@@ -688,6 +946,18 @@ def threads(channel_id=None):
         out.append({"id": t["id"], "name": t["name"], "parent": chans.get(t["parent_id"], t["parent_id"]),
                     "archived": t["thread_metadata"]["archived"]})
     return out
+
+
+def this_machine():
+    """This machine's name as altention dc post says it (altention.config.this_machine(): the name it was given
+    first, then the list's name for its hostname, then the hostname), so both tools make one key for one sender
+    (#code-review on 6de04a81, manager 11-17)."""
+    host = socket.gethostname().split(".")[0]
+    try:
+        from altention import config as altconfig
+        return altconfig.this_machine() or host
+    except Exception:
+        return host
 
 
 def machine_name(hostname):
@@ -874,9 +1144,39 @@ def main(argv):
         if not rest:
             sys.exit("用法：dcctl send CHANNEL TEXT [--mentions]")
         body = send_body(rest[1:], pings="--mentions" in args)  # (before the channel is looked for: too long reads no list)
-        cid = str(rest[0]).lstrip("#") if str(rest[0]).lstrip("#").isdigit() else find(rest[0])["id"]  # an ID: no list (C-87)
-        m = call("POST", "/channels/%s/messages" % cid, body) or {}
+        refuse_reserved(body["content"], "send")
+        refuse(rules.everyone_refused(body, "send"))  # (C-172a P1c)
+        to = notify_default() if rest[0] == "@notify" else rest[0]  # (C-103: the supervisor, while the bot is down)
+        cid = str(to).lstrip("#") if str(to).lstrip("#").isdigit() else find(to)["id"]  # an ID: no list (C-87)
+        where = source_of(cid)  # (a Claude's to another's channel: where it comes from on top, C-172a P1d)
+        if where:
+            body, why = payloads.sourced(body, where)
+            if why:
+                print("dcctl send：沒有送出：%s" % why, file=sys.stderr)
+                sys.exit(SEND_TOO_LONG)
+        m = call("POST", "/channels/%s/messages" % cid, body) or {}  # straight to Discord: the bot may be down (the
+        remember_sent(m.get("id"))  # supervisor tells the owner through this); its ledger entry is the bot's to write,
+        try:                        # later (C-172a P1b batch 4)
+            if m.get("id"):
+                pending.write(cid, m["id"], who_says(), framed=("source",) if where else ())  # (the key: bot/senders.py)
+        except OSError as e:
+            print("dcctl send：沒記進機器人的訊息紀錄（%s）" % e, file=sys.stderr)
         print("已送出\n%s" % m.get("id", ""))  # the message's ID on the last line
+        try:  # (P0-5; the message went: a failing #audit line does not make it look as if it had not)
+            audit("<#%s> 用 send 發了訊息 %s（%s）" % (cid, m.get("id", "?"), who_words()))
+            if rules.owner_pinged(body, config.OWNER_ID):  # (C-103: who pinged the owner, each time; manager 11-16;
+                # only when the text does: --mentions alone pings nobody, manager 11-17)
+                audit("<#%s> 用 send --mentions @ 了使用者（訊息 %s；%s）" % (cid, m.get("id", "?"), who_words()))
+        except (SystemExit, Exception) as e:
+            print("dcctl send：#audit 沒記到（%s）" % e, file=sys.stderr)
+    elif cmd == "send-json":
+        ping, rest = mentions_asked(args)
+        if len(rest) != 1:
+            sys.exit("用法：dcctl send-json CHANNEL [--mention owner|user:ID|role:ID]…（訊息的 payload 是 JSON，從 stdin 讀）")
+        body = json_body(sys.stdin.read(), ping)  # before anything is asked of Discord
+        cid, label = place(rest[0])
+        queue(dict(as_dc_post(), channel=cid, json=body, ping=ping),  # (C-172a P1d: altention dc post --json's way: the
+              lambda got: print("已送出\n%s" % (got.get("message_id") or "")))  # bot's from_json; the ID last, as send
     elif cmd == "pin":
         rest = [a for a in args if a != "--unpin"]
         if len(rest) != 2:
@@ -885,23 +1185,39 @@ def main(argv):
         mid = message_id(rest[1])
         off = "--unpin" in args
         call("DELETE" if off else "PUT", "/channels/%s/messages/pins/%s" % (cid, mid))
+        try:  # (a pinned post stays in the ledger however many come after it, so dcctl edit may still change it: C-172a
+            pending.write_pin(cid, mid, not off)  # P1c; the ledger is the bot's, it takes this in on its next round)
+        except OSError as e:
+            print("dcctl pin：沒記進機器人的訊息紀錄（%s）" % e, file=sys.stderr)
         print("已取消釘選" if off else "已釘選")
+        if not off and ledger.entry(mid, cid, ledger.read()) is None:  # (#code-review on 0ae18afc: said, not silent)
+            print("這則不在機器人的紀錄裡，釘了也不能用 dcctl edit 改（剛用 dcctl send 發的除外：機器人幾秒內會記上）")
         audit("%s %s訊息 %s" % (label, "取消釘選" if off else "釘選", mid))
     elif cmd == "edit":
         if len(args) != 2:
             sys.exit("用法：dcctl edit CHANNEL MESSAGE_ID（新內容從 stdin 讀）")
         text = edit_text(sys.stdin.read())  # before anything is asked of Discord
-        cid, label = place(args[0])
+        refuse_reserved(text, "edit")
+        refuse(rules.everyone_refused({"content": text}, "edit"))
         mid = message_id(args[1])
-        m = call("GET", "/channels/%s/messages/%s" % (cid, mid))
-        if str((m.get("author") or {}).get("id")) != str(call("GET", "/users/@me")["id"]):
-            sys.exit("dcctl edit：那則訊息不是機器人自己發的，不能改")
+        cid, label = place(args[0])
+        noted = ledger.entry(mid, cid, ledger.read())  # (C-172a P1c: a post of one's own, by the ledger. Not on its
+        refuse(rules.change_refused(noted, who_says(), "edit") if noted else None)  # file yet, maybe just sent: the
+        m = call("GET", "/channels/%s/messages/%s" % (cid, mid))  # bot, which takes dcctl send's notes in first,
+        if str((m.get("author") or {}).get("id")) != str(call("GET", "/users/@me")["id"]):  # decides and says why;
+            refuse("dcctl edit：那則訊息不是機器人自己發的，不能改")  # refused: exit 4, as the other rules: manager 11-17)
+        if m.get("components") or m.get("embeds"):
+            refuse("dcctl edit：那則訊息有按鈕或卡片，不能改")
         if (m.get("content") or "") == text:
             print("內容相同，沒有改")
             return
-        call("PATCH", "/channels/%s/messages/%s" % (cid, mid), {"content": text})
-        print("已修改")
-        audit("%s 修改訊息 %s（%d 字）" % (label, mid, len(text)))
+        who = who_says()  # (the bot checks the ledger again, edits it and writes the #audit line)
+        queue({"raw": {"content": text}, "edit_message": mid, "channel": cid, "label": label, "who": who,
+               "from_name": who_words()},
+              lambda got: print("已修改"))
+    elif cmd == "whoami":  # (C-172a P1d: what send, send-json and edit go by)
+        print(who_says())
+        print(who_words())
     elif cmd == "threads":
         for t in threads(find(args[0])["id"] if args else None):
             print("%-22s %-14s %s%s" % (t["id"], "#" + t["parent"], t["name"], "（已收起）" if t["archived"] else ""))
@@ -915,7 +1231,7 @@ def main(argv):
         GAVE_UP = "Discord 限速，這則沒有送出，等一下再送"
         wait = post.pop("wait", None)  # altention dc post/notify --wait N (C-87): until the bot says it is on Discord
         if wait is not None:
-            if any(post.get(k) for k in NO_WAIT):
+            if any(post.get(k) for k in NO_WAIT if not (k == "board" and "json" in post)):  # (a framed board is: P1d)
                 sys.exit("altention dc post：--wait 只用在貼訊息和通知")
             try:
                 wait = float(wait)
@@ -966,8 +1282,12 @@ def main(argv):
             return wait_for(post, wait, moved)
         print(moved or "已送出到 #%s" % str(post.get("channel", "")).lstrip("#"))
         age = postbox.heartbeat_age()
-        if age is None or age > 90:  # still queued: delivered when the bot is back, nothing to resend
+        if (age is None or age > 90) and bot_moving():  # (C-188: changing machines, not down)
+            print("（%s）" % MOVING)
+        elif age is None or age > 90:  # still queued: delivered when the bot is back, nothing to resend
             print("（機器人目前離線%s，訊息已排進佇列，上線後會送出，不用重送）" % ("（%d 秒沒有心跳）" % age if age is not None else ""))
+    elif cmd == "paused":
+        print(paused_said())
     elif cmd == "recap":
         from bot import sessions
         cid = args[0] if args[0].isdigit() else find(args[0])["id"]

@@ -50,13 +50,30 @@ def entry(channel_id, pid):
     return out
 
 
-def bind_key(pane_key, channel_id, pid):
+def bind_key(pane_key, channel_id, pid, epoch=None):
     """Route the pane (by its key in the table: "socket|%id") to the channel. The pane's process id goes along:
     pane numbers start over when a tmux server restarts, and the hook checks it is still the same pane
-    (tools/dchook routed())."""
+    (tools/dchook routed()). `epoch`: the epoch of the bot that asked (dcremote bind on another machine, C-163):
+    the hook leaves such an entry alone once a newer bot was seen here (drill 11-08)."""
     table = dict((k, v) for k, v in load().items() if channel_of(v) != str(channel_id))  # one pane per channel
     table[pane_key] = entry(channel_id, pid)
+    if epoch is not None:
+        table[pane_key]["epoch"] = int(epoch)
     save(table)
+
+
+def drop_older(epoch, named=()):
+    """The bot became the bot on this machine with `epoch`: the entries an older bot (another machine, by dcremote
+    bind) wrote here go, unless a channel of this bot names that pane (`named`: the keys of its own panes here) (C-163
+    drill 11-08: the standby's binding outlived the failback and took another pane's number; #code-review-2 on ac4e72e,
+    manager: an attached pane of this machine that the other bot had bound stays). How many went."""
+    table = load()
+    named = set(named)
+    kept = dict((k, v) for k, v in table.items()
+                if k in named or not (isinstance(v, dict) and isinstance(v.get("epoch"), int) and v["epoch"] < int(epoch)))
+    if len(kept) != len(table):
+        save(kept)
+    return len(table) - len(kept)
 
 
 def unbind(channel_id):

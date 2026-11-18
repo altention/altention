@@ -1,0 +1,250 @@
+#golden spec §13.4
+{
+ "@audit x": {
+  "channel": "@audit",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "@notify --wait 30 x": {
+  "channel": "@notify",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool",
+  "wait": 30
+ },
+ "audit --move-to 系統 why": {
+  "channel": "audit",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "move_to": "系統",
+  "text": "str",
+  "verified": "bool"
+ },
+ "lab --json <payload> --edit 900": {
+  "channel": "lab",
+  "edit_message": "900",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "json": {
+   "components": [
+    {
+     "content": "x",
+     "type": 10
+    }
+   ],
+   "flags": 32768
+  },
+  "text": "str",
+  "verified": "bool",
+  "wait": 30
+ },
+ "lab --json <payload> --mention owner --silent --no-embeds --reply-to 555": {
+  "channel": "lab",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "json": {
+   "components": [
+    {
+     "content": "x",
+     "type": 10
+    }
+   ],
+   "flags": 32768
+  },
+  "no_embeds": true,
+  "ping": [
+   "owner"
+  ],
+  "reply_to": "555",
+  "silent": true,
+  "text": "str",
+  "verified": "bool",
+  "wait": 30
+ },
+ "lab --json <payload> --thread-new 討論": {
+  "channel": "lab",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "json": {
+   "components": [
+    {
+     "content": "x",
+     "type": 10
+    }
+   ],
+   "flags": 32768
+  },
+  "text": "str",
+  "thread_new": "討論",
+  "verified": "bool",
+  "wait": 30
+ },
+ "lab --reply-to 555 --silent x": {
+  "channel": "lab",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "reply_to": "555",
+  "silent": true,
+  "text": "str",
+  "verified": "bool"
+ },
+ "reports --file <file> 週報": {
+  "channel": "reports",
+  "file_b64": "str",
+  "file_name": "str",
+  "file_source": {
+   "kind": "chart",
+   "lang": "python",
+   "source": "str",
+   "tool": "matplotlib"
+  },
+  "file_where": {
+   "machine": "str",
+   "path": "str"
+  },
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "reports hello": {
+  "channel": "reports",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "st-0 --activity demo/files --arg path=/r.pdf 報告": {
+  "activity": "demo/files",
+  "args": {
+   "path": "/r.pdf"
+  },
+  "channel": "st-0",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "st-0 --history": {
+  "channel": "st-0",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "history": true,
+  "text": "str",
+  "verified": "bool"
+ },
+ "st-0 --resume eb106548 --quiet": {
+  "channel": "st-0",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "quiet": true,
+  "resume": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "st-0 --secret demo/api-token": {
+  "channel": "st-0",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "secret": "demo/api-token",
+  "text": "str",
+  "verified": "bool"
+ },
+ "專案/demo --new-claude /w/demo --on host-b 主題": {
+  "channel": "專案/demo",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "new_claude": "str",
+  "on": "host-b",
+  "text": "str",
+  "verified": "bool"
+ },
+ "新頻道 --create x": {
+  "channel": "新頻道",
+  "create": true,
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ },
+ "行程 --board 本週 --json <payload>": {
+  "board": "本週",
+  "channel": "行程",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "json": {
+   "components": [
+    {
+     "content": "x",
+     "type": 10
+    }
+   ],
+   "flags": 32768
+  },
+  "text": "str",
+  "verified": "bool",
+  "wait": 30
+ },
+ "行程 --board 本週 x": {
+  "board": "本週",
+  "channel": "行程",
+  "from_channel": "55",
+  "from_folder": "str",
+  "from_host": "str",
+  "from_machine": "str",
+  "from_name": "str",
+  "text": "str",
+  "verified": "bool"
+ }
+}

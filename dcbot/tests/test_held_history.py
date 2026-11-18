@@ -3,6 +3,11 @@ by `altention dc post <channel> --resume <id>`, after a !cwd. A conversation beg
 channel's own (st["history"]) only when the channel left it by !reset or !resume, and !cwd noted it not at all.
 Now: every conversation the channel's Claude starts or takes up is the channel's own at once; !cwd notes the one it
 leaves; and dcpost --resume takes --quiet, as !resume does."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util

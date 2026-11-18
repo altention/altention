@@ -777,6 +777,9 @@ def show(rows):
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if argv[:1] in (["set"], ["hook"], ["attach"], ["clone"]):  # these write this machine's repos and the instance's settings
         from altention import engine_id
         why = engine_id.refusal(ENGINE, "remote.py %s" % argv[0])

@@ -1,14 +1,17 @@
-"""Configuration: secrets live outside the repo in ~/.config/dcbot/env (KEY=VALUE lines, mode 600)."""
+"""Configuration (bot/envfile.py): the token and the two IDs from the core's secrets (~/.config/altention/secrets/core/,
+one file each, mode 600), the rest from the instance's plugins.json under "dcbot", and the old settings file for what
+those do not have."""
 import os
 
 from . import envfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_FILE = envfile.path()
+ENV_FILE = envfile.path()  # the old settings file (still read in 0.x)
 STATE = os.path.join(ROOT, "state")  # gitignored runtime state
 
 
-def load_env(path=ENV_FILE):
+def load_env(path=None):
+    """The settings by their old names (envfile.load): a path given, that file alone."""
     return envfile.load(path)
 
 
@@ -48,6 +51,7 @@ DIVIDER = "━"  # a category named so is the owner's divider ("━━ 專案 �
 def not_a_project(name):
     """Does a category by this name stand for no project folder (the bot's own, the archive, a divider)?"""
     return name in NOT_PROJECTS or str(name).startswith(DIVIDER)
+LEASE_CHANNEL = channel_name("lease", "bot-lease")  # C-163: who is the bot (only with a standby; made by doctor/#setup)
 GUIDE_CHANNEL = channel_name("guide", "guide")  # the manual (GUIDE.md) lives here; the bot never answers in it
 SETUP_CHANNEL = channel_name("setup", "setup")  # the setup conversation (C-48); update cards hand it what needs a person (C-57)
 

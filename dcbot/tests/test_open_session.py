@@ -1,6 +1,11 @@
 """Opening a channel's session: ensure(), ensure_home() and wait_ready() (no test at all before 2026-10-11: every
 test that went through submit() put an empty function in ensure's place). What is started, with what, what is tried
 again, what the owner is told, and what is never touched (an attached pane is the owner's own terminal)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import json
@@ -145,7 +150,7 @@ class Ensure(Base):
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
         self.assertEqual(argv[argv.index("--append-system-prompt") + 1], "you are in #c")
         self.assertNotIn("--resume", argv)
-        self.assertEqual(env, {"DCBOT_ROOT": config.ROOT, "DCBOT_CHANNEL": str(self.ch.id), "LANG": "C.UTF-8"},
+        self.assertEqual(env, dict(tmux_bridge.RESUME_ENV, DCBOT_ROOT=config.ROOT, DCBOT_CHANNEL=str(self.ch.id), LANG="C.UTF-8"),
                          "started from cron there is no locale: one is given")
         self.assertEqual(self.st["session_id"], "new-session", "what SessionStart reported: the next start resumes it")
         self.assertEqual((self.said(), tmux.did("kill")), ("", []))
@@ -178,6 +183,43 @@ class Ensure(Base):
         self.assertEqual(self.said(), "接不回原本的對話（`saved-1`），已開始新的對話。")
         self.assertNotIn("bg", self.st)
 
+    def test_c161_never_asked_to_resume_from_a_summary(self):
+        """Claude Code 2.1.318 asks about an old, big conversation unless these say it is never old nor big enough
+        (read as integers: what the program reads, measured 11-04); in the bot's conversations only."""
+        self.assertEqual(set(tmux_bridge.RESUME_ENV), {"CLAUDE_CODE_RESUME_THRESHOLD_MINUTES", "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD"})
+        self.assertTrue(all(v.isdigit() and int(v) >= 10 ** 9 for v in tmux_bridge.RESUME_ENV.values()))
+        for env in ({}, {"LANG": "zh_TW.UTF-8"}):
+            self.setUp()
+            tmux = Tmux(self)
+            self.st.update({"session_id": "saved-1"})
+            self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux, env=env)
+            self.assertLessEqual(tmux_bridge.RESUME_ENV.items(), tmux.did("start")[0][4].items())
+
+    def test_c161_why_the_saved_one_ended_is_said_masked_and_its_dead_session_closed(self):
+        tmux = Tmux(self, lambda argv: "exits" if "--resume" in argv else "ready")
+        key = "sk-ant-api03-" + "a" * 60
+        reads = []
+
+        async def ended(name):  # the first try's Claude ended; its dead pane is read once, before it is closed
+            reads.append((name, [c[0] for c in tmux.calls]))
+            return {"status": "1", "signal": "", "screen": "\n\nError: boom %s\nPane is dead (status 1)\n\n" % key} if len(reads) == 1 else None
+        settled = mock.AsyncMock()
+        self.st.update({"session_id": "saved-1"})
+        tmux.ended, tmux.settled = ended, settled
+        self.assertIsNone(self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux))
+        self.assertEqual(reads, [(self.st["tmux"], ["start"])], "read when the first try failed, before anything closed it")
+        self.assertEqual([c[0] for c in tmux.calls], ["start", "kill", "start"], "the dead session closed at once")
+        said = self.said()
+        self.assertTrue(said.startswith("接不回原本的對話（`saved-1`），已開始新的對話。\n-# 接回時 Claude Code 自己結束了（結束碼 1），最後的畫面：\n```\n"), said)
+        self.assertIn("Error: boom", said)
+        self.assertNotIn(key, said)
+        self.assertNotIn(key[:30], said, "masked before it is posted")
+        settled.assert_awaited_once_with(self.st["tmux"])  # the new one came up: it ends with its Claude from now on
+
+    def test_c161_one_ended_by_a_signal_says_so(self):
+        self.assertIn("被訊號 9 結束", tmux_bridge.ended_words({"status": "", "signal": "9", "screen": "x"}))
+        self.assertIsNone(tmux_bridge.ended_words(None))
+
     def test_one_that_never_reports_is_given_up_showing_its_screen(self):
         tmux = Tmux(self, lambda argv: "silent")
         tmux.view = "\n".join(["", " API Error: 401", " Please run /login", ""])
@@ -206,7 +248,9 @@ class Ensure(Base):
         class Message(object):
             channel, id, content = self.ch, 1, "hello"
         self.go(self.bridge.submit(Message(), "hello"), tmux)
-        self.assertEqual(self.said(), "出錯了：Claude 沒有啟動成功。\n-# 處理好之後按下面的「再送一次」", "C-74: kept, with the button")
+        self.assertEqual(self.said().replace(" <@%d>" % config.OWNER_ID, ""),
+                         "出錯了：Claude 沒有啟動成功。\n-# 處理好之後按下面的「再送一次」\n⚠️ Claude 沒有啟動成功，訊息沒有送出",
+                         "C-74: kept, with the button; C-103: and the owner mentioned under it")
         self.assertEqual([e["text"] for e in self.st["unsent"].values()], ["hello"])
         self.assertEqual(tmux.did("keys"), [])
         self.assertGreaterEqual(self.bridge.host.saves, 1)
@@ -289,7 +333,8 @@ class Home(Base):
         given = json.loads(argv[argv.index("--settings") + 1])  # only its attachments folder: no file, no hooks
         self.assertEqual(given, {"permissions": {"additionalDirectories": ["/far/engine/dcbot/state/attachments/5"]}},
                          "its global hook reports, through its route table")
-        self.assertEqual(env, {"DCBOT_CHANNEL": str(self.ch.id)}, "dcpost's sender only: this machine's paths mean nothing there")
+        self.assertEqual(env, dict(tmux_bridge.RESUME_ENV, DCBOT_CHANNEL=str(self.ch.id)),
+                         "dcpost's sender only (this machine's paths mean nothing there), and C-161's thresholds")
         self.bound.assert_awaited_once()
         self.assertEqual(self.bound.await_args[0][1], str(self.ch.id))
         self.assertEqual(self.st["pane"]["host"], "lap", "taken as up once its input box shows")
@@ -348,16 +393,32 @@ class WaitReady(Base):
     def test_never_reporting_ends_after_the_time_allowed(self):
         tmux = Tmux(self)
         tmux.up.add("s")
+        tmux.view = "Loading…"  # no box: still starting
         t0 = time.time()
         self.assertFalse(self.wait(tmux, secs=0.15))
         self.assertLess(time.time() - t0, 3)
+        self.assertIn("找不到輸入框", self.rt.ready_why or "", "why it gave up, for the channel and cc_health")
 
-    def test_only_another_machines_pane_is_taken_as_up_by_its_input_box(self):
+    def test_a_window_whose_start_event_is_late_but_shows_its_box_is_kept(self):
+        """11-10 #英文: the window had come up; its SessionStart sat in the spool behind a round of 136 s, and the
+        window was closed as not come up. The box on its screen at the end of the wait says it is up."""
+        tmux = Tmux(self)
+        tmux.up.add("s")
+        self.assertTrue(self.wait(tmux, secs=0.15))
+        self.assertIsNone(self.rt.ready_why)
+
+    def test_only_another_machines_pane_is_taken_as_up_by_its_input_box_at_once(self):
         tmux = Tmux(self)
         tmux.up.update(["%7", "s"])
-        self.assertTrue(self.wait(tmux, name={"socket": "/s", "id": "%7", "host": "lap"}, secs=0.15))
-        self.assertFalse(self.wait(tmux, name={"socket": "/s", "id": "%7"}, secs=0.15), "this machine: SessionStart is waited for")
-        self.assertFalse(self.wait(tmux, name="s", secs=0.15))
+        t0 = time.time()
+        self.assertTrue(self.wait(tmux, name={"socket": "/s", "id": "%7", "host": "lap"}, secs=1))
+        self.assertLess(time.time() - t0, 0.8, "another machine: its box is enough at once")
+        t0 = time.time()
+        self.assertTrue(self.wait(tmux, name={"socket": "/s", "id": "%7"}, secs=0.3),
+                        "this machine: SessionStart waited for, then the box on the screen counts (11-10: it sat in the spool)")
+        self.assertGreaterEqual(time.time() - t0, 0.3, "this machine: SessionStart is waited for first")
+        tmux.view = "Loading…"
+        self.assertFalse(self.wait(tmux, name="s", secs=0.15), "no box, no SessionStart: not up")
 
 
 if __name__ == "__main__":

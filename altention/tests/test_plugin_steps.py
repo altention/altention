@@ -160,6 +160,63 @@ class ExitStatuses(Rig):
                       "\n".join(ps.lines(p)))
 
 
+class InstallFilledIn(Rig):
+    """display-manager 11-03: needs[].install gets {plugin}, {python}… as a check does (tokens v2), so the line shown
+    in #setup, doctor and install.sh runs from any folder; a value it names that is not set: no command, why and
+    the hint instead."""
+    def whole(self, install, settings=None, hint=""):
+        d = shaped(needs=[{"name": "tool", "check": "false", "hint": hint, "install": {"debian": install}}])
+        with mock.patch.object(ps, "os_name", return_value="debian"):
+            return ps.plan("demo", self.folder, d, settings if settings is not None else {})
+
+    def plan(self, install, settings=None, hint=""):
+        return self.whole(install, settings, hint)["needs"][0]
+
+    def test_the_command_shown_is_a_full_path(self):
+        p = self.whole('"{plugin}/bin/display" --install chrome')
+        n = p["needs"][0]
+        self.assertEqual(n["install"], '"%s/bin/display" --install chrome' % self.folder)
+        self.assertIn("裝法：\"%s/bin/display\" --install chrome" % self.folder, "\n".join(ps.lines(p)))
+        self.assertEqual(ps.how_short(n), n["install"])
+        self.assertEqual(self.plan("{python} -m pip install --user rig")["install"],
+                         plugin.expand("{python}") + " -m pip install --user rig")
+        self.assertEqual(self.plan("{setting:demo.dir}/go", {"demo": {"dir": "/opt/d"}})["install"], "/opt/d/go")
+
+    def test_quoting_is_the_checks_own(self):
+        """Nothing quoted for the plugin, as in a check: the author writes the quotes (its folder has a space here)."""
+        n = self.plan("{plugin}/bin/x")
+        self.assertEqual(n["install"], plugin.expand("{plugin}/bin/x", self.folder))
+        self.assertEqual(n["install"], self.folder + "/bin/x")
+
+    def test_shell_braces_are_left_alone(self):
+        for cmd in ("${HOME}/bin/x --go", "cp a.{txt,md} /tmp/rig", "echo {}"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.plan(cmd)["install"], cmd)
+
+    def test_sudo_is_told_from_the_filled_in_command(self):
+        n = self.plan('sudo "{plugin}/bin/root-setup"')
+        self.assertTrue(n["sudo"])
+        self.assertEqual(n["install"], 'sudo "%s/bin/root-setup"' % self.folder)
+
+    def test_a_setting_not_set_gives_no_command_but_why_and_the_hint(self):
+        p = self.whole("{setting:demo.dir}/go", {}, hint="看 README 的安裝那段")
+        n = p["needs"][0]
+        self.assertEqual((n["install"], n["unset"]), ("", "設定 demo.dir 還沒設"))
+        words = "\n".join(ps.lines(p))
+        self.assertIn("這個裝法要用的東西還沒設好（設定 demo.dir 還沒設），給不出完整的指令；照下面的說明裝。說明：看 README 的安裝那段", words)
+        self.assertNotIn("{setting", words)
+        self.assertNotIn("PluginError", words)
+        self.assertEqual(ps.how_short(n), "這個裝法要用的東西還沒設好（設定 demo.dir 還沒設），給不出完整的指令；照下面的說明裝。說明：看 README 的安裝那段")
+
+    def test_another_machines_plan_without_unset_still_reads(self):
+        """plugin-steps --all: an older engine's plan has no "unset"."""
+        p = self.whole("{setting:demo.dir}/go", {}, hint="看 README")
+        n = p["needs"][0]
+        del n["unset"]
+        self.assertEqual(ps.how_short(n), "看 README")
+        self.assertIn("說明：看 README", "\n".join(ps.lines(p)))
+
+
 class OsName(unittest.TestCase):
     def test_os_release_like_words(self):
         for text, want in (('ID=ubuntu\nID_LIKE=debian\n', "debian"), ('ID="rocky"\nID_LIKE="rhel centos fedora"\n', "fedora"),

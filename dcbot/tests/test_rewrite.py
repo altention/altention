@@ -1,5 +1,10 @@
 """C-71b: a plugin rewrites Claude's final reply before it is posted (bot/rewrite.py): which plugin, how it is run
 and read, and on the reply: in a task of its own, the channel's events waiting behind it, the old way when it fails."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import re
@@ -206,11 +211,16 @@ class OnTheReply(State):
             job = self.bridge.host.chan(self.ch)["rewriting"]
             self.assertIsInstance(job.get("pgid"), int, "its process group kept with the reply, for a restart")
             await self.settle()
-        with mock.patch.object(rewrite, "SHOW_AFTER", 0.2):
+        from bot import ledger
+        noted = []
+        real = ledger.note
+        with mock.patch.object(rewrite, "SHOW_AFTER", 0.2), \
+                mock.patch.object(ledger, "note", lambda cid, mid, *a, **k: (noted.append(mid), real(cid, mid, *a, **k))):
             asyncio.run(go())
         note = next(m for m in self.ch.sent if m.content == "-# ⏳ 整理排版中…")
         self.assertTrue(note.silent)
         self.assertEqual(self.ch.deleted, [note.id], "gone once the reply is up")
+        self.assertNotIn(note.id, noted, "soon deleted: never kept in the ledger (#code-review-2 on 09b745d0)")
 
     def test_the_receipt_of_the_next_message_is_not_held_and_the_owners_words_are_not_taken_for_the_terminals(self):
         """#code-review-2 on f2ee5d3: Q2 typed while the reply was laid out; its receipt waited in the spool, submit

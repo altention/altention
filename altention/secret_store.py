@@ -9,6 +9,8 @@ program run as this user can read the file; the plugin's own programs do).
                                                   the value on stdin (the bot's box, a script); --via says where it
                                                   came from in #audit
   altention secret list [<plugin>]                which declared secrets this machine has (names and lengths only)
+  altention secret fix-mode                       every stored secret back to 600, its folders to 700 (doctor says
+                                                  when: the path need not be typed)
 
 Only a name the plugin declares in plugin.json's secrets[] is taken. A value is never printed, logged or put on a
 command line; #audit gets one line naming the plugin, the secret and where it came from. HOME is read at call time.
@@ -27,7 +29,7 @@ from altention.text import t  # noqa: E402
 FOLDER = "~/.config/altention/secrets"  # the guard's DEFAULT names the same folder
 MAX = 64 * 1024  # a key or a token, not a file
 AUDIT_TIMEOUT = 60
-VIA = ("terminal", "discord")
+VIA = ("terminal", "discord", "setup")  # setup: altention standby setup sent it from the bot's machine (C-163 d3a)
 
 
 class Refused(Exception):
@@ -77,6 +79,21 @@ def length(plugin_name, name):
     return size or None
 
 
+def fingerprint(plugin_name, name):
+    """{"mode": its permission bits, "hash": the first 16 hex of its value's sha256} of a stored secret, None when
+    there is none: for comparing two machines' copies (C-163: the standby's bot token against the primary's) without
+    the value ever leaving this function."""
+    import hashlib
+    try:
+        p = path(plugin_name, name)
+        mode = os.stat(p).st_mode & 0o777
+        with open(p, "rb") as f:
+            digest = hashlib.sha256(f.read().rstrip(b"\n")).hexdigest()[:16]
+    except (OSError, Refused):
+        return None
+    return {"mode": mode, "hash": digest}
+
+
 def write(plugin_name, name, value):
     """Store `value` (str) as plugin_name's secret `name`: folders 700, a new file made 600 before anything is
     written into it, then moved over the old one. Returns its length. Refused for an undeclared name, an empty or
@@ -108,7 +125,7 @@ def write(plugin_name, name, value):
 
 def tell_audit(line):
     """One line in #audit (altention dc post): never the value. A failure is said on stderr, not raised."""
-    channel = config.setting("dcbot.channels.audit", None) or "audit"
+    channel = "@audit"  # the bot's own #audit, by the ID it keeps (C-201 6.2): its name may have been changed
     tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "altention")
     try:
         r = subprocess.run([sys.executable, tool, "dc", "post", str(channel), line], stdin=subprocess.DEVNULL,
@@ -152,6 +169,24 @@ def set_cmd(args, stdin=None, ask=None, out=None):
     return 0
 
 
+def fix_mode_cmd(out=None):
+    """`fix-mode`: every stored secret back to 600 and its folders to 700 (doctor's fix for a loose one: the path is
+    never typed, C-163 / K-03). Says how many it changed."""
+    out = out or sys.stdout
+    n, base = 0, root()
+    for folder, _dirs, files in os.walk(base):
+        if os.stat(folder).st_mode & 0o077:
+            os.chmod(folder, 0o700)
+            n += 1
+        for f in files:
+            p = os.path.join(folder, f)
+            if os.stat(p).st_mode & 0o077:
+                os.chmod(p, 0o600)
+                n += 1
+    out.write(t("secret.fixed_mode", n=n) + "\n")
+    return 0
+
+
 def list_cmd(args, out=None):
     out = out or sys.stdout
     rows, _ = plugin.on_this_machine()
@@ -172,6 +207,8 @@ def main(argv):
                 return code
         elif argv[:1] == ["list"]:
             return list_cmd(argv[1:])
+        elif argv[:1] == ["fix-mode"]:
+            return fix_mode_cmd()
     except Refused as e:
         print(t("secret.refused", why=e))
         return 1

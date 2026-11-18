@@ -40,6 +40,11 @@ def shell(folder, body):
 class Base(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="家 install ")
+        from altention import botmove
+        self.told = []  # C-110: the move's #audit line, never really posted from a test
+        told = mock.patch.object(botmove, "tell_audit", self.told.append)
+        told.start()
+        self.addCleanup(told.stop)
         # never the real user's shell: its rc files would be read; this one has ~/.local/bin on its PATH
         sh = shell(self.home, 'echo noise; echo %s; echo "PATH=$HOME/.local/bin:/usr/bin"\n' % install.PATH_MARK)
         self.env = mock.patch.dict(os.environ, {"HOME": self.home, "ALT_INSTANCE": "", "XDG_STATE_HOME": "", "SHELL": sh})
@@ -659,7 +664,6 @@ class ExternalPlugins(Base):
         """C-77 G1: a guide[] step whose check fails is a todo naming #setup; a need or a step that cannot be checked
         (3, null) and has no answer kept is not called missing (#code-review of bb05de1: a plugin set up before its
         guide[] existed)."""
-        from altention import plugin_steps
         self.declare({"source": self.src, "version": "v0.1.0"})
         self.install()
         real = install.plugin.on_this_machine
@@ -1146,14 +1150,14 @@ class PluginsHere(Base):
 
 class Token(Base):
     def test_never_opened_only_its_size(self):
-        path = os.path.join(self.home, ".config", "dcbot", "env")
+        path = os.path.join(self.home, ".config", "altention", "secrets", "core", "discord-token")
         os.makedirs(os.path.dirname(path))
         with open(path, "w") as f:
-            f.write("DISCORD_TOKEN=FAKE-TOKEN-NOT-REAL\n")
+            f.write("FAKE-TOKEN-NOT-REAL\n")
         real_open = builtins.open
 
         def guarded(p, *a, **k):
-            if str(p).endswith(os.path.join("dcbot", "env")):
+            if str(p).endswith("discord-token"):
                 raise AssertionError("the token file was opened")
             return real_open(p, *a, **k)
         r, out = self.run_()
@@ -1165,7 +1169,32 @@ class Token(Base):
         with redirect_stdout(out):
             install.token(r, True)
         self.assertIn("todo dcbot.token", out.getvalue())
-        self.assertIn(path, out.getvalue(), "the todo names the file")
+        self.assertIn("~/.config/altention/secrets/core/discord-token", out.getvalue(), "the todo names the file")
+
+    def test_an_old_settings_file_is_moved_first(self):
+        """C-110: the step moves the old file (altention/botmove.py) and says so in its own line."""
+        old = os.path.join(self.home, ".config", "dcbot", "env")
+        os.makedirs(os.path.dirname(old))
+        with open(old, "w") as f:
+            f.write("DISCORD_TOKEN=FAKE-TOKEN-NOT-REAL\nOWNER_ID=42\nGUILD_ID=7\n")
+        r, out = self.run_()
+        with mock.patch.object(install.config, "bot_machine", return_value=("lap", {}, False)), \
+                mock.patch.object(install.config, "known_here", return_value=True), redirect_stdout(out):
+            install.token(r, True)
+        self.assertIn("changed dcbot.move 機器人的 token 和兩個 ID 已搬進", out.getvalue())
+        self.assertEqual(len(self.told), 1)
+        self.assertIn("機器人的 token 和兩個 ID 已搬進", self.told[0])
+        self.assertIn("ok dcbot.token", out.getvalue())
+        self.assertNotIn("FAKE-TOKEN", out.getvalue())
+        self.assertFalse(os.path.exists(old))
+        os.makedirs(os.path.dirname(old), exist_ok=True)
+        with open(old, "w") as f:
+            f.write("NOT_A_KEY_WE_KNOW=1\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            install.token(r, True)
+        self.assertIn("todo dcbot.move 機器人的設定這次沒有搬（env 裡有不認得的鍵：NOT_A_KEY_WE_KNOW）", out.getvalue())
+        self.assertTrue(os.path.exists(old))
 
 
 class FakeDiscord:
@@ -1243,7 +1272,8 @@ class AskDiscord(Base):
         # Base's, left the throwaway HOME behind for the tests that come later).
         for k in [k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")]:
             del os.environ[k]
-        self.path = os.path.join(self.home, ".config", "dcbot", "env")
+        self.path = os.path.join(self.home, ".config", "altention", "secrets", "core", "discord-token")  # C-110
+        self.old = os.path.join(self.home, ".config", "dcbot", "env")
         self.fake = FakeDiscord()
         self.addCleanup(self.fake.close)
         self.fake.servers = [(self.GUILD, "my server")]
@@ -1275,8 +1305,12 @@ class AskDiscord(Base):
         return rc, out.getvalue()
 
     def lines(self):
-        with open(self.path) as f:
-            return f.read().splitlines()
+        """The three secrets as the old file's lines (FileNotFoundError when the token is not there)."""
+        got = []
+        for key, name in (("DISCORD_TOKEN", "discord-token"), ("OWNER_ID", "owner-id"), ("GUILD_ID", "guild-id")):
+            with open(os.path.join(os.path.dirname(self.path), name)) as f:
+                got.append("%s=%s" % (key, f.read()))
+        return got
 
     def test_one_server_written_600_in_a_700_folder_and_never_shown(self):
         rc, out = self.ask([])
@@ -1289,7 +1323,10 @@ class AskDiscord(Base):
         self.assertIn("接下來會問你機器人的 token（打字時看不到）", out.splitlines()[0])
         self.assertNotIn("oauth2/authorize", out, "already in one server: no link to click")
         self.assertIn("my server", out)
-        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["env"], "no temporary file left")
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["discord-token", "guild-id", "owner-id"],
+                         "no temporary file left")
+        for name in ("owner-id", "guild-id"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(os.path.dirname(self.path), name)).st_mode), 0o600)
         self.assertTrue(self.fake.seen)
         for path, headers in self.fake.seen:
             self.assertEqual(headers.get("Authorization"), "Bot " + self.TOK)
@@ -1306,7 +1343,7 @@ class AskDiscord(Base):
         q = parse_qs(urlsplit(link[0]).query)
         self.assertEqual(q["client_id"], ["100000000000000010"])
         self.assertEqual(q["scope"], ["bot applications.commands"])
-        self.assertEqual(q["permissions"], ["2252128378809552"], "the 14 permissions of the install guide")
+        self.assertEqual(q["permissions"], ["2252128378809560"], "the 14 permissions of the install guide and Administrator (C-191)")
         self.assertEqual(q["integration_type"], ["0"])
         self.assertEqual(self.slept, [3, 3, 3], "a look every 3 seconds until the bot is in")
 
@@ -1421,18 +1458,14 @@ class AskDiscord(Base):
         self.assertEqual(other.seen, [], "nothing sent on")
         self.assertFalse(os.path.exists(self.path))
 
-    def test_a_folder_made_before_is_tightened_to_700(self):
+    def test_a_folder_made_before_is_set_to_700(self):
         folder = os.path.dirname(self.path)
         os.makedirs(folder)
         os.chmod(folder, 0o755)
         rc, out = self.ask([])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
-        os.chmod(folder, 0o311)
-        rc, out = self.ask(["y"])
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o300, "only tightened: no bit the owner lacked is added")
-        os.chmod(folder, 0o700)
+        for f in (folder, os.path.dirname(folder)):
+            self.assertEqual(stat.S_IMODE(os.stat(f).st_mode), 0o700, f)
 
     def test_trouble_while_waiting_is_said_once_and_waited_out(self):
         """A 5xx or no network while the bot is awaited does not end the command (manager 2026-10-16)."""
@@ -1481,6 +1514,7 @@ class AskDiscord(Base):
         self.assertEqual(rc, 1)
         self.assertIn("fail dcbot.token", out)
         self.assertFalse(os.path.exists(os.path.dirname(self.path)))
+        self.assertFalse(os.path.exists(os.path.dirname(self.old)))
         self.assertEqual(self.fake.seen, [])
         with mock.patch.object(sys.stdin, "isatty", return_value=False), redirect_stdout(io.StringIO()) as o:
             self.assertEqual(install.main(["discord"]), 1)
@@ -1499,34 +1533,67 @@ class AskDiscord(Base):
         self.assertIn("什麼都沒寫", out)
         self.assertFalse(os.path.exists(self.path))
 
-    def test_an_existing_file_is_kept_unless_asked_and_its_other_lines_stay(self):
-        os.makedirs(os.path.dirname(self.path))
-        with open(self.path, "w") as f:
-            f.write("# 我的設定\nDISCORD_TOKEN=OLD.OLD.OLD\nMODEL=opus\nOWNER_ID=100000000000000009\n")
-        os.chmod(self.path, 0o600)
+    def test_a_token_there_is_kept_unless_asked(self):
+        rc, out = self.ask([])
+        self.assertEqual(rc, 0, out)
         before = self.lines()
-        rc, out = self.ask([""])
+        self.fake.seen = []
+        rc, out = self.ask([""], secrets=[])
         self.assertEqual((rc, self.lines()), (0, before), "Enter keeps it")
         self.assertIn("ok dcbot.token", out)
         self.assertEqual(self.fake.seen, [])
         rc, out = self.ask(["y"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD,
-                                        "# 我的設定", "MODEL=opus"])
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        self.assertEqual(self.lines(), before)
 
-    def test_every_spelling_of_a_replaced_key_goes(self):
-        """export KEY=old, KEY = old, a second line of the same key: no old token stays in the file."""
-        os.makedirs(os.path.dirname(self.path))
-        with open(self.path, "w") as f:
+    def test_an_old_settings_file_is_asked_about_then_given_the_new_token_too(self):
+        """C-110: an old file counts as a token there. Once the new token is stored, the old file still there gets it
+        too (manager 2026-11-03: a rollback during the trial reads that file alone), its other lines kept; then it
+        moves as any other, or says why it does not."""
+        os.makedirs(os.path.dirname(self.old))
+        with open(self.old, "w") as f:
+            f.write("# 我的設定\nDISCORD_TOKEN=OLD.OLD.OLD\nCLAUDE_MODEL=opus\nOWNER_ID=100000000000000009\n")
+        os.chmod(self.old, 0o600)
+        rc, out = self.ask([""], secrets=[])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok dcbot.token", out)
+        self.assertFalse(os.path.exists(self.path))
+        with mock.patch.object(install.config, "bot_machine", return_value=("lap", {}, False)), \
+                mock.patch.object(install.config, "known_here", return_value=True):
+            rc, out = self.ask(["y"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD])
+        self.assertIn("changed dcbot.move 機器人的 token 和兩個 ID 已搬進", out, "the same values in both: it moves")
+        self.assertNotIn("OLD.OLD", out)
+        self.assertNotIn(self.TOK, out)
+        self.assertFalse(os.path.exists(self.old))
+        self.assertEqual(len(self.told), 1, "said in #audit too")
+
+    def test_an_old_file_that_cannot_move_still_gets_the_new_token(self):
+        """Every spelling of a replaced key goes (export KEY=old, KEY = old, a second line): no old token stays."""
+        os.makedirs(os.path.dirname(self.old))
+        with open(self.old, "w") as f:
             f.write("export DISCORD_TOKEN=OLD.OLD.OLD\nDISCORD_TOKEN = OLD2.OLD.OLD\nexport\tGUILD_ID=100000000000000008\n"
-                    "exported_TOKEN=keep\nexport MODEL=opus\n")
+                    "SOMETHING=keep\n")
         rc, out = self.ask(["y"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.lines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER, "GUILD_ID=" + self.GUILD,
-                                        "exported_TOKEN=keep", "export MODEL=opus"])
-        with open(self.path) as f:
-            self.assertNotIn("OLD", f.read())
+        self.assertIn("todo dcbot.move 機器人的設定這次沒有搬（env 裡有不認得的鍵：SOMETHING）", out)
+        self.assertNotIn("OLD.OLD", out)
+        self.assertNotIn(self.TOK, out)
+        with open(self.old) as f:
+            self.assertEqual(f.read().splitlines(), ["DISCORD_TOKEN=" + self.TOK, "OWNER_ID=" + self.OWNER,
+                                                     "GUILD_ID=" + self.GUILD, "SOMETHING=keep"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.old).st_mode), 0o600)
+        self.assertEqual(self.lines()[0], "DISCORD_TOKEN=" + self.TOK)
+
+    def test_an_old_file_that_cannot_be_rewritten_is_said(self):
+        os.makedirs(os.path.dirname(self.old))
+        os.mkfifo(self.old)
+        rc, out = self.ask(["y"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("todo dcbot.token 舊的設定檔 ~/.config/dcbot/env 沒有跟著換成新 token（not a file）。新版用新的位置，不受影響；"
+                      "要退回舊版前，先修好這個檔的權限，再跑一次 install.sh discord。", out)
+        self.assertEqual(self.lines()[0], "DISCORD_TOKEN=" + self.TOK)
 
     @unittest.skipUnless(os.path.isdir("/proc/self"), "reads /proc")
     def test_on_a_real_terminal_the_token_is_in_no_argument_environment_or_output(self):

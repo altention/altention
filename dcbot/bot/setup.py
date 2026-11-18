@@ -17,7 +17,7 @@ import discord
 
 import json
 
-from . import config, files, remote, routes, tmuxio
+from . import config, deliver, files, remote, routes, tmuxio
 
 PREFIX = "setup"
 
@@ -231,7 +231,7 @@ class Setup(object):
         st = self.bot.chan(ch)
         try:
             v = card_view(ch.id)
-            msg = await ch.send(card_text(ch.name, st["cwd"]), view=v)
+            msg = await deliver.deliver(ch, card_text(ch.name, st["cwd"]), view=v, intent="card")
             v.stop()
             self.cards[ch.id] = msg.id
         except Exception:
@@ -372,6 +372,25 @@ class Setup(object):
         except ValueError:
             return {}
 
+    async def on_remote(self, st, host, folder, session, window, new, terminal=False):
+        """A channel's place in the owner's tmux on another machine (the card, altention dc post --new-claude): the
+        folder looked for over there, `session` (new: one that is not there yet), written into `st`. (why not, None)
+        with `st` untouched, or (None, what to say)."""
+        info = await self.info(host, folder.strip() or "~")
+        if not info:
+            return "%s。" % remote.unreachable(host), None
+        if not info.get("folder"):
+            return "%s 上找不到資料夾：`%s`" % (host, folder), None
+        if new and session in dict(await tmuxio.user_sessions(info["socket"], host)):
+            return "%s 的 tmux 裡已經有叫 `%s` 的 session 了。換個名字，或改用「加到現有的 tmux」。" % (host, session), None
+        st.update({"home": {"socket": info["socket"], "session": session, "window": window, "host": host},
+                   "cwd": info["folder"], "mode": "tmux"})
+        if terminal:
+            st["kind"] = "terminal"
+        return None, "%s會開在 %s 上你的 tmux `%s` 的%s視窗%s，工作目錄 `%s`。在 %s 上用 `tmux attach -t %s` 就看得到。" % (
+            "💻 終端機" if terminal else "", host, session, "第一個" if new else "新", "「%s」" % window if window else "",
+            info["folder"].replace(info.get("home") or "\0", "~"), host, session)
+
     async def choose(self, interaction, ch, session, window, cwd_text, new, terminal=False):
         st = self.bot.chan(ch)
         host = self.host_of(ch.id)
@@ -379,22 +398,11 @@ class Setup(object):
             return await interaction.response.send_message("tmux session 名稱不能是空的。", ephemeral=True)
         if host:
             await interaction.response.defer()
-            info = await self.info(host, cwd_text.strip() or "~")
-            if not info:
-                return await interaction.followup.send("%s。" % remote.unreachable(host), ephemeral=True)
-            if not info.get("folder"):
-                return await interaction.followup.send("%s 上找不到資料夾：`%s`" % (host, cwd_text), ephemeral=True)
-            if new and session in dict(await tmuxio.user_sessions(info["socket"], host)):
-                return await interaction.followup.send(
-                    "%s 的 tmux 裡已經有叫 `%s` 的 session 了。換個名字，或改用「加到現有的 tmux」。" % (host, session), ephemeral=True)
-            st.update({"home": {"socket": info["socket"], "session": session, "window": window, "host": host},
-                       "cwd": info["folder"], "mode": "tmux"})
-            if terminal:
-                st["kind"] = "terminal"
+            why, where = await self.on_remote(st, host, cwd_text, session, window, new, terminal)
+            if why:
+                return await interaction.followup.send(why, ephemeral=True)
             self.machine.pop(ch.id, None)
-            return await self.done(ch, st, "%s會開在 %s 上你的 tmux `%s` 的%s視窗%s，工作目錄 `%s`。在 %s 上用 `tmux attach -t %s` 就看得到。" % (
-                "💻 終端機" if terminal else "", host, session, "第一個" if new else "新", "「%s」" % window if window else "",
-                info["folder"].replace(info.get("home") or "\0", "~"), host, session))
+            return await self.done(ch, st, where)
         cwd = expand(cwd_text, st["cwd"])
         if cwd is None:
             return await interaction.response.send_message("%s 上找不到資料夾：`%s`" % (where_searched(None), cwd_text),
@@ -436,7 +444,7 @@ class Setup(object):
         card = self.cards.pop(ch.id, None)
         if card is not None:
             try:
-                await ch.get_partial_message(card).edit(content="✅ " + where, view=None)
+                await deliver.deliver(ch, content="✅ " + where, view=None, intent="card", edit=card)
             except Exception:
                 pass
         await self.bot.audit("#%s 設定：%s" % (getattr(ch, "name", "DM"), where))
@@ -452,7 +460,7 @@ class Setup(object):
             try:
                 await self.bot.terminal.ensure(ch, st)
             except Exception as e:
-                return await ch.send("出錯了：%s" % e)
+                return await deliver.deliver(ch, "出錯了：%s" % e, intent="status")
             for message, text in held:
                 await self.bot.terminal.run(ch, text)
             return

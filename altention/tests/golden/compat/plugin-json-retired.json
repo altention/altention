@@ -1,0 +1,15 @@
+#golden spec §17.2
+[
+ [
+  "commands",
+  "沒有程式讀，刪掉"
+ ],
+ [
+  "requires[].data",
+  "只看 plugin，刪掉 data"
+ ],
+ [
+  "secrets[].path",
+  "路徑固定在 ~/.config/altention/secrets/<插件>/<名字>，刪掉 path"
+ ]
+]

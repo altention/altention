@@ -2,6 +2,11 @@
 (dcbot.open-settings, 3b 2.6e). The two conditions are written twice, in the bot's with_() and in doctor's
 open_settings_problem() (one function for both comes with step 2.7): here both are fed the same values and must
 come to the same."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import contextlib
 import importlib.util
 import io

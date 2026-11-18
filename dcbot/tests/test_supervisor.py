@@ -92,6 +92,9 @@ class Rig(unittest.TestCase):
         self.dc = dc
         os.makedirs(os.path.join(dc, "state"), exist_ok=True)
         self.sup.POLL, self.sup.BACKOFF, self.sup.LOCK_WAIT = 0.2, 0.5, 2  # the real seconds, scaled down
+        self.pings = []  # what the supervisor tells the owner itself (C-103): kept here, never sent
+        self.sup.ping = lambda text: self.pings.append(text) or True
+        self.sup.say_quietly = lambda text: self.pings.append("(quiet) " + text) or True
 
     def tearDown(self):
         open(os.path.join(self.dc, "state", "stop"), "w").close()
@@ -176,6 +179,31 @@ class Rig(unittest.TestCase):
     def ready_for_head(self):
         ready = os.path.join(self.dc, "state", "ready")
         return os.path.exists(ready) and slurp(ready).startswith(self.sup.bot_tree())
+
+
+class Help(Rig):
+    """spec §11.1 (manager 2026-11-03): -h/--help says how and does nothing; any other argument but --check-engine is
+    refused. Either way: no lock taken, nothing started, nothing written in state/ (cron starts it with none; a person
+    typing --help on a machine whose bot is not running started the bot)."""
+    def as_it_was(self):
+        state = os.path.join(self.dc, "state")
+        return sorted(os.listdir(state)), self.head(), sh(self.engine, "git", "status", "--porcelain").stdout
+
+    def run_sup(self, *args):
+        return subprocess.run([sys.executable, "supervisor.py"] + list(args), cwd=self.dc, timeout=30,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+
+    def test_help_and_wrong_arguments_do_nothing(self):
+        before = self.as_it_was()
+        for args, code, words in ((["--help"], 0, "Keeps the bot running and rolls back bad versions."),
+                                  (["-h"], 0, "Keeps the bot running"), (["--help", "x"], 0, "Keeps the bot running"),
+                                  (["--nope"], 2, "supervisor：不認得 --nope（只有 --check-engine；-h 看說明），什麼都沒做"),
+                                  (["start"], 2, "不認得 start"), (["--check-engine", "x"], 2, "不認得 --check-engine x")):
+            with self.subTest(args=args):
+                r = self.run_sup(*args)
+                self.assertEqual(r.returncode, code, r.stdout)
+                self.assertIn(words, r.stdout)
+                self.assertEqual(self.as_it_was(), before, "no lock, no pid, no bot, no state")
 
 
 class WholeTree(Rig):
@@ -479,6 +507,22 @@ class MainLoop(Rig):
         self.assertEqual(slurp(os.path.join(self.engine, "altention", "thing.py")), "OK = 1\n")
         open(os.path.join(self.dc, "state", "stop"), "w").close()
         t.join(10)
+        self.assertEqual([p for p in self.pings if not p.startswith("(quiet)")], ["🛠️ 機器人新版有問題，已退回上一版，照常運作"],
+                         "C-103: a new version that did not come up, rolled back on its own: the owner is told, once")
+
+    def test_a_rollback_the_owner_asked_for_mentions_nobody(self):
+        """#code-review-2 on 3c7ad8f: !rollback is the owner's own doing; they are in the channel, and nothing was wrong
+        with the version for the words to say so."""
+        self.sup.STABLE_SECS, self.sup.TRIAL_SECS = 1, 30
+        new = self.commit({"dcbot/bot/extra.py": "E = 2\n"}, "a good new version")
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        self.assertNotEqual(new, self.good)
+        open(os.path.join(self.dc, "state", "rollback-requested"), "w").close()
+        t = self.run_main()
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log() and self.ready_for_head()), self.last_log())
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)
+        self.assertEqual([p for p in self.pings if not p.startswith("(quiet)")], [])
 
     def test_last_good_follows_head_so_only_the_failed_deploy_is_taken_back(self):
         self.sup.STABLE_SECS, self.sup.TRIAL_SECS, self.sup.FOLLOW_SECS = 1, 30, 0.5
@@ -494,6 +538,17 @@ class MainLoop(Rig):
         self.assertEqual(self.sup.tree(), self.sup.tree(ops))
         self.assertEqual(slurp(os.path.join(self.engine, "ops", "x.py")), "X = 3\n", "the ops commits stay")
         self.assertNotIn("ops change", self.last_log())
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)
+
+    def test_up_stable_secs_takes_the_down_mark_away(self):
+        """Drill item 20: the bot up STABLE_SECS → state/lease-down.json (tools/dclease's "down") removed."""
+        self.sup.STABLE_SECS, self.sup.TRIAL_SECS = 1, 30
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        write(os.path.join(self.dc, "state", "lease-down.json"), "{}")
+        t = self.run_main()
+        self.assertTrue(self.wait(self.ready_for_head), "the bot came up")
+        self.assertTrue(self.wait(lambda: not os.path.exists(os.path.join(self.dc, "state", "lease-down.json"))))
         open(os.path.join(self.dc, "state", "stop"), "w").close()
         t.join(10)
 

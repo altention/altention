@@ -13,7 +13,7 @@ import discord
 
 from altention.connectors.claude_code import screen
 
-from . import config, masking, tmuxio
+from . import config, deliver, masking, tmuxio
 
 PREFIX = "sta"
 ASK_SECS = 1800  # how long a conversation waits on the owner's answer before its opening is given up
@@ -40,7 +40,7 @@ class StartupAsk(object):
             v.add_item(discord.ui.Button(label=masking.mask(label)[0][:80], custom_id="%s:%s:%d" % (PREFIX, token, i),
                                          style=discord.ButtonStyle.danger if label.startswith("Yes") else discord.ButtonStyle.secondary))
         try:
-            msg = await ch.send(body(choice), view=v)
+            msg = await deliver.deliver(ch, body(choice), view=v, intent="card")
         except Exception:
             traceback.print_exc()
             return None
@@ -56,8 +56,8 @@ class StartupAsk(object):
             return
         ch = self.bridge.host.get_channel(m["channel"])
         try:
-            await ch.get_partial_message(m["msg"]).edit(view=None, content=None if not note else
-                                                         "🔔 Claude Code 啟動前的問題：%s" % note)
+            await deliver.deliver(ch, view=None, content=None if not note else "🔔 Claude Code 啟動前的問題：%s" % note,
+                                  intent="card", edit=m["msg"])
         except Exception:
             traceback.print_exc()
 
@@ -82,12 +82,12 @@ class StartupAsk(object):
         msg = interaction.channel.get_partial_message(m["msg"])
         if now is None or now["title"] != m["title"] or now["options"] != m["options"]:
             self.open.pop(parts[1], None)
-            await msg.edit(view=None, content="🔔 Claude Code 啟動前的問題已經不在畫面上了（在終端機答掉了，或 Claude 已經結束），沒有送出。")
+            await deliver.deliver(interaction.channel, edit=msg, intent="card", view=None, content="🔔 Claude Code 啟動前的問題已經不在畫面上了（在終端機答掉了，或 Claude 已經結束），沒有送出。")
             return True
         for key in screen.keys_for(now, index):
             await pane.keys(key)
         self.open.pop(parts[1], None)
-        await msg.edit(view=None, content="🔔 Claude Code 啟動前的問題：%s\n✅ 選了「%s」" % (
+        await deliver.deliver(interaction.channel, edit=msg, intent="card", view=None, content="🔔 Claude Code 啟動前的問題：%s\n✅ 選了「%s」" % (
             masking.mask(m["title"])[0], masking.mask(m["options"][index])[0]))
         await self.bridge.host.audit("#%s 啟動前的問題「%s」：選了「%s」" % (getattr(interaction.channel, "name", "?"),
                                                                      masking.mask(m["title"])[0],

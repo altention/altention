@@ -56,7 +56,7 @@ import time
 from common import engine_on, inventory, run_on
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from altention import config  # noqa: E402
+from altention import config, plugin  # noqa: E402
 import plugins  # noqa: E402
 
 def engine_origin():
@@ -228,8 +228,10 @@ python3 "$H/ops/plugins.py" held {names}
 
 
 def singles(rows, machine, bot):
-    """The single-machine plugins that run on `machine`: machines one and on here, and "bot" where the bot runs."""
-    out = [n for n, _, d, where, _ in rows if where == "on" and d is not None and d.get("machines") == "one"]
+    """The single-machine plugins that run on `machine`: machines one and on here, and "bot" where the bot runs. Not
+    one that runs on the standby machines too ("standby": true, C-181) on a standby machine: it is meant to be there."""
+    out = [n for n, _, d, where, _ in rows if where == "on" and d is not None and d.get("machines") == "one"
+           and machine not in plugin.also_standby(d)]
     return out + (["bot"] if machine == bot else [])
 
 
@@ -259,19 +261,24 @@ def has(v):
     return v not in (False, None)
 
 
-def still_held(name, needs, inv):
+def still_held(name, needs, inv, alongside=()):
     """[(other machine, [plugins], why)]: the single-machine plugins `needs` another machine still has, or cannot be
-    told not to."""
+    told not to. A standby's supervisor lines are no "bot" held elsewhere (C-163: it runs them too), nor are the
+    lines of the plugins `alongside` ("standby": true, C-181: they run there too)."""
     out = []
+    standbys = plugin.standby_machines()
     for other, m in inv["machines"].items():
         if other == name:
             continue
-        got = held_on(m, needs)
-        if isinstance(got, str):
-            out.append((other, needs, got))
+        here = [n for n in needs if not ((n == "bot" or n in alongside) and other in standbys)]  # (this machine's own: `needs` stays
+        if not here:  # whole for the next one; #code-review-2 on f47de47)
             continue
-        marked = [n for n in needs if has(got.get(n, True)) and got.get(n) != "old"]
-        old = [n for n in needs if got.get(n) == "old"]
+        got = held_on(m, here)
+        if isinstance(got, str):
+            out.append((other, here, got))
+            continue
+        marked = [n for n in here if has(got.get(n, True)) and got.get(n) != "old"]
+        old = [n for n in here if got.get(n) == "old"]
         if marked:
             out.append((other, marked, "還有它們的排程（先在那台跑 apply 拿掉）"))
         if old:
@@ -281,6 +288,9 @@ def still_held(name, needs, inv):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
+    if "-h" in args or "--help" in args:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     dry = force = take = False
     allow, moved, names, odd = [], [], [], []
     while args:  # nothing unknown is ignored: a mistyped flag must not turn into a write
@@ -343,6 +353,7 @@ def main(argv=None):
     # each machine is asked once what it holds now; one that is losing a single-machine plugin goes before one
     # gaining it, so a move is done in one run (#code-review-2 2026-10-06)
     every = sorted(set(holders) | {"bot"})
+    standbys = plugin.standby_machines()  # C-163: they run the supervisor too, never "a machine the bot has left"
     mine_all = {n: held_on(inv["machines"][n], every) for n in names if not places[n][2]}
 
     def order(n):
@@ -374,7 +385,7 @@ def main(argv=None):
             print("  ✗ 這台不做：讀不出它自己有哪些排程（%s）" % mine)
             rc = 1
             continue
-        bot_leaves = n != bot and has(mine.get("bot"))
+        bot_leaves = n != bot and n not in standbys and has(mine.get("bot"))  # (a standby keeps the supervisor: C-163)
         if bot_leaves:
             print("  機器人已經不在這台跑：先停掉它（dcbot/uninstall.sh），再由 plugins.py apply 拿掉 supervisor 的兩行")
             # COMPAT: crontab 還是舊格式的機器（# planner、# usage，或沒有標記的行）；每台的 crontab 都沒有舊格式的行（plugins.py plan 沒有 old、unclaimed）之後
@@ -385,7 +396,7 @@ def main(argv=None):
                 print("  ⚠ %s 不在這台跑，但這台還有它的舊格式排程：%s" % (s, OLD))
         needs = [s for s in needs if not has(mine.get(s))]  # held here already: not a move, the others not asked
         if needs:
-            left = still_held(n, needs, inv)
+            left = still_held(n, needs, inv, [p for p, _, d, _, _ in rows if isinstance(d, dict) and d.get("standby") is True])
             for other, which, why in left:
                 print("  %s %s 在 %s：%s" % ("⚠" if force else "✗", "、".join(which), other, why))
             blocked = sorted({p for _, which, _ in left for p in which}) if not force else []

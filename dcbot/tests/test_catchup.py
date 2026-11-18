@@ -1,4 +1,9 @@
 """Messages sent while the bot was down are delivered after it reconnects, once."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import datetime
 import os
@@ -70,7 +75,163 @@ class Catchup(unittest.TestCase):
             again = catchup.Catchup(bot)
             self.assertEqual(again.seen["1"], 14, "remembered across restarts")
             asyncio.run(c.run())
-            self.assertEqual(bot.delivered, [12], "only once per process")
+            self.assertEqual(bot.delivered, [12], "nothing owed until the connection is lost again")
+
+
+class NewChannel(unittest.TestCase):
+    """manager 11-08: a channel made a few minutes before, its first message from the owner just as the bot went down
+    (seen.json has no message of it yet), is caught up too, from when the bot went down; an old channel never written
+    in is not read at every start."""
+
+    def test_the_first_message_of_a_new_channel_during_a_restart(self):
+
+        import discord
+        tmp = tempfile.mkdtemp()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        down = now - datetime.timedelta(seconds=30)
+        snow = lambda t: discord.utils.time_snowflake(t)  # noqa: E731
+        new_id = snow(down - datetime.timedelta(minutes=7))       # made 7 minutes before
+        old_id = snow(down - datetime.timedelta(days=3))          # made 3 days before, never written in
+        with open(os.path.join(tmp, "heartbeat"), "w") as f:
+            f.write("x")
+        os.utime(os.path.join(tmp, "heartbeat"), (down.timestamp(), down.timestamp()))
+        with mock.patch.object(catchup, "SEEN", os.path.join(tmp, "seen.json")), mock.patch.object(config, "STATE", tmp):
+            new, old = Chan(new_id), Chan(old_id)
+            bot = Bot({new_id: new, old_id: old})
+            bot.channels_state = {str(new_id): {"kind": "conversation"}, str(old_id): {"kind": "conversation"}}
+            c = bot.c = catchup.Catchup(bot)
+            first = Msg(snow(down + datetime.timedelta(seconds=1)), new, 29)
+            new.history_msgs = [first]
+            read = []
+            real = old.history
+            old.history = lambda **kw: (read.append(1), real(**kw))[1]
+            asyncio.run(c.run())
+        self.assertEqual(bot.delivered, [first.id], "the new channel's first message caught up")
+        self.assertEqual(read, [], "the old channel never written in is not read")
+
+
+
+class Reconnect(unittest.TestCase):
+    """C-170: a network outage longer than Discord keeps a session: the gateway opens a new one (on_ready again)
+    and Discord replays nothing. What the owner said meanwhile is caught up like after a restart."""
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        patch = mock.patch.object(catchup, "SEEN", os.path.join(tmp, "seen.json"))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.ch = Chan(1)
+        self.bot = Bot({1: self.ch})
+        catchup.Catchup(self.bot).mark(Msg(10, self.ch, 100))
+        self.c = self.bot.c = catchup.Catchup(self.bot)
+        asyncio.run(self.c.run())  # the first on_ready: nothing missed
+        self.bot.on_message_live = lambda m: asyncio.run(self.bot.on_message(m))
+
+    def test_what_was_said_while_cut_off_is_delivered_once(self):
+        self.bot.on_message_live(Msg(11, self.ch, 600))  # live, before the outage
+        self.c.cut()  # on_disconnect
+        self.ch.history_msgs = [Msg(11, self.ch, 600), Msg(12, self.ch, 300), Msg(13, self.ch, 200, uid=999),
+                                Msg(14, self.ch, 100), Msg(15, self.ch, 5)]
+        self.bot.on_message_live(self.ch.history_msgs[-1])  # live on the new session, before the catch-up read
+        asyncio.run(self.c.run())  # on_ready of the new session
+        self.assertEqual(self.bot.delivered, [11, 15, 12, 14])
+        self.assertIn("補送", self.ch.sent[-1])
+        asyncio.run(self.c.run())
+        self.assertEqual(self.bot.delivered, [11, 15, 12, 14], "each once")
+
+    def test_dropped_again_before_on_ready_keeps_the_older_point(self):
+        self.c.cut()
+        self.bot.on_message_live(Msg(13, self.ch, 100))  # moves seen on before the second drop (#code-review)
+        self.c.cut()  # the reconnect failed and the socket closed again
+        self.ch.history_msgs = [Msg(12, self.ch, 300), Msg(13, self.ch, 100)]
+        asyncio.run(self.c.run())
+        self.assertEqual(self.bot.delivered, [13, 12], "12, said before the first drop's point, is not missed")
+
+    def test_a_resumed_session_owes_nothing(self):
+        """Discord replays a resumed session's events: no catch-up, and none left waiting for a later on_ready
+        (it would read messages handled long ago as missed)."""
+        self.c.cut()
+        self.c.resumed()
+        self.ch.history_msgs = [Msg(12, self.ch, 4000)]
+        asyncio.run(self.c.run())
+        self.assertEqual((self.bot.delivered, self.ch.sent), ([], []))
+
+    def test_the_window_still_holds(self):
+        self.c.cut()
+        self.ch.history_msgs = [Msg(12, self.ch, catchup.WINDOW + 60), Msg(13, self.ch, 60)]
+        asyncio.run(self.c.run())
+        self.assertEqual(self.bot.delivered, [13])
+        self.assertIn("超過", self.ch.sent[0])
+
+    def test_a_second_catch_up_waits_for_the_first(self):
+        """A drop and a new session while a catch-up still reads the history: the second waits for the first
+        (the lock), so the older messages are handed on first."""
+        self.c.cut()
+        self.ch.history_msgs = [Msg(12, self.ch, 60), Msg(13, self.ch, 50), Msg(14, self.ch, 30)]
+        gate, calls, plain = asyncio.Event(), [], self.ch.history
+
+        def history(after=None, limit=None, oldest_first=True):
+            calls.append(after.id)
+            first = len(calls) == 1
+
+            async def gen():
+                if first:
+                    await gate.wait()
+                async for m in plain(after=after, limit=limit, oldest_first=oldest_first):
+                    yield m
+            return gen()
+        self.ch.history = history
+
+        let_run = asyncio.sleep  # (the catch-up's own pauses are patched away below)
+
+        async def both():
+            a = asyncio.ensure_future(self.c.run())
+            for _ in range(5):
+                await let_run(0)  # a reads the history and waits there
+            await self.bot.on_message(self.ch.history_msgs[1])  # 13, live, before the next drop
+            self.c.cut()
+            b = asyncio.ensure_future(self.c.run())
+            for _ in range(5):
+                await let_run(0)  # b, without the lock, would read and hand on 14 now
+            gate.set()
+            await asyncio.gather(a, b)
+        with mock.patch.object(catchup.asyncio, "sleep", mock.AsyncMock()):
+            asyncio.run(both())
+        self.assertEqual(self.bot.delivered, [13, 12, 14])
+
+
+class OnReady(unittest.TestCase):
+    """main.Bot: every on_ready starts a catch-up (not only the first, which also starts the pump); a lost
+    connection cuts, a resumed one drops the cut."""
+
+    def stub(self, pumping):
+        from bot import main
+        bot = mock.Mock()
+        bot.pumping = pumping
+        bot.get_guild.return_value = None
+        bot.audit = mock.AsyncMock()
+        bot.sync_menu = mock.AsyncMock()
+        bot.loop.create_task.side_effect = lambda coro: coro.close()
+        bot.catchup = mock.Mock()
+        return main, bot
+
+    def test_every_on_ready_catches_up(self):
+        for pumping in (False, True):
+            main, bot = self.stub(pumping)
+            with mock.patch.object(main, "git", return_value="abc"), \
+                    mock.patch.object(main, "NOTICE", "/nonexistent/notice"), \
+                    mock.patch.object(main, "RESTART_FLAG", "/nonexistent/flag"), \
+                    mock.patch.object(main.catalog, "stale", return_value=False), \
+                    mock.patch.object(main.catalog, "load", return_value={}):
+                asyncio.run(main.Bot.on_ready(bot))
+            bot.catchup.run.assert_called_once_with()
+
+    def test_disconnect_cuts_and_resume_drops_it(self):
+        main, bot = self.stub(True)
+        asyncio.run(main.Bot.on_disconnect(bot))
+        bot.catchup.cut.assert_called_once_with()
+        asyncio.run(main.Bot.on_resumed(bot))
+        bot.catchup.resumed.assert_called_once_with()
 
 
 class Held(unittest.TestCase):

@@ -23,7 +23,7 @@ import traceback
 from altention.connectors.claude_code import hooks as cc_hooks
 from altention.connectors.claude_code import transcript
 
-from . import config, events, masking
+from . import config, deliver, events, masking
 from .util import split_message
 
 FLUSH_SECS = 4        # a thread gets at most one progress message this often
@@ -138,7 +138,7 @@ class Agents(object):
                                          "done": 0, "title": self.workflow_title(st, run) if run else label}
             text = workflow_status(room) if run else agent_status(sub)
             try:
-                msg = await ch.send(text, silent=True)
+                msg = await deliver.deliver(ch, text, silent=True, intent="status")
                 room["msg"] = msg.id
                 thread = await msg.create_thread(name=cut(("🧩 " if run else "🤖 ") + room["title"], 95),
                                                  auto_archive_duration=60)
@@ -265,7 +265,8 @@ class Agents(object):
             parts = parts[:1]
         for part in parts:
             try:
-                await thread.send(part, silent=True)
+                await deliver.deliver(thread, part, silent=True, intent="status", keep=False)  # (a thread's log: not kept,
+                # manager 11-16; its status line in the channel is)
             except Exception:
                 traceback.print_exc()
                 return
@@ -273,7 +274,7 @@ class Agents(object):
     async def restatus(self, ch, room, text):
         if room.get("msg"):
             try:
-                await ch.get_partial_message(room["msg"]).edit(content=text)
+                await deliver.deliver(ch, content=text, intent="status", edit=room["msg"])
             except Exception:
                 pass
 

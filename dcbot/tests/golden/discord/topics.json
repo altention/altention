@@ -1,0 +1,16 @@
+#golden spec §15.6（v0.7.0 改成跟語言無關：C-147 Q08-04）
+{
+ "archived": "📦 原分類：專案 · 封存於 2026-10-26\nlap 上的 Claude Code：tmux work:2，~/proj",
+ "archived, category unknown": "📦 原分類：（不明） · 封存於 2026-10-26\nx",
+ "archived, no category": "📦 原分類：（沒有分類） · 封存於 2026-10-26",
+ "archived, read back": [
+  "lap 上的 Claude Code：tmux work:2，~/proj",
+  "專案"
+ ],
+ "attached (another machine)": "box 上的 Claude Code：tmux work:2，/w/them/proj",
+ "attached (this machine)": "lap 上的 Claude Code：tmux work:2，~/proj",
+ "made by dc post": [
+  "紀錄用的頻道（由 altention dc post 建立，機器人不在這裡對話）",
+  "通知用的頻道（機器人建立，不在這裡對話）"
+ ]
+}

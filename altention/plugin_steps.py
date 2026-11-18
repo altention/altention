@@ -103,6 +103,44 @@ def _expanded(cmd, folder, settings):
         return ""
 
 
+def install_for(n, folder, settings=None, here=None):
+    """(command, why) of need `n` on this system: its "install" with {plugin}, {python}… filled in as a check's are
+    (plugin.expand, the same rules: nothing quoted for the plugin; tokens v2), so what the person is shown runs from
+    any folder. (None, "") when none is written for this system; ("", plain words) when a value it names is not set
+    here (never half a command)."""
+    raw = (n.get("install") or {}).get(here or os_name())
+    if not raw:
+        return None, ""
+    try:
+        return plugin.expand(raw, folder, settings), ""
+    except plugin.PluginError:
+        return "", unset_words(raw, folder, settings)
+
+
+def unset_words(text, folder, settings=None):
+    """What of `text`'s {…} cannot be filled in here, in plain words (#release 11-03: no exception's words)."""
+    for m in plugin.TOKEN.finditer(text):
+        try:
+            plugin.expand(m.group(0), folder, settings)
+        except plugin.PluginError:
+            key = m.group(1)
+            if key.startswith("setting:"):
+                return t("steps.unset_setting", name=key.split(":", 1)[1])
+            return t("steps.unset_instance") if key == "instance" else t("steps.unset_plugin")
+    return t("steps.unset_plugin")
+
+
+def unset_how(n):
+    """A planned need whose install names a value not set here: why, then its hint."""
+    return t("steps.need_unset", error=n["unset"]) + (t("steps.need_hint", hint=n["hint"]) if n["hint"] else "")
+
+
+def how_short(n):
+    """A planned need's way to install it in a line (doctor, install.sh): the full command, else why there is none
+    and the hint, else the hint ("" when none)."""
+    return n["install"] or (unset_how(n) if n.get("unset") else n["hint"])
+
+
 def _asked(key, optional, kept):
     a = (kept.get(key) or {}).get("answer")
     if a == "yes":
@@ -118,10 +156,11 @@ def plan(name, folder, d, settings=None, deadline=None):
         st, why = run_check(n["check"], folder, settings, deadline)
         if st == "cannot":
             st = _asked("needs:" + n["name"], n.get("optional", False), kept)
-        cmd = (n.get("install") or {}).get(here)
+        cmd, unset = install_for(n, folder, settings, here)
         needs.append({"name": n["name"], "state": st, "reason": why if st in ("todo", "unchecked") else "",
                       "why": n.get("why", ""), "size": n.get("size", ""), "optional": n.get("optional", False),
                       "for": n.get("for", []), "install": cmd, "sudo": bool(cmd and cmd.startswith("sudo ")),
+                      "unset": unset,
                       "hint": n.get("hint", ""), "ask": n.get("ask") or t("steps.ask_need", name=n["name"])})
     steps = []
     for g in d.get("guide", []):
@@ -214,6 +253,8 @@ def _need_words(n):
         return {"ok": t("steps.need_ok"), "declined": t("steps.need_declined")}.get(n["state"]) or t("steps.need_ask", ask=n["ask"])
     how = t("steps.need_how", cmd=n["install"]) + (t("steps.need_sudo") if n["sudo"] else "") if n["install"] \
         else t("steps.need_hint", hint=n["hint"]) if n["hint"] else t("steps.need_no_how")
+    if n.get("unset"):  # written, but a value it names is not set here: no command, the hint instead
+        how = unset_how(n)
     return "；".join(x for x in (t("steps.need_missing") if n["state"] == "todo" else n["reason"], n["why"], n["size"],
                                  t("steps.need_optional", what="、".join(n["for"])) if n["optional"] else "", how) if x)
 

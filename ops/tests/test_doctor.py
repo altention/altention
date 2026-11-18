@@ -220,6 +220,69 @@ class Records(unittest.TestCase):
         finally:
             shutil.rmtree(home, ignore_errors=True)
 
+    def test_the_probe_over_ssh_from_a_home_holding_an_altention_folder(self):
+        """C-158: ssh starts the probe in ~, and ~/altention (the folder the engine and the instance live in) is not a
+        package: an `from altention import …` before the engine was put on sys.path loaded that folder as a namespace
+        package and kept it, and every later `from altention import config` failed (ImportError, "unknown location"):
+        doctor said core.config and instance.joined, and never what botmove said (bot_old). Seen on macOS's Python
+        3.9 (#activity-manager, 11-04); this test fails without the fix on 3.12 too."""
+        from altention import botmove
+        home = tempfile.mkdtemp(prefix="dcq")
+        try:
+            eng = os.path.join(home, "altention", "engine")  # the layout install.sh makes
+            shutil.copytree(os.path.join(doctor.ENGINE_DIR, "altention"), os.path.join(eng, "altention"),
+                            ignore=shutil.ignore_patterns("tests", "__pycache__"))
+            os.makedirs(os.path.join(home, "altention", "instance"))
+            with mock.patch.dict(os.environ, HOME=home):
+                old = botmove.old_path()
+            os.makedirs(os.path.dirname(old))
+            open(old, "w").close()  # an old settings file, empty: only whether it is there is looked at
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), cwd=home,
+                               timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertNotIn("config_error", o, o.get("config_error"))
+            self.assertIn("this_machine", o)
+            self.assertTrue(o.get("bot_old"), "botmove read too")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_the_probe_lists_routes_and_channels_whose_pane_is_gone(self):
+        """C-201 6.1: a route or a channel's pane of this machine whose tmux server is gone, whose pane tmux does not
+        have, or whose pane number runs another process, is listed; a live one, an old route with no process, another
+        machine's pane and an archived channel are not."""
+        home = tempfile.mkdtemp(prefix="dcq")
+        sock = os.path.join(home, "s")
+        try:
+            subprocess.run(["tmux", "-S", sock, "new-session", "-d", "sleep 120"], check=True, timeout=30)
+            pane, pid = subprocess.run(["tmux", "-S", sock, "display-message", "-p", "#{pane_id}\t#{pane_pid}"], stdout=subprocess.PIPE,
+                                       universal_newlines=True, check=True, timeout=30).stdout.strip().split("\t")
+            eng = os.path.join(home, "engine")
+            os.makedirs(os.path.join(eng, "dcbot", "state"))
+            gone_sock = os.path.join(home, "nothing-here")
+            routes = {"%s|%s" % (sock, pane): {"channel": "1", "pid": pid},             # live
+                      "%s|%s" % (gone_sock, "%3"): {"channel": "2", "pid": "5"},        # its server is gone
+                      "%s|%s" % (sock, "%999"): {"channel": "3", "pid": "6"},           # no such pane
+                      "x|%s|%s" % (sock, "%998"): {"channel": "4", "pid": "7"},         # (a key of another shape)
+                      "%s|%s" % (gone_sock, "%4"): "5"}                                 # the first format: not here
+            chans = {"11": {"pane": {"socket": sock, "id": pane, "pid": pid}},
+                     "12": {"pane": {"socket": sock, "id": pane, "pid": str(int(pid) + 100000)}},  # another process now
+                     "13": {"pane": {"socket": gone_sock, "id": "%1", "pid": "9", "host": "elsewhere"}},
+                     "14": {"pane": {"socket": gone_sock, "id": "%1", "pid": "9"}, "archived": True},
+                     "15": {"pane": {"socket": gone_sock, "id": "%1", "pid": "9"}}}
+            for n, d in (("routes.json", routes), ("channels.json", chans)):
+                with open(os.path.join(eng, "dcbot", "state", n), "w") as f:
+                    json.dump(d, f)
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), cwd=home,
+                               timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual(o.get("panes_gone"), {"routes": ["2", "3"], "channels": ["12", "15"]})
+            self.assertEqual(o.get("routes_without_pid"), ["5"], "the first format stays the other check's")
+        finally:
+            subprocess.run(["tmux", "-S", sock, "kill-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+            shutil.rmtree(home, ignore_errors=True)
+
     def test_the_probe_reads_how_progress_last_failed(self):
         """progress notes a round that stopped (state.json last_failed); the probe also takes cron.out's last line."""
         home = tempfile.mkdtemp(prefix="家 目錄 ")
@@ -256,15 +319,18 @@ class Records(unittest.TestCase):
                 r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), timeout=120)
                 o = json.loads(r.stdout.strip().splitlines()[-1])
-                return [o.get(k) for k in ("usage_last_run", "usage_failed", "usage_errors", "usage_log_tail")]
-            self.assertEqual(probe(), [None, None, [], None], "nothing there")
+                return [o.get(k) for k in ("usage_last_run", "usage_failed", "usage_errors", "usage_log_tail", "usage_names")]
+            self.assertEqual(probe(), [None, None, [], None, None], "nothing there")
             with open(os.path.join(cache, "state.json"), "w") as f:
                 json.dump({"last_run": "2026-10-15T11:07:00+08:00", "last_failed": {"at": "2026-10-15T12:07:00+08:00", "why": "原因"},
-                           "last_errors": ["host-b：連不上"]}, f)
+                           "last_errors": ["host-b：連不上"], "names_problem": "usage.project_names 寫錯"}, f)
             with open(os.path.join(home, ".cache", "usage.out"), "w") as f:
                 f.write("x" * 9000 + "\nusage：原因\n\n")
             self.assertEqual(probe(), ["2026-10-15T11:07:00+08:00", {"at": "2026-10-15T12:07:00+08:00", "why": "原因"},
-                                       ["host-b：連不上"], "usage：原因"])
+                                       ["host-b：連不上"], "usage：原因", "usage.project_names 寫錯"])
+            with open(os.path.join(cache, "state.json"), "w") as f:
+                json.dump({"names_problem": ["not", "text"]}, f)
+            self.assertIsNone(probe()[4], "a note of another shape is not said")
             share = os.path.join(home, ".local", "share", "usage")
             os.makedirs(share)
             os.chmod(share, 0o755)  # made before collect.py and usage/install.sh made it 700
@@ -1143,37 +1209,43 @@ class Records(unittest.TestCase):
             ids = [r["id"] for r in recs if r["machine"] == "host-a"]
             self.assertLessEqual(ids.count("usage.last-run"), 1, ids)
             by = {r["id"]: r for r in recs if r["machine"] == "host-a"}
-            return code, by.get("usage.last-run"), by.get("usage.errors")
+            return code, by.get("usage.last-run"), by.get("usage.errors"), by.get("usage.project-names")
 
         why = "usage：實例的 plugins.json 沒有用量來源（plugins.usage.sources），這一輪不收集"
-        code, r, _ = check(usage_last_run=None, usage_failed={"at": iso(3), "why": why})
+        code, r, _, _n = check(usage_last_run=None, usage_failed={"at": iso(3), "why": why})
         self.assertEqual((code, r["status"]), (1, "fail"))
         self.assertIn("用量統計最近一次收集失敗（3 分鐘前）：" + why, r["msg"])
         self.assertIn("usage.out", r["fix"])
-        code, r, _ = check(usage_last_run=iso(70), usage_failed={"at": iso(10), "why": why})
+        code, r, _, _n = check(usage_last_run=iso(70), usage_failed={"at": iso(10), "why": why})
         self.assertEqual(r["status"], "fail", "failing since it last worked")
         good = iso(10)  # once: a second may pass between the round and the check (it did, 2026-10-19)
-        code, r, _ = check(usage_last_run=good, usage_failed={"at": iso(70), "why": why})
+        code, r, _, _n = check(usage_last_run=good, usage_failed={"at": iso(70), "why": why})
         self.assertEqual((r["status"], r["value"]), ("ok", good), "a good round after it")
-        code, r, _ = check(usage_last_run=None, usage_failed=None, usage_log_tail="usage：沒有 ccusage")
+        code, r, _, _n = check(usage_last_run=None, usage_failed=None, usage_log_tail="usage：沒有 ccusage")
         self.assertEqual(r["status"], "fail")
         self.assertIn("還沒有收集成功過，輸出的最後一行：usage：沒有 ccusage", r["msg"])
-        code, r, _ = check(usage_last_run=None, usage_failed=None, usage_log_tail=None)
+        code, r, _, _n = check(usage_last_run=None, usage_failed=None, usage_log_tail=None)
         self.assertEqual(r["status"], "warn", "nothing said anywhere yet: shown, not a fault")
-        code, r, _ = check(usage_last_run=iso(5 * 60))
+        code, r, _, _n = check(usage_last_run=iso(5 * 60))
         self.assertEqual(r["status"], "fail")
         self.assertIn("用量統計上次收集：5 小時前", r["msg"])
-        code, r, e = check(usage_last_run=iso(10), usage_errors=["host-b：連不上（經 B）"])
+        code, r, e, _n = check(usage_last_run=iso(10), usage_errors=["host-b：連不上（經 B）"])
         self.assertEqual((r["status"], e["status"]), ("ok", "warn"))
         self.assertIn("1 台讀不到：host-b：連不上（經 B）", e["msg"])
-        code, r, _ = check(usage_last_run=iso(10), usage_failed={"at": 5, "why": ["x"]})
+        self.assertIsNone(_n, "nothing noted, nothing said")
+        miswritten = '實例 plugins.json 的 usage.project_names 要是 {"資料夾名": "顯示名"}（兩邊都是文字），現在是 ["a", "b"]，看板先照資料夾名顯示'
+        code, r, _, n = check(usage_last_run=iso(10), usage_names=miswritten)
+        self.assertEqual((code, r["status"], n["status"]), (0, "ok", "warn"), "a warning, never a failure: the boards still go out")
+        self.assertEqual(n["msg"], miswritten)
+        self.assertIn("usage.project_names", n["fix"])
+        code, r, _, _n = check(usage_last_run=iso(10), usage_failed={"at": 5, "why": ["x"]})
         self.assertEqual(r["status"], "ok", "a note of another shape is not a failure")
         _, text = self.run_doctor({"host-a": healthy(usage_last_run=iso(30))}, inv=inv)
         self.assertIn("用量", text.splitlines()[0])
         self.assertIn("30 分鐘前", text.splitlines()[1])
         self.unset = {"host-a": [("usage", "usage.channel", "board")]}
         try:
-            code, r, _ = check(usage_last_run=None, usage_failed=None, usage_log_tail="usage：實例設定沒有 usage.channel")
+            code, r, _, _n = check(usage_last_run=None, usage_failed=None, usage_log_tail="usage：實例設定沒有 usage.channel")
             self.assertIsNone(r, "no channel: its own note says why, not twice")
         finally:
             self.unset = {}
@@ -1538,8 +1610,8 @@ class Records(unittest.TestCase):
         self.assertEqual(code, 0, "shown, not a problem")
         self.assertEqual(by["status.channel"]["status"], "warn")
         self.assertIn("看板頻道沒設定：status.channel", by["status.channel"]["msg"])
-        for k in ("status.channel", "usage.channel"):  # C-57 S3: the reconcile asks in #setup, or setup.py makes it
-            self.assertIn("python3 ops/setup.py reconcile", by[k]["fix"])
+        for k in ("status.channel", "usage.channel"):  # C-181: setup.py makes it, never asked
+            self.assertNotIn("reconcile", by[k]["fix"])
             self.assertIn("python3 ops/setup.py dashboard", by[k]["fix"])
         self.assertEqual(by["planner.channel"]["status"], "warn")
         self.assertIn("對話頻道沒設定：planner.channel", by["planner.channel"]["msg"])
@@ -1891,6 +1963,31 @@ class Records(unittest.TestCase):
         self.assertEqual((code, told), (0, []))
         self.assertIn("不是這台的正式引擎", text)
 
+    def test_watch_runs_only_where_the_bot_is(self):
+        """C-185: the watch line is on standbys too; a round runs only on the machine config.bot_machine() says is
+        the bot now (bot-host after a takeover), asking no machine elsewhere; the list not readable: it runs."""
+        now = 2000000000
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from altention import config as altconfig, update
+        probes = {"host-a": healthy(now=now, last_ok={"sync": now - 9999, "update": now}, alerts=[])}
+        for says, runs in ((("host-b", {}, False), False), (("host-a", {}, True), True), ((None, None, False), True),
+                           (altconfig.ConfigError("broken list"), True)):
+            told, asked = [], []
+            real = doctor.collect
+
+            def collect(*a, _asked=asked, _real=real, **k):
+                _asked.append(a)
+                return _real(*a, **k)
+            how = dict(side_effect=says) if isinstance(says, Exception) else dict(return_value=says)
+            with mock.patch.object(update, "alert", lambda *a, _told=told, **k: _told.append(a)), \
+                    mock.patch.object(update, "verdict", return_value=("ok", "")), \
+                    mock.patch.object(altconfig, "bot_machine", **how), mock.patch.object(doctor, "collect", collect):
+                code, text = self.run_doctor(probes, ["--watch"])
+            self.assertEqual((bool(asked), bool(told)), (runs, runs), says)
+            if not runs:
+                self.assertEqual(code, 0)
+                self.assertIn("這台現在不是機器人（host-b 是），系統檢查由那台跑", text)
+
     def test_a_cron_line_that_says_it_did_not_run_shows(self):
         now = 2000000000
         code, recs = self.records({"host-a": healthy(now=now, last_ok={"sync": now, "update": now}, alerts=[],
@@ -2018,6 +2115,21 @@ class Records(unittest.TestCase):
                                  ("host-b", "dcbot.not-listed"), ("host-b", "progress.not-listed"), (None, "progress.single")])
         self.assertIn("host-a, host-b", recs[-1]["msg"])
 
+    def test_a_standby_keeps_the_token_and_the_supervisor(self):
+        """C-163 go-live (11-11): on the standby doctor said "has the bot's token but the list says elsewhere" and "not
+        responsible for dcbot, yet a bot schedule": both are what a standby is meant to have. Without the role, as before."""
+        inv = {"machines": {"host-a": {"ssh": ["A"], "roles": ["chatlog", "progress", "dcbot"]},
+                            "host-b": {"ssh": ["B"], "roles": ["chatlog", "dcbot-standby"]}}}
+        code, recs = self.records({"host-a": healthy(), "host-b": healthy(stray_bot=True)}, inv=inv)
+        got = {(r["machine"], r["id"]): r["status"] for r in recs}
+        self.assertNotEqual(got.get(("host-b", "dcbot.not-listed")), "fail")
+        self.assertNotEqual(got.get(("host-b", "dcbot.stray-settings")), "fail")
+        inv["machines"]["host-b"]["roles"] = ["chatlog"]
+        code, recs = self.records({"host-a": healthy(), "host-b": healthy(stray_bot=True)}, inv=inv)
+        got = {(r["machine"], r["id"]): r["status"] for r in recs}
+        self.assertEqual(got.get(("host-b", "dcbot.not-listed")), "fail", "no standby role: said as before")
+        self.assertEqual(got.get(("host-b", "dcbot.stray-settings")), "fail")
+
     def test_sessions_of_deleted_channels_the_bot_did_not_close(self):
         """Manager 2026-10-11 (#issues 10): what cannot be closed on plain facts is listed for the owner."""
         def item(**probe):
@@ -2038,6 +2150,35 @@ class Records(unittest.TestCase):
         self.assertEqual(item(ownerless={"kept": [5, {"name": 7}]})["status"], "ok", "rows that are no rows")
         self.assertIsNone(item(), "an engine that does not probe it")
         self.assertNotIn("dcbot.ownerless-sessions", doctor.WATCHED + doctor.WATCHED_WARN)
+
+    def test_the_bots_own_permissions(self):
+        """C-191 (manager 11-17): no Administrator is a warn that says why and that the bot works without it, with
+        the link that grants it; any of the 14 missing a warn of its own; Administrator ok, with the link back.
+        Shown, not told; nothing written yet: no record."""
+        def items(st):
+            _, recs = self.records({"host-a": healthy(bot_permissions=st)})
+            return {r["id"]: r for r in recs if r["id"] in ("dcbot.administrator", "dcbot.permissions-missing")}
+        urls = {"grant_url": "https://discord.com/oauth2/authorize?permissions=2252128378809560&guild_id=9",
+                "revert_url": "https://discord.com/oauth2/authorize?permissions=2252128378809552&guild_id=9"}
+        got = items(dict(urls, bits=2252128378809552, admin=False, missing=[]))
+        self.assertEqual(list(got), ["dcbot.administrator"])
+        r = got["dcbot.administrator"]
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("社群伺服器", r["msg"])
+        self.assertIn("不給也照常能用", r["msg"])
+        self.assertIn(urls["grant_url"], r["fix"])
+        got = items(dict(urls, bits=2252128378809560, admin=True, missing=[]))
+        self.assertEqual((list(got), got["dcbot.administrator"]["status"]), (["dcbot.administrator"], "ok"))
+        self.assertIn(urls["revert_url"], got["dcbot.administrator"]["msg"])
+        got = items(dict(urls, bits=1024, admin=False, missing=["PIN_MESSAGES", "ATTACH_FILES"]))
+        self.assertEqual((got["dcbot.permissions-missing"]["status"], got["dcbot.permissions-missing"]["value"]), ("warn", 2))
+        self.assertIn("PIN_MESSAGES、ATTACH_FILES", got["dcbot.permissions-missing"]["msg"])
+        self.assertIn("機器人上線後會記", items({"bits": 0, "admin": False})["dcbot.administrator"]["fix"], "no links yet")
+        for st in ({}, {"bits": "x"}, {"bits": True}, "x", None):
+            self.assertEqual(items(st), {}, st)
+        self.assertEqual(items(None), {})
+        for rid in ("dcbot.administrator", "dcbot.permissions-missing"):
+            self.assertNotIn(rid, doctor.WATCHED + doctor.WATCHED_WARN)
 
     def test_notifications_the_bot_could_show_nowhere(self):
         """Manager 2026-10-11 (#issues 7): a notification kept in dcbot/state/posts-failed/ is a warning."""
@@ -2094,6 +2235,24 @@ class Records(unittest.TestCase):
         self.assertEqual(item(routes_without_pid="x")["status"], "ok", "not a list: as none")
         self.assertIsNone(item(), "a machine whose engine is a step behind does not say: no item")
         self.assertNotIn("dcbot.routes-without-pid", doctor.WATCHED + doctor.WATCHED_WARN)
+
+    def test_records_pointing_at_a_gone_pane_are_listed(self):
+        """C-201 6.1: shown, not told; nothing is removed."""
+        def item(**probe):
+            _, recs = self.records({"host-a": healthy(**probe)})
+            return next((r for r in recs if r["id"] == "dcbot.panes-gone"), None)
+        r = item(panes_gone={"routes": ["100000000000000042", "7"], "channels": ["8"]})
+        self.assertEqual((r["status"], r["value"]), ("warn", {"routes": 2, "channels": 1}))
+        self.assertIn("路由表（dcbot/state/routes.json）2 筆（頻道 100000000000000042、7）", r["msg"])
+        self.assertIn("機器人的頻道紀錄 1 個（頻道 8）", r["msg"])
+        self.assertIn("只列出，沒有刪", r["fix"])
+        r = item(panes_gone={"routes": [], "channels": ["8"]})
+        self.assertNotIn("路由表", r["msg"])
+        self.assertEqual((item(panes_gone={"routes": [], "channels": []})["status"], item(panes_gone={})["msg"]), ("ok", ""))
+        self.assertEqual(item(panes_gone={"routes": [5, None]})["status"], "ok", "not names: as none")
+        self.assertIsNone(item(), "a machine whose engine is a step behind does not say: no item")
+        self.assertIsNone(item(panes_gone="x"))
+        self.assertNotIn("dcbot.panes-gone", doctor.WATCHED + doctor.WATCHED_WARN)
 
     def test_the_bot_checks_stop_at_the_first_that_fails(self):
         inv = {"machines": {"host-a": {"ssh": ["A"], "roles": ["dcbot"]}}}
@@ -2201,6 +2360,18 @@ class AsksLeft(unittest.TestCase):
 class DraftLeftovers(unittest.TestCase):
     """C-61 E1 (#code-review's note, manager 2026-10-20): a draft that still has its cron lines, hooks or data here
     stopped running here; that is a warn, with what to write to use it. A draft with none is only listed."""
+
+    def test_an_optional_use_that_cannot_be_used_is_ok_with_why(self):
+        """plugin.format 2: doctor says each optional use of a plugin on here that cannot be used, as ok (no fault)."""
+        d = {"uses": {"plugin.format": 2, "dc.post": {"v": 99, "optional": True}, "no.such": {"v": 1, "optional": True}}}
+        rows = [("core", "/c", {}, "on", ""), ("demo", "/r/demo", d, "on", "")]
+        with mock.patch.object(doctor.altplugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(doctor.altplugin, "external", return_value=False):
+            recs = {r["id"]: r for r in doctor.external_records()}
+        r = recs["plugin.demo.optional"]
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["msg"], "demo：選用的 dc.post 不能用：它需要 dc.post v99，這版引擎提供的是 v1；"
+                                   "選用的 no.such 不能用：它需要的介面 no.such，這版引擎沒有")
 
     def test_a_draft_with_lines_hooks_or_data_is_a_warn(self):
         home = tempfile.mkdtemp(prefix="家 ")
@@ -2808,6 +2979,130 @@ class JoinedByApply(unittest.TestCase):
             f.write("{")
         self.assertEqual(doctor.joined_records(now), [])
 
+class StandbyReady(unittest.TestCase):
+    """C-163 section 8: a standby must really be able to take over; doctor says it as todos."""
+    ALL = {"host-a": {"roles": ["dcbot"], "ssh": ["a"]}, "host-b": {"roles": ["dcbot-standby"], "ssh": ["b"]}}
+
+    def records(self, o, name="host-b", is_bot=False, lease_on=True):
+        m = dict(self.ALL.get(name, {"roles": []}), _lease_on=lease_on, _all=self.ALL)
+        return {r["id"]: r for r in doctor.lease_records(name, "~/altention/engine", m, o, is_bot)}
+
+    GOOD = {"role": "standby", "role_file": "standby", "token": {"mode_ok": True}, "token_same": True, "pushed": 120,
+            "protocol": True, "requirements": True, "settings": [], "lease": "ok", "ssh_primary": True}
+
+    def test_all_good(self):
+        got = self.records({"standby": dict(self.GOOD), "standby_discord": True})
+        self.assertEqual(sorted(r for r, v in got.items() if v["status"] != "ok"), [])
+        self.assertEqual(sorted(got), ["lease.ids", "lease.pushed", "lease.read", "lease.same", "lease.ssh", "lease.token", "lease.venv"])
+
+    def test_each_trouble(self):
+        def one(check_id, **kw):
+            return self.records({"standby": dict(self.GOOD, **kw), "standby_discord": True})[check_id]
+        neither = one("lease.token", token=None)  # (no token, no webhook: which kind is not known: chosen again)
+        self.assertIn("token 和 webhook 都沒有", neither["msg"])
+        self.assertIn("重新選 host-b 要自動接手還是只通知", neither["fix"])
+        self.assertNotIn("install.sh discord", neither["fix"], "never told to put the token there")
+        self.assertIn("讀得到（應該是 600）", one("lease.token", token={"mode_ok": False})["msg"])
+        self.assertIn("跟 host-a 的不一樣（只比對雜湊，不看 token 本身）", one("lease.token", token_same=False)["msg"])
+        self.assertIn("altention secret fix-mode", one("lease.token", token={"mode_ok": False})["fix"], "chmod, never the path typed")
+        self.assertIn("頻道不在", one("lease.read", lease="no-channel")["msg"])
+        self.assertEqual(one("lease.read", lease="no-channel")["fix"],  # (#release 11-12: a fix that makes it, not doctor again)
+                         "在 host-a 上跑 altention standby setup host-b auto（會建好 #bot-lease，跑完會重啟機器人一次），或看 host-b 連不連得上 Discord")
+        missing = one("lease.read", lease="missing", missing=["guild-id", "owner-id"])  # (go-live 11-11: said plainly)
+        self.assertIn("讀不到 #bot-lease：少了伺服器 ID（guild-id）、擁有者 ID（owner-id）", missing["msg"])
+        self.assertIn("python3 ops/setup.py secret-send core guild-id host-b", missing["fix"])
+        self.assertIn("python3 ops/setup.py secret-send core owner-id host-b", missing["fix"])
+        self.assertEqual(one("lease.read", missing=["owner-id"])["status"], "ok", "read all the same")
+        owner = one("lease.ids", missing=["owner-id"])
+        self.assertEqual(owner["status"], "fail")
+        self.assertIn("備援 host-b 少了擁有者 ID（owner-id）（跟 token 放在一起的機器人設定）", owner["msg"])
+        self.assertEqual(owner["fix"], "在 host-a 上跑 python3 ops/setup.py secret-send core owner-id host-b")
+        self.assertEqual(one("lease.ids")["status"], "ok")
+        self.assertEqual(one("lease.ssh", ssh_primary=False)["status"], "fail")
+        self.assertIn("還沒收到", one("lease.pushed", pushed=None)["msg"])
+        self.assertIn("落後 61 分鐘", one("lease.pushed", pushed=3660)["msg"])
+        self.assertIn("引擎差太多，沒辦法互相接手、機器人設定（MODEL）", one("lease.same", protocol=False, settings=["MODEL"])["msg"])
+        self.assertIn("不是用備援的身分在跑（記的是 primary）", one("lease.role-file", role_file="primary")["msg"])
+        self.assertEqual(one("lease.check", timed_out=40)["status"], "warn", "past the time limit: what is known, said so")
+        venv = self.records({"standby": {"venv": False}})
+        self.assertEqual(list(venv), ["lease.venv"])
+        self.assertEqual(self.records({"standby": dict(self.GOOD), "standby_discord": False})["lease.venv"]["status"], "fail")
+
+    def test_a_notify_standby_is_never_told_to_take_the_token(self):
+        """#code-review-2, #code-review on 1917441 (manager): a standby the owner chose "only tell, no token" for is
+        checked for its webhook and ssh only; nothing in doctor's words leads anyone to put the token there."""
+        notify = {"role": "standby", "mode": "notify", "token": None, "webhook": {"mode_ok": True, "discord": True},
+                  "ssh_primary": True, "health_same": False, "pushed": None, "token_same": None}
+        got = self.records({"standby": notify, "standby_discord": True})
+        self.assertEqual(sorted(got), ["lease.ids", "lease.ssh", "lease.venv", "lease.webhook"])
+        self.assertEqual([r for r, v in got.items() if v["status"] != "ok"], [])
+        words = json.dumps(got, ensure_ascii=False)
+        for bad in ("token", "install.sh discord", "auto"):
+            self.assertNotIn(bad, words, "never a fix that puts the token there or turns it into auto")
+        bad = self.records({"standby": dict(notify, webhook={"mode_ok": False, "discord": True}), "standby_discord": True})
+        self.assertIn("應該是 600", bad["lease.webhook"]["msg"])
+        bad = self.records({"standby": dict(notify, webhook={"mode_ok": True, "discord": False}), "standby_discord": True})
+        self.assertIn("不是 Discord 的 webhook", bad["lease.webhook"]["msg"])
+        self.assertNotIn("auto", bad["lease.webhook"]["fix"])
+        no_owner = self.records({"standby": dict(notify, missing=["owner-id"]), "standby_discord": True})["lease.ids"]
+        self.assertEqual(no_owner["status"], "fail", "its webhook's @ needs it (#code-review on b6fb3f9)")
+        self.assertEqual(no_owner["msg"], "只通知的備援 host-b 少了擁有者 ID（owner-id），用 webhook 通知時沒辦法 @ 你")
+        self.assertEqual(no_owner["fix"], "在 host-a 上跑 python3 ops/setup.py secret-send core owner-id host-b")
+        self.assertNotIn("install.sh discord", no_owner["fix"])
+
+    def test_the_healthchecks_address_differs(self):
+        got = self.records({"standby": dict(self.GOOD, health_same=False), "standby_discord": True})
+        self.assertIn("healthchecks 網址跟 host-a 的不一樣", got["lease.health-same"]["msg"])
+        self.assertIn("altention standby setup host-b auto", got["lease.health-same"]["fix"])
+        self.assertNotIn("lease.health-same", self.records({"standby": dict(self.GOOD, health_same=None), "standby_discord": True}))
+
+    def test_the_primary_missing_from_the_lease(self):
+        got = self.records({"standby": dict(self.GOOD, primary_missing=700), "standby_discord": True})
+        self.assertIn("host-a 已經 11 分鐘沒在 #bot-lease 留下紀錄", got["lease.primary-missing"]["msg"])
+        self.assertNotIn("lease.primary-missing", self.records({"standby": dict(self.GOOD, primary_missing=300), "standby_discord": True}))
+
+    def test_the_outside_notice(self):
+        """C-163 d3b: set, it must be https and 600; not set, nothing (it is optional)."""
+        self.assertEqual(self.records({"health": {"https": False, "mode_ok": True}}, name="host-a", is_bot=True)["health.url"]["status"], "fail")
+        self.assertIn("600", self.records({"health": {"https": True, "mode_ok": False}}, name="host-a", is_bot=True)["health.url"]["msg"])
+        self.assertEqual(self.records({"health": {"https": True, "mode_ok": True}}, name="host-a", is_bot=True)["health.url"]["status"], "ok")
+        self.assertNotIn("health.url", self.records({}, name="host-a", is_bot=True))
+
+    def test_the_primarys_pushes(self):
+        import time as _t
+        late = self.records({"standby_sync": {"host-b": {"at": _t.time() - 7200, "ok": True}}}, name="host-a", is_bot=True)
+        self.assertEqual(late["lease.push"]["status"], "fail")
+        why = self.records({"standby_sync": {"host-b": {"at": _t.time(), "ok": False, "why": "連不上"}}}, name="host-a", is_bot=True)
+        self.assertIn("連不上", why["lease.push"]["msg"])
+        self.assertEqual(self.records({"standby_sync": {"host-b": {"at": _t.time(), "ok": True}}}, name="host-a", is_bot=True)
+                         ["lease.push"]["status"], "ok")
+
+    def test_the_owner_file_left_when_there_is_no_standby(self):
+        got = self.records({"fence_owner": 4}, name="host-c", lease_on=False)
+        self.assertEqual(got["lease.owner-left"]["status"], "fail")
+        self.assertIn("dcremote owner-clear", got["lease.owner-left"]["fix"])
+        self.assertEqual(self.records({"fence_owner": 4}, name="host-c", lease_on=True), {}, "a standby there: as it should be")
+        self.assertEqual(self.records({"fence_owner": 0}, name="host-c", lease_on=False), {})
+
+    def test_offered_once_where_the_bot_runs(self):
+        """C-163 d3a (manager): with other machines and no standby, the bot's machine notes it (warn: not a problem);
+        not while the standby is not offered yet (standby.ready(): the drill)."""
+        with mock.patch.object(doctor, "standby_ready", lambda: False):
+            self.assertNotIn("lease.offer", self.records({}, name="host-a", is_bot=True, lease_on=False), "switch off: not said")
+        p = mock.patch.object(doctor, "standby_ready", lambda: True)
+        p.start()
+        self.addCleanup(p.stop)
+        got = self.records({}, name="host-a", is_bot=True, lease_on=False)
+        self.assertEqual(got["lease.offer"]["status"], "warn")
+        self.assertIn("設備援", got["lease.offer"]["fix"])
+        self.assertNotIn("lease.offer", self.records({}, name="host-a", is_bot=True, lease_on=True), "a standby there")
+        self.assertNotIn("lease.offer", self.records({}, name="host-c", is_bot=False, lease_on=False), "only the bot's machine")
+
+    def test_no_standby_warn_on_a_standby(self):
+        recs = {r["id"] for r in doctor.token_records("host-b", "~/e", False, {"bot_env": True, "bot_reach": {"bot": "host-a", "way": "a", "dcctl": True}}, standby=True)}
+        self.assertNotIn("dcbot.standby-token", recs, "a standby's token: lease_records says what of it")
+
+
 class TokenOnTheBotsMachineOnly(unittest.TestCase):
     """C-109: where the bot runs, is its token taken now; elsewhere, does dcctl reach that machine; a bot settings file
     left elsewhere is said, not as a fault (a standby machine, C-53, keeps one), and never opened."""
@@ -2840,6 +3135,17 @@ class TokenOnTheBotsMachineOnly(unittest.TestCase):
         self.assertEqual(self.records(False, {"bot_env": False, "bot_reach": {"error": "找不到"}})["dcbot.forward"]["status"], "fail")
         self.assertEqual(self.records(False, {"bot_env": False, "bot_reach": None})["dcbot.forward"]["status"], "warn")
         self.assertEqual(self.records(None, {"bot_env": True, "bot_reach": {}}), {}, "one machine: nothing to reach")
+
+    def test_old_settings_not_moved_are_said_with_why(self):
+        """C-110 (manager 2026-11-03): the old file still there is never quiet: why it waits, and what to do."""
+        rec = self.records(True, {"bot_env": True, "bot_old": ["這台的機器人設定還在舊位置（~/.config/dcbot/env），因為機器清單上找不到這台的名字，不知道它是不是機器人那台",
+                                                              "doctor 會說怎麼對上名字；對上之後再跑一次 install 就會搬。"]})
+        r = rec["dcbot.old-settings"]
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("host-b：這台的機器人設定還在舊位置", r["msg"])
+        self.assertIn("再跑一次 install 就會搬", r["fix"])
+        self.assertNotIn("dcbot.old-settings", self.records(True, {"bot_env": True}))
+        self.assertNotIn("dcbot.old-settings", self.records(True, {"bot_env": True, "bot_old": "壞的"}))
 
     def test_a_settings_file_left_elsewhere_is_said_with_no_word_of_deleting_it(self):
         left = self.records(False, {"bot_env": True, "bot_reach": {"bot": "botbox", "here": False, "way": "A", "tried": ["A"], "dcctl": True}})

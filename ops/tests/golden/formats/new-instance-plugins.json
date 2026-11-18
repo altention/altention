@@ -1,0 +1,43 @@
+#golden spec §12.5.6
+{
+ "init (install.sh)": {
+  "core": {
+   "language": "zh-TW",
+   "timezone": "Asia/Taipei"
+  },
+  "dcbot": {
+   "default_permission": "auto"
+  },
+  "format": 1,
+  "setup": {
+   "done": false
+  },
+  "sync": {
+   "dirs": {},
+   "interval": "15m",
+   "owns": [
+    "knowledge"
+   ]
+  },
+  "usage": {
+   "subscription_limits": true
+  }
+ },
+ "seed": {
+  "core": {
+   "language": "zh-TW",
+   "timezone": "Asia/Taipei"
+  },
+  "format": 1,
+  "sync": {
+   "dirs": {},
+   "interval": "15m",
+   "owns": [
+    "knowledge"
+   ]
+  },
+  "usage": {
+   "subscription_limits": true
+  }
+ }
+}

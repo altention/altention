@@ -103,6 +103,38 @@ class InTheBox(unittest.TestCase):
         self.assertEqual(run(typist.enter(pane, "hello")), (None, False))
         self.assertEqual(pane.pressed, [])
 
+    def test_a_box_caught_while_it_is_drawn_is_looked_at_again(self):
+        """11-10 #psro: a long message typed right into another machine's pane was left unsent; the box held it alone,
+        and the same screen read later compares equal (test_a_long_wrapped_message_with_quotes_and_marks_is_itself).
+        What was read the moment Enter was to go was not the message: looked at again before it is given up."""
+        for first in (box("❯ hello and"), samples.screen("permission"), "Loading…"):
+            pane = Pane(first, box("❯ hello and more"))
+            self.assertEqual(run(typist.enter(pane, "hello and more", others_type=True)), ("pressed", False), first[:20])
+            self.assertEqual(pane.pressed, ["Enter"])
+        pane = Pane(box("❯ hello and"), box("❯ hello and"), box("❯ hello and"), box("❯ hello and"), box("❯ hello and more"))
+        self.assertEqual(run(typist.enter(pane, "hello and more", others_type=True)), (None, False), "ENTER_LOOKS looks, no more")
+        self.assertEqual(pane.pressed, [])
+
+    def test_a_long_wrapped_message_with_quotes_and_marks_is_itself(self):
+        """The text of 11-10 #psro (a channel mention spelled out: back quotes, full-width brackets, "…", a ~ path),
+        wrapped over five rows of an 80-column pane as Claude Code 2.1.319 drew it there (the channel's name changed
+        to one of the same length). Compares equal: no character or row end of it was the cause."""
+        typed = ('那你要跑一些實驗看看嗎？VAE 要怎麼設計可以問問看 #lab-notes-manager0（貼東西過去或跟它說話：'
+                 '`~/altention/engine/bin/altention dc post lab-notes-manager0 "…"`；讀它最近的訊息：'
+                 '`~/altention/engine/bin/altention dc read lab-notes-manager0`）')
+        rule = "─" * 80
+        view = "\n".join(["  7 和第 10 節確認。", "", "✻ Sautéed for 53s · done 11:35 AM",
+                          " " * 40 + "✔ Update installed · Restart to update", rule,
+                          "❯\xa0那你要跑一些實驗看看嗎？VAE 要怎麼設計可以問問看",
+                          "  #lab-notes-manager0（貼東西過去或跟它說話：`~/altention/engine/bin/altention",
+                          "  dc post lab-notes-manager0",
+                          '  "…"`；讀它最近的訊息：`~/altention/engine/bin/altention dc read',
+                          "  lab-notes-manager0`）", rule, "  ⏵⏵ bypass permissions on (shift+tab to cycle)", ""])
+        self.assertEqual(screen.pane_state(view), "box")
+        self.assertTrue(screen.bot_typed(view, typed, screen.paste_marks(typed)))
+        pane = Pane(view)
+        self.assertEqual(run(typist.enter(pane, typed, others_type=True)), ("pressed", False))
+
     def test_enter_on_a_box_that_differs(self):
         pane = Pane(box("❯ hello and more"))
         self.assertEqual(run(typist.enter(pane, "hello")), ("pressed", True), "a session nobody else types at: pressed, and said")

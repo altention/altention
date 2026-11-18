@@ -1,4 +1,9 @@
 """Subagents and workflows as threads: what the hook passes on, and what ends up in which thread."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os
@@ -132,6 +137,29 @@ class Threads(unittest.TestCase):
         self.assertIn("Bash×1", msg.content)
         self.assertTrue(thread.archived)
         self.assertEqual((self.st["subs"], self.st["rooms"]), ({}, {}))
+
+    def test_a_threads_log_is_not_kept_in_the_ledger(self):
+        """Manager 11-16 (C-172a P1c): what a subagent's or workflow's thread logs (its task, tool lines, result) is
+        not noted in the ledger; the status line in the channel is, edits and all."""
+        calls = []
+        real = agents.deliver.deliver
+
+        async def watched(to, *args, **kw):
+            calls.append((to, kw.get("keep", True)))
+            return await real(to, *args, **dict(kw, keep=False))  # (the fakes keep no ledger)
+        self.agent_files("a1", {"agentType": "general-purpose", "description": "Count"}, line("user", "Count them."))
+        with mock.patch.object(agents.deliver, "deliver", watched):
+            self.handle(self.ev("SubagentStart", agent_id="a1", agent_type="general-purpose"))
+            self.handle(self.ev("PreToolUse", agent_id="a1", agent_type="general-purpose", tool_name="Bash", hint="ls"))
+            self.flush_all()
+            self.handle(self.ev("SubagentStop", agent_id="a1", agent_type="general-purpose",
+                                last_assistant_message="Done."))
+        (thread,) = self.ch.threads.values()
+        in_thread = [keep for to, keep in calls if to is thread]
+        in_channel = [keep for to, keep in calls if to is self.ch]
+        self.assertTrue(in_thread and in_channel, calls)
+        self.assertEqual(set(in_thread), {False}, "the thread's log: not kept")
+        self.assertEqual(set(in_channel), {True}, "the status line: kept")
 
     def test_a_subagent_whose_stop_event_never_came_ends_with_the_main_turn(self):
         path = self.agent_files("a3", {"description": "Quiet one"}, line("user", "do it"))

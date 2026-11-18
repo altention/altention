@@ -21,7 +21,7 @@ import discord
 
 from altention.connectors.claude_code import screen
 
-from . import config, messages, tmuxio
+from . import config, deliver, messages, tmuxio
 from .util import target
 
 KEEP = 20             # notices with a button kept in a channel (the oldest go)
@@ -78,7 +78,7 @@ class Unsent(object):
         token = uuid.uuid4().hex[:12]
         auto = bool(getattr(message, "auto", False))
         try:
-            msg = await ch.send(worded(words, code, auto), view=view(ch.id, token))
+            msg = await deliver.deliver(ch, worded(words, code, auto), view=view(ch.id, token), intent="status", key="resend:%s" % token)
         except Exception:
             traceback.print_exc()
             msg = None
@@ -131,7 +131,8 @@ class Unsent(object):
             r = await self.bridge.submit(Again(ch, entry), entry["text"])
         except Exception as e:  # kept again, with a button again: never lost over a failure on the way (#code-review)
             try:
-                msg = await ch.send(messages.note("resend.press_failed", why=error_of(e)), view=view(ch.id, token))
+                msg = await deliver.deliver(ch, messages.note("resend.press_failed", why=error_of(e)), view=view(ch.id, token),
+                                            intent="status", key="resend:%s" % token)
                 entry["msg"] = msg.id
             except Exception:
                 traceback.print_exc()
@@ -139,7 +140,8 @@ class Unsent(object):
             raise
         done = getattr(r, "code", None) is None
         try:
-            await interaction.message.edit(content=(interaction.message.content or "") + "\n" + messages.note("resend.done" if done else "resend.still"))
+            await deliver.deliver(ch, content=(interaction.message.content or "") + "\n" + messages.note("resend.done" if done else "resend.still"),
+                                  intent="status", key="resend:%s" % token, edit=interaction.message)
         except Exception:
             traceback.print_exc()
         return True
@@ -167,7 +169,9 @@ class Unsent(object):
                     traceback.print_exc()
                     return
                 if shown != "box":  # the next dialog, the owner's text, a list: not yet
-                    return
+                    if shown == "dialog" and getattr(self.bridge, "menus", None) is not None:  # C-189: a dialog no
+                        await self.bridge.menus.look_again(ch, st)  # menu of ours knows of (a restart): taken in, so
+                    return  # --waiting lists it and another Claude may answer it
                 if self.kept(st).pop(token, None) is None:  # taken meanwhile: its button pressed, sent from there
                     continue                                 # (#code-review on 5a9fe8d: it went in twice)
                 self.bridge.host.save()
@@ -192,8 +196,9 @@ class Unsent(object):
                 if entry.get("msg"):
                     try:
                         msg = ch.get_partial_message(entry["msg"])
-                        await msg.edit(view=None)
-                        await ch.send(messages.note("resend.handed"), silent=True, reference=msg, mention_author=False)
+                        await deliver.deliver(ch, view=None, intent="status", key="resend:%s" % token, edit=msg)
+                        await deliver.deliver(ch, messages.note("resend.handed"), silent=True, reference=msg, mention_author=False,
+                                              intent="status")
                     except Exception:
                         traceback.print_exc()
         finally:
@@ -208,7 +213,7 @@ class Unsent(object):
         sender = self.bridge.host.get_channel(int(entry["from"])) if str(entry.get("from") or "").isdigit() else None
         try:
             if sender is not None:
-                await sender.send(text, silent=True)
+                await deliver.deliver(sender, text, silent=True, intent="status")
             else:
                 await self.bridge.host.audit(text)
         except Exception:

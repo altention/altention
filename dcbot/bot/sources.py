@@ -18,7 +18,7 @@ import traceback
 
 import discord
 
-from . import config, masking
+from . import config, deliver, masking
 
 FOLDER = os.path.join(config.STATE, "sources")
 KEEP_DAYS, KEEP_COUNT = 30, 500
@@ -130,5 +130,5 @@ async def show(bot, payload):
         extra = {"file": discord.File(io.BytesIO(data), name)} if name else {}
         if i == 0:
             extra.update(reference=ref, mention_author=False)
-        await ch.send(text, allowed_mentions=quiet, **extra)
+        await deliver.deliver(ch, text, allowed_mentions=quiet, intent="status", **extra)
     return True

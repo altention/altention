@@ -1,6 +1,11 @@
 """Another machine's event stream while it reconnects (2026-10-07: the Mac back in the lab, typing got through at
 once while the stream slept its 300 seconds, so messages were reported as maybe not sent and the late replies were
 marked as typed at the terminal)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import tempfile

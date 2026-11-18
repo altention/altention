@@ -1,5 +1,10 @@
 """/archive (C-63): every kind of channel put away and taken back where it was; the archive's categories, 50 channels
 each; the note at the start of the topic; /detach remembers where it was too."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import time
 import unittest
@@ -100,6 +105,9 @@ class Bot(object):
 
     async def audit(self, text):
         self.audits.append(text)
+
+    async def fetch_channel(self, cid):  # (a channel by an ID the cache lacks is asked of Discord: none here, C-191)
+        raise discord.NotFound(type("R", (), {"status": 404, "reason": "Not Found"})(), {"code": 10003, "message": "x"})
 
 
 class Base(unittest.TestCase):

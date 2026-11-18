@@ -1,5 +1,10 @@
 """B-12: what the bot posts of Claude's words and of its tools' output is masked first (bot/masking.py, on
 altention/redact.py's pattern), and a message that had something masked says so in a small line."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import unittest
 from unittest import mock

@@ -1,4 +1,9 @@
 """C-76: what "已上線，版本 `abc1234`（…）" says in brackets: the release when HEAD is one, else HEAD's own subject."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import os
 import shutil
 import subprocess

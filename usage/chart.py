@@ -72,14 +72,31 @@ def weekly_panel(ax, samples, pro, plan="?"):
     ax.grid(alpha=0.3)
 
 
-def projects_panel(ax, results, top=8):
-    short = lambda name: name if len(name) <= 24 else name[:22] + "…"  # noqa: E731
+def short(name, keep=24):
+    """A project's name for a bar's label: as it is when short; else its start, "…" and its end, so two long names
+    that differ only at the end (…-real-stochastic-0921, …-edge-search-1029) stay apart (11-09: cut to the start
+    alone they read the same)."""
+    if len(name) <= keep:
+        return name
+    head = (keep - 1) // 2
+    return name[:head] + "…" + name[-(keep - 1 - head):]
+
+
+def project_rows(results, top=8):
+    """The bars of the projects panel, from the bottom up: (cost, label), at least $0.5, the top ones."""
     items = sorted(((p["cost"], "%s（%s）" % (short(p["project"]), r["machine"])) for r in results
                     for p in r.get("projects", [])), reverse=True)[:top]
-    items = [i for i in items if i[0] >= 0.5][::-1]
-    if items:
-        ax.barh([n for _, n in items], [c for c, _ in items], color=COLORS[0])
-        for y, (c, _) in enumerate(items):
+    return [i for i in items if i[0] >= 0.5][::-1]
+
+
+def projects_panel(ax, results, top=8):
+    items = project_rows(results, top)
+    if items:  # (bars at numbers, labels set apart: two equal labels never fold into one row, every amount stays
+        ys = list(range(len(items)))  # beside its own bar; 11-09 the amounts were one row off)
+        ax.barh(ys, [c for c, _ in items], color=COLORS[0])
+        ax.set_yticks(ys)
+        ax.set_yticklabels([n for _, n in items])
+        for y, (c, _) in zip(ys, items):
             ax.text(c, y, " $%.0f" % c, va="center", fontsize=8)
     ax.set_title("近 7 天用最多的專案（API 等值美元）", fontsize=11)
     ax.tick_params(axis="y", labelsize=8)

@@ -221,3 +221,41 @@ class After(unittest.TestCase):
         moved = (base + 8) % 15
         self.assertEqual(plancore.cron_time({"every": "15m", "offset": "machine", "after": "8m"}, "box"),
                          ",".join(str(x) for x in range(moved, 60, 15)) + " * * * *" if moved else "*/15 * * * *")
+
+
+class Standby(unittest.TestCase):
+    """C-163 d2a: the core's supervisor lines and the bot's venv on a standby too ("on": ["bot", "standby"]); a machine
+    without the standby role gets exactly what it got before (manager)."""
+
+    def core(self, on_supervisor):
+        import json as _json
+        with open(_os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+                               "altention", "core.plugin.json"), encoding="utf-8") as f:
+            d = _json.load(f)
+        if on_supervisor is not None:
+            for c in d["cron"]:
+                if c["name"] in ("supervisor", "supervisor-boot"):
+                    c["on"] = on_supervisor
+        return [("core", "/e/altention", d, "on", "")]
+
+    def plan(self, machine, on, standbys):
+        from altention import plugin
+        with mock.patch.object(plugin, "standby_machines", lambda: set(standbys)):
+            want, _ = plancore.wanted(self.core(on), machine, {}, "host-a")
+            away = plancore.elsewhere(self.core(on), machine, {}, "host-a", {"host-a", "host-b", "host-c"})
+        return sorted((w["name"], w["text"]) for w in want), sorted(a["name"] for a in away)
+
+    def test_no_standby_role_no_change(self):
+        for machine in ("host-a", "host-c"):
+            with self.subTest(machine=machine):
+                self.assertEqual(self.plan(machine, None, {"host-b"}), self.plan(machine, "bot", set()),
+                                 "the new core with a standby elsewhere = the old core without one")
+
+    def test_the_standby_runs_the_supervisor(self):
+        names = [n for n, _ in self.plan("host-b", None, {"host-b"})[0]]
+        self.assertIn("supervisor", names)
+        self.assertIn("supervisor-boot", names)
+        self.assertIn("watch", names, "C-185: the system check too, run only while it is the bot (doctor.watch_elsewhere)")
+        self.assertEqual(self.plan("host-b", None, {"host-b"})[1], [], "nothing of the bot's called elsewhere")
+        self.assertIn("healthchecks", names, "it pings when it is the bot (manager on e2e60ab)")
+        self.assertNotIn("supervisor", [n for n, _ in self.plan("host-b", None, set())[0]], "the role taken away: gone")

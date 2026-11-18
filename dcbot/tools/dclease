@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+"""dclease: the lease before the bot starts (C-163 step 2, design: instance docs/refactor/c163-design.md 1.1-1.4).
+
+  dclease gate     for the supervisor, before it starts the bot: 0 start it, 10 not now (another machine holds the
+                   place, or this standby has no reason to take it), anything else: the supervisor's own rule (start
+                   on the primary: a broken lease must not keep the bot down there)
+  dclease watch    the core's standby-watch, each minute on a standby (design sections 1.3, 2): with the bot's token,
+                   the primary's bot up but not reaching Discord for 10 minutes is said once (by REST); with only the
+                   webhook (notify only), the primary's bot down for 5 minutes (its heartbeat old and its process
+                   gone, or ssh failing that long) is said once by the webhook, and Discord out of reach too; with
+                   neither, nothing. Said again only once it was back in between.
+  dclease check    for doctor (design section 8): can this machine take over? One line of JSON: its part, the token
+                   (there, its permission, the same as the primary's: never its value), #bot-lease read by REST, ssh
+                   to the primary, the state the primary pushed (its age, protocol, requirements, settings). Writes
+                   nothing, posts nothing.
+  dclease --help
+
+Only for an installation with a standby (a machine with the role dcbot-standby): without one, `gate` says 0 at once
+and touches nothing (no Discord call). With one, it writes this machine's own message in #bot-lease (leader: false:
+"alive", never in the way of a takeover) and reads every machine's:
+- the primary starts unless another machine holds the place (a bigger epoch, fresh), or a state/fenced written by
+  the bot that took over names a bigger epoch than its own while that machine still holds the place;
+- a standby takes over only when nobody holds it (the primary's lt stale for 5 minutes), ssh does not show the
+  primary's bot alive (state/heartbeat written in 2 minutes and its process up for more than 2), no takeover in the
+  last 30 minutes and fewer than 3 in 24 hours: it writes the next epoch with leader: true, waits 15 seconds, reads
+  again, and starts only if its message is that epoch and the primary's lt is still stale (then state/fenced on the
+  primary, by ssh, when it can be reached).
+Times are Discord's (edited_timestamp), never a machine's clock. Nothing is printed of the token.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bot import config, lease, remote  # noqa: E402
+
+API = "https://discord.com/api/v10"
+START, WAIT = 0, 10
+TAKEOVERS = os.path.join(config.STATE, "lease-takeovers.json")
+TOOK_OVER = os.path.join(config.STATE, "took-over.json")  # read by the bot once it is up (its #audit line)
+NOTE = os.path.join(config.STATE, "lease-gate-note.json")
+STANDBY_DIR = os.path.join(config.ROOT, "state-standby")  # what the bot pushed here (bot/standby.py)
+FAILBACK_TAKEN = os.path.join(config.STATE, "failback-taken.json")  # the primary: the failback push last taken in
+FAILED_BACK = os.path.join(config.STATE, "failed-back.json")  # the standby: when it failed back (bot/main.py fail_back)
+FAILED_BACK_WAIT = 10 * 60  # no takeover this soon after failing back: the primary is starting
+MISSING = os.path.join(config.STATE, "lease-primary-missing.json")  # since when the primary has no message in
+# #bot-lease (a standby's gate): past MISSING_SECS, standby-watch and doctor say it (manager on 5f1addf)
+MISSING_SECS = 10 * 60
+REPLAY = os.path.join(config.STATE, "replay-wanted.json")  # the primary became the bot again after a failback or a
+# standby gone down: the bot looks for replies left unposted (Bot.replay_all(), 1.4 point 4)
+RECOVERED = os.path.join(config.STATE, "standby-recovered.json")  # the primary took the standby's pushed channels in
+# (it went down while it was the bot): the bot says so in #audit once (Bot.recovered_note())  # what the gate could not do, said by the bot (#audit)
+ROLE_FILE = os.path.join(config.STATE, "lease-role")  # this machine's part, for the supervisor (stdlib only)
+BUDGET_SECS = 100  # the whole gate (the supervisor allows 120): past it, a connection trouble
+SSH_SECS = 10      # each ssh of the takeover, one way only (the primary is likely down: no 20 s per alias)
+
+
+class Budget(Exception):
+    """The gate ran past BUDGET_SECS."""
+
+
+def role_said(role):
+    try:
+        with open(ROLE_FILE, "w") as f:
+            f.write(role or "")
+    except OSError:
+        pass
+FENCED = os.path.join(config.STATE, "fenced")
+DOWN = os.path.join(config.STATE, "lease-down.json")  # the primary's bot crashing: {"since", "checked", "down"} (item 20;
+# the supervisor removes it once the bot is up STABLE_SECS, a passing load check here removes it too)
+LOAD_CHECK_SECS = 40
+
+
+def call(method, path, body=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bot " + config.TOKEN, "Content-Type": "application/json",
+                                          "User-Agent": "DiscordBot (altention dcbot, 1.0)"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = r.read()
+        return json.loads(data) if data else None
+
+
+def stamp(m):
+    return lease.when(m.get("edited_timestamp") or m.get("timestamp"))
+
+
+class Discord(object):
+    """#bot-lease by REST (the bot is not connected yet)."""
+
+    def __init__(self, api=call):
+        self.api = api
+        self.me_id = str(self.api("GET", "/users/@me")["id"])
+        found = [c for c in self.api("GET", "/guilds/%d/channels" % config.GUILD_ID) or []
+                 if c.get("name") == config.LEASE_CHANNEL and c.get("type") == 0]
+        self.channel = found[0]["id"] if found else None
+
+    def messages(self):
+        got = self.api("GET", "/channels/%s/messages?limit=20" % self.channel) or []
+        return [m for m in got if str((m.get("author") or {}).get("id")) == self.me_id]
+
+    def entries(self):
+        out = []
+        for m in self.messages():
+            e = lease.parse(m.get("content"), stamp(m))
+            if e is not None:
+                out.append((e, m))
+        return out
+
+    def notify(self, text):
+        """The notification channel (core.notify_channel), mentioning the owner (section 5: once)."""
+        name = remote.alt().setting("core.notify_channel", "notifications")
+        found = [c for c in self.api("GET", "/guilds/%d/channels" % config.GUILD_ID) or [] if c.get("name") == name]
+        if found:
+            self.api("POST", "/channels/%s/messages" % found[0]["id"],
+                     {"content": "%s <@%d>" % (text, config.OWNER_ID), "allowed_mentions": {"users": [str(config.OWNER_ID)]}})
+
+    def write(self, me, epoch, leader, lt, down=None):
+        """This machine's message (made when there is none); the Discord time of the edit."""
+        own = [m for e, m in self.entries() if e["machine"] == me]
+        text = lease.worded(me, epoch, leader, lt, down)
+        if own:
+            got = self.api("PATCH", "/channels/%s/messages/%s" % (self.channel, own[0]["id"]), {"content": text})
+        else:
+            got = self.api("POST", "/channels/%s/messages" % self.channel, {"content": text})
+        return stamp(got or {})
+
+
+def ssh_veto(primary):
+    """Does ssh show the primary's bot alive (section 1.1)? (True, words) when its state/heartbeat was written in
+    the last 2 minutes and its bot process has been up for more than 2; (False, words) otherwise, ssh down included."""
+    engine = remote.engine_of(primary)
+    cmd = ("cd %s/dcbot/state 2>/dev/null || { echo NOSTATE; exit 0; }; echo $(( $(date +%%s) - $(cat heartbeat 2>/dev/null || echo 0) )) "
+           "$(ps -o etime= -p $(cat bot.pid 2>/dev/null || echo 0) 2>/dev/null | tr -d ' ' || echo 0)" % engine)
+    # (engine_of is ready for a shell over there, its ~ outside quotes: quoted once more, ~ was a folder named "~"
+    # and this always said NOSTATE, never seeing the primary's bot alive: found in d2b, manager)
+    # (etime, [[dd-]hh:]mm:ss, on Linux and macOS alike: macOS's ps has no etimes)
+    code, out = ssh(primary, cmd)
+    if code != 0:
+        return False, "ssh 不通"
+    if out.strip() == "NOSTATE":  # (reached, but not where its bot keeps its state: not "ssh down", said apart)
+        return False, "ssh 通，但沒查到（%s/dcbot/state 不在）" % engine
+    try:
+        words = out.split()
+        beat, up = int(words[0]), elapsed(words[1] if len(words) > 1 else "0")
+    except (ValueError, IndexError):
+        return False, "ssh 通，讀不到心跳"
+    if beat < 120 and up > 120:
+        return True, "ssh 通，心跳 %d 秒前" % beat
+    if beat < 120:
+        return False, "ssh 通，但機器人一直重啟（程序才跑 %d 秒）" % up
+    return False, "ssh 通，心跳 %d 秒前" % beat
+
+
+def elapsed(text):
+    """ps's etime ([[dd-]hh:]mm:ss) in seconds; 0 for nothing."""
+    if not text or text == "0":
+        return 0
+    days, _, rest = text.rpartition("-")
+    parts = [int(p) for p in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return int(days or 0) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def ssh(host, cmd):
+    """(exit code, stdout) of `cmd` on `host`, by its first alias, in SSH_SECS at most (255: not reached)."""
+    import subprocess
+    try:
+        r = subprocess.run(remote.argv(host, cmd), capture_output=True, timeout=SSH_SECS)
+    except (OSError, subprocess.TimeoutExpired):
+        return 255, ""
+    return r.returncode, r.stdout.decode("utf-8", "replace")
+
+
+def fence(primary, epoch):
+    """state/fenced on the primary (its bot ends on seeing it; its supervisor does not start it): best effort."""
+    cmd = "printf %%s %d > %s/dcbot/state/fenced" % (epoch, remote.engine_of(primary))  # (shell-ready: see ssh_veto)
+    try:
+        return ssh(primary, cmd)[0] == 0
+    except Exception:
+        return False
+
+
+def load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def save(path, data):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def trouble(e):
+    """What kind of trouble an error is (manager 11-08): "connection" (the network, a time limit, 429, 5xx: it may
+    pass; the primary waits and tries again each minute) or "setup" (401/403/404: no rights, #bot-lease gone, a
+    mistake of this code: it will not pass by waiting, and a standby cannot read it either; the primary starts)."""
+    if isinstance(e, urllib.error.HTTPError):
+        return "setup" if e.code in (401, 403, 404) else "connection"
+    if isinstance(e, (urllib.error.URLError, OSError, TimeoutError, Budget)):
+        return "connection"
+    return "setup"
+
+
+def discord_code(e):
+    """Discord's own error code in an HTTP error's body (10003 a channel, 10008 a message unknown); None."""
+    try:
+        got = json.loads(e.read().decode("utf-8", "replace") or "{}")
+    except Exception:
+        return None
+    return got.get("code") if isinstance(got, dict) else None
+
+
+def plain(e):
+    """The reason of an error in plain words, for #audit (#release 11-08: no error names)."""
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code == 404 and discord_code(e) == 10008:  # Unknown Message: its own message, gone between two calls
+            return "這台自己的那則訊息不在了"
+        return {401: "機器人的 token 不對", 403: "沒有權限", 404: "頻道不在", 429: "Discord 限速"}.get(
+            e.code, "Discord 那邊出問題" if e.code >= 500 else "Discord 回了錯誤（%d）" % e.code)
+    if isinstance(e, Budget):
+        return "超過時間"
+    if isinstance(e, (urllib.error.URLError, OSError, TimeoutError)):
+        return "網路連不上"
+    return "程式出錯（%s）" % e.__class__.__name__
+
+
+def note(kind, why):
+    """state/lease-gate-note.json: what the gate could not do, since when; the bot says it in #audit once it is up
+    (the gate itself cannot: the trouble is often reaching Discord). A connection trouble is said only past
+    CONNECTION_SAY seconds in a row."""
+    got = load(NOTE, {}) if kind else {}
+    if not kind:
+        if os.path.exists(NOTE):
+            os.remove(NOTE)
+        return
+    if got.get("kind") != kind:
+        got = {"kind": kind, "since": time.time()}
+    got["why"] = why
+    save(NOTE, got)
+
+
+def said(why):
+    """Why the primary's gate says "wait", on stderr: the supervisor logs it when it changes (drill problem B,
+    manager 11-09: six minutes of nobody being the bot after a failback, and nothing said why)."""
+    print("dclease: waiting: %s" % why, file=sys.stderr)
+
+
+def load_check():
+    """"" when the bot's code loads (bot.main imported in a child, with this Python: its top-level code runs, main()
+    does not, nothing reaches Discord); else why not. The same kind of check as the update's (manager 11-10)."""
+    try:
+        r = subprocess.run([sys.executable, "-B", "-c", "import bot.main"], cwd=config.ROOT, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=LOAD_CHECK_SECS)
+    except (OSError, subprocess.SubprocessError) as e:
+        return "load check: %s" % e.__class__.__name__
+    if r.returncode != 0:
+        return "load check failed: %s" % r.stdout.decode("utf-8", "replace").strip()[-300:]
+    return ""
+
+
+def down_mark(crashing, check=None):
+    """The primary's "down" for its message (drill item 20, manager 11-10): while its bot keeps crashing (the
+    supervisor's --crashing), "crashing" when the bot's code does not load. The load check runs at most each
+    DOWN_CHECK_SECS (its result kept in state/lease-down.json): passing, the standby may fail back (a crash the check
+    cannot see costs a failback that fails, at most 3 a day). Not crashing: no mark, the file goes. Decided at every
+    gate, whoever holds the place: the standby holding it is the case that counts (the drill's 18:54, the rig on
+    d8f431c: marked only once nobody held it, the standby had failed back already)."""
+    if not crashing:
+        if os.path.exists(DOWN):
+            try:
+                os.remove(DOWN)
+            except OSError:
+                pass
+        return None
+    got = load(DOWN, None)
+    got = got if isinstance(got, dict) else {}
+    if time.time() - (got.get("checked") or 0) < lease.DOWN_CHECK_SECS:
+        return "crashing" if got.get("down", True) else None  # (no "down": d8f431c's file, there = down: #code-review-2)
+    why = (check or load_check)()
+    if bool(why) != bool(got.get("down")) or not got:
+        said("the bot keeps crashing; its code %s" % ("does not load (%s): marked down" % why if why
+                                                      else "loads: not marked down"))
+    save(DOWN, {"since": got.get("since") or time.time(), "checked": time.time(), "down": bool(why)})
+    return "crashing" if why else None
+
+
+def gate(d=None, sleep=time.sleep, veto=ssh_veto, fence_=fence, crashing=False, check=None):
+    machines = remote.inventory().get("machines") or {}
+    if not lease.enabled(machines):
+        role_said(None)
+        return START
+    me = remote.this_machine()
+    role = lease.role_of(me, machines)
+    role_said(role)  # (for the supervisor: on a standby anything but 0 is "wait")
+    if role is None:
+        return START
+    order = list(machines)
+    primary = next((n for n in order if lease.role_of(n, machines) == "primary"), None)
+    try:
+        d = d or Discord()
+        if d.channel is None:  # no #bot-lease: the primary runs as without a standby, a standby never starts
+            if role == "primary":
+                note("setup", "頻道不在")
+                return START
+            return WAIT
+        pairs = d.entries()
+        if role == "standby":
+            note_primary([e for e, _ in pairs], primary)  # (before any return: #code-review-2 on e2e60ab, manager)
+        mine = [e for e, _ in pairs if e["machine"] == me]
+        epoch = mine[0]["epoch"] if mine else 0
+        lt = mine[0]["lt"] if mine else None
+        newest = max([stamp(m) for _, m in pairs if stamp(m) is not None] or [None]) if pairs else None
+        if newest is not None and lease.leader_of([e for e, _ in pairs], newest, order) == me:
+            note(None, None)
+            return START  # this machine holds the place already (its bot restarted: a deploy, !restart, a crash):
+            # started again as it is, no leader: false edit, no takeover counted (#code-review on ccd8baa)
+        down = down_mark(crashing, check) if role == "primary" else None
+        now = d.write(me, epoch, False, lt, down)  # alive (section 1.2: written before the read)
+        entries = [e for e, _ in d.entries()]
+        if role == "standby":
+            note_primary(entries, primary)
+        note(None, None)
+        verdict = lease.decide(role, me, entries, now, order)
+        if role == "primary":
+            fenced = lease.fenced_epoch(FENCED)
+            holder = lease.leader_of(entries, now, order)
+            if fenced is not None and (holder is None or holder == me):
+                os.remove(FENCED)  # the lease is back here: the fence goes (section 1.4)
+            elif fenced is not None and fenced > epoch:
+                said("fenced: epoch %s here, %s in state/fenced, %s holds the place" % (epoch, fenced, holder))
+                return WAIT
+            if verdict == "start" and holder is None and crashing and lease.leave_to_standby(entries, now, me, machines):
+                said("the bot keeps crashing and its place lapsed: left to the standby")
+                return WAIT  # (drill item 17, manager 11-09: lease.leave_to_standby())
+            if verdict == "start" and holder is None:  # becoming the bot without a takeover (the standby went away
+                # otherwise than by failing back): a new epoch, as a takeover's and a failback's are; else machines
+                # that saw the standby's epoch refuse this bot for good (#code-review-2 on 94f58e5)
+                new = lease.new_epoch(entries, epoch, me, machines)
+                d.write(me, new, False, lt, down)
+                pairs = d.entries()  # read again: a standby taking over meanwhile wins, or gives up (still_mine)
+                again = next((stamp(m) for e, m in pairs if e["machine"] == me), now)
+                if not lease.mine_alone([e for e, _ in pairs], again, me, new, order):
+                    said("epoch %s written, but the read after it was not this machine's alone: %s"
+                         % (new, "; ".join(lease.worded(e["machine"], e["epoch"], e["leader"], e["lt"]) for e, _ in pairs)))
+                    return WAIT
+                from bot import standby
+                pushed = standby.failback_waiting(STANDBY_DIR, load(FAILBACK_TAKEN, 0))
+                if pushed is not None:  # section 5: the standby failed back to here, with its channels as they are now
+                    own = load(os.path.join(config.STATE, "channels.json"), None)
+                    standby.take_in(STANDBY_DIR, config.STATE, me)
+                    marks = load(os.path.join(STANDBY_DIR, "meta.json"), {}) or {}
+                    marks = {k: marks.get(k) for k in ("untouched", "gone") if isinstance(marks.get(k), list)}
+                    merged = standby.failback_merge(load(os.path.join(config.STATE, "channels.json"), None), own, marks)
+                    if marks and isinstance(merged, dict):  # channel by channel: what the standby did not change keeps
+                        save(os.path.join(config.STATE, "channels.json"), merged)  # this machine's own copy (manager
+                        # 11-09 (b)); a pushed file unreadable: left as take_in() put it (#code-review on 67ba1d8)
+                    save(FAILBACK_TAKEN, pushed)
+                    save(REPLAY, {"at": time.time(), "from": (load(os.path.join(STANDBY_DIR, "meta.json"), {}) or {}).get("from")})
+                    # (the bot takes the questions waiting in and posts what the handing back left unposted)
+                else:  # the standby took over and went down itself: what it pushed while it was the bot, turned as
+                    got = standby.recovered_channels(STANDBY_DIR, me, epoch,  # a failback would (manager on 8778f8d)
+                                                     os.path.join(config.STATE, "channels.json"))
+                    if got is not None:
+                        channels, meta = got
+                        standby.take_in(STANDBY_DIR, config.STATE, me)
+                        save(os.path.join(config.STATE, "channels.json"), channels)
+                        save(RECOVERED, {"standby": meta.get("from"), "at": meta.get("at")})
+                        save(REPLAY, {"at": time.time(), "from": meta.get("from")})
+            if verdict != "start":
+                said("%s holds the place (read at %s): %s" % (holder, now, "; ".join(
+                    lease.worded(e["machine"], e["epoch"], e["leader"], e["lt"]) for e in entries)))
+            return START if verdict == "start" else WAIT
+        if verdict != "takeover":
+            return START if verdict == "start" else WAIT
+        if primary and not any(e["machine"] == primary for e in entries):
+            return WAIT  # the primary never wrote in #bot-lease (a standby just set up, its bot restarting): it has not
+            # joined yet, it has not stopped: nothing taken over, nothing said (#code-review, #code-review-2 on 3a4e6b1)
+        back = load(FAILED_BACK, {})
+        if isinstance(back, dict) and isinstance(back.get("at"), (int, float)) and time.time() - back["at"] < FAILED_BACK_WAIT:
+            return WAIT  # this machine failed back a moment ago: the primary is starting, not gone (section 5)
+        return take_over(d, me, primary, order, entries, sleep, veto, fence_, machines)
+    except Exception as e:
+        kind = trouble(e)
+        print("dclease: %s (%s)" % (e.__class__.__name__, kind), file=sys.stderr)
+        if role != "primary":
+            return WAIT  # a standby is never started on a guess
+        if lease.fenced_epoch(FENCED) is not None:
+            return WAIT  # fenced by another machine: never started on a guess (no note: "started anyway" would be
+            # untrue, #code-review on 3757c8c)
+        note(kind, plain(e))
+        if kind == "connection":
+            return WAIT  # fenced by another machine, or Discord out of reach for now: each minute again (section 1.2)
+        return START  # a setup trouble: waiting does not fix it, and a standby cannot read it either (manager 11-08)
+
+
+def note_primary(entries, primary):
+    """MISSING kept as it is: written (since when) while #bot-lease has no message of the primary, removed as soon as
+    it has one. Run right after every read, before anything returns (standby-watch and doctor say it past 10 min)."""
+    if primary and not any(e["machine"] == primary for e in entries):
+        if not isinstance(load(MISSING, None), (int, float)):
+            save(MISSING, time.time())
+        return
+    try:
+        os.remove(MISSING)
+    except OSError:
+        pass
+
+
+def now_of(d, me):
+    return next((stamp(m) for e, m in d.entries() if e["machine"] == me), None)
+
+
+def take_over(d, me, primary, order, entries, sleep, veto, fence_, machines=None):
+    history = load(TAKEOVERS, [])
+    held = lease.may_take_over(history, time.time())
+    if held:
+        said = load(TAKEOVERS + ".said", 0)
+        if held == "day" and not (isinstance(said, (int, float)) and time.time() - said < 86400):  # (once: section 5)
+            save(TAKEOVERS + ".said", time.time())
+            from bot import messages
+            d.notify(messages.lease("day_stopped", here=lease.leader_of(entries, now_of(d, me) or lease.when("1970-01-01"),
+                                                                         order) or primary, primary=primary))
+        return WAIT
+    blocked, ssh_said = veto(primary)
+    if blocked:
+        return WAIT
+    from bot import standby
+    held, stale, engines = standby.checks(STANDBY_DIR, config.ROOT)  # section 3.4: else notify only, say which
+    if held:
+        said = load(TAKEOVERS + ".cannot", 0)
+        if not (isinstance(said, (int, float)) and time.time() - said < 3600):  # (once an hour at most)
+            save(TAKEOVERS + ".cannot", time.time())
+            from bot import messages
+            d.notify(messages.lease("cannot_take_over", primary=primary, standby=me,
+                                    why=messages.lease(held, primary=primary)))
+        return WAIT
+    epoch = lease.new_epoch(entries, 0, me, machines)
+    taken = wrote = counted = False
+    try:
+        d.write(me, epoch, True, None)
+        sleep(lease.TAKEOVER_WAIT)
+        pairs = d.entries()
+        now = next((stamp(m) for e, m in pairs if e["machine"] == me), None)
+        if now is None or not lease.still_mine([e for e, _ in pairs], now, me, epoch, primary, order):
+            return WAIT
+        counted = time.time()
+        save(TAKEOVERS, [t for t in history if time.time() - t < 86400] + [counted])  # (counted before anything else
+        # can fail or be killed: #code-review-2 on ccd8baa; taken out again below when it fails short of a kill)
+        standby.take_in(STANDBY_DIR, config.STATE, me)  # the bot's channels, routes, marks… as last pushed (3.1)
+        standby.keep_base(STANDBY_DIR, config.STATE)  # (what the failback compares with: failback_marks())
+        prim = next((e for e, _ in pairs if e["machine"] == primary), None)
+        wrote = True
+        save(TOOK_OVER, {"epoch": epoch, "primary": primary,
+                         "primary_lt": prim["lt"].isoformat() if prim and prim["lt"] else None,
+                         "ssh": ssh_said, "fenced": None, "at": time.time(), "stale": stale, "engines": engines})
+        fenced = fence_(primary, epoch) if primary else False
+        save(TOOK_OVER, dict(load(TOOK_OVER, {}), fenced=fenced))
+        taken = True  # (only now: anything failing after the leader: true edit, taking the state in among it, goes
+        return START  # back to leader: false in finally, as 163b's rule: #code-review on 9d2b7bd, manager)
+    except Budget:
+        counted = False  # (cut short by the time limit: counted all the same, like a kill: manager 11-08)
+        raise
+    finally:
+        if not taken:  # given up, or trouble after the leader: true edit: back to alive only, as far as it goes (a
+            try:       # fresh leader: true left behind would make this machine the bot unchecked next time)
+                d.write(me, epoch, False, None)
+            except Exception:
+                pass
+            if counted:  # an error, not a kill nor the time limit: no takeover took place (#code-review on 65ee18f:
+                try:     # else the next minute is held by "one within 30 minutes" while the primary is down)
+                    save(TAKEOVERS, [t for t in load(TAKEOVERS, []) if t != counted])
+                except Exception:
+                    pass
+            if wrote:  # (and no takeover said when the bot starts some other way)
+                try:
+                    os.remove(TOOK_OVER)
+                except OSError:
+                    pass
+
+
+def check(d=None, known=None):
+    """`dclease check`: section 8's checks, as data for doctor. `known`: filled as it goes (what main prints when
+    the time runs out)."""
+    from bot import standby
+    machines = remote.inventory().get("machines") or {}
+    me = remote.this_machine()
+    role = lease.role_of(me, machines)
+    out = known if known is not None else {}
+    out.update({"role": role, "enabled": lease.enabled(machines), "role_file": None})
+    try:
+        with open(ROLE_FILE) as f:
+            out["role_file"] = f.read().strip() or None
+    except OSError:
+        pass
+    try:
+        from altention import secret_store
+        got = secret_store.fingerprint("core", "discord-token")
+    except Exception:
+        got = None
+    out["token"] = None if got is None else {"mode_ok": got["mode"] & 0o077 == 0}
+    if role != "standby":
+        return out
+    try:  # which kind of standby (the owner's choice at setup: auto has the bot's token, notify only a webhook)
+        hook = secret_store.fingerprint("core", "standby-webhook")
+    except Exception:
+        hook = None
+    out["mode"] = "auto" if got is not None else "notify" if hook is not None else None
+    out["webhook"] = None if hook is None else {"mode_ok": hook["mode"] & 0o077 == 0, "discord": webhook_url() is not None}
+    if out["mode"] == "notify":  # (no token: no lease to read, nothing to take over; ssh to the primary is its watch)
+        out["missing"] = [] if config.OWNER_ID else ["owner-id"]  # (its webhook mentions the owner by it: #code-review
+        # on b6fb3f9, one set up before setup handed it over)
+        primary = next((n for n in machines if lease.role_of(n, machines) == "primary"), None)
+        if primary:
+            out["ssh_primary"] = ssh(primary, "true")[0] == 0
+        return out
+    out.update(standby.readiness(STANDBY_DIR, config.ROOT))
+    since = load(MISSING, None)
+    out["primary_missing"] = int(time.time() - since) if isinstance(since, (int, float)) else None
+    out["missing"] = [n for n, v in (("guild-id", config.GUILD_ID), ("owner-id", config.OWNER_ID)) if not v]
+    if "guild-id" in out["missing"]:  # (no server to look in: "the channel is not there" said nothing of why; go-live
+        out["lease"] = "missing"      # 11-11, manager)
+    try:
+        if out.get("lease") == "missing":
+            raise StopIteration
+        d = d or Discord()
+        out["lease"] = "ok" if d.channel is not None and d.messages() is not None else "no-channel"
+    except StopIteration:
+        pass
+    except Budget:
+        raise
+    except Exception as e:
+        out["lease"] = "%s: %s" % (trouble(e), plain(e))
+    primary = next((n for n in machines if lease.role_of(n, machines) == "primary"), None)
+    if primary:
+        code, _ = ssh(primary, "true")
+        out["ssh_primary"] = code == 0
+    return out
+
+
+DOWN_SECS = 5 * 60       # the primary's bot down this long: said (notify only)
+DISCORD_SECS = 10 * 60   # its bot up, not reaching Discord this long: said
+WATCH = os.path.join(config.STATE, "standby-watch.json")  # what was seen and said (episodes)
+
+
+def look(primary):
+    """The primary by ssh: {"ok": reached, "heartbeat": its bot's heartbeat's age in seconds, "discord": the age of
+    its state/discord-ok, "up": its bot's process alive} (ages by the primary's own clock; None when not there)."""
+    st = "%s/dcbot/state" % remote.engine_of(primary)  # (ready for that shell as it is: never quoted again)
+    code, out = ssh(primary, "date +%%s; cat %s/heartbeat 2>/dev/null | tr -d '\\n\\r '; echo; "
+                             "cat %s/discord-ok 2>/dev/null | tr -d '\\n\\r '; echo; "
+                             "p=$(cat %s/bot.pid 2>/dev/null); [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && "
+                             "{ tr '\\000' ' ' < /proc/$p/cmdline 2>/dev/null || ps -p \"$p\" -o command= 2>/dev/null; } "
+                             "| grep -q 'bot\\.main' && echo up || echo down"
+                    % (st, st, st))
+    # (the pid alone could be another program's after the primary restarted: its command line must be the bot's,
+    # bot.main; Linux by /proc, macOS by ps. #code-review-2 on bb2f2f2, manager. Each value on a line of its own
+    # whatever the file ends with: a newline at the end shifted the lines, found trying it on the mac, manager)
+    if code != 0:
+        return {"ok": False}
+    rows = [r.strip() for r in out.splitlines()]
+    while len(rows) < 4:
+        rows.append("")
+
+    def age(v):
+        return int(rows[0]) - int(v) if rows[0].isdigit() and v.isdigit() else None
+    return {"ok": True, "heartbeat": age(rows[1]), "discord": age(rows[2]), "up": rows[3] == "up"}
+
+
+def webhook_url():
+    """The standby's webhook (the core's secret standby-webhook), only a Discord webhook address: else None."""
+    try:
+        from altention import secret_store
+        with open(secret_store.path("core", "standby-webhook"), encoding="utf-8") as f:
+            url = f.read().strip()
+    except Exception:
+        return None
+    return url if url.startswith(("https://discord.com/api/webhooks/", "https://discordapp.com/api/webhooks/")) else None
+
+
+def by_webhook(url, text):
+    """`text` posted by the webhook, mentioning the owner when known."""
+    body = {"content": text, "allowed_mentions": {"parse": []}}
+    if getattr(config, "OWNER_ID", 0):
+        body["content"] = "%s <@%d>" % (text, config.OWNER_ID)
+        body["allowed_mentions"] = {"users": [str(config.OWNER_ID)]}
+    req = urllib.request.Request(url, method="POST", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": "altention"})
+    with urllib.request.urlopen(req, timeout=20):
+        pass
+
+
+def said_trouble(line):
+    """standby-watch.out gets a trouble once, when it differs from the last one said (a standby off the net would
+    add a line a minute for ever; #code-review-2 on bb2f2f2, manager). None: no trouble now (said once too)."""
+    last = load(WATCH + ".trouble", None)
+    if line == last:
+        return
+    save(WATCH + ".trouble", line)
+    print("dclease watch: %s" % (line or "沒有問題了"))
+
+
+def bot_here_running():
+    """This machine's bot running now (it is the bot: nothing to watch)."""
+    try:
+        with open(os.path.join(config.STATE, "bot.pid")) as f:
+            os.kill(int(f.read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def watch(now=None, d_factory=None):
+    """`dclease watch`: one look (see the module's words). Returns what it said, for the tests."""
+    from altention import config as engine_config
+    from bot import messages
+    machines = remote.inventory().get("machines") or {}
+    me = remote.this_machine()
+    if lease.role_of(me, machines) != "standby" or bot_here_running():
+        return []
+    primary = next((n for n in machines if lease.role_of(n, machines) == "primary"), None)
+    token, url = engine_config.bot_token_there(), webhook_url()
+    if not primary or not (token or url):
+        return []
+    now = now or time.time()
+    seen = load(WATCH, {})
+    seen = seen if isinstance(seen, dict) else {}
+    got = look(primary)
+    said = []
+
+    def tell(text):
+        try:
+            if token:
+                (d_factory or Discord)().notify(text)
+            else:
+                by_webhook(url, text)
+        except Exception:
+            save(WATCH, seen)  # (what was seen kept: ssh_bad_since not lost; said next minute again: #code-review)
+            raise
+        said.append(text)
+    if not got["ok"]:
+        seen.setdefault("ssh_bad_since", now)
+    else:
+        seen.pop("ssh_bad_since", None)
+    down = (not got["ok"] and now - seen["ssh_bad_since"] >= DOWN_SECS) or \
+        (got["ok"] and not got["up"] and (got["heartbeat"] is None or got["heartbeat"] >= DOWN_SECS))
+    if not token:  # (with the token, the lease takes over: nothing to tell of the bot down)
+        if down and not seen.get("down_said"):
+            tell(messages.lease("watch_down", primary=primary, standby=me))
+            seen["down_said"] = now
+        elif got["ok"] and got["up"]:
+            seen.pop("down_said", None)
+    since = load(MISSING, None)
+    if token and isinstance(since, (int, float)) and now - since >= MISSING_SECS:
+        if not seen.get("missing_said"):
+            tell(messages.lease("watch_no_primary", primary=primary, minutes=int((now - since) // 60)))
+            seen["missing_said"] = now
+    elif not isinstance(since, (int, float)):
+        seen.pop("missing_said", None)
+    away = got["ok"] and got["up"] and got["discord"] is not None and got["discord"] >= DISCORD_SECS
+    if away and not seen.get("discord_said"):
+        tell(messages.lease("watch_discord", primary=primary))
+        seen["discord_said"] = now
+    elif got["ok"] and got["discord"] is not None and got["discord"] < DISCORD_SECS:
+        seen.pop("discord_said", None)
+    save(WATCH, seen)
+    return said
+
+
+CHECK_SECS = 40  # `check` in all (doctor's probe allows 120 for everything of the machine): past it, what is known
+
+
+def main(argv):
+    if argv and argv[0] == "watch":
+        try:
+            watch()
+            said_trouble(None)
+        except Exception as e:  # (said in standby-watch.out once a kind of trouble; the next minute tries again)
+            said_trouble("%s: %s" % (type(e).__name__, plain(e)))
+        return 0
+    if argv and argv[0] == "check":
+        import signal
+        known = {}
+
+        def over(signum, frame):
+            raise Budget()
+        signal.signal(signal.SIGALRM, over)
+        signal.alarm(CHECK_SECS)
+        try:
+            check(known=known)
+        except Budget:
+            known["timed_out"] = CHECK_SECS  # (#code-review on f68f24b, manager)
+        finally:
+            signal.alarm(0)
+        print(json.dumps(known, ensure_ascii=False))
+        return 0
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0 if argv else 2
+    if argv[0] == "gate":
+        import signal
+
+        def over(signum, frame):
+            raise Budget()
+        signal.signal(signal.SIGALRM, over)
+        signal.alarm(BUDGET_SECS)
+        try:
+            return gate(crashing="--crashing" in argv[1:])
+        finally:
+            signal.alarm(0)
+    print("dclease：不認得 %s（-h 看說明）" % " ".join(argv))
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

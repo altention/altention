@@ -78,6 +78,21 @@ class Conversations(InAConfigFolder):
         self.assertEqual((s["id"], s["prompts"], s["first"], s["last"], s["title"]),
                          ("aaaa1111-x", 2, "第一句", "最後一句", "標題"))
 
+    def test_the_name_given_with_rename_comes_before_the_made_up_title(self):
+        """C-201 6.4: Claude Code's /rename writes a "custom-title" row (as 2.1.325 does); the newest one is the
+        title, as in Claude Code's own /resume list; one with no text is passed over."""
+        rename = lambda t: json.dumps({"type": "custom-title", "customTitle": t, "sessionId": "aaaa1111-x"},
+                                         separators=(",", ":"), ensure_ascii=False) + "\n"  # as Claude Code writes it
+        ai = '{"type":"ai-title","aiTitle":"標題"}\n'
+        for rows, want in (([rename("舊名"), ai, rename("新名")], "新名"),
+                           ([ai, rename("我取的")], "我取的"),
+                           ([rename("我取的"), ai], "我取的"),
+                           ([ai, rename(""), rename("  ")], "標題"),
+                           ([ai, '{"type":"custom-title","customTitle":5}\n'], "標題"),
+                           ([rename("只有名字")], "只有名字")):
+            path = self.write("aaaa1111-x", human("第一句") + "".join(rows), 100)
+            self.assertEqual(sessions.summarize(path)["title"], want, rows)
+
     def test_recent_and_find(self):
         self.write("aaaa1111-x", human("old one"), 100)
         self.write("bbbb2222-y", human("new one") + human("its last"), 200)

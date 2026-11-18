@@ -1,10 +1,16 @@
 """How a turn ends on Discord: failures with a retry button, quiet progress, a mention after a long turn,
 and send-now for "!!" messages."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import discord
 
@@ -13,12 +19,17 @@ from tests import fakepane
 
 
 class Msg(object):
-    def __init__(self, mid, content, view, silent, allowed=None):
+    def __init__(self, mid, content, view, silent, kw=None):
         self.id, self.content, self.view, self.silent, self.reactions = mid, content, view, silent, []
-        self.allowed = allowed
+        self.kw = kw or {}  # what else it was sent with: allowed_mentions, reference (C-103's mentions)
 
     async def delete(self):
         pass
+
+    async def edit(self, content=None, view=None, **kw):
+        if content is not None:
+            self.content = content
+        self.view = view
 
     async def add_reaction(self, emoji):
         self.reactions.append(emoji)
@@ -30,10 +41,12 @@ class Ch(object):
     def __init__(self):
         self.sent = []
 
-    async def send(self, content, view=None, silent=False, allowed_mentions=None, files=None):
-        self.sent.append(Msg(len(self.sent) + 1, content, view, silent, allowed_mentions))
-        self.sent[-1].files = files
+    async def send(self, content, view=None, silent=False, **kw):
+        self.sent.append(Msg(len(self.sent) + 1, content, view, silent, kw))
         return self.sent[-1]
+
+    def get_partial_message(self, mid):
+        return next(m for m in self.sent if m.id == mid)
 
     async def typing(self):
         pass
@@ -77,8 +90,13 @@ class TurnEnd(unittest.TestCase):
             await self.bridge.handle(self.ev("UserPromptSubmit", prompt="do it"))
             st = self.bridge.host.chan(self.ch)
             self.assertTrue(st["busy"])
-            await self.bridge.handle(self.ev("StopFailure", error="rate_limit",
-                                             last_assistant_message="API Error: 429 usage limit"))
+            async def no_screen(st):
+                return "", ""  # (Claude Code shows no wait of its own: the failure as ever, C-99a)
+            self.bridge.quota.screens = no_screen
+            with mock.patch.object(tmux_bridge.quota, "LOOKS", (0,)):
+                await self.bridge.handle(self.ev("StopFailure", error="rate_limit",
+                                                 last_assistant_message="API Error: 429 usage limit"))
+                await asyncio.gather(*self.bridge.quota.working)
             self.assertFalse(st["busy"])
             msg = self.ch.sent[-1]
             self.assertIn("用量達到上限", msg.content)
@@ -110,49 +128,23 @@ class TurnEnd(unittest.TestCase):
             self.assertFalse(await self.bridge.on_interaction(Click()))
         asyncio.run(go())
 
-    def test_a_long_turn_ends_with_a_mention_and_a_short_one_does_not(self):
+    def test_a_long_turn_ends_without_a_mention(self):
+        """C-103 (owner 2026-11-03): how long a turn took is no reason to ring; only what needs the owner is."""
         async def go():
-            for secs, mention in ((5, False), (tmux_bridge.LONG_TURN + 5, True)):
+            for secs in (5, 3600):
                 await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go"))
                 self.bridge.rt(self.ch).turn.t0 = time.time() - secs
                 await self.bridge.handle(self.ev("Stop", last_assistant_message="done"))
-                self.assertEqual("<@42>" in self.ch.sent[-1].content, mention)
-                allowed = self.ch.sent[-1].allowed  # P0-1: the client pings nobody; the footer's send lets the owner through
-                self.assertEqual(allowed.to_dict() if allowed else None, {"parse": [], "users": [42]} if mention else None)
+                self.assertNotIn("<@", self.ch.sent[-1].content, secs)
         asyncio.run(go())
-
-    def test_a_long_turns_mention_still_rings_when_its_picture_cannot_be_sent(self):
-        """P0-1 (#code-review on 1c0d6f85): the last message falls back to its text alone; it keeps the footer and may
-        still ping the owner."""
-        async def go():
-            await self.bridge.post_reply(self.ch, {}, [("done", ["/nonexistent/picture.png"])],
-                                         {"foot": "-# 11 分鐘 · <@42>", "final": "done"})
-        asyncio.run(go())
-        last = self.ch.sent[-1]
-        self.assertIn("<@42>", last.content)
-        self.assertEqual(last.allowed.to_dict() if last.allowed else None, {"parse": [], "users": [42]})
-
-    def test_a_long_turns_mention_rings_on_the_message_with_its_picture(self):
-        """P0-1 (#code-review-2 on 1c0d6f85): the footer on the last message, sent with its picture."""
-        with tempfile.TemporaryDirectory() as d:
-            pic = os.path.join(d, "chart.png")
-            with open(pic, "wb") as f:
-                f.write(b"\x89PNG\r\n")
-
-            async def go():
-                await self.bridge.post_reply(self.ch, {}, [("done", [pic])], {"foot": "-# 11 分鐘 · <@42>", "final": "done"})
-            asyncio.run(go())
-        last = self.ch.sent[-1]
-        self.assertEqual(len(last.files or []), 1, "sent with its picture, not the fallback")
-        self.assertIn("<@42>", last.content)
-        self.assertEqual(last.allowed.to_dict() if last.allowed else None, {"parse": [], "users": [42]})
 
     def test_progress_and_notes_along_the_way_are_silent(self):
         async def go():
             await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go"))
             turn = self.bridge.rt(self.ch).turn
             turn.t0 -= 60
-            await self.bridge.progress(self.ch, turn, "Bash ls")
+            turn.lines.append("Bash ls")
+            await self.bridge.progress(self.ch, turn, self.bridge.lane(self.ch))
             await self.bridge.say(self.ch, "note", silent=True)
             await self.bridge.handle(self.ev("Stop", last_assistant_message="done"))
             self.assertEqual([m.silent for m in self.ch.sent], [True, True, True, False])  # typed at the terminal, progress, note, reply
@@ -184,6 +176,31 @@ class TurnEnd(unittest.TestCase):
             finally:
                 tmux_bridge.asyncio.sleep = tmux_sleep
             self.assertEqual(pressed, [])
+
+
+    def test_send_now_is_said_in_audit_whoever_asked(self):
+        """C-176: every send-now pressed is one #audit line: the owner's !!, or a Claude's dc post --now (its ⚡ on its
+        📨 card). Not pressed (nothing queued): nothing said."""
+        from bot import posts
+        card = Msg(5, "card", None, False)
+        owner = Msg(1, "hi", None, False)
+        owner.channel = self.ch
+        cases = [(owner, tmux_bridge.NOW_OWNER % self.ch.name),
+                 (posts.Origin(self.ch, auto=True, sender=7, sender_name="#st-1", card=card),
+                  tmux_bridge.NOW_CLAUDE % (self.ch.name, "#st-1 的 Claude ")),
+                 (posts.Origin(self.ch, auto=True, sender_name="HostB 上的 Claude（x）"),
+                  tmux_bridge.NOW_CLAUDE % (self.ch.name, "HostB 上的 Claude（x）"))]
+        for msg, said in cases:
+            self.bridge.host.audits.clear()
+            with mock.patch.object(tmux_bridge.cc_typing, "send_now", mock.AsyncMock(return_value=True)):
+                self.assertTrue(asyncio.run(self.bridge.send_now(msg, "s")))
+            self.assertEqual(self.bridge.host.audits, [said])
+        self.assertEqual(card.reactions, ["⚡"], "a post's ⚡ on its card")
+        self.assertIn("#st-1 的 Claude 要求立刻送出", tmux_bridge.NOW_CLAUDE % (self.ch.name, "#st-1 的 Claude "))
+        self.bridge.host.audits.clear()
+        with mock.patch.object(tmux_bridge.cc_typing, "send_now", mock.AsyncMock(return_value=False)):
+            self.assertFalse(asyncio.run(self.bridge.send_now(Msg(1, "hi", None, False), "s")))
+        self.assertEqual(self.bridge.host.audits, [])
 
 
 if __name__ == "__main__":

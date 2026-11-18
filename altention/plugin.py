@@ -12,7 +12,8 @@ plugin.json is public, so it holds no personal values; those live in the instanc
     "plugins": {"<name>": {"on": "host-a" | ["host-a", "host-b"], "disabled_on": ["host-b"], …}}
 A plugin with "machines": "all" runs on every machine unless the instance lists the machine in disabled_on (written
 "on purpose", and doctor says so rather than calling it broken). One with "machines": "one" runs where the
-instance's "on" says, else on the bot's machine. The core always runs and cannot be turned off.
+instance's "on" says, else on the bot's machine, and with "standby": true on the standby machines too (C-181: the
+status boards, whose own code posts only where the bot is right now). The core always runs and cannot be turned off.
 
 When what decides it cannot be read (the instance's settings or the machine list broken or unreadable, or "on"
 naming a machine not in the list), a plugin's place is "unknown", never "off": plan shows it as unknown, and apply
@@ -69,7 +70,17 @@ CORE_ONLY = ("cron", "settings")  # blocks only the core may declare
 # release.py check-plugin remind its author to delete them. Each: (where, what to do instead).
 RETIRED = (("commands", "沒有程式讀，刪掉"), ("requires[].data", "只看 plugin，刪掉 data"),
            ("secrets[].path", "路徑固定在 ~/.config/altention/secrets/<插件>/<名字>，刪掉 path"))  # the last: C-77 G3
-ON_WORDS = ("all", "bot", "one", "sources")  # what a step's "on" may say besides machine names
+ON_WORDS = ("all", "bot", "one", "sources", "standby")  # what a step's "on" may say besides machine names
+STANDBY_ROLE = "dcbot-standby"  # C-163: "standby" in an "on" is every machine of the list with this role
+
+
+def standby_machines():
+    """The machines of the list that have the standby role (STANDBY_ROLE); empty when the list cannot be read."""
+    try:
+        return {n for n, m in (config.inventory().get("machines") or {}).items()
+                if STANDBY_ROLE in ((m or {}).get("roles") or [])}
+    except Exception:
+        return set()
 # The engine update and the engine/instance sync never go into the scheduler (DESIGN 8): they must keep running when
 # the time zone, plugins.json or the scheduler's state are broken, or a fix pushed to every machine never arrives.
 # (only what is written out: a wrapper script that pulls inside is not seen; the guarantee is the sync's own cron line)
@@ -148,6 +159,10 @@ def check(d, path="plugin.json", core=False):
         _need(isinstance(d.get(key), str) and d[key].strip(), path, "少了 %s" % key)
     _need(check_name(d["name"]), path, "name 只能用小寫英文、數字和 -")
     _need(d.get("machines", "all") in ("all", "one"), path, "machines 只能是 all 或 one")
+    _need(type(d.get("standby", False)) is bool, path,
+          "standby 只能是 true 或 false，而且只配 machines one")
+    _need(not (d.get("standby") is True and d.get("machines") != "one"),
+          path, "standby 只能是 true 或 false，而且只配 machines one")
     _need((d["name"] == "core") == core, path, "只有引擎的 altention/core.plugin.json 是核心，其他插件不能叫 core"
           if not core else "altention/core.plugin.json 的 name 要是 core")
     if not core:
@@ -245,13 +260,16 @@ def check(d, path="plugin.json", core=False):
             _need(isinstance(page.get("title", ""), str), path, "activity.pages[%d].title 要是文字" % i)
             _need(page.get("access", "owner") in ACCESS, path,
                   "activity.pages[%d].access 要是 owner（只有擁有者）或 guild（伺服器裡的人都能開）" % i)
+            _need(isinstance(page.get("opens_files", False), bool), path,  # C-116: buttons on files posted with --file
+                  "activity.pages[%d].opens_files 要是 true 或 false" % i)
+            _need(isinstance(page.get("file_button", ""), str) and len(page.get("file_button", "")) <= 80, path,
+                  "activity.pages[%d].file_button 要是 80 字以內的文字（檔案按鈕上的字）" % i)
     uses = d.get("uses", {})
     _need(isinstance(uses, dict), path, "uses 要是物件（介面名 → 版本）")
     for k, v in uses.items():
-        n = v.get("v") if isinstance(v, dict) else None
-        if isinstance(n, int) and not isinstance(n, bool) and n >= 1:  # v0.6.0's optional entry: {"v": N, "optional": …}
-            raise NewerEngine("%s：%s" % (path, text.t("plugin.newer_engine", name=k)))
-        _need(isinstance(v, int) and not isinstance(v, bool) and v >= 1, path, "uses.%s 要是 1 以上的整數（介面的版本）" % k)
+        _need(_version_ok(v) or (isinstance(v, dict) and _version_ok(v.get("v")) and set(v) <= {"v", "optional"}
+                                 and isinstance(v.get("optional", False), bool)), path,
+              text.t("plugin.uses_shape", name=k))
     offers = d.get("interfaces", {})
     _need(isinstance(offers, dict), path, "interfaces 要是物件（介面名 → {version, what, paths, also}）")
     for k, e in offers.items():
@@ -296,22 +314,102 @@ def interfaces(engine=None):
     return found
 
 
+def _version_ok(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
+def want_of(v):
+    """(version, optional) of one "uses" entry: N, or {"v": N, "optional": true} (plugin.format 2)."""
+    return (v.get("v"), v.get("optional") is True) if isinstance(v, dict) else (v, False)
+
+
+def use_problem(name, v, offered, elsewhere=None):
+    """Why the interface `name` at the version `v` asks (a "uses" entry) cannot be used where `offered` is, or ""."""
+    want = want_of(v)[0]
+    have = offered.get(name)
+    if have is None and (elsewhere or {}).get(name):
+        return text.t("plugin.uses_provider_off", name=name, provider=elsewhere[name])
+    if have is None:
+        return text.t("plugin.uses_missing", name=name)
+    if want != have["version"] and want not in (have.get("also") or []):
+        versions = "、v".join(str(x) for x in [have["version"]] + list(have.get("also") or []))
+        return text.t("plugin.uses_version_plugin", name=name, want=want, have=versions, provider=have["provider"]) \
+            if have.get("provider") else text.t("plugin.uses_version", name=name, want=want, have=versions)
+    return ""
+
+
 def uses_problem(d, offered, elsewhere=None):
     """Why plugin.json `d` cannot run where `offered` (interfaces(), with what plugins on there offer: those carry
     "provider") is offered, or "" when it can (or says nothing in "uses"). `elsewhere`: {interface: plugin} offered
-    by a plugin not on there, to name it."""
-    out = []
-    for name, want in sorted((d.get("uses") or {}).items()):
-        have = offered.get(name)
-        if have is None and (elsewhere or {}).get(name):
-            out.append(text.t("plugin.uses_provider_off", name=name, provider=elsewhere[name]))
-        elif have is None:
-            out.append(text.t("plugin.uses_missing", name=name))
-        elif want != have["version"] and want not in (have.get("also") or []):
-            versions = "、v".join(str(v) for v in [have["version"]] + list(have.get("also") or []))
-            out.append(text.t("plugin.uses_version_plugin", name=name, want=want, have=versions, provider=have["provider"])
-                       if have.get("provider") else text.t("plugin.uses_version", name=name, want=want, have=versions))
-    return "；".join(out)
+    by a plugin not on there, to name it. An optional entry never stops it (optional_off says those)."""
+    out = [use_problem(name, v, offered, elsewhere) for name, v in sorted((d.get("uses") or {}).items())
+           if not want_of(v)[1]]
+    return "；".join(x for x in out if x)
+
+
+def missing_why(name, why, offered, elsewhere=None, unsure=None, broken=(), core=None):
+    """use_problem()'s `why` for the interface `name`, said again when "the engine does not offer it" may not be so
+    (C-155, as unsure_why says it for a plugin blocked): its provider's place is not known (`unsure`, provided()'s:
+    this machine not on the machine list, say), or a plugin.json here cannot be read (`broken`, their names) and the
+    name is not the engine's (`core`). A provider plainly off (`elsewhere`) keeps its own words."""
+    if not why or name in offered or name in (elsewhere or {}):
+        return why
+    if name in (unsure or {}):
+        return text.t("plugin.uses_provider_unknown", name=name, provider=unsure[name][0], why=unsure[name][1])
+    if broken and name not in (core or {}):
+        return text.t("plugin.uses_maybe_broken", name=name, plugins="、".join(sorted(broken)))
+    return why
+
+
+def broken_names(rows):
+    """The plugins in `rows` (on_this_machine's) whose plugin.json could not be read."""
+    return [r[0] for r in rows if r[2] is None]
+
+
+def optional_off(d, offered, elsewhere=None, unsure=None, broken=(), core=None):
+    """{interface: why} of plugin.json `d`'s optional "uses" that cannot be used where `offered` is (missing_why
+    for the rest of the arguments)."""
+    out = {}
+    for name, v in sorted((d.get("uses") or {}).items()):
+        if want_of(v)[1]:
+            why = missing_why(name, use_problem(name, v, offered, elsewhere), offered, elsewhere, unsure, broken, core)
+            if why:
+                out[name] = why
+    return out
+
+
+def optional_lines(rows, engine=None):
+    """[(plugin, words)]: each optional use of a plugin on in `rows` (on_this_machine's) that cannot be used now, and
+    why (plugin.format 2): plugins.py list and doctor say these, as no fault."""
+    users = [r for r in rows if r[3] == "on" and r[2] and any(want_of(v)[1] for v in (r[2].get("uses") or {}).values())]
+    if not users:
+        return []
+    try:
+        core = interfaces(engine)
+    except PluginError:
+        return []
+    mine, elsewhere, unsure, _ = provided(rows, core)
+    offered, broken = dict(core, **mine), broken_names(rows)
+    return [(r[0], text.t("plugin.optional_off", name=n, why=why))
+            for r in users for n, why in optional_off(r[2], offered, elsewhere, unsure, broken, core).items()]
+
+
+def uses_now(name, machine=None, engine=None, root=None):
+    """`altention plugins uses NAME` (plugin.format 2): (where the plugin is here, {interface: {"ok", "optional",
+    "why"?}}) worked out now from the settings and the plugins on here, so a long-running program learns that an
+    optional one came or went. None when there is no such plugin; PluginError when interfaces.json cannot be read."""
+    rows, _ = on_this_machine(machine, engine, root)
+    row = next((r for r in rows if r[0] == name), None)
+    if row is None or row[2] is None:
+        return None
+    core = interfaces(engine)
+    mine, elsewhere, unsure, _ = provided(rows, core)
+    offered, broken = dict(core, **mine), broken_names(rows)
+    out = {}
+    for n, v in sorted((row[2].get("uses") or {}).items()):
+        why = missing_why(n, use_problem(n, v, offered, elsewhere), offered, elsewhere, unsure, broken, core)
+        out[n] = dict({"ok": not why, "optional": want_of(v)[1]}, **({"why": why} if why else {}))
+    return row[3], out
 
 
 def machines_for(name, entry, d):
@@ -323,7 +421,7 @@ def machines_for(name, entry, d):
         names = sorted(config.machines())
         if d.get("machines", "all") == "all":
             return [m for m in names if plugin_update.wanted_here(name, entry, m)]
-        on = _names(entry.get("on")) or [config.bot_machine()[0]]
+        on = _names(entry.get("on")) or [config.bot_machine()[0]] + sorted(also_standby(d))
     except config.ConfigError:
         return []
     off = _names(entry.get("disabled_on"))
@@ -352,7 +450,7 @@ def blocked_why(d, offered, elsewhere=None):
         return text.t("plugin.blocked_provider", problem=problem)
     first = failing[0]  # every provider is on: only versions differ (#code-review-2 of 0e39bb6)
     return text.t("plugin.blocked_provider_version", problem=problem, provider=offered[first]["provider"],
-                  want=d["uses"][first])
+                  want=want_of(d["uses"][first])[0])
 
 
 def blocked_by_engine(why):
@@ -526,7 +624,7 @@ def instance_entry(name, settings):
 
 # C-37: the instance may override a plugin's schedules (plugins.<name>.schedules) and, of the core's own cron lines,
 # only these (core.schedules); the sync and the engine update follow in a batch of their own (manager 2026-10-17)
-CORE_OVERRIDABLE = ("watch", "sync", "engine-update")
+CORE_OVERRIDABLE = ("watch", "sync", "engine-update", "standby-watch", "healthchecks")  # (C-163: the standby's watch may be off)
 CORE_ALWAYS_ON = ("sync", "engine-update")  # the way fixes reach a machine: their time may change, they never go
 OVERRIDE_KEYS = ("when", "enabled", "timezone")
 DAY_NAMES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
@@ -716,7 +814,13 @@ def placement(name, d, machine, settings, bot, known=None):
         return "on" if machine in where else "off"
     if not bot:
         return "unknown"
-    return "on" if machine == bot else "off"
+    return "on" if machine == bot or machine in also_standby(d) else "off"
+
+
+def also_standby(d):
+    """The standby machines a "machines": "one" plugin also runs on unless the instance's "on" says where: every
+    standby machine (standby_machines()) for one whose plugin.json says "standby": true (C-181), none else."""
+    return standby_machines() if isinstance(d, dict) and d.get("standby") is True else set()
 
 
 def why_unknown(name, settings, bot, known, machine=None):
@@ -997,10 +1101,12 @@ def link_skills(engine=None, add_only=False):
 def step_here(step, machine, plugin_on, bot=None, sources=()):
     """Whether one step (a setup step, a secret, a cron line) applies on `machine`, by its "on": "all" (or none),
     "one" (where the plugin itself runs: `plugin_on`), "bot", "sources" (the instance's list for this plugin),
-    machine names; a list means any of them."""
+    "standby" (a machine with the standby role: standby_machines(), C-163), machine names; a list means any of
+    them."""
     words = _names(step.get("on", "all")) or ["all"]
     return ("all" in words or ("one" in words and plugin_on) or ("bot" in words and machine == bot)
-            or ("sources" in words and machine in sources) or machine in words)
+            or ("sources" in words and machine in sources) or machine in words
+            or ("standby" in words and machine in standby_machines()))
 
 
 def unknown_on(step, known):

@@ -20,6 +20,7 @@
                                             # would do on this computer (nothing written); with --yes, written into
                                             # the instance (source, version), committed and pushed; one with hooks
                                             # or a rewrite of replies also needs --hooks-ok, asked on its own
+  python3 ops/plugins.py uses <插件> [--json] # which of its "uses" can be used here now, and why not (plugin.format 2)
   python3 ops/plugins.py lose <插件>          # what turning it off loses (its plugin.json "lose", what needs it,
                                             # its schedules, hooks and channels), to say before turning it off (C-85)
   python3 ops/plugins.py setup <插件> <項目>  # one setup item of an external plugin on here, by hand (C-61 E2: a
@@ -802,6 +803,8 @@ def list_all(out=sys.stdout, left_out=False):
         rows = []
     for name, words in plugin.external_notes(rows, settings):
         out.write("提醒：%s：%s\n" % (name, words))
+    for name, words in plugin.optional_lines(rows):  # plugin.format 2: said, not a problem
+        out.write("%s：%s\n" % (name, words))
     for name, folder, d, where, why in rows:
         if where == "blocked":  # C-94
             out.write(alt_text.t("plugins.list_blocked", plugin=name, why=why) + "\n")
@@ -1015,36 +1018,6 @@ def machine_question(names, listed=False):
                                    "description": "用這台自己的名字：照舊名字記的設定不會套到這台，之後要自己重設"}])}
 
 
-def dashboard_question(again=False, gone=False, only=None):
-    """C-57 S3: an installation from before #dashboard (or whose board channel is gone): make it, or turn the boards
-    off. Asked, never made unasked: it is one more channel in the main area (owner's decision 7, 2026-10-19).
-    again: they chose to make it before and it was never made: asked as that. gone: it was there and was deleted.
-    only: (the board without a channel, whether its channel was deleted, the board still in place, its channel ID):
-    the boards are in two channels and one is still there (C-67): asked of that one board alone."""
-    if only:
-        lost, deleted, kept, where = only
-        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
-                "question": "%s的頻道%s（%s還在 <#%s>）。要把%s放回看板頻道嗎？" % (
-                    lost, "已經不在了" if deleted else "還沒設定", kept, where, lost),
-                "options": [{"label": "放回去（建議）", "description": "放進 #dashboard（沒有就開一個），看板自己更新"},
-                            {"label": "不要了", "description": "只關掉%s，%s照舊" % (lost, kept)}]}
-    if gone:
-        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
-                "question": "#dashboard 已經不在了，要重新建一個嗎？",
-                "options": [{"label": "重新建（建議）", "description": "在主區再開一個 #dashboard，看板自己更新"},
-                            {"label": "不要了", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
-    if again:
-        return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
-                "question": "上次你選了開 #dashboard，可是它還沒建好（那時設定沒做完）。要現在建好嗎？",
-                "options": [{"label": "建好它（建議）", "description": "在主區開 #dashboard，看板自己更新"},
-                            {"label": "不要了", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
-    return {"key": "dashboard", "values": ["make", "off"], "header": "看板頻道", "multiSelect": False,
-            "question": "要開一個 #dashboard 頻道放看板嗎？看板會顯示各頻道在忙什麼、機器的狀況、要注意的事，"
-                        "還有訂閱額度用了多少。之後想關，跟 Claude 說一聲就好。",
-            "options": [{"label": "開（建議）", "description": "在主區多一個 #dashboard，看板自己更新"},
-                        {"label": "不要", "description": "不開看板頻道，狀態和用量看板都關掉"}]}
-
-
 def tour_question():
     """The last question of #setup, once it is done: the tour (the tour skill's own opening, word for word)."""
     return {"key": "tour", "values": ["start", "later", "no"], "header": "導覽", "multiSelect": False,
@@ -1079,6 +1052,32 @@ def backup_questions(off=()):
          "question": "要備份哪幾樣？建議全部勾選。每一樣各用一個 private 的 repo。",
          "options": [{"label": remote.label(n), "description": d} for n, d in items]},
     ]
+
+
+def standby_questions(machines, primary, chosen=None):
+    """C-163 d3a: which machine is the bot's standby (only with another machine on the list), then how (#release's
+    words, design section 10). `machines`: the candidates (altention.standby.candidates()); `chosen`: the first
+    answer, for the second question's words."""
+    return [
+        {"key": "standby", "values": list(machines) + ["no"], "header": "備援", "multiSelect": False,
+         "question": "要不要讓另一台機器在 %s 上的機器人停了時接手或通知你？選一台當備援，或先不要。" % primary,
+         "options": [{"label": m, "description": "%s 當備援" % m} for m in machines] +
+                    [{"label": "先不要", "description": "之後在 #setup 說「設備援」再設"}]},
+        {"key": "standby.mode", "values": ["auto", "notify"], "header": "備援做什麼", "multiSelect": False,
+         "question": "要不要讓 %s 在 %s 上的機器人停了時自動接手？要的話，機器人的 token 會多放一份在那台。多一台機器，就多一個可能被"
+                     "偷的地方。不要的話，那台只會在 %s 停了時通知你。" % (chosen or "那台", primary, primary),  # (#release 11-08)
+         "options": [{"label": "自動接手", "description": "token 放一份在 %s，%s 停了它會接手" % (chosen or "那台", primary)},
+                     {"label": "只通知", "description": "不放 token，%s 停了會在通知頻道告訴你" % primary}]},
+    ]
+
+
+def health_question():
+    """C-163 d3b (design section 6, #release's words): the outside dead man's switch, off unless the owner says yes."""
+    return {"key": "healthchecks", "values": ["yes", "no"], "header": "外部通知", "multiSelect": False,
+            "question": "要不要在機器人停掉時，由外部服務（healthchecks.io）通知你？機器人每 5 分鐘連一次 healthchecks.io 上的"
+                        "一個網址，不送任何內容：不送對話、頻道名、機器名，對方只看得到連線的 IP 和時間。",
+            "options": [{"label": "要", "description": "你到 healthchecks.io 建一個檢查，把 ping 網址貼給我"},
+                        {"label": "不要", "description": "之後在 #setup 說「設外部通知」再開"}]}
 
 
 def off_here():
@@ -1167,7 +1166,33 @@ def setup_one(name, item, out=sys.stdout):
     return 0 if ran and ran[0][1] in ("ran", "record") else 1
 
 
+def uses_main(name, as_json, out=None):
+    """altention plugins uses NAME [--json]: which of its uses can be used here now (plugin.format 2). Exit 0;
+    1 when there is no such plugin or interfaces.json cannot be read."""
+    out = out or sys.stdout
+    try:
+        got = plugin.uses_now(name)
+    except plugin.PluginError as e:
+        out.write(alt_text.t("plugin.interfaces_unreadable", error=e) + "\n")
+        return 1
+    if got is None:
+        out.write(alt_text.t("setup.steps_no_plugin", plugin=name) + "\n")
+        return 1
+    where, uses = got
+    if as_json:
+        json.dump({"plugin": name, "where": where, "uses": uses}, out, ensure_ascii=False)
+        out.write("\n")
+        return 0
+    for n, u in uses.items():
+        out.write("%s %s%s%s\n" % ("✓" if u["ok"] else "✗", n, alt_text.t("plugins.uses_optional") if u["optional"] else "",
+                                    "：" + u["why"] if u.get("why") else ""))
+    return 0
+
+
 def main(argv, again=None, apply_cmd=None):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     from altention import engine_id
     if (argv[:1] == ["apply"] and "--write" in argv) or argv[:1] == ["restore"]:
         why = engine_id.refusal(plugin.ENGINE, "plugins.py %s" % argv[0])
@@ -1193,6 +1218,8 @@ def main(argv, again=None, apply_cmd=None):
             and ("--hooks-ok" not in argv or "--yes" in argv):
         rest = [a for a in argv[1:] if not a.startswith("--")]
         return add(rest[0], rest[1] if len(rest) > 1 else None, "--yes" in argv, "--hooks-ok" in argv, out=sys.stdout, again=again, apply_cmd=apply_cmd)
+    if argv[:1] == ["uses"] and len([a for a in argv if a != "--json"]) == 2:
+        return uses_main([a for a in argv[1:] if a != "--json"][0], "--json" in argv)
     if argv[:1] == ["lose"] and len(argv) == 2:
         return lose(argv[1], sys.stdout)
     if argv[:1] == ["setup"] and len(argv) == 3:

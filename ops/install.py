@@ -510,7 +510,7 @@ def _external_plugins(r, settings, items):
         later = [i for i, s_, _ in ran if s_ == "later"]
         stuck = ["%s（%s）" % (i, t) for i, s_, t in ran if s_ == "stuck"]
         blocked = [i for i, s_, _ in ran if s_ == "blocked"]
-        missing = [(x["name"], x["install"] or x["hint"]) for x in steps["needs"]
+        missing = [(x["name"], plugin_steps.how_short(x)) for x in steps["needs"]
                    if x["state"] == "todo" and not x["optional"]] if steps else []  # a check said so (never one it cannot tell)
         extras = [x for x in steps["needs"] if x["state"] == "todo" and x["optional"]] if steps else []  # said apart, no command
         if failed:
@@ -650,8 +650,10 @@ def plugins_here(r, holds):
         rel = os.path.relpath(os.path.realpath(folder), os.path.realpath(ENGINE))
         if not rel.startswith("..") and os.path.isfile(os.path.join(folder, "install.sh")):
             found.append((name, rel))
-    if bot_here and "bot" not in holds:
+    standby_here = config.this_machine() in plugin.standby_machines()  # C-163: the bot's program and venv there too
+    if (bot_here or standby_here) and "bot" not in holds:
         found.append(("dcbot", "dcbot"))
+    plugins_here.standby = standby_here and not bot_here
     plugins_here.held = holds  # what plugins.py apply is told to leave alone too
     plugins_here.on = [n for n, _, _, w, _ in rows if w == "on" and n not in holds]  # core.backup's
     found.sort(key=lambda x: (FIRST.index(x[0]) if x[0] in FIRST else len(FIRST), x[0]))
@@ -772,7 +774,21 @@ def write_schedules(r, holds, allow, moved=()):
 
 
 def token(r, bot_here):
-    path = os.path.expanduser(TOKEN_FILE)
+    """dcbot.token: the bot's settings moved out of the old file first (C-110: altention/botmove.py, this machine's
+    own file only, a standby's too), then whether the bot has its token here."""
+    from altention import botmove
+    code, said, _done = botmove.move(tell=True)
+    if said:
+        r.say("changed" if code == 0 else "todo", "dcbot.move", said)
+    if not bot_here and getattr(plugins_here, "standby", False):  # C-163: a standby's token is its owner's choice
+        try:
+            primary = config.bot_machine()[0] or "主機"
+        except Exception:
+            primary = "主機"
+        r.say("ok", "dcbot.token", ("這台是備援：有機器人的 token，%s 停了會自動接手。" if config.bot_token_there() else
+                                    "這台是備援：沒有機器人的 token，%s 停了只會通知你，不會接手（要自動接手，到 #setup 同意）。")
+              % primary)  # (#release)
+        return
     if not bot_here:
         try:
             anywhere = config.bot_machine()[0]
@@ -782,19 +798,16 @@ def token(r, bot_here):
             r.say("todo", "dcbot.token", "還沒接 Discord：在你自己的終端機跑 %s discord（會問機器人的 token，其他的自己查），再重跑 install.sh"
                   % os.path.join(ENGINE, "install.sh"))
         return
-    try:  # whether it is there and not empty: never opened, never read
-        there = os.path.getsize(path) > 0
-    except OSError:
-        there = False
-    if there:
-        r.say("ok", "dcbot.token", "機器人的設定檔在")
+    if config.bot_token_there():  # (the supervisor's answer too: #code-review-2 on f47de47)
+        r.say("ok", "dcbot.token", "機器人的 token 在")
     else:
         r.say("todo", "dcbot.token", "缺機器人的 token（%s 不在或是空的）：在你自己的終端機跑 %s discord，再重跑 install.sh"
-              % (path, os.path.join(ENGINE, "install.sh")))
+              % (TOKEN_FILE, os.path.join(ENGINE, "install.sh")))
 
 
-TOKEN_FILE = "~/.config/dcbot/env"  # the bot's settings (dcbot/bot/envfile.py), as config.bot_here() looks for them
+TOKEN_FILE = config.BOT_TOKEN  # the bot's token (C-110: the core's secrets, as config.bot_here() looks for it)
 TOKEN_KEYS = ("DISCORD_TOKEN", "OWNER_ID", "GUILD_ID")
+TOKEN_SECRETS = (("discord-token", 0), ("owner-id", 1), ("guild-id", 2))  # the core's secrets: token, owner, server
 DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
 
 
@@ -814,7 +827,8 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
     it: the application, its owner, the server the bot was added to by the link printed here. Written to the bot's
     settings file (600) only once all three are known; the file's other lines are kept. 0 written or left as it
     was, 1 refused or stopped. `base` is for the tests (a fake Discord on this machine); there is no other way to
-    point it elsewhere, so the token cannot be sent anywhere but Discord."""
+    point it elsewhere, so the token cannot be sent anywhere but Discord. Written into the core's secrets (C-110,
+    altention/secret_store.py: one file each, 600); an old settings file still here is then moved (botmove)."""
     import getpass
     import discordapp as dapp
     secret = secret or (lambda prompt: getpass.getpass(prompt))
@@ -826,15 +840,7 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
     if not interactive:
         print("fail dcbot.token 要在你自己的終端機跑 install.sh discord（token 只從鍵盤讀，不經過 Claude 或管線）；什麼都沒寫")
         return 1
-    try:
-        with open(path, encoding="utf-8") as f:
-            kept = [x for x in f.read().splitlines() if token_key(x) not in TOKEN_KEYS]
-        there = True
-    except FileNotFoundError:
-        kept, there = [], False
-    except (OSError, UnicodeDecodeError) as e:
-        print("fail dcbot.token %s 讀不出來（%s）：修好或移走它再重跑；什麼都沒寫" % (path, getattr(e, "strerror", None) or e))
-        return 1
+    there = os.path.lexists(path) or os.path.lexists(os.path.expanduser(config.BOT_OLD_SETTINGS))  # never opened
 
     def ask_app(tok):
         app = dapp.get(tok, "/oauth2/applications/@me", base, sleep)
@@ -848,8 +854,8 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
         return app
 
     try:
-        if there and line("%s 已經有了，要換掉 token 和 ID 嗎？[y/N] " % path).strip().lower() not in ("y", "yes"):
-            print("ok dcbot.token 沒有改 %s" % path)
+        if there and line("機器人的 token 已經有了，要換掉 token 和 ID 嗎？[y/N] ").strip().lower() not in ("y", "yes"):
+            print("ok dcbot.token 沒有改")
             return 0
         print("接 Discord：接下來會問你機器人的 token（打字時看不到），其他的這個指令會自己查。")
         print("先到 https://discord.com/developers/applications → 你的應用程式（還沒有就按 新建應用程式（New Application））→ 機器人（Bot）頁：")
@@ -916,7 +922,8 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
         found = look()
         if not found:
             print("用瀏覽器打開下面的連結，選你的伺服器（最好是新的、空的；你要有那個伺服器的「管理伺服器」權限），"
-                  "按 繼續（Continue）、授權（Authorize）：")
+                  "按 繼續（Continue）、授權（Authorize）。權限裡有「管理者」（就是管理員權限）：之後的功能（例如社群伺服器設定）要用，"
+                  "之後在伺服器的身分組拿掉，機器人照常能用：")
             print(dapp.invite_url(app["id"]))
             while not found:
                 print("等機器人進伺服器（最多 %d 分鐘；Ctrl-C 停止）…" % (dapp.WAIT // 60))
@@ -957,25 +964,55 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
     except (EOFError, KeyboardInterrupt):
         print("\nfail dcbot.token 中途停了；什麼都沒寫")
         return 1
-    folder = os.path.dirname(path)
-    os.makedirs(folder, mode=0o700, exist_ok=True)
-    mode = stat.S_IMODE(os.stat(folder).st_mode)
-    if mode & 0o077:  # a folder made before (755): tightened to the owner's bits only, never loosened
-        os.chmod(folder, mode & 0o700)
-    tmp = "%s.tmp-%d" % (path, os.getpid())
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    from altention import botmove, secret_store
+    values = (tok, owner[0], guild[0])
     try:
+        for name, i in TOKEN_SECRETS:  # each one 600 before anything is in it, then moved over the old one
+            secret_store.write("core", name, values[i])
+    except (OSError, secret_store.Refused) as e:  # its kind only: never a value
+        print("fail dcbot.token 寫不進祕密資料夾（%s）；%s" % (type(e).__name__, again))
+        return 1
+    print("changed dcbot.token 寫好了 %s（600）" % os.path.dirname(TOKEN_FILE))
+    old = os.path.expanduser(config.BOT_OLD_SETTINGS)
+    if os.path.lexists(old):  # C-110: still there (the move waits, or stopped): the same token and IDs there too, so
+        # a version that reads it alone (a rollback during the trial) gets the new ones (manager 2026-11-03); then the
+        # rest moves, the values now the same in both places
+        why = rewrite_old(old, values)
+        if why:
+            print("todo dcbot.token 舊的設定檔 %s 沒有跟著換成新 token（%s）。新版用新的位置，不受影響；要退回舊版前，"
+                  "先修好這個檔的權限，再跑一次 install.sh discord。" % (config.BOT_OLD_SETTINGS, why))
+        code, said, _done = botmove.move(tell=True)
+        if said:
+            print("%s dcbot.move %s" % ("changed" if code == 0 else "todo", said))
+    return 0
+
+
+def rewrite_old(path, values):
+    """The old settings file's token and IDs replaced by `values` (token, owner, guild), every spelling of those keys
+    taken out (export, spaces, a second line: no old token left), its other lines kept, 600, written whole. "" done,
+    else why not (its kind only). Only a regular file is opened."""
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return "not a file"
+        with open(path, encoding="utf-8") as f:
+            kept = [x for x in f.read().splitlines() if token_key(x) not in TOKEN_KEYS]
+    except (OSError, UnicodeDecodeError) as e:
+        return type(e).__name__
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(["DISCORD_TOKEN=%s" % tok, "OWNER_ID=%s" % owner[0], "GUILD_ID=%s" % guild[0]] + kept) + "\n")
+            f.write("\n".join(["DISCORD_TOKEN=%s" % values[0], "OWNER_ID=%s" % values[1], "GUILD_ID=%s" % values[2]]
+                              + kept) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+    except OSError as e:
+        return type(e).__name__
     finally:
         if os.path.lexists(tmp):
             os.remove(tmp)
-    print("changed dcbot.token 寫好了 %s（600）" % path)
-    return 0
+    return ""
 
 
 LOG_SHOWN = "~/.local/state/altention/install/last.log"  # as the user is told it (Run makes it from HOME at call time)
@@ -1027,6 +1064,9 @@ class Steps:
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if list(argv) == ["discord"]:  # nothing else: the bot's token typed in, the rest asked of Discord
         rc = ask_discord()
         if rc:  # stopped or refused: said why, nothing written, no install

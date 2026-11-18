@@ -1,13 +1,17 @@
 """C-77 G3b: the 填入 button for a plugin's secret (bot/secretbox.py): who may press it, what reaches the core's store
 (altention/secret_store.py, run for real behind a wrapper that only stands in for the plugin list, the machine's name
 and #audit), what the owner is told, and that the value is nowhere else: not in replies, the state, or the output."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io
 import json
 import os
 import stat
-import sys
 import tempfile
 import textwrap
 import unittest
@@ -222,6 +226,29 @@ class Sending(Base):
         self.assertEqual(stat.S_IMODE(os.stat(self.file()).st_mode), 0o600)
         self.assertEqual(self.audit(), ["🔑 lap 存了 demo 的 api-token（從 Discord 的輸入框）"])
         self.assertNotIn(VALUE, json.dumps(self.bot.channels_state, ensure_ascii=False))
+
+    def test_the_card_says_filled_and_may_be_pressed_again(self):
+        """notice-design §7 bug 5: a secret stored, the card's button said nothing of it."""
+        class Card(object):
+            views = []
+
+            async def edit(self, view=None):
+                self.views.append([(b.label, b.custom_id, b.style) for b in view.children])
+        token = self.button()
+        i = answer(token, "  \n")  # refused by the store: the button stays as it was
+        i.message = Card()
+        self.go(i)
+        self.assertEqual(Card.views, [])
+        i = answer(token)
+        i.message = Card()
+        self.go(i)
+        self.assertEqual(Card.views, [[("✅ 已填入 Rig API token（再按可以換）", "sec:" + token, discord.ButtonStyle.secondary)]])
+        self.go(press(token))  # (the same token: it still opens the box)
+        i = answer(token, "other-" + VALUE)
+        i.message = Card()
+        self.go(i)
+        with open(self.file()) as f:
+            self.assertEqual(f.read(), "other-" + VALUE)
 
     def test_it_works_from_a_bot_started_after_the_button_and_with_label_components(self):
         token = self.button()

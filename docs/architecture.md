@@ -10,7 +10,7 @@
 |---|---|---|---|
 | **引擎** | 所有程式：機器人、共用設定、機器管理、內建的選用功能 | 每台機器各 clone 一份 | 引擎的 git repo |
 | **實例** | 使用者的知識、記憶、機器清單、設定 | 每台機器各 clone 一份 | 使用者的私人 repo |
-| **dcbot** | Discord 機器人：每個頻道一個對話；可以修改自己，壞了自動退回 | 一台（角色 `dcbot`） | `dcbot/state/`（不進 git）；token 在那台的 `~/.config/dcbot/env` |
+| **dcbot** | Discord 機器人：每個頻道一個對話；可以修改自己，壞了自動退回 | 一台（角色 `dcbot`） | `dcbot/state/`（不進 git）；token 在那台的 `~/.config/altention/secrets/core/`，其他設定在實例 plugins.json 的 `dcbot` |
 | **chatlog** | 把這台機器的對話同步到對話紀錄 repo | 每台要記錄的機器（角色 `chatlog`） | 對話紀錄 repo |
 | **progress（進度）** | 讀對話紀錄，把每段工作歸到專案，寫進度和最新狀態 | 一台（plugins.json 的 `plugins.progress.on`） | 進度的資料 repo（含處理進度） |
 | **usage** | 把訂閱額度和各機器的用量更新到 Discord 的看板 | 一台（角色 `usage`） | 樣本檔在那台的 `~/.local/share/usage/` |
@@ -125,7 +125,7 @@
 | `dcbot/state/`（機器人那台，不進 git） | 頻道對應哪個對話、路由表、看板的訊息 ID、還沒回答的提問 | 還沒有（C-28） |
 | `~/.cache/` | chatlog 和進度插件的狀態與鎖、提醒發過沒、各排程的輸出 | 不用：可以重建 |
 | `~/.local/share/usage/`（700） | 用量樣本、畫圖用的 Python 環境 | 不備份 |
-| `~/.config/` | 秘密和每台機器的設定：`dcbot/env`（token）、`altention/instance`（實例在哪）、`altention/host`（機器名） | 不進 git；換機器重新取得 |
+| `~/.config/` | 秘密和每台機器的設定：`altention/secrets/`（token、插件的金鑰）、`altention/instance`（實例在哪）、`altention/host`（機器名） | 不進 git；換機器重新取得 |
 
 四個資料 repo 都只推到 private 的遠端：`ops/remote.py` 設定時檢查，pre-push hook 每次推送前再查一次（結果記一小時），系統檢查列出每一樣的狀態。新機器上 `instance.py join` 拿回實例，`./install.sh` 照實例裡的網址把另外三樣 clone 回來。
 

@@ -3,6 +3,11 @@ hook that waits for the answer with SIGTERM, and Claude Code says nothing else t
 2026-11-03). Until now the bot kept the question open, and took the next message typed in the channel for its answer.
 Now the hook tells the bot before it ends (an AskCancelled event), and the bot closes the question: whichever of a
 click and the cancel comes first counts, the later one changes nothing."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os
@@ -181,8 +186,10 @@ class Bot(Base):
         asyncio.run(go())
 
     def test_whichever_comes_first_counts_a_cancel_while_a_typed_answer_is_on_its_way(self):
-        """The message typed is edited into the question first, then the answer settled: a cancel that comes in
-        between wins, and the message goes to Claude (typed() says False), nothing is handed to the gone hook."""
+        """The typed answer is settled first, then the question's message edited (C-176, #code-review-2 on 1ad499a:
+        until then the edit came first and an answer could show that never went). Nothing awaits between typed()'s
+        look and its settle(): a cancel that comes while the message is being edited comes after the answer was
+        taken, and changes nothing (the answer went; not 已取消 as well)."""
         async def go():
             await self.asker.post(self.ch, {"ask_id": "6-1", "questions": [Q1]})
             msg, real_edit = self.ch.sent[0], FakeMessage.edit
@@ -192,11 +199,11 @@ class Bot(Base):
                 if content and "→ typed" in content:  # the typed answer's edit: the cancel comes meanwhile
                     await self.asker.cancelled(self.ch, self.gone("6-1"))
             with mock.patch.object(msg, "edit", edit):
-                self.assertFalse(await self.asker.typed(self.ch, "typed"))
-            self.assertIn("在終端機取消了", msg.content)
-            self.assertIsNone(self.answer_file("6-1"))
+                self.assertTrue(await self.asker.typed(self.ch, "typed"))
+            self.assertIn("→ typed", msg.content)
+            self.assertEqual(self.answer_file("6-1"), {"answers": {"Which one?": "typed"}})
             self.assertEqual(ask.waiting(), [])
-            self.assertEqual(self.done, [("6-1", "已取消")], "not 已回答 as well")
+            self.assertEqual(self.done, [("6-1", "已回答")], "not 已取消 as well")
         asyncio.run(go())
 
     def test_whichever_comes_first_counts_a_cancel_while_a_click_is_answered(self):

@@ -37,6 +37,10 @@ READY, INPUT, PROGRESS, PEER_SENT, TURN_END, TURN_FAILED = "ready", "input", "pr
 SESSION_CHANGED, SESSION_LEAVING, SESSION_ENDED = "session_changed", "session_leaving", "session_ended"
 COMPACTING, COMPACTED, COMPACT_DONE = "compacting", "compacted", "compact_done"
 ASK, PLAN, DIALOG, IDLE = "ask", "plan", "dialog", "idle"
+QUOTA_RESUMED, QUOTA_STALE, QUOTA_STOPPED = "quota_resumed", "quota_stale", "quota_stopped"
+QUOTA_CONTINUE = "Your claude.ai usage limit has reset."  # the prompt it sends then (2.1.310; seen 2026-10-26)
+QUOTA_TYPES = {"quota_auto_resume_fired": QUOTA_RESUMED, "quota_auto_resume_stale": QUOTA_STALE,
+               "quota_auto_resume_disabled": QUOTA_STOPPED}  # Notification types since 2.1.234 (hooks docs, C-99)
 ASK_CANCELLED = "ask_cancelled"
 ASK_ELSEWHERE = "ask_elsewhere"  # a question not of the conversation in the file (C-167): handed to the terminal
 AGENT_START, AGENT_PROGRESS, AGENT_STOP, AGENT_LAUNCHED, WORKFLOW_START = \
@@ -104,7 +108,7 @@ def normalize(ev, anew=False):
     - INPUT: something was said to Claude, `dc_from` TYPED (somebody typed it: the owner at the terminal, or whoever
       types for them), TASK (Claude Code's own notice that a background task is done), PEER (another conversation,
       with `dc_peer` its name and `dc_text` the message), NOTICE (a bracketed notice of Claude Code's), SYSTEM
-      (anything else in <…>).
+      (anything else in <…>); Claude Code's prompt continuing at a usage limit's reset (QUOTA_CONTINUE) is a NOTICE.
     - PROGRESS: a tool is about to be called. PEER_SENT: that tool is a message to another conversation.
     - TURN_END, TURN_FAILED (`dc_why`: the API's error code, "unknown" when it gives none).
     - ASK, PLAN: Claude waits for an answer to a question, to a plan. ASK_CANCELLED: it no longer does, the question
@@ -112,6 +116,11 @@ def normalize(ev, anew=False):
       ASK_ELSEWHERE: a question whose tool call never showed in the conversation's file (a background fork of Claude
       Code's own, the memory pass: C-167): no card, the hook left it to the terminal. DIALOG: Claude Code shows something to be
       answered on the screen; IDLE: its notice that it is waiting for input, which is nobody's business.
+    - QUOTA_RESUMED, QUOTA_STALE, QUOTA_STOPPED: Claude Code's own wait at a claude.ai usage limit (2.1.234 on) has
+      ended: it continues the task (Notification quota_auto_resume_fired); the limit reset while the computer slept,
+      and it waits for Enter (…_stale); it stopped waiting without continuing (…_disabled: its setting off, the reset
+      moved past 24 hours, the continued task kept hitting the limit, the continuation was blocked). Its own words
+      are in the event's `message`. No dialog: nothing to answer with keys but Enter, after a stale one (C-99).
     - AGENT_START, AGENT_STOP; AGENT_PROGRESS (a tool call from inside a subagent); AGENT_LAUNCHED (the Agent or
       Task tool has returned), WORKFLOW_START (the Workflow tool has returned). These four hooks are the ones seen
       to come from a subagent. Any other event that bears a subagent's id (none has been seen: a dialog, a turn's
@@ -181,6 +190,8 @@ def _kind(ev):
             return {"dc_kind": INPUT, "dc_from": PEER, "dc_peer": peer[0], "dc_text": peer[1]}
         if text.startswith("<task-notification>"):
             return {"dc_kind": INPUT, "dc_from": TASK}
+        if text.startswith(QUOTA_CONTINUE):  # Claude Code's own words, continuing at a usage limit's reset (C-99a)
+            return {"dc_kind": INPUT, "dc_from": NOTICE}
         if text.startswith("<"):
             return {"dc_kind": INPUT, "dc_from": SYSTEM}
         return {"dc_kind": INPUT, "dc_from": NOTICE if _NOTICE.match(text) else TYPED}
@@ -192,6 +203,8 @@ def _kind(ev):
     if name == "StopFailure":
         return {"dc_kind": TURN_FAILED, "dc_why": str(ev.get("error") or "unknown")}
     if name == "Notification":
+        if ev.get("notification_type") in QUOTA_TYPES:
+            return {"dc_kind": QUOTA_TYPES[ev["notification_type"]]}
         idle = ev.get("notification_type") == "idle_prompt" or "waiting for your input" in str(ev.get("message") or "")
         return {"dc_kind": IDLE if idle else DIALOG}
     if name == "PreCompact":

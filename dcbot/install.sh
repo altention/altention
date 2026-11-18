@@ -29,11 +29,14 @@ elif [ -e state/stop ]; then
   echo "⚠ supervisor 被人停著（state/stop），沒有啟動；要啟動請照 dcbot/SUPERVISOR-RESCUE.md 刪掉 state/stop"
 fi
 # stop-flag: end
-ENVF="$HOME/.config/dcbot/env"
-if [ ! -s "$ENVF" ]; then
-  echo "⚠ 還沒有設定檔 $ENVF，機器人不會啟動：在自己的終端機跑 $(dirname "$ROOT")/install.sh discord"
+TOKENF="$HOME/.config/altention/secrets/core/discord-token"  # C-110: the bot's token (bot/envfile.py)
+ENVF="$HOME/.config/dcbot/env"  # COMPAT: ~/.config/dcbot/env 裡還有機器人設定的機器；0.x 期間都還讀，1.0 之前拿掉
+HAVE_TOKEN=0
+if [ -s "$TOKENF" ] || [ -s "$ENVF" ]; then HAVE_TOKEN=1; fi
+if [ "$HAVE_TOKEN" = 0 ]; then
+  echo "⚠ 還沒有機器人的 token（$TOKENF），機器人不會啟動：在自己的終端機跑 $(dirname "$ROOT")/install.sh discord"
 fi
 echo "✓ dcbot 的程式已裝好（cron 和 hook 由 plugins.py apply 寫）"
 if [ -n "${ALT_NO_START:-}" ]; then
   echo "（ALT_NO_START：不啟動 supervisor）"
-elif [ -s "$ENVF" ] && [ "$STOPPED" = 0 ]; then nohup /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1 & echo "✓ supervisor 已啟動"; fi
+elif [ "$HAVE_TOKEN" = 1 ] && [ "$STOPPED" = 0 ]; then nohup /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1 & echo "✓ supervisor 已啟動"; fi

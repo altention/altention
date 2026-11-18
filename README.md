@@ -132,10 +132,12 @@ Without the guide:
 3. In your own terminal, run `~/altention/engine/install.sh discord`. When it asks, press **Reset Token** on the
    **Bot** page and paste the new token straight in. With the token it reads the application's ID and its owner
    (you; if a team owns it, you pick yourself from the team), says what is still to change on the Bot page, and
-   prints a link that adds the bot with the scopes and the 14 permissions it needs. Open the link and pick your
+   prints a link that adds the bot with the scopes, the 14 permissions its features use and Administrator (wanted
+   for later features such as setting the server up as a Community; take it away and the bot works as before). Open the link and pick your
    server (a new, empty one is best). It waits until the bot is in (it asks which server if there are several) and
-   writes the token, your user ID and the server's ID to `~/.config/dcbot/env` (mode 600). Then it goes straight on
-   to install everything this machine needs (the same as `./install.sh`); wait until its last line says it is done.
+   stores the token, your user ID and the server's ID in `~/.config/altention/secrets/core/` (one file each, mode
+   600). Then it goes straight on to install everything this machine needs (the same as `./install.sh`); wait until
+   its last line says it is done.
 
 Two things you may meet:
 
@@ -219,10 +221,10 @@ something other than this kind of data. Every push goes through a pre-push hook 
 again; the system check (`altention doctor`) shows each backup, fails on a public one, and says "沒辦法確認" when it
 could not tell (offline, or a host reached only over SSH: those are pushed anyway).
 
-Not backed up: the bot's token (`~/.config/dcbot/env`; on a new machine `install.sh discord` asks for a new one), the
-bot's channel state (which channel holds which conversation: not yet), the usage board's history
-(`~/.local/share/usage`: it starts again from zero) and Claude Code's own conversation files (the conversation
-records are their readable copy).
+Not backed up: the bot's token (`~/.config/altention/secrets/core/`; on a new machine `install.sh discord` asks for a
+new one), the bot's channel state (which channel holds which conversation: not yet), the usage board's history
+(`~/.local/share/usage`: it starts again from zero) and Claude Code's own conversation files (the conversation records
+are their readable copy).
 
 **On a new machine**, clone the engine as in [Install](#install), start Claude Code in it and choose 「從備份還原」
 (restore from the backups) when `/install` asks: it does the steps below with you and asks none of the setup
@@ -294,9 +296,9 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
   - `bypassPermissions`: never asks and never blocks; your Discord account is as good as a shell on the machine.
 
   The buttons are read off the screen; see SECURITY.md for what they do not guarantee.
-- The token stays in `~/.config/dcbot/env` (mode 600). A guard hook stops every Claude Code on your machines from
-  reading, searching or naming it and your private SSH keys; it is best effort, and SECURITY.md says what it does not
-  cover. Keys and tokens in what the bot posts are masked first.
+- The token stays in `~/.config/altention/secrets/core/` (mode 600). A guard hook stops every Claude Code on your
+  machines from reading, searching or naming it and your private SSH keys; it is best effort, and SECURITY.md says what
+  it does not cover. Keys and tokens in what the bot posts are masked first.
 - The engine does not update itself by default (`core.update: "notify"`: a notice in Discord, once per release, and
   the system check and the status board tell you of a new release). `"release"` follows release tags on its own; SECURITY.md says what that trusts.
 - Plugins are not sandboxed. Install only plugins you trust.
@@ -346,6 +348,10 @@ Read [SECURITY.md](SECURITY.md) before installing. In short:
   - The fields it reads are not documented by Anthropic; they follow what Claude Code 2.1.299 and 2.1.316 return
     (2.1.316 gives only the week: the board says the 5-hour window was not provided). If the format changes the board
     says it could not read them (it never guesses a number), and they may be unreadable while the limit is used up.
+- **The projects board can show several folders as one project.**
+  `"usage": {"project_names": {"old-folder": "my-project", "engine": "my-project"}}` in the instance's
+  `plugins.json` shows those folders under that name on the projects board and the chart; folders given the same
+  name become one row, costs added. Folders not listed keep their folder name.
 
 ## Roadmap
 

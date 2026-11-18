@@ -34,5 +34,23 @@
   "text": "crontab 還是舊格式的機器（# planner、# usage，或沒有標記的行）；每台的 crontab 都沒有舊格式的行（plugins.py plan 沒有 old、unclaimed）之後",
   "status": "after-release",
   "why": "Claiming crontab lines with the older markers (# planner, # usage, none): a new install has only altention: markers, so this never matches there."
+ },
+ {
+  "file": "altention/config.py",
+  "text": "~/.config/dcbot/env 裡還有機器人設定的機器；0.x 期間都還讀，1.0 之前拿掉",
+  "status": "after-release",
+  "why": "The bot's old settings file (~/.config/dcbot/env) is still read, and moved into the core's secrets and plugins.json when found (C-110); a new install writes only the new places and never has one."
+ },
+ {
+  "file": "dcbot/bot/envfile.py",
+  "text": "~/.config/dcbot/env 裡還有機器人設定的機器；0.x 期間都還讀，1.0 之前拿掉",
+  "status": "after-release",
+  "why": "The bot's old settings file (~/.config/dcbot/env) is still read, and moved into the core's secrets and plugins.json when found (C-110); a new install writes only the new places and never has one."
+ },
+ {
+  "file": "dcbot/install.sh",
+  "text": "~/.config/dcbot/env 裡還有機器人設定的機器；0.x 期間都還讀，1.0 之前拿掉",
+  "status": "after-release",
+  "why": "The bot's old settings file (~/.config/dcbot/env) is still read, and moved into the core's secrets and plugins.json when found (C-110); a new install writes only the new places and never has one."
  }
 ]

@@ -1,0 +1,20 @@
+#golden spec §11.8
+{
+ "machine": "str",
+ "plugins": [
+  {
+   "folder": "str",
+   "name": "str",
+   "placement": "on",
+   "reason": "str"
+  },
+  {
+   "folder": "str",
+   "name": "str",
+   "placement": "blocked",
+   "reason": "str"
+  }
+ ],
+ "problems": [],
+ "unknown": []
+}

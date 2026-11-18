@@ -67,7 +67,7 @@ Then ask what to try (AskUserQuestion, **multiSelect**), header 「要試哪些�
 選好幾個，選好點選單外面送出）」, options in this order, leaving out those whose part is off:
 
 - 「開新的對話頻道」（自己開一個頻道，再讓兩個頻道的 Claude 互相傳話）
-- 「#dashboard 看板」（只在 `status` 或 `usage` 開著時）
+- 「#dashboard 看板」（一律帶，除非 `status` 和 `usage` 都被關掉了）
 - 「提醒」（只在 `planner` 開著時）
 - 「接上電腦上的 Claude」（要你人在電腦前）
 
@@ -96,9 +96,10 @@ sentence of point 3 in it. Do not suggest deleting the channel: deleting it does
 
 ## 4. #dashboard
 
-Only when `status` or `usage` is on; asked for with `args` while both are off, say 「看板（status、usage）在這台關著，跟
-Claude 說「打開狀態看板」或「打開用量看板」就會有。」 and go to the end (step 8). Run `altention dc read --map`: no channel holding the boards (`#dashboard` on a
-new install), say 「看板頻道還沒設定，裝好後跟 Claude 說「幫我設定看板」就好。」 and go on.
+The boards are always on (C-181); someone may still have turned both `status` and `usage` off by hand. Then, asked
+for with `args`, say 「看板（status、usage）在這台關著，跟
+Claude 說「打開狀態看板」或「打開用量看板」就會有。」 and go to the end (step 8). Run `altention dc read --map`: no channel holding the boards (just installed, or
+deleted a moment ago), say 「#dashboard 還沒建好：機器人會自己建，等幾分鐘再看。」 and go on.
 
 Say: 「打開 #dashboard，從上往下看：上面是用量和圖表，下面是各頻道在做什麼、各機器的狀況、需要注意的事，最下面是
 在等你回答的事。等一下最下面那塊會出現我現在要問你的這一題。」 (the last sentence only when `status` is on).

@@ -1758,6 +1758,9 @@ def _alert_plain(source, kind, text):
 
 def main(argv):
     """python3 -m altention.sync: one round (its own cron line, 3a.10); 0 when both repos went through."""
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if len(argv) == 3 and argv[0] == "--allow-delete":
         allow_delete(argv[1], argv[2])
         print("下一輪同步會提交 %s 裡的刪除（24 小時內有效，用一次）" % argv[2])

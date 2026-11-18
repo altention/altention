@@ -77,14 +77,14 @@
  "cron": [
   {
    "name": "supervisor-boot",
-   "on": "bot",
+   "on": ["bot", "standby"],
    "scheduler": false,
    "when": "@reboot",
    "run": "cd \"{engine}/dcbot\" && /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1"
   },
   {
    "name": "supervisor",
-   "on": "bot",
+   "on": ["bot", "standby"],
    "scheduler": false,
    "when": "*/5 * * * *",
    "run": "cd \"{engine}/dcbot\" && /usr/bin/python3 supervisor.py >> state/supervisor.out 2>&1"
@@ -122,8 +122,26 @@
    "why": "3a.11：排程器的只記錄模式，每分鐘記下這台的插件排程「會跑什麼」，什麼都不執行、不通知；它自己就是排程器，不進排程器。啟動檔不在（引擎被退回到 3a.11 之前）時這行什麼都不做、沒有輸出"
   },
   {
+   "name": "healthchecks",
+   "on": ["bot", "standby"],
+   "scheduler": false,
+   "when": {
+    "every": "5m"
+   },
+   "run": "{python} \"{engine}/altention/health.py\" ping >> \"$HOME/.local/state/altention/healthchecks.log\" 2>&1",
+   "why": "C-163（設計第 6 節）：外部的死亡開關。機器人那台的心跳 2 分鐘內寫過，才連一次使用者自己設的 healthchecks 網址；沒設網址就什麼都不做。太久沒連到，由 healthchecks 通知使用者"
+  },
+  {
+   "name": "standby-watch",
+   "on": "standby",
+   "scheduler": false,
+   "when": "* * * * *",
+   "run": "cd \"{engine}/dcbot\" && /usr/bin/python3 tools/dclease watch >> state/standby-watch.out 2>&1",
+   "why": "C-163：備援每分鐘看一次主機。有 token：主機的機器人活著、連不上 Discord 10 分鐘就說一次；只有 webhook：主機的機器人停了 5 分鐘就用 webhook 說一次；兩個都沒有：什麼都不做"
+  },
+  {
    "name": "watch",
-   "on": "bot",
+   "on": ["bot", "standby"],
    "scheduler": false,
    "when": {
     "every": "15m",
@@ -131,7 +149,7 @@
     "after": "13m"
    },
    "run": "{python} \"{engine}/ops/doctor.py\" --watch >> \"$HOME/.local/state/altention/cron-watch.log\" 2>&1",
-   "why": "3a.10：機器人那台定期看四台的 last_ok 和被擋、被跳過，四台的同步都停了也有人說話"
+   "why": "3a.10：機器人那台定期看四台的 last_ok 和被擋、被跳過，四台的同步都停了也有人說話；C-185：備援也裝，只在它正在當機器人時跑（doctor.py watch_elsewhere），一次只有一台說話"
   }
  ],
  "settings": [
@@ -144,16 +162,16 @@
  "setup": [
   {
    "name": "bot-venv",
-   "on": "bot",
+   "on": ["bot", "standby"],
    "run": "cd \"{engine}/dcbot\" && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt"
   }
  ],
  "secrets": [
-  {
-   "name": "bot",
-   "on": "bot",
-   "path": "~/.config/dcbot/env"
-  }
+  {"name": "discord-token", "on": "bot", "label": "機器人的 token"},
+  {"name": "owner-id", "on": "bot", "label": "擁有者的 Discord ID"},
+  {"name": "guild-id", "on": "bot", "label": "伺服器的 ID"},
+  {"name": "standby-webhook", "on": "standby", "label": "備援只通知時用的 Discord webhook 網址"},
+  {"name": "healthchecks-url", "on": ["bot", "standby"], "label": "healthchecks.io 的 ping 網址"}
  ],
  "data": [
   {

@@ -17,7 +17,7 @@ import discord
 
 from altention.connectors.claude_code import panels, screen
 
-from . import awaiting, config, masking, messages, tmuxio
+from . import awaiting, blocked, config, deliver, masking, messages, tmuxio
 from .util import target
 
 PREFIX = "key"
@@ -40,6 +40,17 @@ def asked(view):
     top = [i for i in range(first) if DIALOG_TOP.match(rows[i])]
     part = rows[top[-1] + 1:first] if top else rows[max(0, first - 3):first]
     return "\n".join(r.strip() for r in part if r.strip() and not panels.MENU_RULE.match(r))
+
+
+def gist_of(excerpt, title, permission):
+    """The gist of a dialog for its mention (C-103): for a permission, what it is for (its first rows: the tool, the
+    command), masked; else the notification's own words."""
+    if permission:
+        rows = [r.strip(" │┃|") .strip() for r in (excerpt or "").splitlines()]
+        rows = [r for r in rows if r and not set(r) <= set("─━═-╌╍ ")]
+        if rows:
+            return masking.masked(" ".join(rows[:2]))
+    return masking.masked(title or "")
 
 
 def panel_of(view, has_box):
@@ -86,9 +97,20 @@ class TypeModal(discord.ui.Modal):
         await self.menus.act(interaction, self.token, "text", str(self.text.value))
 
 
+PLAIN_KEYS = {"Up", "Down", "Escape", "Tab", "Enter"}  # a dialog's own keys (a permission's, a question's) besides numbers
+
+
+def plain_menu(view):
+    """C-189: a dialog of numbered options whose hint names no keys of its own besides moving, Tab, Enter and Escape
+    (a permission, Claude Code's own question), unlike a panel (/model's ←/→ and "s"): what is taken in on a restart
+    with no card of it known (the screens of 2.1.296's samples)."""
+    content = panel_of(view, screen.has_prompt(view)) or {}
+    return all(set(a.get("keys") or ()) <= PLAIN_KEYS for a in content.get("actions") or [])
+
+
 class Menus(object):
-    """`bridge` is the TmuxBridge (for host, target lookup); menus live in memory: a restart leaves old
-    buttons dead, and /screen and /key still work."""
+    """`bridge` is the TmuxBridge (for host, target lookup); menus live in memory: after a restart look_again()
+    takes in a dialog still on the screen (C-189), and /screen and /key work as ever."""
 
     def __init__(self, bridge):
         self.bridge, self.open = bridge, awaiting.Shown()  # token -> {"channel", "msg", "title", "since"[, "actions"]}
@@ -150,21 +172,91 @@ class Menus(object):
         try:
             v = self.view(token, options)
             due = deadline_of(view)
-            msg = await ch.send(body(title, excerpt, "" if options else "\n-# 看不出選項：用下面的按鍵，或 `/key` 送其他按鍵", due), view=v)
+            msg = await deliver.deliver(ch, body(title, excerpt, "" if options else "\n-# 看不出選項：用下面的按鍵，或 `/key` 送其他按鍵", due),
+                                        view=v, intent="card", key="menu:%s" % token)
             v.stop()
         except Exception:
             traceback.print_exc()
             return
-        self.open[token] = {"channel": ch.id, "msg": msg.id, "title": title, "shown": [asked(view), options], "deadline": due}
+        self.open[token] = {"channel": ch.id, "msg": msg.id, "title": title, "shown": [asked(view), options], "deadline": due,
+                            "call": "menu:%s" % msg.id,  # (C-103: by its message, which no other menu has)
+                            "excerpt": excerpt}  # what the card shows of it (C-176: agentanswer.last_check() reads it)
+        blocked.put(st, "dialog", self.bridge.machine_of(st) if self.bridge is not None else None, detail=title, msg=msg.id)  # (C-101)
+        if self.bridge is not None:  # (C-103) what it asks: a permission, or another choice
+            permission = ev.get("notification_type") == "permission_prompt" or "permission" in str(ev.get("message") or "").lower()
+            await self.bridge.call(ch, self.open[token]["call"], "permission" if permission else "menu", gist_of(excerpt, title, permission),
+                                   about=msg.id)
+
+    async def look_again(self, ch, st):
+        """C-189: a dialog may be on the screen with no menu of ours for it (the bot restarted: self.open is in memory
+        only; or no Notification came). Read the screen once (pressing nothing) and, when it shows a menu with
+        options, take it in: the card the channel's state still names (blocked "dialog": its message id) gets new
+        buttons, no new card and no new ring; with no such card, one is posted as for a Notification. A screen with
+        the plain input box: the dialog was answered meanwhile, its old card and mention are closed. True when a menu
+        is open for the channel after it. Run on a task of its own (it reads a screen, maybe on another machine)."""
+        if ch is None or not isinstance(st, dict) or any(m.get("channel") == ch.id for m in self.open.values()):
+            return any(m.get("channel") == ch.id for m in self.open.values()) if ch is not None else False
+        t = target(st)
+        if not t or not await tmuxio.alive(t):
+            return False
+        view = await tmuxio.raw_screen(t)
+        old = blocked.of(st, "dialog")
+        state = screen.pane_state(view)
+        if state == "box":
+            if old is not None:  # answered at the terminal while nobody here knew: the old card and mention closed
+                blocked.clear(st, "dialog")
+                self.bridge.host.save()
+                if old.get("msg") and self.bridge is not None:
+                    await self.bridge.call_done(ch, "menu:%s" % old["msg"])
+                    try:
+                        await deliver.deliver(ch, view=None, intent="card", edit=old["msg"])
+                    except Exception:
+                        pass
+            return False
+        excerpt, options = panels.parse_menu(view)
+        if state != "dialog" or not options or any(m.get("channel") == ch.id for m in self.open.values()):
+            return any(m.get("channel") == ch.id for m in self.open.values())
+        if old is None or not old.get("msg"):
+            if not plain_menu(view):  # (a panel a slash command left open, /model's: the owner's, never taken in)
+                return False
+            await self.post(ch, st, {"message": messages.menus("restored_title")})
+            return any(m.get("channel") == ch.id for m in self.open.values())
+        token = "%d" % (time.time() * 1000)
+        title = messages.menus("restored_title")  # (not the old card's: another dialog may stand there now; reviews on d5bfa13c)
+        due = deadline_of(view)
+        self.open[token] = {"channel": ch.id, "msg": old["msg"], "title": title, "shown": [asked(view), options],
+                            "deadline": due, "call": "menu:%s" % old["msg"], "excerpt": excerpt}  # (before any await: a
+        try:  # Notification meanwhile finds it open, never two menus for one channel; reviews on d5bfa13c)
+            v = self.view(token, options)
+            await deliver.deliver(ch, content=body(title, excerpt, "\n-# " + messages.menus("restored"), due), view=v,
+                                  intent="card", key="menu:%s" % token, edit=old["msg"])
+            v.stop()
+        except Exception:
+            traceback.print_exc()
+            self.open.pop(token, None)
+            return False
+        return True
+
+    async def closed(self, ch, m):
+        """The menu `m` (one of self.open's) is over (answered, gone from the screen): its mention gets its ✅ (C-103)."""
+        if self.bridge is not None and m.get("call"):
+            try:
+                await self.bridge.call_done(ch, m["call"])
+            except Exception:
+                traceback.print_exc()
 
     async def resolve(self, ch):
         """The session moved on: drop the buttons of whatever menu is still shown in this channel."""
+        st = self.bridge.host.channels_state.get(str(ch.id)) if self.bridge is not None else None
+        if st is not None:
+            blocked.clear(st, "dialog")
         for token, m in list(self.open.items()):
             if m["channel"] != ch.id:
                 continue
             self.open.pop(token, None)
+            await self.closed(ch, m)
             try:
-                await ch.get_partial_message(m["msg"]).edit(view=None)
+                await deliver.deliver(ch, view=None, intent="card", edit=m["msg"])
             except Exception:
                 pass
 
@@ -244,7 +336,12 @@ class Menus(object):
             return await self.act_panel(interaction, token, m, t, what[1:])
         else:
             await tmuxio.keys(t, {"enter": "Enter"}.get(what, what))
-            did = {"enter": "按了 Enter"}.get(what, "選了 %s" % what)
+            did = {"enter": "按了 Enter"}.get(what, ("選了 %s" if what.isdigit() else "按了 %s") % what)  # (a named key: C-189)
+        by = getattr(interaction, "by", None)  # a Claude pressed it (C-176: agentanswer.Press), not the owner's button
+        note = getattr(interaction, "note", None)
+        if note is not None:
+            note(did)
+        shown_did = did + ("（由 %s 回答）" % by if by else "")
         await asyncio.sleep(1.2)
         view = await tmuxio.raw_screen(t)
         excerpt, options = panels.parse_menu(view)
@@ -253,19 +350,29 @@ class Menus(object):
             if options:  # still a menu on screen (or a new one): show it again, buttons follow it
                 v = self.view(token, options)
                 m["deadline"] = deadline_of(view)
-                await msg.edit(content=body(m["title"], excerpt, "\n-# " + did, m["deadline"]), view=v)
+                await deliver.deliver(interaction.channel, content=body(m["title"], excerpt, "\n-# " + shown_did, m["deadline"]), view=v,
+                                      intent="card", key="menu:%s" % token, edit=msg)
                 v.stop()
-                m["shown"] = [asked(view), options]
+                m["shown"], m["excerpt"] = [asked(view), options], excerpt
             else:
                 self.open.pop(token, None)
-                await msg.edit(content=body(m["title"], excerpt, "\n✅ " + did), view=None)
+                await self.closed(interaction.channel, m)
+                await deliver.deliver(interaction.channel, content=body(m["title"], excerpt, "\n✅ " + shown_did), view=None,
+                                      intent="card", key="menu:%s" % token, edit=msg)
         except Exception:
             traceback.print_exc()
+        if by:
+            return await self.bridge.host.audit("#%s：%s在選單%s（為什麼：%s）" % (
+                getattr(interaction.channel, "name", "DM"), by + getattr(interaction, "vouch", "") + " ", did,
+                getattr(interaction, "why", "")))
         await self.bridge.host.audit("#%s 選單：%s" % (getattr(interaction.channel, "name", "DM"), did))
 
     async def changed(self, interaction, token, m, view, excerpt, options):
         """The dialog on screen is not the one the buttons were made for: nothing was pressed. The message shows what
         is there now, with buttons for it if it is a dialog still, and says so."""
+        note_of = getattr(interaction, "note", None)
+        if note_of is not None:  # (a Claude's press, C-176: it is told so)
+            note_of(changed=True)
         msg = interaction.channel.get_partial_message(m["msg"])
         note = "\n⚠️ 選單已經變了，沒有送出。上面是現在的畫面%s。" % ("，按鈕已換成它的選項" if options else "")
         if not options and m.get("deadline") and time.time() >= m["deadline"] - 2:  # its own deadline passed
@@ -274,12 +381,15 @@ class Menus(object):
             if options:
                 v = self.view(token, options)
                 m["deadline"] = deadline_of(view)
-                await msg.edit(content=body(m["title"], excerpt, note, m["deadline"]), view=v)
+                await deliver.deliver(interaction.channel, content=body(m["title"], excerpt, note, m["deadline"]), view=v,
+                                      intent="card", key="menu:%s" % token, edit=msg)
                 v.stop()
-                m["shown"] = [asked(view), options]
+                m["shown"], m["excerpt"] = [asked(view), options], excerpt
             else:
                 self.open.pop(token, None)
-                await msg.edit(content=body(m["title"], excerpt, note), view=None)
+                await self.closed(interaction.channel, m)
+                await deliver.deliver(interaction.channel, content=body(m["title"], excerpt, note), view=None,
+                                      intent="card", key="menu:%s" % token, edit=msg)
         except Exception:
             traceback.print_exc()
         await self.bridge.host.audit("#%s 選單：畫面已經變了，按鈕沒有送出" % getattr(interaction.channel, "name", "DM"))
@@ -310,13 +420,15 @@ class Menus(object):
             try:
                 if now is not None and now["actions"]:
                     v = self.panel_view(token, now["actions"])
-                    await msg.edit(content=body(m["title"], now["text"], "\n-# " + did), view=v)
+                    await deliver.deliver(interaction.channel, content=body(m["title"], now["text"], "\n-# " + did), view=v,
+                                          intent="card", key="menu:%s" % token, edit=msg)
                     v.stop()
                 else:
                     self.open.pop(token, None)
                     self.locks.pop(token, None)
                     excerpt = now["text"] if now else panels.parse_menu(view)[0]
-                    await msg.edit(content=body(m["title"], excerpt, "\n✅ " + did), view=None)
+                    await deliver.deliver(interaction.channel, content=body(m["title"], excerpt, "\n✅ " + did), view=None,
+                                          intent="card", key="menu:%s" % token, edit=msg)
             except Exception:
                 traceback.print_exc()
         await self.bridge.host.audit("#%s 面板：%s" % (getattr(interaction.channel, "name", "DM"), did))

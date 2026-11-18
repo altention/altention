@@ -602,6 +602,44 @@ class Machines(unittest.TestCase):
         code, text, ran = self.run_apply(["all", "--dryrun"])
         self.assertEqual((code, ran), (2, []))
 
+    def test_a_standby_keeps_its_supervisor(self):
+        """C-163 d2a: a standby runs the supervisor too: never a machine "the bot has left" (no uninstall), and its
+        lines hold nothing back on the bot's machine."""
+        with mock.patch.object(apply.plugin, "standby_machines", lambda: {"c"}):
+            code, text, ran = self.run_apply(["all"], held={"c": {"progress": False, "bot": "marked"}})
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(("c", "apply+stop-bot"), ran)
+        self.assertIn(("c", "apply"), ran)
+        self.assertIn(("b", "apply"), ran, "the bot's machine not held back by the standby's supervisor lines")
+        self.assertNotIn("機器人已經不在這台跑", text)
+        code, text, ran = self.run_apply(["all"], held={"c": {"progress": False, "bot": "marked"}})
+        self.assertIn(("c", "apply+stop-bot"), ran, "no standby role: as before, the bot is stopped there")
+
+    def test_a_standby_out_of_reach_first_still_checks_the_others_for_the_bot(self):
+        """#code-review-2 on f47de47: the standby's list is its own; a machine after it is asked for "bot" too."""
+        inv = {"machines": {"stby": {"ssh": ["S"]}, "old": {"ssh": ["O"]}, "new": {"ssh": ["N"]}}}
+        answers = {"S": "連不上", "O": {"bot": "marked", "planner": "marked"}}
+        with mock.patch.object(apply.plugin, "standby_machines", lambda: {"stby"}), \
+                mock.patch.object(apply, "held_on", lambda m, names: answers[m["ssh"][0]]):
+            got = apply.still_held("new", ["bot", "planner"], inv)
+        self.assertEqual(got, [("stby", ["planner"], "連不上"), ("old", ["bot", "planner"], "還有它們的排程（先在那台跑 apply 拿掉）")])
+
+    def test_a_plugin_on_the_standby_too_is_no_second_holder_c181(self):
+        """"standby": true (C-181): a single-machine plugin on the bot's machine and on the standby is meant to be on
+        both; apply neither refuses ("在兩台以上") nor holds the bot's machine back for the standby's lines."""
+        sb = lambda where: ("status", "/e/status", {"machines": "one", "standby": True}, where, "")  # noqa: E731
+        places = {"a": ([row("chatlog", "on")], [], []), "b": ([row("chatlog", "on"), sb("on")], [], []),
+                  "c": ([row("chatlog", "on"), sb("on")], [], [])}
+        with mock.patch.object(apply.plugin, "standby_machines", lambda: {"c"}):
+            code, text, ran = self.run_apply(["all"], places=places, held={"a": {"status": False, "bot": False}, "c": {"status": "marked", "bot": "marked"}})
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("在兩台以上", text)
+        self.assertIn(("b", "apply"), ran)
+        self.assertIn(("c", "apply"), ran)
+        self.assertNotIn(("b", "hold status"), ran)
+        code, text, ran = self.run_apply(["all"], places=places, held={"a": {"status": False, "bot": False}, "c": {"status": "marked", "bot": "marked"}})
+        self.assertIn("在兩台以上", text, "without the standby role: two holders, as before")
+
     def test_a_failed_machine_does_not_stop_the_others(self):
         code, text, ran = self.run_apply(["all"], codes={"a": 1})
         self.assertEqual(code, 1)

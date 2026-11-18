@@ -1,0 +1,109 @@
+#golden spec §17.3
+{
+ "read": {
+  "CLAUDE_BIN": "/usr/bin/claude # tail",
+  "DISCORD_TOKEN": "x-token",
+  "EMPTY": "",
+  "GUILD_ID": "7",
+  "INTERIM": "1",
+  "MAX_PARALLEL": "3",
+  "OWNER_ID": "42",
+  "export BRIDGE": "tmux"
+ },
+ "secrets": [
+  [
+   "DISCORD_TOKEN",
+   "discord-token"
+  ],
+  [
+   "OWNER_ID",
+   "owner-id"
+  ],
+  [
+   "GUILD_ID",
+   "guild-id"
+  ]
+ ],
+ "settings": [
+  [
+   "CLAUDE_BIN",
+   "claude_bin",
+   "str"
+  ],
+  [
+   "CLAUDE_MODEL",
+   "model",
+   "str"
+  ],
+  [
+   "MAX_PARALLEL",
+   "max_parallel",
+   "int"
+  ],
+  [
+   "TURN_TIMEOUT",
+   "turn_timeout",
+   "int"
+  ],
+  [
+   "BRIDGE",
+   "bridge",
+   "str"
+  ],
+  [
+   "USER_TMUX",
+   "user_tmux",
+   "str"
+  ],
+  [
+   "TMUX_SOCKET",
+   "tmux_socket",
+   "str"
+  ],
+  [
+   "INTERIM",
+   "interim",
+   "bool"
+  ],
+  [
+   "AGENT_THREADS",
+   "agent_threads",
+   "bool"
+  ],
+  [
+   "IDLE_HOURS",
+   "idle_hours",
+   "float"
+  ],
+  [
+   "ARCHIVE_CATEGORY",
+   "channels.archive",
+   "str"
+  ],
+  [
+   "AUDIT_CHANNEL",
+   "channels.audit",
+   "str"
+  ],
+  [
+   "CHAT_CHANNEL",
+   "channels.chat",
+   "str"
+  ],
+  [
+   "GUIDE_CHANNEL",
+   "channels.guide",
+   "str"
+  ],
+  [
+   "SETUP_CHANNEL",
+   "channels.setup",
+   "str"
+  ],
+  [
+   "SYSTEM_CHANNEL",
+   "channels.system",
+   "str"
+  ]
+ ]
+}

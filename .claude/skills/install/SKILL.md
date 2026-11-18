@@ -24,9 +24,9 @@ user to the README's "Several machines" section after this one works, and do not
   terminal. If they paste a token into the chat anyway, tell them at once to reset it (Developer Portal → their
   application → 機器人（Bot）→ 重設權杖（Reset Token）), do not use or repeat it, and continue with the new one
   typed in the terminal.
-- Never read, print or edit `~/.config/dcbot/` (where the token lives), and do not check it yourself either
-  (`ls`, `stat`): a guard refuses any command of yours that names that path. `install.sh` and doctor check that
-  the file is there; rely on their lines.
+- Never read, print or edit `~/.config/altention/secrets/` (where the token lives) or `~/.config/dcbot/`, and do not
+  check them yourself either (`ls`, `stat`): a guard refuses any command of yours that names those paths. `install.sh`
+  and doctor check that the file is there; rely on their lines.
 - Change nothing in the engine folder (this repository). Everything personal goes into the instance
   (`~/altention/instance` unless `ALT_INSTANCE` says otherwise).
 - `install.sh` and `ops/doctor.py` can be run again at any time; prefer rerunning them to working around them.
@@ -134,13 +134,14 @@ Then tell them what it will do, in this order:
    that one person only). Otherwise nothing is asked: the application's owner is them.
 5. It prints a link (`https://discord.com/oauth2/authorize?...`) and waits. They open it in a browser, pick their
    server under **新增至伺服器（Add to Server，待核對）** (a new, empty server is best: the bot makes its own categories
-   and channels; they need Manage Server there), **繼續（Continue，待核對）**, leave every permission ticked,
+   and channels; they need Manage Server there), **繼續（Continue，待核對）**, leave every permission ticked (Administrator among them: later features such as a Community server need it;
+   taken away later, the bot works as before),
    **授權（Authorize，待核對）**, and pass the check if one comes up. If the bot is already in a server, there is no
    link: it uses that one, or asks which when there are several.
-6. As soon as the bot is in, it writes `~/.config/dcbot/env` (mode 600), says `changed dcbot.token`, and goes
-   straight on to install everything this machine needs (the same as `./install.sh`). Do not run `./install.sh`
-   yourself meanwhile. Ask them to wait until it has finished, that is until the last line says 「安裝跑完了」 or
-   「安裝沒跑完」, and to tell you then.
+6. As soon as the bot is in, it stores the token and the two IDs in `~/.config/altention/secrets/core/` (mode 600), says
+   `changed dcbot.token`, and goes straight on to install everything this machine needs (the same as `./install.sh`). Do
+   not run `./install.sh` yourself meanwhile. Ask them to wait until it has finished, that is until the last line says
+   「安裝跑完了」 or 「安裝沒跑完」, and to tell you then.
 
 If it waits 10 minutes without the bot coming in, it asks: Enter waits again, `q` stops without writing anything.
 Any `fail dcbot.token` line says what was wrong and that nothing was written, and the install is not run: run it

@@ -162,7 +162,7 @@ class FromTheStream(unittest.TestCase):
     def test_a_window_in_a_wrong_shape_is_said_even_beside_a_good_one(self):
         for bad in ("13%", -0.1):
             limits, why = collect.limits_from_stream(
-                with_info(lambda i: i["unifiedWindows"]["seven_day"].update(utilization=bad)), NOW)
+                with_info(lambda i, bad=bad: i["unifiedWindows"]["seven_day"].update(utilization=bad)), NOW)
             self.assertEqual(limits, [], bad)
             self.assertTrue(why.startswith(collect.CHANGED), why)
 

@@ -3,6 +3,11 @@ started for a channel that is gone. Those are closed only on facts that can be r
 be, the session stays and is written down for the owner (manager: "停掉、移除只能靠讀得到而且明確的事實；不確定就
 不關、列出來給人看"). The first version went by the session's name and by an idle screen: it would have closed a
 terminal channel's session, and one with a training run in the background (#code-review)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os

@@ -64,7 +64,8 @@ if not tmuxio._set.get("done"):  # a test file run alone, without the bot's brid
 FUNCTIONS = ("tmux", "alive", "start", "kill", "open_window", "kill_pane", "pane_pid", "exists",
              "raw_screen", "color_screen", "screen", "cursor", "in_mode", "vim_mode",
              "keys", "type_text", "escape", "clipboard", "buffers", "take_buffer",
-             "claude_panes", "local_claude_panes", "user_sessions", "own_sessions", "started_for", "children")
+             "claude_panes", "local_claude_panes", "user_sessions", "own_sessions", "started_for", "children",
+             "claude_under", "ended", "settled")
 CONSTANTS = ("ESC_GAP", "TYPE_PAUSE", "TYPE_CHUNK")
 WHERE = dict([(name, tmuxio) for name in FUNCTIONS] + [(name, cc_typing) for name in CONSTANTS])  # the module each name
 # lives in today (the pace and the Escapes' gap are the connector's since 3b 2.7a-1)
@@ -130,11 +131,23 @@ def patchers(fake=None, **named):
             out.append(replace(name, getattr(fake, name)))
     for name, new in named.items():
         out.append(replace(name, new))
+    if "claude_under" not in named and not hasattr(fake, "claude_under"):
+        out.append(replace("claude_under", no_claude_under))  # not this machine's processes, nor an ssh (C-92 b)
+    if not any(n in named or hasattr(fake, n) for n in ("own_sessions", "tmux")):  # (C-201 6.3: ensure() looks for a
+        out.append(replace("own_sessions", no_sessions))  # renamed session) a fake without it has none; one standing in
+        # for tmux itself answers it through the real own_sessions()
+    for name, default in (("ended", no_end), ("settled", nothing)):  # C-161: a fake without them ends as a session
+        if name not in named and not hasattr(fake, name):            # always did, and shows nothing of it
+            out.append(replace(name, default))
     out.append(guard())  # also when tmux itself is stood in for: an ssh started directly is still a real one
     # Opening a conversation makes the channel's attachments folder (C-151): in a folder of the tests' own, and on
     # another machine by asking it over ssh, which a fake pane stands in for (FAR); `fake` may bring its own
     out.append(mock.patch.object(attachments, "DIR", attachments_dir()))
     out.append(mock.patch.object(attachments, "far_folder", getattr(fake, "far_folder", None) or far_folder))
+    from bot import remote as _remote  # (that machine's claude by its path: a fake one, never an ssh of the test)
+    out.append(mock.patch.object(_remote, "claude_on", getattr(fake, "claude_on", None) or far_claude))
+    out.append(mock.patch.object(tmuxio, "session_command", getattr(fake, "session_command", None) or nothing))  # (a fake
+    # window's command line is not known: taken for the bot's own, as before C-163's check)
     # The bot's settings file, of which an opened conversation gets a copy with its attachments folder in it: the
     # tests' own, never the one in the engine's state (a copy would be written beside it)
     out.append(mock.patch.object(_tmux_bridge, "SETTINGS_FILE", settings_file()))
@@ -172,7 +185,26 @@ async def far_folder(host, channel_id):
     return "%s/%s" % (FAR, channel_id)
 
 
+async def far_claude(host):
+    """remote.claude_on() of a fake machine: the bare name, as a window there was opened with before (C-163 drill)."""
+    return "claude"
+
+
+async def no_claude_under(t, pid):
+    """tmuxio.claude_under() of a fake pane: not known, so alive() goes by the name of its foreground program (a
+    test that has Claude under a shell, or a Node program that is not Claude, gives a claude_under of its own)."""
+    return None
+
+
 reached = []  # what the guard caught, until use() or a test looks
+
+
+async def no_end(t):
+    return None
+
+
+async def nothing(*a, **kw):
+    return None
 
 
 def guard():
@@ -185,6 +217,10 @@ def guard():
             raise Reached("a test with a fake pane started a real %s: %s" % (os.path.basename(str(program)), reached[-1]))
         return await real(program, *args, **kw)
     return mock.patch.object(asyncio, "create_subprocess_exec", create_subprocess_exec)
+
+
+async def no_sessions():
+    return []
 
 
 @contextlib.contextmanager

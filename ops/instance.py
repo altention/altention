@@ -492,6 +492,9 @@ def status():
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     if argv[:1] not in (["status"], ["names"]) and argv:  # every other command writes this machine's instance, pointer or links
         from altention import engine_id
         why = engine_id.refusal(ENGINE, "instance.py %s" % argv[0])

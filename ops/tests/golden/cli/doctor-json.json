@@ -1,0 +1,20 @@
+#golden spec §11.6
+[
+ {
+  "fix": "str",
+  "id": "str",
+  "machine": "str",
+  "msg": "str",
+  "status": "str"
+ },
+ {
+  "fix": "str",
+  "id": "str",
+  "machine": "null",
+  "msg": "str",
+  "status": "str",
+  "value": {
+   "n": "number"
+  }
+ }
+]

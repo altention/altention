@@ -1,6 +1,11 @@
 """A channel deleted while its Claude runs on (#issues 21, stage 3b step 2.2e): what it still asks is let go at once,
 and what it asks afterwards is refused at once. Before, the hook (`dchook --ask`) waited for an answer nobody could
 give, up to its limit of half a day, and the conversation under it stood still."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os
@@ -119,6 +124,76 @@ class OpenWhenDeleted(World):
         self.assertEqual((self.answer("5-1"), ask.waiting()), ({"reason": ask.GONE}, []))
         self.assertNotIn(str(self.ch.id), bot.channels_state)
         self.assertEqual(len(audits), 1, "and #audit says, as ever, where its Claude still runs")
+
+
+class BoardChannelDeleted(unittest.TestCase):
+    """C-181: a deleted channel that held a board starts ops/setup.py board-gone ID in the background (it makes
+    #dashboard again and tells #audit, at most once an hour); the delete handler never waits on it."""
+
+    def bot(self):
+        from bot import main as botmain
+        with mock.patch.object(botmain.Bot, "save", lambda self: None):
+            return botmain, botmain.Bot()
+
+    def test_holds_board_reads_the_board_settings_of_plugins_on_here(self):
+        from bot import main as botmain
+        rows = [("one", "/x", {"channels": [{"name": "dashboard", "kind": "board", "setting": "one.channel"}]}, "on", ""),
+                ("two", "/x", {"channels": [{"name": "dashboard", "kind": "board", "setting": "two.channel"}]}, "disabled", ""),
+                ("three", "/x", {"channels": [{"name": "x", "kind": "claude", "setting": "three.channel"}]}, "on", "")]
+        values = {"one.channel": "105", "two.channel": "106", "three.channel": "107"}
+        with mock.patch("altention.plugin.on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(botmain.config_mod, "setting", lambda k, d=None: values.get(k, d)):
+            self.assertEqual([botmain.holds_board(c) for c in (105, "105", 106, 107, 108)], [True, True, False, False, False])
+
+    def test_started_in_the_background_for_a_board_channel_only(self):
+        botmain, bot = self.bot()
+        started, audits = [], []
+
+        class Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"ok", None
+
+        async def spawn(*argv, **kw):
+            started.append(argv[1:])
+            return Proc()
+
+        async def audit(text):
+            audits.append(text)
+
+        async def go(board):
+            with mock.patch.object(botmain, "holds_board", lambda cid: board), \
+                    mock.patch.object(botmain.asyncio, "create_subprocess_exec", spawn), mock.patch.object(bot, "audit", audit):
+                await bot.board_gone(105)
+        asyncio.run(go(False))
+        self.assertEqual(started, [])
+        with mock.patch("builtins.print"):
+            asyncio.run(go(True))
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][-2:], ("board-gone", "105"))
+        self.assertTrue(started[0][0].endswith(os.path.join("ops", "setup.py")))
+        self.assertEqual(audits, [], "setup.py tells #audit itself")
+
+    def test_the_delete_handler_does_not_wait_for_it(self):
+        botmain, bot = self.bot()
+        ch = FakeChannel()
+        gate = []
+
+        async def slow(cid):
+            await asyncio.sleep(3600)
+            gate.append(cid)
+
+        async def unbind(*a, **k):
+            pass
+
+        async def go():
+            with mock.patch.object(bot, "board_gone", slow), mock.patch.object(bot, "save", lambda: None), \
+                    mock.patch.object(botmain.routes, "unbind_any", unbind):
+                await asyncio.wait_for(bot.on_guild_channel_delete(ch), 5)
+                return bot.bg_tasks["board-gone-%s" % ch.id]
+        t = asyncio.run(go())
+        self.assertTrue(t.cancelled() or not t.done() or gate == [], "still running when the handler returned")
 
 
 class AskedAfterwards(World):

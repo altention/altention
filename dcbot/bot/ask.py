@@ -20,6 +20,7 @@ import traceback
 import discord
 
 from . import awaiting, config
+from . import deliver as outgoing  # (C-172a P1b; this module's own deliver() hands answers to the hook)
 from .util import split_message
 
 ASKS = os.path.join(config.STATE, "asks")        # questions waiting for the owner
@@ -45,6 +46,11 @@ def question_text(q, i, total):
 
 
 ELSEWHERE_AUDIT = "#%s：有一個提問不在這個對話的紀錄裡，沒有貼成卡片，交回終端機的選單"  # (C-167; words #release)
+NOT_TAKEN_LINE = "\n-# 這一下沒有送出：這題已經有人回答了，或提問已經關了（看 #audit）"  # (C-176; words #release)
+FIRST = "%s 先回答了（%s）"  # who answered first, and what (a Claude of another channel: "#x 的 Claude")
+LAST_KEPT = 50
+NOT_TAKEN = "這一下沒有送出：這題已經有人回答了（可能是別的頻道的 Claude），或提問已經關了。"
+NOT_TAKEN_TYPED = "這則沒有當作提問的答案：這題已經有人回答了，或提問已經關了；它照一般訊息交給 Claude。"
 CANCELLED_HERE = "（在終端機取消了，沒有回答）"  # a question or plan cancelled in Claude Code's terminal (C-152; #release)
 
 
@@ -111,6 +117,18 @@ def load(ask_id):
     return None if isinstance(state, dict) and "owed" in state else state
 
 
+CHANGED = None  # called (no arguments) once a question is saved or forgotten: the bot's push_rounds() wakes, so a
+# standby has a new question at once, not up to standby.PUSH_SECS later (C-163 drill item 12, manager 11-10)
+
+
+def changed():
+    if CHANGED is not None:
+        try:
+            CHANGED()
+        except Exception:
+            pass  # (the loop it wakes gone: nothing to tell)
+
+
 def save(ask_id, state):
     os.makedirs(ASKS, exist_ok=True)
     tmp = _path(ASKS, ask_id) + ".tmp"
@@ -118,6 +136,7 @@ def save(ask_id, state):
         json.dump(state, f, ensure_ascii=False)
     os.replace(tmp, _path(ASKS, ask_id))
     awaiting.note()  # (opened, answered in part, or closed and only owed: what waits for the owner may have changed)
+    changed()
 
 
 def forget(ask_id):
@@ -126,6 +145,61 @@ def forget(ask_id):
     except OSError:
         pass
     awaiting.note()
+    changed()
+
+
+def ids():
+    """The ids of the questions on disk (open, or owed to their machine)."""
+    try:
+        return sorted(n[:-5] for n in os.listdir(ASKS) if n.endswith(".json"))
+    except OSError:
+        return []
+
+
+def folder_name():
+    """The questions' folder's name in a bundle (always there: an empty one says there are none)."""
+    return os.path.basename(ASKS)
+
+
+def bundled():
+    """(name in a bundle, path) of every question on disk: C-163 pushes them to the standby with the bot's state
+    (standby.bundle's `extra`), under this folder's own name."""
+    return [(os.path.join(os.path.basename(ASKS), i + ".json"), os.path.join(ASKS, i + ".json")) for i in ids()]
+
+
+def take_from(root, me, other):
+    """C-163, as this machine becomes the bot in place of `other` (a takeover, a failback, a standby gone down):
+    the questions the other one pushed (under `root`, its state-standby/) become this machine's, each through
+    save() (noted). Where its answer goes is set as this machine sees it: one asked on `other`'s own windows (no
+    host) goes to `other` by dcremote, one asked on this machine's is local; another machine's as it was. Questions
+    here that the push does not have are let go of (answered or closed meanwhile over there). Nothing when the push
+    carried no questions folder (pushed by a version before the folder was always sent: nothing to go by; an empty
+    folder says there are none). How many taken."""
+    folder = os.path.join(root, os.path.basename(ASKS))
+    if not os.path.isdir(folder):
+        return 0
+    pushed = {}
+    for name in os.listdir(folder):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(folder, name)) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(st, dict):
+            pushed[name[:-5]] = st
+    for ask_id in ids():
+        if ask_id not in pushed:
+            forget(ask_id)
+    for ask_id, st in pushed.items():
+        if not st.get("host"):
+            if other:
+                st["host"] = other
+        elif st.get("host") == me:
+            st.pop("host")
+        save(ask_id, st)
+    return len(pushed)
 
 
 GONE = ("This conversation's Discord channel was deleted, so nobody can answer there. Ask in plain text here in the "
@@ -203,8 +277,35 @@ class Asker(object):
     """`audit` is the bot's audit(text) coroutine."""
     def __init__(self, audit):
         self.audit = audit
+        self.last = {}  # ask_id -> the record as it was handed over (answers, and "by": who answered each), the newest
+        # LAST_KEPT: a click a step behind says who answered first and what (C-176, #release)
         self.on_done = None  # coroutine (channel, ask_id, "已回答" / "已取消"): bot/posts.py updates its notice
         self.on_owed = None  # called when a result is owed to another machine (hand()): the bridge starts its task
+        self.on_asked = None   # coroutine (channel, ask_id, code, gist, message id, n): the owner is mentioned (C-103)
+        self.on_closed = None  # coroutine (channel, ask_id): answered, approved, sent back or cancelled: that mention's ✅
+
+    async def asked(self, ch, ask_id, code, gist, mid, n=1):
+        if self.on_asked is not None:
+            try:
+                await self.on_asked(ch, ask_id, code, gist, mid, n)
+            except Exception:
+                traceback.print_exc()
+
+    async def closed(self, ch, ask_id):
+        if self.on_closed is not None:
+            try:
+                await self.on_closed(ch, ask_id)
+            except Exception:
+                traceback.print_exc()
+
+    async def plan_done(self, ch, ask_id, how):
+        """A plan approved or sent back: the ⏸️ line another channel was given (Posts.asking) says so (notice-design §7
+        bug 1: only closed() was called, so that line waited for ever and st["asking"] stayed)."""
+        if self.on_done is not None:
+            try:
+                await self.on_done(ch, ask_id, how)
+            except Exception:
+                traceback.print_exc()
 
     async def post(self, ch, ev):
         """An Ask event: show the questions. Returns False (and tells the hook) if there is nothing to show."""
@@ -217,7 +318,7 @@ class Asker(object):
         try:
             for i, q in enumerate(qs):
                 view = view_for(ask_id, i, q)
-                msg = await ch.send(question_text(q, i, len(qs)), view=view)
+                msg = await outgoing.deliver(ch, question_text(q, i, len(qs)), view=view, intent="card", key="ask:%s" % ask_id)
                 view.stop()  # clicks are handled by custom_id in on_interaction, not by this object
                 state["messages"][str(i)] = msg.id
         except Exception as e:
@@ -226,6 +327,8 @@ class Asker(object):
                                                              "plain text instead." % type(e).__name__})
             return False
         save(ask_id, state)
+        first = qs[0].get("question") or qs[0].get("header") or ""
+        await self.asked(ch, ask_id, "ask" if len(qs) == 1 else "ask_many", first, state["messages"]["0"], len(qs))
         return True
 
     async def post_plan(self, ch, ev):
@@ -239,8 +342,9 @@ class Asker(object):
                                         style=discord.ButtonStyle.secondary))
         try:
             for part in split_message("📋 **Claude 的計畫**\n" + plan):
-                await ch.send(part)
-            msg = await ch.send("📋 **%s**　%s" % (q["header"], q["question"]), view=view)
+                await outgoing.deliver(ch, part, intent="card", key="plan:%s" % ask_id)
+            msg = await outgoing.deliver(ch, "📋 **%s**　%s" % (q["header"], q["question"]), view=view, intent="card",
+                                        key="plan:%s" % ask_id)
             view.stop()
         except Exception as e:
             traceback.print_exc()
@@ -248,7 +352,10 @@ class Asker(object):
                                                              "in plain text and ask the user to reply." % type(e).__name__})
             return False
         save(ask_id, {"channel": str(ch.id), "kind": "plan", "questions": [q], "answers": {}, "messages": {"0": msg.id},
+                      "plan": plan[:20000],  # (what --waiting shows a Claude that may approve it: C-176)
                       "ts": time.time(), "host": ev.get("host")})
+        first = next((r.strip().lstrip("#").strip() for r in plan.splitlines() if r.strip().lstrip("#").strip()), "")
+        await self.asked(ch, ask_id, "plan", first, msg.id)
         return True
 
     async def on_interaction(self, interaction):
@@ -275,6 +382,8 @@ class Asker(object):
             forget(ask_id)
             await deliver_to(state.get("host"), ask_id, {"approve": True})
             await interaction.response.edit_message(content="✅ **計畫已核准**，Claude 開始執行。", view=None)
+            await self.closed(interaction.channel, ask_id)  # (after the response: Discord's 3 s, #code-review on 3c7ad8f)
+            await self.plan_done(interaction.channel, ask_id, "計畫已核准")
             await self.audit("#%s 核准了 Claude 的計畫" % getattr(interaction.channel, "name", "DM"))
             return True
         answer = chosen(q, what, (interaction.data or {}).get("values") or ())
@@ -294,10 +403,23 @@ class Asker(object):
             await deliver_to(state.get("host"), ask_id, {"reason": "The user read the plan on Discord and wants it changed before approving: "
                                        "%s\nRevise the plan and present it again." % answer})
             await interaction.response.edit_message(content="✏️ **計畫退回修改**\n" + answer[:1800], view=None)
+            await self.closed(interaction.channel, ask_id)  # (after the response: Discord's 3 s)
+            await self.plan_done(interaction.channel, ask_id, "計畫已退回修改")
             return await self.audit("#%s 要求修改 Claude 的計畫：%s" % (getattr(interaction.channel, "name", "DM"),
                                                                  cut(answer, 80)))
         await interaction.response.edit_message(content=answered_text(q, answer), view=None)
-        await self.settle(interaction.channel, ask_id, state, qi, answer)
+        if not await self.settle(interaction.channel, ask_id, state, qi, answer):
+            # Not taken (#code-review on 1ad499a): answered or closed meanwhile, another channel's Claude perhaps. The card
+            # does not keep an answer that never went; the owner is told.
+            first = load(ask_id) or self.last.get(ask_id) or {}
+            by, theirs = (first.get("by") or {}).get(str(qi)), (first.get("answers") or {}).get(str(qi))
+            said = FIRST % (by, cut(theirs, 200)) if by and theirs else None
+            try:
+                await interaction.edit_original_response(
+                    content=answered_text(q, answer, done="⚠️") + ("\n-# 這一下沒有送出：" + said if said else NOT_TAKEN_LINE))
+                await interaction.followup.send("這一下沒有送出：" + said if said else NOT_TAKEN, ephemeral=True)
+            except Exception:
+                traceback.print_exc()
 
     async def typed(self, ch, text):
         """A message typed in the channel while Claude waits on exactly one unanswered question (not a plan):
@@ -310,32 +432,50 @@ class Asker(object):
         if len(left) != 1:
             return False  # several questions still open: which one this answers is anybody's guess
         qi, answer = left[0], text.strip()[:1500]
+        if not await self.settle(ch, ask_id, state, qi, answer):  # settled first, then the card (#code-review on 1ad499a)
+            # answered or closed meanwhile (another channel's Claude, the terminal: C-152): the message goes to Claude
+            # as an ordinary one, and the owner is told it was not taken as the answer
+            try:
+                await outgoing.deliver(ch, NOT_TAKEN_TYPED, silent=True, intent="status")
+            except Exception:
+                traceback.print_exc()
+            return False
         try:
-            await ch.get_partial_message(state["messages"][str(qi)]).edit(
-                content=answered_text(state["questions"][qi], answer), view=None)
+            await outgoing.deliver(ch, content=answered_text(state["questions"][qi], answer), view=None, intent="card",
+                                  key="ask:%s" % ask_id, edit=state["messages"][str(qi)])
         except Exception:
             traceback.print_exc()
-        return await self.settle(ch, ask_id, state, qi, answer)  # (closed meanwhile: the message goes to Claude, C-152)
+        return True
 
-    async def settle(self, ch, ask_id, state, qi, answer):
+    async def settle(self, ch, ask_id, state, qi, answer, by=None, why=None, vouch=""):
         """Record one answer; once every question has one, hand them all to the waiting hook. A question closed
         meanwhile (while the message was being edited: cancelled in the terminal, C-152; the turn ended) stays closed:
         False, nothing written, nothing handed; True when the answer was taken."""
-        if load(ask_id) is None:
-            return False
+        fresh = load(ask_id)  # the record as it is now (#code-review on 1ad499a): another answer may have come meanwhile
+        if fresh is None or str(qi) in fresh.get("answers", {}):
+            return False  # closed, or this question answered already (by the owner or another channel's Claude): theirs
+        state = fresh
         state["answers"][str(qi)] = answer
+        if by:  # who answered it (another channel's Claude, C-176): for a click a step behind
+            state.setdefault("by", {})[str(qi)] = by
         if len(state["answers"]) < len(state["questions"]):
             save(ask_id, state)
             return True
         forget(ask_id)
+        self.last[ask_id] = state
+        while len(self.last) > LAST_KEPT:
+            self.last.pop(next(iter(self.last)))
+        await self.closed(ch, ask_id)
         await deliver_to(state.get("host"), ask_id, {"answers": dict((qq.get("question") or "", state["answers"][str(i)])
                                          for i, qq in enumerate(state["questions"]))})
         if self.on_done is not None:
-            await self.on_done(ch, ask_id, "已回答")
-        await self.audit("#%s 回答 Claude 的提問：%s" % (
-            getattr(ch, "name", "DM"),
-            "；".join("%s → %s" % (cut(qq.get("header") or qq.get("question"), 30), cut(state["answers"][str(i)], 60))
-                      for i, qq in enumerate(state["questions"]))))
+            await self.on_done(ch, ask_id, "已回答" if not by else "已由 %s 回答" % by)
+        said = "；".join("%s → %s" % (cut(qq.get("header") or qq.get("question"), 30), cut(state["answers"][str(i)], 60))
+                        for i, qq in enumerate(state["questions"]))
+        if by:  # another channel's Claude answered it for the owner (C-176)
+            await self.audit("#%s：%s回答了提問：%s（為什麼：%s）" % (getattr(ch, "name", "DM"), by + vouch + " ", said, why or ""))
+        else:
+            await self.audit("#%s 回答 Claude 的提問：%s" % (getattr(ch, "name", "DM"), said))
         return True
 
     async def hand(self, ask_id, state, result):
@@ -358,6 +498,7 @@ class Asker(object):
         is edited: the messages went with the channel. A notice of it in another channel is updated."""
         for ask_id, state in waiting(ch.id):
             await self.hand(ask_id, state, gone_result(plan=state.get("kind") == "plan"))
+            await self.closed(ch, ask_id)
             if self.on_done is not None:
                 try:
                     await self.on_done(ch, ask_id, "已取消")
@@ -395,6 +536,7 @@ class Asker(object):
         if not isinstance(state, dict) or str(state.get("channel")) != str(ch.id):
             return await self.audit("#%s 的提問在終端機取消了，但它已經回答或關掉，沒有改任何東西" % name)
         forget(ask_id)
+        await self.closed(ch, ask_id)  # (C-103: the owner's mention gets its ✅)
         if self.on_done is not None:
             try:
                 await self.on_done(ch, ask_id, "已取消")
@@ -405,7 +547,8 @@ class Asker(object):
                 continue
             try:
                 q = state["questions"][int(i)]
-                await ch.get_partial_message(mid).edit(content=answered_text(q, CANCELLED_HERE, "⌛"), view=None)
+                await outgoing.deliver(ch, content=answered_text(q, CANCELLED_HERE, "⌛"), view=None, intent="card",
+                                      key="ask:%s" % ask_id, edit=mid)
             except Exception:
                 traceback.print_exc()
         await self.audit("#%s 的提問在終端機取消了（Esc、Ctrl-C 或 !key），按鈕已關掉" % name)
@@ -414,6 +557,7 @@ class Asker(object):
         """The turn that asked is over (stopped, reset, or it ended): close whatever is still open."""
         for ask_id, state in waiting(ch.id):
             await self.hand(ask_id, state, {"reason": reason})
+            await self.closed(ch, ask_id)
             if self.on_done is not None:
                 await self.on_done(ch, ask_id, "已取消")
             for i, mid in state.get("messages", {}).items():
@@ -421,6 +565,7 @@ class Asker(object):
                     continue
                 try:
                     q = state["questions"][int(i)]
-                    await ch.get_partial_message(mid).edit(content=answered_text(q, "（已取消，沒有回答）", "⌛"), view=None)
+                    await outgoing.deliver(ch, content=answered_text(q, "（已取消，沒有回答）", "⌛"), view=None, intent="card",
+                                          key="ask:%s" % ask_id, edit=mid)
                 except Exception:
                     pass

@@ -1,6 +1,11 @@
 """dcctl position (manager 2026-10-20: the owner cannot drag categories on a tablet): a category among the categories, a
 channel among the channels of its own category and kind, Discord's bulk position update, the system category kept at
 the bottom when another category moves, and every change in #audit."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import importlib.machinery
 import importlib.util
 import os

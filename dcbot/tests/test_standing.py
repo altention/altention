@@ -3,6 +3,11 @@ manager 2026-10-14: removing goes only by facts that can be read and are plain).
 apart; each caller that does something on "not alive" is kept here for what it does on "unknown": nothing is
 detached, closed, opened anew or called gone. (ensure() and a window the bot opened: tests/test_open_params.py;
 an archived channel taken back: tests/test_archive.py.)"""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import unittest
 from unittest import mock
@@ -33,6 +38,78 @@ class Standing(unittest.TestCase):
         self.assertEqual(self.ask(FAR, 1, ""), ("gone", False), "tmux there answered: no such pane")
         self.assertEqual(self.ask(FAR, 255, ""), ("unknown", False), "ssh's own failure: nothing answered")
         self.assertEqual(self.ask(FAR, 1, ""), ("gone", False), "and an answer after it is an answer")
+
+    def test_claude_started_by_a_script(self):
+        """C-92 b: tmux names the script's shell; what runs under the pane says Claude. Asked over there only when
+        the name does not say it."""
+        under = []
+
+        async def claude_under(t, pid):
+            under.append(pid)
+            return True
+        async def tmux(*args, **kw):
+            return 0, "bash\t77\n"
+        with fakepane.use(tmux=tmux, claude_under=claude_under):
+            self.assertTrue(asyncio.run(tmuxio.alive(FAR)))
+            self.assertTrue(asyncio.run(tmuxio.alive(HERE)))
+        self.assertEqual(under, ["77", "77"])
+        self.assertEqual(self.ask(FAR, 0, "claude\t77\n"), ("alive", True))  # (the default fake: none asked)
+
+    def test_what_another_machine_says_runs_under_its_pane(self):
+        real = tmuxio.claude_under  # the real one, over a fake dcremote (the fake pane's default: not known)
+        for command, said, want in (
+                ("bash", (0, "1\n"), ("alive", True)), ("bash", (0, "0\n"), ("gone", False)),
+                ("bash", (1, ""), ("gone", False)),  # a dcremote too old to know claude-at: as the name says
+                ("bash", (255, ""), ("unknown", False)),  # ssh's own failure: nothing answered
+                ("node", (0, "1\n"), ("alive", True)),  # Claude installed with npm
+                ("node", (0, "0\n"), ("gone", False)),  # manager: a Node dev server is not Claude, in alive() too
+                ("node", (1, ""), ("alive", True)),  # too old to tell: by the name, as before
+                ("node", (255, ""), ("unknown", False)),
+                ("node", (0, "?\n"), ("alive", True)),  # that machine cannot tell: by the name
+                ("bash", (0, "?\n"), ("gone", False)),
+                ("node", (0, "what\n"), ("alive", True))):  # an answer not 0, 1 or ?: not known, by the name
+            async def dcremote(host, *args, said=said, **kw):
+                self.assertEqual((host, args), ("lap", ("claude-at", "77")))
+                return said
+
+            async def tmux(*args, command=command, **kw):
+                return 0, "%s\t77\n" % command
+            with fakepane.use(tmux=tmux, claude_under=real), \
+                    mock.patch("bot.remote.dcremote", dcremote):
+                self.assertEqual((asyncio.run(tmuxio.standing(FAR)), asyncio.run(tmuxio.alive(FAR))), want,
+                                 (command, said))
+
+    def test_this_machine_s_processes_for_a_pane_here(self):
+        with mock.patch.object(tmuxio.cc_process, "runs_claude", lambda command, pid: pid == "77"):
+            self.assertTrue(asyncio.run(tmuxio.claude_under(HERE, "77")))
+            self.assertFalse(asyncio.run(tmuxio.claude_under(HERE, "78")))
+
+    def test_node_here_is_told_by_what_runs(self):
+        """manager on 6e93ae2: alive() does not go by the name "node"; a Node dev server here is not Claude."""
+        async def tmux(*args, **kw):
+            return 0, "node\t77\n"
+        for under, want in ((True, ("alive", True)), (False, ("gone", False))):
+            with fakepane.use(tmux=tmux, claude_under=tmuxio.claude_under), \
+                    mock.patch.object(tmuxio.cc_process, "runs_claude", lambda command, pid, under=under: under):
+                self.assertEqual((asyncio.run(tmuxio.standing(HERE)), asyncio.run(tmuxio.alive(HERE))), want, under)
+
+    def test_here_not_known_goes_by_the_name(self):
+        """No process table here (or the pane's process not in it): by the name, as before C-92 b."""
+        for command, want in (("node", ("alive", True)), ("bash", ("gone", False))):
+            async def tmux(*args, command=command, **kw):
+                return 0, "%s\t77\n" % command
+            with fakepane.use(tmux=tmux, claude_under=tmuxio.claude_under), \
+                    mock.patch.object(tmuxio.cc_process, "table", lambda: {}):
+                self.assertEqual((asyncio.run(tmuxio.standing(HERE)), asyncio.run(tmuxio.alive(HERE))), want, command)
+
+    def test_claude_s_own_name_asks_nothing_more(self):
+        async def claude_under(t, pid):
+            raise AssertionError("asked")
+        async def tmux(*args, **kw):
+            return 0, "claude\t77\n"
+        with fakepane.use(tmux=tmux, claude_under=claude_under):
+            self.assertTrue(asyncio.run(tmuxio.alive(FAR)))
+            self.assertTrue(asyncio.run(tmuxio.alive(HERE)))
 
     def test_a_pane_on_this_machine_or_a_session_of_the_bots_is_never_unknown(self):
         self.assertEqual(self.ask(HERE, 255, ""), ("gone", False))
@@ -341,7 +418,7 @@ class Callers(unittest.TestCase):
         session of ensure()."""
         import inspect
         from bot import archive
-        for function in (tmux_bridge.TmuxBridge.ensure_home, tmux_bridge.TmuxBridge.wait_ready, tmux_bridge.TmuxBridge.pump,
+        for function in (tmux_bridge.TmuxBridge.ensure_home, tmux_bridge.TmuxBridge.wait_ready, tmux_bridge.TmuxBridge.look_again,
                          tmux_bridge.TmuxBridge.watch_busy, archive.Archive.back):
             source = inspect.getsource(function)
             self.assertIn("standing(", source, function.__name__)

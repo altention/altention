@@ -3,6 +3,11 @@
 held by test_whole_turn on both roads, the rules of turns by the connector's own tests (test_hooks, test_turns: step
 1.6a); here what the bot does with them: the turn's place for 📋 as the last event told it, a failure of the reading
 that does not lose the event, nothing asleep in the event loop, the words said before a question above it."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os
@@ -51,6 +56,7 @@ class LocalEvents(unittest.TestCase):
         async def go():
             for ev in evs:
                 await self.bridge.handle(ev)
+                await self.bridge.lanes_done()  # (what a tool call shows goes out from its lane: lanes.py)
             if self.rt.typing is not None:
                 self.rt.typing.cancel()  # the "typing…" watcher of a running turn: not this loop's to finish
         asyncio.run(go())
@@ -157,8 +163,9 @@ class LocalEvents(unittest.TestCase):
         with mock.patch.object(tmux_bridge.ask, "deliver_to", mock.AsyncMock()):
             self.handle(self.asked())
         said_at = [i for i, m in enumerate(self.ch.sent) if m.content == ">>> before I go on, one thing"]
-        asked_at = [i for i, m in enumerate(self.ch.sent) if "Which one?" in m.content]
+        asked_at = [i for i, m in enumerate(self.ch.sent) if "Which one?" in m.content and not m.content.startswith("🔘")]
         self.assertEqual((len(said_at), len(asked_at)), (1, 1), [m.content for m in self.ch.sent])
+        self.assertTrue(self.ch.sent[-1].content.startswith("🔘 要你選：Which one?"), "C-103: the owner's mention, last")
         self.assertLess(said_at[0], asked_at[0])
         self.write(said("and the plan is ready"))
         with mock.patch.object(tmux_bridge.ask, "deliver_to", mock.AsyncMock()):

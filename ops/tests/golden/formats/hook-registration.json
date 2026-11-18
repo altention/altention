@@ -1,0 +1,49 @@
+#golden spec §14.3
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "hooks": [
+     {
+      "command": "/e/dcbot/tools/dchook --ask",
+      "timeout": 43200,
+      "type": "command"
+     }
+    ],
+    "matcher": "AskUserQuestion"
+   }
+  ],
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "command": "/e/x/hook.py",
+      "type": "command"
+     }
+    ]
+   }
+  ],
+  "Stop": [
+   {
+    "hooks": [
+     {
+      "command": "theirs.sh",
+      "type": "command"
+     }
+    ]
+   },
+   {
+    "hooks": [
+     {
+      "command": "/e/dcbot/tools/dchook --global",
+      "timeout": 20,
+      "type": "command"
+     }
+    ]
+   }
+  ]
+ },
+ "permissions": {
+  "allow": []
+ }
+}

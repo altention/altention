@@ -359,6 +359,9 @@ def due(item, now, sent):
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     check, where = "--check" in argv, "--where" in argv
     files = [a for a in argv if a not in ("--check", "--where")]
     sys.path.insert(0, HOME_REPO)

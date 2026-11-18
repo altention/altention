@@ -1,0 +1,13 @@
+  Ran 1 shell command                                                           
+  ⎿  You've hit your weekly limit · resets 5am (Asia/Taipei)                                                          
+                                                                                                                        
+● Usage limit reached · continuing automatically at 5am · esc to cancel                                             
+                                                                                                                        
+✻ Sautéed for 50m 58s · done 3:39 AM                                                                                    
+                                                                                new task? /clear to save 763.8k tokens
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                       
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Usage limit reached · limit resets 5am                           
+    Continuing shortly · esc to cancel                                                                                  
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 4 agents                   

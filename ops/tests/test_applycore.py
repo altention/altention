@@ -1336,7 +1336,7 @@ class Overrides(Report):
                                 "supervisor": {"when": {"every": "10m"}}})
         s["sync"] = {"interval": "1h"}
         code, text = self.apply_with(s, write=False)
-        self.assertIn("不動 core.schedules.supervisor：不知道（這一筆不用：這一版還不能改（核心只開放 watch、sync、engine-update））", text)
+        self.assertIn("不動 core.schedules.supervisor：不知道（這一筆不用：這一版還不能改（核心只開放 watch、sync、engine-update、standby-watch、healthchecks））", text)
         rep = self.report(settings=s)
         self.assertEqual(sorted((r["plugin"], r["name"]) for r in rep["core"]), [("core", "sync"), ("core", "watch")],
                          "the core's: shown, never automatic")

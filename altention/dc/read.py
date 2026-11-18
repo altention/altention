@@ -7,6 +7,10 @@
   altention dc read 100000000000000021   a thread (or a channel) by ID
   altention dc read bot-test --claude 5  the last 5 turns of the Claude conversation behind the channel (fuller than
                                          the channel: what was asked and the whole replies, from the transcript)
+  altention dc read bot-test --waiting   what that channel's Claude waits on you for, with ids to answer it by
+                                         (the same as altention dc post bot-test --waiting; see its --help: --answer)
+  altention dc read --paused             the channels paused until a time (altention dc post --pause-until): who paused
+                                         each, why, until when, how many posts are kept for it
   altention dc read --map                the whole server: categories, what each channel is for (Claude and its folder,
                                          terminal, plain), and which channel you are in
 
@@ -40,6 +44,8 @@ def dcctl_args(argv):
             return ["map", "--pane", "%s|%s|%s" % (socket.gethostname().split(".")[0], os.environ["TMUX"].split(",")[0],
                                                    os.environ["TMUX_PANE"])]
         return ["map"]
+    if argv[0] == "--paused":
+        return ["paused"]
     where, rest = argv[0].lstrip("#"), argv[1:]
     if "--threads" in rest:
         return ["threads", where]
@@ -51,6 +57,10 @@ def dcctl_args(argv):
 
 
 def main():
+    if len(sys.argv) > 2 and "--waiting" in sys.argv[2:]:  # C-176: asked of the bot, as altention dc post asks it
+        from altention.dc import post
+        sys.argv = ["altention dc post", sys.argv[1], "--waiting"]
+        return post.main()
     args = dcctl_args(sys.argv[1:])
     try:
         r = botside.run(args, prog="altention dc read", repo=HOME_REPO)

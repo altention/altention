@@ -1,0 +1,13 @@
+  Ran 1 shell command                                                           
+  ⎿  You've hit your weekly limit · resets 5am (Asia/Taipei)                                                          
+                                                                                                                        
+● Usage limit reached · continuing automatically at 5am · esc to cancel                                             
+                                                                                                                        
+✻ Sautéed for 50m 58s · done 3:39 AM                                                                                    
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                       
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Usage limit reached · limit resets 5am                           
+    Continuing automatically at 5am · esc to cancel · /usage-credits to continue now                                    
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 4 agents                   

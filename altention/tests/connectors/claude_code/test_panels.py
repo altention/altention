@@ -158,6 +158,17 @@ class AutoDeny(unittest.TestCase):
         for which in self.SETS:
             self.assertIsNone(panels.auto_deny(samples.screen("permission", which)), which)
 
+    def test_2_1_322_words_it_otherwise(self):
+        """2.1.322 (C-176's rig, #code-review-2 2026-11-11): "automatically block … to avoid holding up an unattended
+        session". Read as the deadline, and left out of what the dialog asks, as 2.1.302's."""
+        from altention.tests.connectors.claude_code import samples
+        view = samples.extra("P", "countdown-rig", version="2.1.322")
+        self.assertIn("automatically block this request in 1:53", view)
+        self.assertEqual(panels.auto_deny(view), 113)
+        excerpt, options = panels.parse_menu(view)
+        self.assertEqual(options, [(1, "Yes"), (2, "No")])
+        self.assertNotIn("unattended session", excerpt)
+
     def test_a_narrow_pane_wraps_it_onto_three_rows(self):
         """2.1.310 at 52 columns (#activity-dev 2026-10-27): the reason in a │ box above, the row wrapped after "request",
         so its first row has no "in" (the buttons never went out: each second the dialog looked changed)."""

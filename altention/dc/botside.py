@@ -19,7 +19,7 @@ WAIT_MOST = 600  # --wait's most seconds (altention dc post and notify)
 RUN_SECS = 900  # the command itself over SSH, at most (C-125): above --wait's most, dcctl's wait for its lock and a
 # rate limit's (#code-review on 4ee2ab6), so a post still queued says so rather than being cut
 HANDED = "ALTENTION_HANDED"  # set on a command sent to the bot's machine: one that arrives there is not sent on
-STDIN_COMMANDS = {"post", "edit"}  # the dcctl commands that read stdin: only theirs is read and sent over
+STDIN_COMMANDS = {"post", "edit", "send-json"}  # the dcctl commands that read stdin: only theirs is read and sent over
 
 
 class NoBot(Exception):
@@ -117,12 +117,14 @@ def way(m):
     return None, tried
 
 
-def run(args, input=None, cache=None, prog="altention dc", repo=HOME_REPO, where=None, timeout=RUN_SECS, **io):
+def run(args, input=None, cache=None, prog="altention dc", repo=HOME_REPO, where=None, timeout=RUN_SECS, sender=None,
+        **io):
     """dcctl `args` on the machine connected to Discord, run once: the CompletedProcess (`io`: subprocess.run's
     stdout and stderr). `input` (bytes) is its stdin; None gives it none. NoBot when there is no machine, no way
     there, the line dropped while it ran (255: maybe done, not sent again), or it ran longer than `timeout` seconds
     over SSH (cut then, said so: maybe done, never taken for done, not sent again; C-125). `where`: bot_machine()'s
-    answer, when the caller asked already."""
+    answer, when the caller asked already. `sender`: who runs it, looked up here (altention.dc.sender.encoded()),
+    for dcctl over there (ALTENTION_SENDER; C-172a P1d)."""
     name, m, here = where or bot_machine(cache, prog)
     stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     if here:
@@ -131,7 +133,8 @@ def run(args, input=None, cache=None, prog="altention dc", repo=HOME_REPO, where
     if alias is None:
         raise NoBot("連不上 %s（試過 %s）" % (name, "、".join(tried)) if tried else "連不上 %s（機器清單裡沒有它的 ssh 別名）" % name)
     try:
-        r = subprocess.run(SSH + [alias, " ".join([HANDED + "=1", dcctl_on(m)] + [quote(a) for a in args])],
+        said = ["ALTENTION_SENDER=" + quote(sender)] if sender else []
+        r = subprocess.run(SSH + [alias, " ".join([HANDED + "=1"] + said + [dcctl_on(m)] + [quote(a) for a in args])],
                            timeout=timeout, **stdin, **io)
     except subprocess.TimeoutExpired:  # ssh killed by subprocess.run: what it did over there is not known
         took = "%d 分鐘" % (timeout // 60) if timeout >= 60 and timeout % 60 == 0 else "%d 秒" % timeout
@@ -161,10 +164,30 @@ def hand_over(argv, stdin=None):
         stdin = stdin or sys.stdin
         data = stdin.buffer.read() if hasattr(stdin, "buffer") else stdin.read().encode("utf-8")
     try:
-        r = run(argv, data, prog="dcctl", where=(name, m, here))
+        r = run(argv, data, prog="dcctl", where=(name, m, here), sender=sender_here())
     except NoBot as e:
         sys.exit("dcctl：%s" % e)
     sys.exit(r.returncode)
+
+
+def sender_here():
+    """Who runs this dcctl, looked up on this machine (the Claude Code above it, by its own environment: C-186), as
+    the word dcctl on the bot's machine reads from ALTENTION_SENDER (C-172a P1d): over there the Claude above is
+    sshd's, nobody's. None when it cannot be looked up: that dcctl takes it as a program of its own machine, never
+    as a channel's Claude (manager 11-17)."""
+    try:
+        import socket
+        sys.path.insert(0, HOME_REPO)
+        from altention.dc import sender
+        from altention import config
+        host = socket.gethostname().split(".")[0]
+        try:
+            machine = config.this_machine() or host  # (as altention dc post says it: one key for one sender)
+        except Exception:
+            machine = host
+        return sender.encoded(sender.describe(sender.claude_env(), host, os.getcwd(), machine))
+    except Exception:
+        return None
 
 
 def reach():

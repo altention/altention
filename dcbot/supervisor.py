@@ -3,6 +3,10 @@
 bad bot commit can't take it down; nothing of the engine is imported here (the sync, when used, runs in a child
 process). cron starts it every 5 minutes; a lock makes extra copies exit.
 
+  python3 dcbot/supervisor.py                  what cron runs (every 5 minutes, and at boot): keep the bot running
+  python3 dcbot/supervisor.py --check-engine   only say whether this is this machine's engine; starts nothing (after a deploy)
+  python3 dcbot/supervisor.py -h | --help      this text
+
 A "version" is the git tree of dcbot/ plus altention/ (the bot imports it): only a change there makes the next
 start a trial. A version is "good" once it has been up for STABLE_SECS; while a good bot runs, last_good follows
 HEAD as long as the version stays the same (commits elsewhere in the engine move it on), so a rollback takes back
@@ -52,10 +56,12 @@ Changing this file is risky: the bot can't roll back its own supervisor. Keep it
 """
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -68,6 +74,9 @@ PATHS = (".", "../altention")  # what a version is (relative to ROOT), and what 
 TRIAL_SECS = 180
 STABLE_SECS = 120
 EXIT_RESTART = 42
+EXIT_LEASE = 4     # C-163: the bot gave the place up (another machine holds it, or it could not tell): not a crash
+LEASE_WAIT = 60    # how often the lease is looked at again while another machine holds it
+LEASE_GATE_SECS = 120  # (dclease keeps itself under 100)
 LOCK_WAIT = 120
 GIT_TIMEOUT = 60
 NET_TIMEOUT = 60
@@ -566,6 +575,114 @@ def failed_events_since(start):
         return []
 
 
+CRASH_WINDOW, CRASH_COUNT = 15 * 60, 3  # a good version down this many times within this long, never up STABLE_SECS
+# in between: the bot keeps restarting, and the owner is told once (C-103)
+RESTART_LOOP = "restart-loop"  # in STATE: the restart loop said and not over yet (the time it was said)
+
+
+_loaded = {}
+
+
+def bot_module(name):
+    """dcbot/bot/<name>.py of this checkout, loaded by its path under a name of its own: nothing called `bot` is put in
+    sys.modules (a test's fake bot package, or another checkout's, is never taken, nor left behind for others).
+    bot/messages.py imports the engine's altention.text, so the engine is put on the path."""
+    if name not in _loaded:
+        if ENGINE not in sys.path:
+            sys.path.insert(0, ENGINE)
+        spec = importlib.util.spec_from_file_location("supervisor_bot_" + name, os.path.join(ROOT, "bot", name + ".py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _loaded[name] = module
+    return _loaded[name]
+
+
+def said_words(code, default, **data):
+    """A line of the bot's words (bot/messages.py CALLS), as the installation words it; `default` when they cannot be
+    read: what tells the owner the bot is down never depends on the bot's own code loading."""
+    try:
+        return bot_module("messages").call(code, **data)
+    except Exception:
+        return default.format(**data)
+
+
+def as_program_env():
+    """The environment the supervisor's dcctl send runs in: said to be a program's (ALTENTION_AS_PROGRAM), whoever
+    started the supervisor (cron, or by hand under a Claude Code): its notices never get a Claude's 「來自」 line
+    (C-172a P1d, manager 11-17). Whoever sets it becomes a program (no such line, edits by its key); all run under
+    one account, so this is not proof of anything (C-186 P0-2)."""
+    return dict(os.environ, ALTENTION_AS_PROGRAM="1")
+
+
+def ping(text):
+    """Straight to Discord (dcctl send, not through the bot, which may be down), in the default notification channel,
+    mentioning the owner at the end (C-103). Best effort, never raises; True when it was sent."""
+    try:
+        owner = bot_module("envfile").load().get("OWNER_ID") or ""
+        head, _, rest = text.partition("\n")
+        body = ("%s <@%s>" % (head, owner) if owner.isdigit() else head) + ("\n" + rest if rest else "")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "dcctl"), "send", "@notify", body, "--mentions"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=NET_TIMEOUT,
+                           env=as_program_env())
+        if r.returncode != 0:
+            log("could not tell the owner (dcctl send %s): %s" % (r.returncode, r.stderr.decode("utf-8", "replace")[-200:]))
+        return r.returncode == 0
+    except Exception as e:
+        log("could not tell the owner (%r)" % e)
+        return False
+
+
+def this_machine():
+    """This machine's name in the machine list (altention.config), its host name when that cannot be read."""
+    try:
+        if ENGINE not in sys.path:
+            sys.path.insert(0, ENGINE)
+        from altention import config as altconfig
+        return altconfig.this_machine() or socket.gethostname()
+    except Exception:
+        return socket.gethostname()
+
+
+def say_quietly(text):
+    """As ping(), mentioning nobody: the line that says what was said is over."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "dcctl"), "send", "@notify", text],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=NET_TIMEOUT,
+                           env=as_program_env())
+        return r.returncode == 0
+    except Exception as e:
+        log("could not post (%r)" % e)
+        return False
+
+
+def restart_loop(crashes, now=None):
+    """`crashes`: when the good version went down lately (never up STABLE_SECS since); kept to CRASH_WINDOW. The
+    owner is told once when there are CRASH_COUNT of them, until the bot is up and stable again (restart_over())."""
+    now = time.time() if now is None else now
+    crashes[:] = [t for t in crashes if now - t <= CRASH_WINDOW]
+    if len(crashes) < CRASH_COUNT or read(RESTART_LOOP):
+        return False
+    write(RESTART_LOOP, str(int(now)))
+    machine = this_machine()
+    where = said_words("restarting_where", "原因在 {machine} 的 {path}", machine=machine,
+                       path=os.path.join(STATE, "supervisor.out"))
+    log("the bot keeps restarting (%d times in %d minutes): telling the owner" % (len(crashes), CRASH_WINDOW // 60))
+    ping(said_words("restarting", "🛠️ 機器人一直重啟，沒辦法上線") + "\n" + where)
+    return True
+
+
+def restart_over():
+    """The bot is up and stable: a restart loop said is over (said, mentioning nobody); the next one is told again."""
+    if not read(RESTART_LOOP):
+        return False
+    try:
+        os.remove(os.path.join(STATE, RESTART_LOOP))
+    except OSError:
+        pass
+    say_quietly(said_words("restarting_back", "✅ 機器人恢復了"))
+    return True
+
+
 def notice(text):
     """Shown in Discord by the next bot that comes up."""
     prev = read("notice.txt")
@@ -805,8 +922,79 @@ def not_this_machines_engine(wait=ENGINE_WAIT):
         time.sleep(ENGINE_POLL)
 
 
-def main():
-    if sys.argv[1:] == ["--check-engine"]:  # the identity check alone, nothing started: for after a deploy
+def token_there():
+    """Is the bot's token on this machine? altention.config.bot_token_there(): the same answer install gives.
+    Not known (the engine's config not importable): True, as before (the gate decides)."""
+    try:
+        import bot  # noqa: F401  (puts the engine's folder on the path)
+        from altention import config as engine_config
+        return engine_config.bot_token_there()
+    except Exception:
+        return True
+
+
+def standby_here():
+    """Is this machine a standby: the machine list gives it the standby role; only when the list cannot be read,
+    what the gate said last (state/lease-role: a standby without its token never runs the gate, so that file may be
+    old; #code-review-2 on c1780a4). Not known: False (the gate decides, as before)."""
+    try:
+        import bot  # noqa: F401
+        from altention import config as engine_config
+        machines = engine_config.inventory().get("machines")
+        if machines:
+            me = engine_config.this_machine()
+            return "dcbot-standby" in ((machines.get(me) or {}).get("roles") or [])
+    except Exception:
+        pass
+    return read("lease-role") == "standby"
+
+
+GATE_SAID = None  # what the gate last said on stderr with its "wait" (lease_gate(): logged when it changes)
+
+
+def lease_gate(crashing=False):
+    """C-163: tools/dclease gate, before the bot starts: "start" or "wait" (another machine holds the place, or this
+    standby has no reason to take it). `crashing`: the bot went down lately before it was ever up STABLE_SECS (said
+    to the gate: a lapsed place is then left to the standby, lease.leave_to_standby()). On a standby
+    (state/lease-role) only its 0 starts the bot: a gate killed, hung or broken is "wait" (#code-review-2 on
+    ccd8baa). On the primary its own trouble is "start" (dclease itself says 10 for what must wait: Discord out of
+    reach, a fence). Why it says "wait", when it says (its stderr), is logged once a change (drill problem B)."""
+    tool = os.path.join(ROOT, "tools", "dclease")
+    standby = read("lease-role") == "standby"  # (dclease writes this machine's part first thing: #code-review-2)
+    if not os.path.exists(tool) or not os.path.exists(PY):
+        return "wait" if standby else "start"
+    try:
+        r = subprocess.run([PY, tool, "gate"] + (["--crashing"] if crashing else []), cwd=ROOT, capture_output=True,
+                           timeout=LEASE_GATE_SECS)
+        code = r.returncode
+    except (OSError, subprocess.TimeoutExpired) as e:
+        code = e.__class__.__name__
+    global GATE_SAID
+    if code == 0:
+        GATE_SAID = None
+        return "start"
+    standby = read("lease-role") == "standby"
+    if code == 10:  # why, when it says (dclease's said(), its trouble): logged once a change (drill problem B)
+        got = (r.stderr or b"").decode("utf-8", "replace").strip()[:600]
+        key = re.sub(r"\d{4}-\d\d-\d\d[ T][\d:.]+(\+00:00)?", "", got)  # (the times in it move every minute)
+        if got and key != GATE_SAID:
+            log("lease gate: wait: %s" % got)
+        GATE_SAID = key or GATE_SAID
+    if code != 10:
+        log("lease gate: %s; %s" % (code, "waiting (a standby starts only on a clear yes)" if standby else "starting"))
+    return "wait" if code == 10 or standby else "start"
+
+
+def main(argv=()):
+    """argv: the command line's arguments (cron gives none); main() alone, as the tests call it, is cron's run."""
+    argv = list(argv)
+    if argv[:1] in (["-h"], ["--help"]):  # spec §11.1: says how and does nothing (no lock, no start, no state)
+        print(__doc__)
+        return 0
+    if argv not in ([], ["--check-engine"]):  # anything else is a mistake, never a reason to start the bot
+        print("supervisor：不認得 %s（只有 --check-engine；-h 看說明），什麼都沒做" % " ".join(argv))
+        return 2
+    if argv == ["--check-engine"]:  # the identity check alone, nothing started: for after a deploy
         kind, why = engine_verdict()
         print("%s %s" % (kind, why or os.path.realpath(ENGINE)))
         return 0 if kind == "ok" else 1
@@ -822,10 +1010,18 @@ def main():
         return 0  # already running
     write("supervisor.pid", str(os.getpid()))
     backoff = BACKOFF
+    crashes = []  # when the good version went down lately (restart_loop())
     while True:
         if os.path.exists(os.path.join(STATE, "stop")):
             log("stop flag present; exiting")
             return 0
+        if standby_here() and not token_there():  # a standby that only tells (no token: design section 2): ends
+            log("standby without the bot's token: notify only, nothing to start; exiting")  # before the gate, which
+            return 0  # would ask Discord with no token every 5 minutes (#code-review-2 on f47de47, manager)
+        if lease_gate(crashing=bool(crashes)) == "wait":  # C-163: another machine is the bot (only with a standby:
+            # else at once "start")
+            time.sleep(LEASE_WAIT)
+            continue
         if os.path.exists(os.path.join(STATE, "rollback-requested")):
             os.remove(os.path.join(STATE, "rollback-requested"))
             if safe_rollback(read("last_good"), "使用者要求退回") is False:
@@ -849,7 +1045,10 @@ def main():
             if not deps_why:
                 drop(FAILING)
         log("starting bot %s%s" % (head[:7], " (trial)" if trial else ""))
-        proc = subprocess.Popen([PY, "-m", "bot.main"], cwd=ROOT)
+        env = {k: v for k, v in os.environ.items() if k != "DCBOT_CRASHING"}
+        if crashes:  # C-163: its last run ended before it was up STABLE_SECS: the bot waits that long before its
+            env["DCBOT_CRASHING"] = "1"  # first leader: true (bot/lease.py's note; manager 11-10)
+        proc = subprocess.Popen([PY, "-m", "bot.main"], cwd=ROOT, env=env)
         write("bot.pid", str(proc.pid))
         marked, followed, next_step = False, 0, start + DEPS_RETRY
         while proc.poll() is None:
@@ -865,6 +1064,9 @@ def main():
                     write("last_good", head)
                 marked, backoff, followed = True, BACKOFF, time.time()
                 log("version %s is good" % head[:7])
+                crashes = []
+                restart_over()  # (C-103)
+                drop("lease-down.json")  # C-163: no longer marked down in #bot-lease (tools/dclease, drill item 20)
             if marked and time.time() - followed > FOLLOW_SECS:  # commits elsewhere: last_good follows HEAD
                 followed, now = time.time(), git("rev-parse", "HEAD")[1]
                 if now and now != read("last_good") and now != stepped and version(now) == ver:
@@ -882,6 +1084,9 @@ def main():
         log("bot exited with %s after %ds" % (code, up))
         if code == EXIT_RESTART:
             continue  # deploy or !restart: start whatever is checked out now
+        if code == EXIT_LEASE:  # C-163: the place given up; the lease decides when it starts again (lease_gate()),
+            time.sleep(LEASE_WAIT)  # not at once: a loop of starts would connect to Discord again and again (#code-review)
+            continue
         rec = read_json(STEPPED)
         if rec and rec.get("venv") == "mixed" and not trial and not marked and not os.path.exists(os.path.join(STATE, "stop")):
             # the old version on a venv the new version's pip left mixed: no crash backoff, the move forward at once
@@ -909,10 +1114,16 @@ def main():
             continue
         if trial and not marked:
             if safe_rollback(good, "新版本 `%s` 啟動失敗（exit %s）" % (head[:7], code)):
+                # (C-103) a new version that did not come up, rolled back on its own: the owner is told (the details
+                # are in the notice). Not a rollback the owner asked for (!rollback): they are there already
+                ping(said_words("rollback", "🛠️ 機器人新版有問題，已退回上一版，照常運作"))
                 continue
+        if not marked:  # down before it was ever up STABLE_SECS: one more in a row (C-103)
+            crashes.append(time.time())
+            restart_loop(crashes)
         time.sleep(backoff)  # crash of a good version: retry with backoff
         backoff = min(backoff * 2, 300)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

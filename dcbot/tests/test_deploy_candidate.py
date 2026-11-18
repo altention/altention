@@ -1,6 +1,11 @@
 """deploy.sh --commit (deploy_candidate.py): a reviewed commit becomes a candidate in a throwaway worktree, is
 checked there, and only then is the live tree moved; before that not a byte of the live tree changes (manager
 2026-10-08: the live cron ran code the tests had not passed yet). Each test has a small repository of its own."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import json
 import os
 import shutil
@@ -8,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..", "deploy_candidate.py")
@@ -180,6 +186,55 @@ class Prepare(Repo):
         self.assertEqual(self.tool("prepare", "m", h)[0], 0)
         self.assertFalse(os.path.exists(os.path.join(self.keep(), "tests")))
         self.assertEqual(self.git("worktree", "list").count("altention-deploy"), 1)
+
+
+class GoldenLines(Repo):
+    """C-148 (#code-review, #code-review-2 of d45add2; manager 11-03): the candidate --commit makes carries the golden:
+    lines of the reviewed commits, so lint's tools/golden check-commits (HEAD0..candidate) sees them and main keeps
+    them; without one it is refused, as it would be in place. The real tools/golden, in this test's repository."""
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.live, "tools"))
+        shutil.copy(os.path.join(HERE, "..", "..", "tools", "golden"), os.path.join(self.live, "tools", "golden"))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "the tool")
+        self.git("checkout", "-q", "fix", cwd=self.wt)
+        self.git("reset", "-q", "--hard", "main", cwd=self.wt)
+
+    def checked(self):
+        """tools/golden check-commits HEAD0..candidate, as tools/lint runs it in verify."""
+        r = subprocess.run([sys.executable, os.path.join(self.live, "tools", "golden"), "check-commits", "main",
+                            self.state()["candidate"]], cwd=self.live, env=ENV, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=120)
+        return r.returncode, r.stdout
+
+    def test_the_reviewed_line_goes_with_the_candidate(self):
+        h = self.reviewed({"ops/tests/golden/cli/x.txt": "x\n"}, "lock x\n\ngolden: cli/x — a new case\n")
+        self.assertEqual(self.tool("prepare", "Lock x", h)[0], 0)
+        message = self.git("log", "-1", "--format=%B", self.state()["candidate"])
+        self.assertEqual(message, "Lock x (reviewed %s)\n\ngolden: cli/x — a new case" % h[:7])
+        self.assertEqual(self.checked()[0], 0)
+
+    def test_without_one_it_is_refused(self):
+        h = self.reviewed({"ops/tests/golden/cli/x.txt": "x\n"}, "lock x, no line")
+        self.assertEqual(self.tool("prepare", "Lock x", h)[0], 0)
+        code, out = self.checked()
+        self.assertEqual(code, 1, out)
+        self.assertIn("改了 golden cli/x", out)
+
+    def test_several_reviewed_commits_with_their_own_cases(self):
+        a = self.reviewed({"ops/tests/golden/cli/x.txt": "x\n"}, "one\n\ngolden: cli/x — first\n")
+        b = self.reviewed({"dcbot/tests/golden/discord/ids.txt": "i\n", "ops/tests/golden/cli/x.txt": "x2\n"},
+                          "two\n\ngolden: discord/ids, cli/x — second\n")
+        c = self.reviewed({"altention/cron.py": "print('c')\n"}, "three, no golden")
+        self.assertEqual(self.tool("prepare", "Batch (reviewed %s, %s, %s)" % (a[:7], b[:7], c[:7]), a, b, c)[0], 0)
+        message = self.git("log", "-1", "--format=%B", self.state()["candidate"])
+        self.assertEqual(message.split("\n")[2:], ["golden: cli/x — first", "golden: discord/ids, cli/x — second"])
+        self.assertEqual(self.checked()[0], 0, "the cases named together are the ones the candidate changes")
+        with mock.patch.object(deploy_candidate, "root", lambda: self.live):  # its git, in this repository
+            again = deploy_candidate.golden_lines([a, b], "already: golden: cli/x — first")
+        self.assertEqual(again,
+                         ["golden: discord/ids, cli/x — second"], "a line the message has already is not added twice")
 
 
 class Land(Repo):

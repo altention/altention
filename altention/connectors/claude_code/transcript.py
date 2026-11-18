@@ -140,6 +140,57 @@ def ends_turn(row):
     return row.get("type") == "assistant" and isinstance(message, dict) and message.get("stop_reason") == "end_turn"
 
 
+def _when(text):
+    try:
+        got = datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return got if got.tzinfo else got.replace(tzinfo=datetime.timezone.utc)
+
+
+def last_begun(path, tail_bytes=1024 * 1024):
+    """The promptId of the last turn begun in the main conversation (begins()), or None: a print-mode reply's id,
+    read once its turn is over (C-163: the footer carries it)."""
+    try:
+        size = os.path.getsize(path)
+    except (OSError, TypeError):
+        return None
+    pid = None
+    for _, _, d in rows(path, max(0, size - tail_bytes)):
+        b = begins(d) if d is not None and not d.get("isSidechain") else None
+        pid = b or pid
+    return pid
+
+
+def replies_since(path, since, tail_bytes=4 * 1024 * 1024):
+    """The turns of the main conversation that began at or after `since` (an ISO time) and ended, oldest first:
+    [{"pid": its promptId, "final": Claude's last words of it, "at": when it ended}] (C-163: a reply a takeover may
+    have left unposted is found by its id, never by time alone). Only the end of the file is read."""
+    try:
+        size = os.path.getsize(path)
+    except (OSError, TypeError):
+        return []
+    start = _when(since)
+    out, pid, began, last = [], None, None, ""
+    for _, _, d in rows(path, max(0, size - tail_bytes)):
+        if d is None or d.get("isSidechain"):
+            continue
+        b = begins(d)
+        if b:
+            pid, began, last = b, _when(d.get("timestamp")), ""
+            continue
+        if d.get("type") == "assistant":
+            content = content_of(d)
+            for block in content if isinstance(content, list) else []:
+                if is_text(block) and text_of(block).strip():
+                    last = text_of(block).strip()
+        if ends_turn(d) and pid:
+            if last and (start is None or (began is not None and began >= start)):
+                out.append({"pid": pid, "final": last, "at": d.get("timestamp") or ""})
+            pid, last = None, ""
+    return out
+
+
 def own_first(found):
     """Of the message rows that bear one prompt id, in the order they stand: which is the turn's own first (its
     place in the list), or None for an empty list. `found`: for each, (its turn_index(), whether a turn ended

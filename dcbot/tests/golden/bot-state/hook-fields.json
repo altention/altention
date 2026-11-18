@@ -1,0 +1,67 @@
+#golden spec §13.8
+{
+ "added_by_event": {
+  "PostToolUse": [
+   "channel",
+   "dc_pane",
+   "hint",
+   "started",
+   "ts"
+  ],
+  "PreToolUse": [
+   "channel",
+   "dc_pane",
+   "hint",
+   "ts"
+  ],
+  "SessionEnd": [
+   "channel",
+   "dc_pane",
+   "ts"
+  ],
+  "SessionStart": [
+   "channel",
+   "dc_pane",
+   "ts"
+  ],
+  "Stop": [
+   "channel",
+   "dc_pane",
+   "ts"
+  ],
+  "UserPromptSubmit": [
+   "channel",
+   "dc_pane",
+   "ts"
+  ]
+ },
+ "before": [
+  "channel",
+  "hint",
+  "send_text",
+  "send_to",
+  "started",
+  "ts"
+ ],
+ "prefix": "dc_",
+ "relay_adds": [
+  "agent_meta",
+  "agent_prompt",
+  "agent_run",
+  "context",
+  "dc_agent",
+  "dc_from",
+  "dc_kind",
+  "dc_peer",
+  "dc_text",
+  "dc_turn_start",
+  "dc_turn_sure",
+  "dc_why",
+  "relay_error",
+  "texts"
+ ],
+ "taken_out": [
+  "tool_input",
+  "tool_response"
+ ]
+}

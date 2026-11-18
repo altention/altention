@@ -2,7 +2,7 @@
   "format": 1,
   "name": "usage",
   "title": "用量統計",
-  "description": "每小時把各機器的用量和訂閱額度（usage.subscription_limits 設 false 就不讀）更新到 Discord 的看板，樣本累積在本機。",
+  "description": "每小時把各機器的用量和訂閱額度（usage.subscription_limits 設 false 就不讀）更新到 Discord 的看板，樣本累積在本機。（預設開著）",
   "pitch": "在 #dashboard 放一個看板，顯示每台機器用了多少 Claude 和訂閱額度還剩多少。讀訂閱額度會每小時用 haiku 送一個最小的請求，算進 5 小時的額度（不要可以關）。",
   "keep": "看板顯示每台機器用了多少 Claude",
   "lose": "看不到每台用了多少 Claude",
@@ -61,5 +61,15 @@
         "usage.subscription_limits": false
       }
     }
-  ]
+  ],
+  "interfaces": {
+    "usage.spend": {
+      "version": 2,
+      "also": [1],
+      "what": "usage/spend.py --json (v 1): spend per folder, machine and bot channel; today, 7 and 30 days, and in all (since); 2: --json --v 2 adds days (each day's dollars per machine, 30 days), limits_history (the hourly samples, 28 days) and plan",
+      "paths": [
+        "usage/spend.py"
+      ]
+    }
+  }
 }

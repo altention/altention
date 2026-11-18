@@ -1,0 +1,861 @@
+{
+ "edit.buttons": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：那則訊息有按鈕或卡片，不能改\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "edit.done": [
+  [
+   "audit",
+   "[dcctl] #lab：dcctl edit：沒有改：這則在別人的頻道卻沒有來源行，改了會變成看不出是誰發的訊息；請重新發一則（<#5> 的 Claude（查證過））"
+  ],
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：這則在別人的頻道卻沒有來源行，改了會變成看不出是誰發的訊息；請重新發一則\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "edit.not_dcctls": [
+  [
+   "audit",
+   "[dcctl] #lab：dcctl edit：沒有改：機器人的紀錄（ledger）裡沒有這則，只能改用 dcctl send／send-json 發的訊息（<#5> 的 Claude（查證過））"
+  ],
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：機器人的紀錄（ledger）裡沒有這則，只能改用 dcctl send／send-json 發的訊息\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "edit.same": [
+  [
+   "said",
+   "內容相同，沒有改\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.edit.anothers_post": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：這則是 <#6> 的 Claude 發的，只能改自己發的\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:6",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.edit.board": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：這則是看板，看板要用 --board 更新\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "board"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.edit.card": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：這則是機器人的卡片（提問、計畫、權限選單、更新或設定），按鈕和內容都由機器人管\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "intent": "card"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.edit.everyone": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：內容裡有 @everyone 或 @here（不會響，但看起來像在叫所有人），請拿掉\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.edit.not_noted": [
+  [
+   "audit",
+   "[dcctl] #lab：dcctl edit：沒有改：機器人的紀錄（ledger）裡沒有這則，只能改用 dcctl send／send-json 發的訊息（<#5> 的 Claude（查證過））"
+  ],
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl edit：沒有改：機器人的紀錄（ledger）裡沒有這則，只能改用 dcctl send／send-json 發的訊息\n"
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.pin": [
+  [
+   "PUT",
+   "/channels/10/messages/pins/555",
+   null
+  ],
+  [
+   "audit",
+   "[dcctl] #lab 釘選訊息 555"
+  ],
+  [
+   "said",
+   "已釘選\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post",
+      "pinned": true
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send.everyone": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send：沒有送出：內容裡有 @everyone 或 @here（不會響，但看起來像在叫所有人），請拿掉\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send_json.custom_id": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send-json：沒有送出：按鈕和選單的 custom_id 要以 user: 開頭（ask:1 不是；連結按鈕不用）\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send_json.everyone": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send-json：沒有送出：內容裡有 @everyone 或 @here（不會響，但看起來像在叫所有人），請拿掉\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send_json.mention_owner": [
+  [
+   "POST",
+   "/channels/10/messages",
+   {
+    "allowed_mentions": {
+     "parse": [],
+     "users": [
+      "42"
+     ]
+    },
+    "content": "-# 📨 來自 <#5>\n<@42> look"
+   }
+  ],
+  [
+   "audit",
+   "[dc post --json] #lab 發了訊息 900（flags 無、頂層元件 0 個；#st-5（查證過））"
+  ],
+  [
+   "audit",
+   "[dc post --json] #lab 用 --mention owner @ 了使用者（訊息 900；#st-5（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "900",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send_json.mention_user": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send-json：沒有送出：這個安裝只允許 @ 使用者本人（--mention owner）；要 @ 其他人或身分組，實例的 dcbot.json_mentions 要設成 \"any\"\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.send_json.user_custom_id": [
+  [
+   "POST",
+   "/channels/10/messages",
+   {
+    "allowed_mentions": {
+     "parse": []
+    },
+    "components": [
+     {
+      "components": [
+       {
+        "custom_id": "user:b",
+        "label": "b",
+        "style": 1,
+        "type": 2
+       }
+      ],
+      "type": 1
+     }
+    ],
+    "content": "-# 📨 來自 <#5>\nx"
+   }
+  ],
+  [
+   "audit",
+   "[dc post --json] #lab 發了訊息 900（flags 無、頂層元件 1 個；#st-5（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "900",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "p1c.unpin": [
+  [
+   "DELETE",
+   "/channels/10/messages/pins/555",
+   null
+  ],
+  [
+   "audit",
+   "[dcctl] #lab 取消釘選訊息 555"
+  ],
+  [
+   "said",
+   "已取消釘選\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "555"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "555",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send.mentions": [
+  [
+   "GET",
+   "/channels/10",
+   null
+  ],
+  [
+   "POST",
+   "/channels/10/messages",
+   {
+    "allowed_mentions": {
+     "parse": [],
+     "users": [
+      "42"
+     ]
+    },
+    "content": "-# 📨 來自 <#5>\nhey <@42>"
+   }
+  ],
+  [
+   "audit",
+   "[dcctl] <#10> 用 send 發了訊息 900（<#5> 的 Claude（查證過））"
+  ],
+  [
+   "audit",
+   "[dcctl] <#10> 用 send --mentions @ 了使用者（訊息 900；<#5> 的 Claude（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "900"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "900",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send.plain": [
+  [
+   "GET",
+   "/channels/10",
+   null
+  ],
+  [
+   "POST",
+   "/channels/10/messages",
+   {
+    "allowed_mentions": {
+     "parse": []
+    },
+    "content": "-# 📨 來自 <#5>\nhello <@42>"
+   }
+  ],
+  [
+   "audit",
+   "[dcctl] <#10> 用 send 發了訊息 900（<#5> 的 Claude（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   [
+    "900"
+   ]
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "900",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send_json.every_field": [
+  [
+   "POST",
+   "/channels/10/messages",
+   {
+    "allowed_mentions": {
+     "parse": []
+    },
+    "attachments": [],
+    "components": [
+     {
+      "components": [
+       {
+        "label": "link",
+        "style": 5,
+        "type": 2,
+        "url": "https://example.com"
+       }
+      ],
+      "type": 1
+     }
+    ],
+    "content": "-# 📨 來自 <#5>\nall of it",
+    "embeds": [
+     {
+      "color": 3,
+      "description": "d",
+      "fields": [
+       {
+        "name": "a",
+        "value": "b"
+       }
+      ],
+      "title": "t"
+     }
+    ],
+    "enforce_nonce": true,
+    "flags": 4096,
+    "message_reference": {
+     "fail_if_not_exists": false,
+     "message_id": "800"
+    },
+    "nonce": "n1",
+    "poll": {
+     "answers": [
+      {
+       "poll_media": {
+        "text": "a"
+       }
+      }
+     ],
+     "question": {
+      "text": "q"
+     }
+    },
+    "sticker_ids": [
+     "1"
+    ],
+    "tts": false
+   }
+  ],
+  [
+   "audit",
+   "[dc post --json] #lab 發了訊息 900（flags 4096、頂層元件 1 個；#st-5（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   [
+    [
+     "900",
+     {
+      "from": "channel:5",
+      "intent": "post"
+     }
+    ]
+   ]
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send_json.not_json": [
+  [
+   "said",
+   "",
+   "exit: dcctl send-json：stdin 不是 JSON（Expecting property name enclosed in double quotes: line 1 column 2 (char 1)），沒有送出"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send_json.reserved": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send-json：沒有送出：開頭「🔔 **[…]**」是機器人自己用的格式，讀回時會被當成別的頻道傳來的、通知、看板或終端機輸入。請換個開頭\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send_json.thread": [
+  [
+   "POST",
+   "/channels/777/messages",
+   {
+    "allowed_mentions": {
+     "parse": []
+    },
+    "content": "-# 📨 來自 <#5>\n<@42> in a thread"
+   }
+  ],
+  [
+   "audit",
+   "[dc post --json] #a-thread 發了訊息 900（flags 無、頂層元件 0 個；#st-5（查證過））"
+  ],
+  [
+   "said",
+   "已送出\n900\n",
+   0
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ],
+ "send_json.v2": [
+  [
+   "said",
+   "",
+   4
+  ],
+  [
+   "stderr",
+   "dcctl send-json：沒有送出：內容裡有 @everyone 或 @here（不會響，但看起來像在叫所有人），請拿掉\n"
+  ],
+  [
+   "dcctl edit may change",
+   null
+  ],
+  [
+   "ledger of channel 10",
+   []
+  ],
+  [
+   "dcctl-pinned.json",
+   false
+  ]
+ ]
+}

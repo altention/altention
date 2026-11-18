@@ -2,6 +2,11 @@
 answers for the current pane, exit 0, when the window or pane a target names is not there (a:7, a:0.5), and for a
 session that is not there it answered with an empty session and %0 (tried 2026-11-03): the post would have attached
 another pane. The place tmux answered for is compared with the target (post.same_place)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import os
 import shutil
 import subprocess

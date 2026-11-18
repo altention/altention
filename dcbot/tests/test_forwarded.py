@@ -2,6 +2,11 @@
 agent, the owner, another conversation, a notification, a board, the bot), when, its id and link, and its content
 without the frame the bot put round it; what the owner types after it is marked as the owner's. Discord's forward
 carries a snapshot with no author: the original is read once, in the message's own handling, five seconds at most."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import datetime
 import tempfile
@@ -12,10 +17,10 @@ from unittest import mock
 import discord
 
 from bot import config, frames, util
-from tests import tmuxguard  # noqa: F401,E402  (no test reaches a real tmux server)
+from tests import marks, tmuxguard  # noqa: F401,E402  (no test reaches a real tmux server)
 
 BOT, OWNER, WHEN = 900, 111, datetime.datetime(2026, 10, 13, 7, 28, 13, tzinfo=datetime.timezone.utc)
-HEAD = util.FORWARDED + "\n"
+HEAD = util.FORWARDED.format(mark=marks.MARK) + "\n"
 
 
 class Author(object):
@@ -83,13 +88,14 @@ class Forwarded(unittest.TestCase):
         user.start()
         self.addCleanup(user.stop)
         self.when = WHEN.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        marks.fixed(self)
 
     def channel(self, original=None, **kw):
         ch = self.channels[77] = Channel(77, "秘書", original, **kw)
         return ch
 
     def text(self, snaps, **kw):
-        return asyncio.run(self.bot.forwarded(forward(snaps, **kw)))
+        return marks.plain(asyncio.run(self.bot.forwarded(forward(snaps, **kw))))
 
     def line(self, who, mid=5):
         return "[%s] %s (id %s)\n連結：https://discord.com/channels/1/77/%s\n" % (self.when, who, mid, mid)
@@ -195,7 +201,7 @@ class Forwarded(unittest.TestCase):
             held = self.bot.forwards.pop(50)
             held[2].cancel()
             return await self.bot.held_text(held[1])
-        both = asyncio.run(go())
+        both = marks.plain(asyncio.run(go()))
         self.assertEqual(both, HEAD + self.line("使用者（在 #秘書）") + "> 第一則\n" + HEAD + self.line("使用者（在 #秘書）", 6) + "> 第二則\n")
         self.assertEqual(util.THEN, "（使用者接著說：）")
         import inspect
@@ -221,7 +227,8 @@ class InOrder(unittest.TestCase):
         self.got = []
 
         async def deliver(message, text, now=False):
-            self.got.append(text)
+            self.got.append(marks.plain(text))
+        marks.fixed(self)
 
         async def passed(message, text):
             return text
@@ -278,7 +285,7 @@ class InOrder(unittest.TestCase):
         self.assertEqual([got[0].index(x) < got[0].index(y) for x, y in (("> 第1則", "> 第2則"), ("> 第2則", util.THEN), (util.THEN, "這兩則一起看"))], [True] * 3)
         self.assertNotIn("第3則", got[0])
         self.assertTrue(got[1].endswith("> 第3則\n" + util.THEN + "\n這是另一件"), got[1][-60:])
-        self.assertEqual(got[0].count(util.FORWARDED), 2, "each forward has its own lines")
+        self.assertEqual(got[0].count(HEAD), 2, "each forward has its own lines")
 
     def test_a_comment_that_comes_while_the_lone_forward_is_about_to_go(self):
         """The wait is over and the forward waits only for its original: the comment still takes it along."""

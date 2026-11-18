@@ -1,4 +1,9 @@
 """The file browser: reading (filecore), what a folder or file looks like, links to mentioned files."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import base64
 import os
@@ -159,6 +164,10 @@ class Browser(unittest.TestCase):
             await f.add_links(ch, bot.chan(ch), reply, "看 `bot/files.py:10` 跟 nothing/here.py")
             self.assertEqual(len(reply.view.children), 1)
             self.assertEqual(bot.chan(ch)["links"]["5"][0][1], 10)
+            from bot import ledger  # (both reviews on 99392598: the 📂 edit keeps the reply's status line on record)
+            ledger.note(ch.id, 6, "reply", framed=("status",))
+            await f.add_links(ch, bot.chan(ch), FakeMsg(6), "看 `bot/files.py:10`")
+            self.assertEqual(ledger.entry(6, ch.id)["framed"], ["status"])
         asyncio.run(go())
 
     def test_files_channel_typing_searches_then_jumps(self):
@@ -285,6 +294,104 @@ class SystemTrees(unittest.TestCase):
                 r = subprocess.run(["python3", os.path.join(root, "tools", "dcremote"), "files"],
                                    input=json.dumps({"op": op, "path": path}), stdout=subprocess.PIPE, universal_newlines=True, timeout=20)
                 self.assertTrue(refused(json.loads(r.stdout)), "%s %s" % (op, path))
+
+
+class Parts(unittest.TestCase):
+    """C-90: raw in parts, for a plugin reading a large file of another machine. Every part is checked as a whole read
+    is; a file replaced or changed between parts is refused, never read half old, half new; every result says the
+    interface's version ("v")."""
+
+    LINUX = SystemTrees.LINUX  # (SystemTrees' setting up and paths; not a subclass, which would run its tests again)
+    setUp, tearDown, secret_paths = SystemTrees.setUp, SystemTrees.tearDown, SystemTrees.secret_paths
+
+    def big(self, name="big.bin", n=3 * filecore.PART_MAX + 123):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(bytes(i % 251 for i in range(n)))
+        return path
+
+    def part(self, path, offset, length, same=None):
+        return filecore.op(dict({"op": "raw", "path": path, "offset": offset, "length": length}, **({"same": same} if same else {})))
+
+    def test_a_large_file_read_whole_in_parts(self):
+        path = self.big()
+        got, offset, same = b"", 0, None
+        while True:
+            r = self.part(path, offset, filecore.PART_MAX * 4, same)  # (asks for more: gets a part's worth)
+            self.assertNotIn("error", r)
+            self.assertLessEqual(r["length"], filecore.PART_MAX)
+            self.assertEqual((r["v"], r["offset"], r["size"]), (filecore.V, offset, os.path.getsize(path)))
+            got += base64.b64decode(r["b64"])
+            offset, same = offset + r["length"], {k: r[k] for k in ("id", "mtime", "size")}
+            if r["end"]:
+                break
+        with open(path, "rb") as f:
+            self.assertEqual(got, f.read())
+
+    def test_a_file_replaced_or_changed_between_parts(self):
+        path = self.big()
+        first = self.part(path, 0, 10)
+        same = {k: first[k] for k in ("id", "mtime", "size")}
+        with open(path, "ab") as f:  # changed: grown
+            f.write(b"more")
+        r = self.part(path, 10, 10, same)
+        self.assertTrue(r["changed"])
+        self.assertIn("error", r)
+        self.assertNotIn("b64", r, "nothing of the new one is read")
+        other = self.big("other.bin", 100)
+        first = self.part(other, 0, 10)
+        same = {k: first[k] for k in ("id", "mtime", "size")}
+        os.replace(self.big("new.bin", 100), other)  # replaced: same size, another file
+        self.assertTrue(self.part(other, 10, 10, same)["changed"])
+
+    def test_every_part_refuses_what_a_whole_read_refuses(self):
+        for path in self.secret_paths():
+            r = filecore.op({"op": "raw", "path": path, "offset": 0, "length": 10})
+            self.assertTrue(refused(r), path)
+            self.assertEqual(r["v"], filecore.V)
+        token = os.path.join(self.dir, "api_token.json")
+        with open(token, "w") as f:
+            f.write("x")
+        self.assertTrue(refused(self.part(token, 0, 1)))
+
+    def test_a_link_swapped_to_a_secret_between_parts(self):
+        """Each part is checked again: a link to an ordinary file swapped for one to /proc after the first part."""
+        if not self.LINUX:
+            self.skipTest("Linux")
+        path = self.big("plain.bin", 100)
+        link = os.path.join(self.dir, "link.bin")
+        os.symlink(path, link)
+        first = self.part(link, 0, 10)
+        self.assertNotIn("error", first)
+        os.remove(link)
+        os.symlink("/proc/self/environ", link)
+        self.assertTrue(refused(self.part(link, 10, 10, {k: first[k] for k in ("id", "mtime", "size")})))
+
+    def test_what_it_is_given(self):
+        path = self.big("small.bin", 10)
+        for offset, length in (("x", 1), (0, "y"), (-1, 1), (0, -1), (None, 1)):
+            r = filecore.op({"op": "raw", "path": path, "offset": offset, "length": length})
+            if offset is None:
+                self.assertNotIn("error", r, "no offset: from the start")
+                continue
+            self.assertIn("error", r, (offset, length))
+        r = self.part(path, 50, 10)
+        self.assertEqual((r["length"], r["end"], r["b64"]), (0, True, ""), "past the end: nothing, and the end")
+        whole = filecore.op({"op": "raw", "path": path})
+        self.assertEqual((whole["size"], whole["v"]), (10, filecore.V), "without offset and length: the whole file, as before")
+
+    def test_over_dcremote(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import json
+        path = self.big("r.bin", 1000)
+        r = subprocess.run(["python3", os.path.join(root, "tools", "dcremote"), "files"],
+                           input=json.dumps({"op": "raw", "path": path, "offset": 100, "length": 50}), stdout=subprocess.PIPE,
+                           universal_newlines=True, timeout=20)
+        got = json.loads(r.stdout)
+        with open(path, "rb") as f:
+            f.seek(100)
+            self.assertEqual(base64.b64decode(got["b64"]), f.read(50))
+        self.assertEqual(got["v"], filecore.V)
 
 
 class Remote(unittest.TestCase):

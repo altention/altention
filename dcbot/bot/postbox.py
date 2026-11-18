@@ -21,6 +21,23 @@ def write(post, spool=None):
     os.rename(tmp, os.path.join(spool, name))
 
 
+NAME = re.compile(r"^\d{20}-\d+\.json$")  # write()'s names: the time first, so that the oldest go first
+
+
+def put(name, post, spool=None):
+    """Leave a post under its own name (C-188: one moved from another machine's spool keeps its place in the order).
+    False for a name not of write()'s shape."""
+    if not NAME.match(str(name)) or not isinstance(post, dict):
+        return False
+    spool = spool or SPOOL
+    os.makedirs(spool, exist_ok=True)
+    tmp = os.path.join(spool, "." + name)
+    with open(tmp, "w") as f:
+        json.dump(post, f, ensure_ascii=False)
+    os.rename(tmp, os.path.join(spool, name))
+    return True
+
+
 def waiting(spool=None):
     """[(path, post)] oldest first, left in the spool until done(path): see events.waiting()."""
     spool = spool or SPOOL

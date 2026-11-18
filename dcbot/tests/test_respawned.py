@@ -4,6 +4,11 @@ bot would not type into it: the owner had to !detach and !attach. Now the hook p
 process ("dc_respawned"), and the bot takes it, and moves the route to that process, when it goes on with the
 channel's conversation (`--resume <id>` and `-c` keep the id: measured, 2.1.306). Any other conversation is left
 out, as before."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os

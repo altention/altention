@@ -10,21 +10,23 @@ There is no one-to-one pairing of message and reply: two messages can share one 
 background task starts a turn by itself. So the rule is simply "every Stop event is posted".
 """
 import asyncio
+import collections
 import json
 import os
+import re
 import time
 import traceback
 
 import discord
 
-from altention.connectors.claude_code import btw, screen, transcript
+from altention.connectors.claude_code import btw, panels, screen, transcript
 from altention.connectors.claude_code import commands as cc_commands
 from altention.connectors.claude_code import hooks as cc_hooks
 from altention.connectors.claude_code import launch as cc_launch
 from altention.connectors.claude_code import typist as cc_typing
 
 from . import posts as posts_mod
-from . import agents, ask, attachments, awaiting, cc_btw, config, events, history, masking, mentions, menus, messages, peers, process, remote, routes, sessions, rewrite, sources, startup_ask, tables, tmuxio, unsent as unsent_mod
+from . import agents, ask, attachments, awaiting, calls, cc_btw, cc_health, cc_probe, cc_watch, config, deliver, events, frames, history, lanes, ledger, masking, menus, messages, blocked, peers, process, quota, remote, routes, sessions, rewrite, sources, startup_ask, tables, tmuxio, unsent as unsent_mod
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
@@ -34,6 +36,10 @@ SETTINGS_FILE = os.path.join(config.STATE, "claude-settings.json")
 HOOK = os.path.join(config.ROOT, "tools", "dchook")
 HOOK_EVENTS = cc_hooks.EVENTS
 START_SECS = 90      # how long a session may take to come up
+# C-161: Claude Code 2.1.318 may ask, when a conversation older than 70 minutes and over 100k tokens is resumed,
+# whether to go on from a summary. The bot always resumes the whole conversation: never asked, in the conversations
+# it opens only (the owner's own settings and terminals are left as they are).
+RESUME_ENV = {"CLAUDE_CODE_RESUME_THRESHOLD_MINUTES": "1000000000", "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000000000"}
 SUBMIT_DELAY = 0.3   # Enter pressed right after typing can get lost
 BTW_SECS = 90        # how long a /btw side question may take
 RECEIPT_SECS = 5     # how long to wait for UserPromptSubmit before pressing Enter again
@@ -42,14 +48,29 @@ STREAM_MAX_DELAY = 60  # longest wait between a stream's reconnects (one `true` 
 STREAM_MIN_GAP = 5     # shortest time between two reconnects, woken or not (code-review 2026-10-07)
 LATE_SECS = 600        # how long a message whose receipt did not come is still matched by a late one
 BUSY_MARK = screen.BUSY_MARK  # on screen while Claude works: asked through screen.busy_shown(), never looked for in a whole screen
-LONG_TURN = 600                  # a turn this long ends with a mention, so the phone rings even in a muted channel
+MACHINE_DOWN_SECS = 300         # another machine's stream down this long, with channels on it: the owner is told (C-103)
 RETRY = "繼續。（上一輪因為 API 錯誤中斷了，請從中斷的地方接著做。）"
 FAILURES = events.FAILURES  # the words for why a request failed (events.failure())
+NOW_OWNER = "#%s：你要求立刻送出，已經按了 Ctrl+X Ctrl+S"  # (C-176; words #release)
+NOW_CLAUDE = "#%s：%s要求立刻送出，已經按了 Ctrl+X Ctrl+S"
+
+
+def now_said(message):
+    """The #audit line for a send-now pressed (C-176): the owner's !!, or a Claude's `altention dc post --now` (a
+    post's stand-in message says who sent it: "#st-1" is "#st-1 的 Claude", a name off a channel is said as it is)."""
+    where = getattr(getattr(message, "channel", None), "name", None) or "DM"
+    if not getattr(message, "auto", False):
+        return NOW_OWNER % where
+    who = getattr(message, "sender_name", None) or "別的地方的 Claude"
+    return NOW_CLAUDE % (where, who + " 的 Claude " if who.startswith("#") else who)
+
+
 KEPT_SECS, KEPT_MAX = 600, 500  # events of a channel Discord does not hand out just now: how long, how many (keep())
 RESEND_FIRST, RESEND_MAX = 30, 600  # a refusal a machine did not take: sent again after this long, doubled each time, up to
 WATCH_SECS = 8           # between the looks of watch_busy() at a running turn
 WATCH_SAY_SECS = 120     # a turn's machine silent for this long: the channel is told, once
 WATCH_SILENT_SECS = 60   # between the looks from then on
+LANE_KINDS = (cc_hooks.PROGRESS, cc_hooks.PEER_SENT)  # what only adds to the channel's lane: never held for it
 SLOW_ROUND = 2           # seconds: a pump round longer than this is said in supervisor.out, with its slow parts (C-73)
 # Slash commands that do harm when typed from Discord: refused outright, or sent only after a button press. Which
 # commands, and what kind of harm, the connector says (commands.REFUSED, commands.CONFIRM: a code for each); the words
@@ -73,6 +94,11 @@ BLOCKED, CONFIRM = harm_tables()
 # then the turn's own and not one the bot opened; and those with which the session has moved on, so that the buttons
 # of a dialog shown earlier would mislead. (Until stage 3b step 2.2b these were lists of hook names; a tool call from
 # inside a subagent counted for the first, and does.)
+LANE_KEPT_RESTART = "重啟時，別台傳來的事件還有沒處理完的，丟掉了：%s"  # (C-174; words #release)
+LANE_KEPT_REPLY_GONE = "；含回覆的頻道少貼了那則回覆，可以在那個頻道用 /screen 看 Claude 的終端機畫面（已經捲走的話，要到那台的 tmux 看）"  # (!recap reads this
+# machine's files only; these channels are another machine's)
+LANE_KEPT_HANDOVER = "交出機器人時，別台傳來的事件還有沒處理完的：%s；回覆由接手的機器人補上"
+LANE_KEPT_SAY_SECS = 5
 TURN_MOVED = (cc_hooks.INPUT, cc_hooks.PROGRESS, cc_hooks.PEER_SENT, cc_hooks.AGENT_PROGRESS, cc_hooks.TURN_END, cc_hooks.READY,
               cc_hooks.SESSION_CHANGED, cc_hooks.COMPACTED, cc_hooks.SESSION_ENDED, cc_hooks.SESSION_LEAVING)
 MOVED_ON = (cc_hooks.INPUT, cc_hooks.PROGRESS, cc_hooks.PEER_SENT, cc_hooks.TURN_END, cc_hooks.SESSION_ENDED, cc_hooks.SESSION_LEAVING)
@@ -251,14 +277,26 @@ def stranger(st, ev):
     return bool(ev.get("dc_respawned")) and (not st.get("session_id") or ev.get("session_id") != st.get("session_id"))
 
 
+STALE_SAY_SECS = 5
+STALE_WAIT_SECS = 300  # C-162: how long a window to be reopened is let finish the turn it runs
+PANE_SAID_SECS = 6 * 3600  # an attached pane whose screen is not known: said at most this often (C-162)
 CLOSED_KEPT = 5
 CLOSED_SECS = 60  # how long a window the bot closed is remembered as closed, when nothing of it or of its number comes
 
 
+def leading(host):
+    """host.leader_ok(), where it has one that says False; True otherwise (no standby, a test's host)."""
+    way = getattr(host, "leader_ok", None)
+    return not callable(way) or way() is not False
+
+
 def opened(st, rt):
-    """A window is open for the channel (st["pane"]): a window the bot closed lately in the same pane, with the
+    """A window is open for the channel (st["pane"], or its session on the bot's own tmux): one closed for print
+    turns (cc_stale, C-162) is no longer in the way. A window the bot closed lately in the same pane, with the
     conversation the channel has now, is no longer told from it (from_elsewhere()), and is forgotten. Not left to
     the new window's SessionStart alone, which may never come."""
+    st.pop("cc_stale", None)  # C-162: the window is a new one, opened with --resume
+    st.pop("cc_told", None)  # (and the next time it is held down, its first reply says what is missing again)
     now = st.get("pane")
     if not isinstance(now, dict) or not getattr(rt, "closed", None):
         return
@@ -355,6 +393,9 @@ class Turn(object):
         self.t0, self.prompt, self.tools, self.lines = time.time(), prompt, {}, []
         self.src = src  # (transcript path, byte where the turn starts): for 📋 on its reply
         self.msg, self.last = None, 0.0  # the "working…" message and when it was last edited
+        self.gen = 0          # one more each time the "working…" message goes (or goes to the bottom): one being sent
+        self.closed = False   # meanwhile is deleted when it comes (lanes.py); closed: the turn is over
+        self.sending = None   # a "working…" message being sent (its lane's request, maybe timed out and still going)
         self.pid = None     # the prompt_id of its events (Claude Code's own id of the turn), once one brought it
         self.quiet = False  # the screen showed no work for a while (watch_busy): waiting in a dialog, or cut short
 
@@ -378,6 +419,8 @@ class Runtime(object):
         self.outcome = None   # what the checks before the last message typed came to (Typing; may_type())
         self.closed = []      # windows the bot closed for the channel lately (close()), until one of their number starts anew
         self.unanswered = False  # the last opening gave up waiting on the owner's answer to a startup dialog (wait_ready)
+        self.lane = None      # what its turns show along the way, posted in order outside the round of events (lanes.py)
+        self.ready_why = None  # why the last wait_ready() gave up, when it ran out of time
 
 
 def write_settings():
@@ -441,6 +484,24 @@ def permission_of(st):
     return value
 
 
+async def box_shown(pane):
+    """Is the prompt box on the pane's screen now (wait_ready()'s last look)? No when it cannot be read."""
+    try:
+        return await pane.standing() not in ("gone", "unknown") and screen.has_prompt(await pane.raw_screen())
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def ended_words(end, limit=1200):
+    """What tmuxio.ended() read, as words for the channel (keys masked first); None for nothing read."""
+    if not end:
+        return None
+    how = ("結束碼 %s" % end["status"]) if end["status"] else ("被訊號 %s 結束" % end["signal"]) if end["signal"] else "結束了"
+    rows = "\n".join(r.rstrip() for r in end["screen"].split("\n") if r.strip())  # what it wrote, without the blank rows
+    return "\n" + messages.note("claude_code.resume_ended", how=how) + "\n" + fence(rows, limit)
+
+
 def fence(text, limit=1500):
     """A screen in a code block, its last `limit` characters, keys masked first (C-127)."""
     shown, said = masking.screen(text)
@@ -452,6 +513,43 @@ def events_cut(text, n):
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
+UNENTERED_KEPT = 50  # screens kept of the times Enter was not pressed (state/samples/not-entered/)
+
+
+def unentered_dir():
+    """state/samples/not-entered/ (looked up at each call; DCBOT_UNENTERED: the tests' own, tests/tmuxguard.py)."""
+    return os.environ.get("DCBOT_UNENTERED") or os.path.join(config.STATE, "samples", "not-entered")
+
+
+def keep_unentered(name, typed, view, coloured, state, now=None):
+    """The whole screen as it was when Enter was not pressed, masked (masking.screen(): a key broken over rows too),
+    as one file of state/samples/not-entered/ (only this user's: 600), the last UNENTERED_KEPT kept; with it how
+    the bot read it and how long the message was. The message itself is not a field of it, but it is there as far as
+    the screen shows it (the rows in the box, and the conversation above it), only keys masked (#code-review on
+    cf23197b: say so when telling the owner). The coloured screen only when nothing on the
+    plain one was masked (colour codes in a key's middle hide its end from the patterns: screens.post() does the
+    same). The file's path, or None when it could not be written (never raises)."""
+    try:
+        now = time.time() if now is None else now
+        folder = unentered_dir()
+        os.makedirs(folder, exist_ok=True)
+        plain, note = masking.screen(view or "")
+        pane_id = name.get("id") if isinstance(name, dict) else str(name)
+        path = os.path.join(folder, "%s.%06d-%s.json" % (time.strftime("%Y%m%d-%H%M%S", time.localtime(now)),
+                                                        int(now % 1 * 1e6), re.sub(r"[^A-Za-z0-9_.-]", "_", pane_id)[:40]))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"at": now, "target": pane_id, "host": name.get("host") if isinstance(name, dict) else None,
+                       "read_as": state, "typed_chars": len(typed or ""), "typed_rows": (typed or "").count("\n") + 1,
+                       "screen": plain, "colour": "" if note else (coloured or "")}, f, ensure_ascii=False, indent=1)
+        for old in sorted(n for n in os.listdir(folder) if n.endswith(".json"))[:-UNENTERED_KEPT]:
+            os.remove(os.path.join(folder, old))
+        return path
+    except Exception as e:
+        print("[enter] the screen was not kept (%s)" % type(e).__name__, flush=True)
+        return None
+
+
 class TmuxBridge(object):
     """`host` is the Discord bot: needs chan(channel), save(), audit(text), note(channel, st), get_channel(id)."""
 
@@ -461,9 +559,13 @@ class TmuxBridge(object):
         self.asks.on_owed = self.start_resends  # a result for a hook on another machine: sent by that machine's task
         if getattr(host, "posts", None) is not None:
             self.asks.on_done = host.posts.answered
+        self.asks.on_asked, self.asks.on_closed = self.question_asked, self.question_closed  # C-103: the owner's mention
+        self.down_since = {}  # machine -> when its stream went down (machine_watch())
         self.agents = agents.Agents(host)
         self.menus = menus.Menus(self)
         self.unsent = unsent_mod.Unsent(self)  # C-74: what could not be handed over for now, sent again
+        self.quota = quota.Quota(self)  # C-99a: a usage limit, and Claude Code's own wait for its reset
+        self.cc = cc_watch.Watch(self, probe=cc_probe.Probe(SETTINGS_FILE, permission_of))  # C-162 (inert in tests)
         self.rewriting = set()  # channel ids whose final reply a plugin is rewriting (C-71b): their events wait
         self.startup = startup_ask.StartupAsk(self)
         self.streams = {}  # machine -> the SSH process bringing its events
@@ -473,6 +575,8 @@ class TmuxBridge(object):
         self.streaming, self.streams_checked = set(), time.time()  # pump() starts the streams; pump_once() rechecks each minute
         self.stream_down = set()  # machines whose stream is not bringing events now (not yet connected, or reconnecting)
         self.stream_wake = {}     # machine -> the Event its stream sleeps on before reconnecting
+        self.lane_held = {}       # channel id -> its events from another machine's stream that wait on its lane (C-174)
+        self.lane_tasks = set()   # the tasks handing those on, one per channel while it has any
         self.let_go_said = set()  # channels put away whose events were dropped, and #audit told once (this run)
         self.kept = {}  # channel id -> [when the first was kept, events, being released?]: of channels Discord does
         #                 not hand out just now
@@ -498,20 +602,34 @@ class TmuxBridge(object):
     def rt(self, ch):
         return self.rts.setdefault(str(ch.id), Runtime())
 
-    async def say(self, ch, text, silent=False, allowed=None):
+    async def say(self, ch, text, silent=False):
         """Post text (split as needed); returns the messages sent. `silent`: no push notification (what
-        Claude says along the way); replies, questions and failures do ring. `allowed`: who it may ping (the
-        client's default: nobody, bot/mentions.py)."""
-        sent, kw = [], ({"allowed_mentions": allowed} if allowed is not None else {})
+        Claude says along the way); replies, questions and failures do ring."""
+        sent = []
         for part in split_message(text):
             try:
-                sent.append(await ch.send(part, silent=True, **kw) if silent else await ch.send(part, **kw))
+                sent.append(await deliver.deliver(ch, part, silent=True, intent="status") if silent
+                            else await deliver.deliver(ch, part, intent="status"))
             except Exception:
                 traceback.print_exc()
         return sent
 
     # ------------------------------------------------------------------ session
-    def argv(self, ch, st, resume, dirs, how=None):
+    async def foreign_window(self, name):
+        """Is the bot's window `name` one the other bot of a standby pair opened here (C-163: a window opened from
+        another machine carries no settings file: no --settings, or one with only the folders it reads, as JSON;
+        one this bot opens always names a file)? Only with a standby: without one
+        nothing changes and no window is ever taken for a foreign one (#code-review on 3223faf, manager). False when
+        its command line cannot be read: nothing is closed on a guess."""
+        if getattr(self.host, "standby_on", False) is not True:
+            return False
+        cmd = await tmuxio.session_command(name)
+        words = (cmd or "").split()  # (--settings <path>, or --settings=<path>: #code-review-2 on 676d4d4)
+        given = [words[i + 1] if w == "--settings" and i + 1 < len(words) else w[len("--settings="):]
+                 for i, w in enumerate(words) if w == "--settings" or w.startswith("--settings=")]
+        return cmd is not None and not any(g and not g.startswith("{") for g in given)  # (JSON: cc_launch.folders_only)
+
+    def argv(self, ch, st, resume, dirs, how=None, claude=None):
         """The command line that opens the channel's conversation (the connector's). On another machine: its own
         claude, and its global hook reports; here: the bot's settings file, whose hooks do. `dirs`: what it reads
         without asking besides its working directory, put in its settings (cc_launch.command(): a copy of the file
@@ -520,7 +638,7 @@ class TmuxBridge(object):
         without a question, now with one; C-151). `how`: the model and the permission mode (with()); looked up here when not given."""
         there = bool((st.get("home") or {}).get("host"))
         model, permission = how or self.with_(st)
-        return cc_launch.command("claude" if there else config.CLAUDE, self.host.note(ch, st), model, permission,
+        return cc_launch.command((claude or "claude") if there else cc_health.binary(), self.host.note(ch, st), model, permission,
                                  settings=None if there else SETTINGS_FILE, resume=resume, dirs=dirs)
 
     def with_(self, st):
@@ -551,8 +669,37 @@ class TmuxBridge(object):
             return self.with_(st)
         return await asyncio.get_running_loop().run_in_executor(None, self.with_, dict(st))
 
+    async def pane_again(self, ch, st):
+        """An attached pane whose pid is not the one recorded, the same pane number running Claude Code with the
+        channel's own conversation: the record follows it (pid), said in #audit; True then. Anything else (another
+        conversation there, none known, not Claude): False, the pane gone as before (C-163 drill problem A, manager
+        11-09 (a): a pane attached again whose new pid never reached the standby)."""
+        pane = st["pane"]
+        now = await tmuxio.moved_on(pane)
+        if now is None or not st.get("session_id"):
+            return False
+        try:
+            sid = await self.host.pane_session_id(dict(pane, id=pane["id"], session=now["session"], cwd=now["cwd"] or st.get("cwd")))
+        except Exception:
+            traceback.print_exc()
+            return False
+        if sid != st["session_id"]:
+            return False
+        was = pane.get("pid")
+        st["pane"] = dict(pane, pid=int(now["pid"]) if str(now["pid"]).isdigit() else now["pid"])
+        self.host.save()
+        try:
+            await self.host.audit(messages.lease("audit_pane_followed", channel=getattr(ch, "name", "?"), where=tmuxio.label(pane),
+                                                 was=was, pid=now["pid"], session=str(sid)[:8]))
+        except Exception:
+            traceback.print_exc()
+        return True
+
     async def ensure(self, ch, st, rt):
         """Make sure the channel's session is running; resume the saved conversation if there is one."""
+        if (st.get("took_from") or {}).get("pending"):  # C-163: the old bot machine's channel, that machine not
+            raise unreachable({"host": st["took_from"]["machine"], "socket": "", "id": "?"})  # reached yet: never
+            # opened here (section 4.1)
         if st.get("home"):  # a window the bot opens in the owner's own tmux (chosen on the setup card)
             return await self.ensure_home(ch, st, rt)
         if st.get("pane"):  # the owner's own terminal: nothing to start, and never anything to restart
@@ -562,6 +709,8 @@ class TmuxBridge(object):
                 return
             if how == "unknown":
                 raise unreachable(st["pane"])
+            if await self.pane_again(ch, st):
+                return
             if st.pop("bg", None):  # what ran under it ended with it
                 self.host.save()
             resume = resume_command(st)
@@ -571,9 +720,29 @@ class TmuxBridge(object):
                             % (attached.label, resume, st.get("cwd")), where=attached.label)
         name = st.setdefault("tmux", tmuxio.session_name(getattr(ch, "name", "dm"), ch.id))
         own = tmuxio.pane(name)
-        if await own.alive():
-            return
+        alive = await own.alive()
+        if not alive:  # renamed in tmux? (C-201 6.3) its Claude is taken again, not a second one opened on the same conversation
+            renamed = await self.renamed_session(ch)
+            if renamed:
+                was, st["tmux"], name = name, renamed, renamed
+                own = tmuxio.pane(name)
+                self.host.save()
+                await self.host.audit("#%s 的 tmux 對話 `%s` 在 tmux 被改名為 `%s`：照用改名後的，沒有另開"
+                                      % (getattr(ch, "name", ch.id), was, renamed))
+                alive = await own.alive()
+        if alive:
+            if not st.get("cc_stale") and await self.foreign_window(name):
+                st["cc_stale"] = True  # a window of this name the other bot opened here while it was the bot (C-163:
+                # no --settings, its hooks went by a route that is gone now): closed and opened again with --resume,
+                # the conversation kept (drill 11-08, manager)
+            if not st.get("cc_stale"):
+                return
+            await self.print_done(ch)
+            await self.stale_turn_done(ch, st, own)
+            await self.close(ch)  # C-162: turns ran in print since this window was opened: its Claude Code does not
+            # know them; reopened with --resume, which reads them from the session file (#code-review-2)
         seen = {}
+        await self.print_done(ch)  # (C-162) a print turn of the channel still running or queued: it ends first
 
         async def start(resume, how, dirs):
             try:
@@ -583,12 +752,15 @@ class TmuxBridge(object):
             return own if started else None
 
         async def kept(pane, fresh):
+            await tmuxio.settled(name)
             if fresh:
                 st.pop("bg", None)
 
         async def failed(pane):
-            seen["view"] = await own.screen(15) if await own.alive() else ""
+            end = await tmuxio.ended(name)  # its Claude ended: why, read once and the dead session closed (C-161)
+            seen["view"] = end["screen"] if end else (await own.screen(15) if await own.alive() else "")
             await own.close()
+            return ended_words(end)
 
         if await self.open(ch, st, rt, start, kept, failed, None):  # this machine's (the bot's own tmux)
             return
@@ -596,8 +768,73 @@ class TmuxBridge(object):
         raise NotOpened(NotOpened.NOT_STARTED, "Claude 沒有啟動成功。%s" % (("最後的畫面：\n" + fence(view)) if view else ""),
                         screen=view or "")
 
+    def reopen_off(self, version):
+        """A pin to Claude Code `version` (C-162 section 2.0 step 1): every window of this machine's own conversations
+        opened with another version is marked to be reopened (cc_stale) at its next message, with --resume, on the
+        pinned file; else "fell back" would be false, the broken windows still in use (#code-review-2 on 0c0b58d)."""
+        states = getattr(self.host, "channels_state", None) or {}
+        marked = False
+        for st in states.values():
+            if isinstance(st, dict) and cc_health.applies(st) and st.get("cc_version") and st["cc_version"] != version:
+                st["cc_stale"] = True
+                marked = True
+        if marked:
+            self.host.save()
+
+    def held_channels(self):
+        """The channels run otherwise than they would (C-162): conversations the bot opened here whose way of running
+        is broken now (cc_health.effective() differs from their own mode)."""
+        states = getattr(self.host, "channels_state", None) or {}
+        return [k for k, st in states.items() if isinstance(st, dict) and posts_mod.listens(st) and
+                cc_health.effective(st.get("mode") or config.BRIDGE, st) != (st.get("mode") or config.BRIDGE)]
+
+    async def box_unknown(self, ch, st, name, r):
+        """A message not sent because the pane shows no box the bot knows, and nothing else it knows either (no
+        menu, no panel, no startup dialog): (c) of C-162 section 2.1, Claude Code's screen changed under it. Counted
+        for this machine's own conversations; an attached pane here (the owner's own Claude Code, never held down)
+        is told in its channel once in a while, with what the owner can do."""
+        if getattr(r, "code", None) != "claude_code.dialog" or not cc_watch.ACTIVE:
+            return
+        try:
+            view = await tmuxio.raw_screen(name)
+        except Exception:
+            return
+        menu, panel = panels.parse_menu(view), panels.parse_panel(view, False)
+        if (menu and menu[1]) or (panel and panel.get("actions")) or screen.startup_key(view) or \
+                screen.startup_choice(view) is not None:  # numbered options, a panel's keys, a startup dialog: known
+            return
+        if cc_health.applies(st):
+            await self.cc.failed("tmux", ch.id, st.get("cc_version"), why="畫面上找不到輸入框", text=view)
+        elif st.get("pane") and not st.get("home") and not st["pane"].get("host"):
+            if time.time() - (st.get("cc_pane_said") or 0) > PANE_SAID_SECS:
+                st["cc_pane_said"] = time.time()
+                self.host.save()
+                version = cc_health.version_of("/proc/%s/exe" % st["pane"].get("pid")) if st["pane"].get("pid") else None
+                await self.say(ch, messages.cc("attached_pane", version=version or "").replace("Claude Code  ", "Claude Code "))
+
+    async def stale_turn_done(self, ch, st, pane):
+        """A window marked to be reopened (cc_stale) that still runs a turn: that turn ends first, up to
+        STALE_WAIT_SECS, while the window is there (a pin moved the channel to the kept version: #code-review-2)."""
+        t0, said = time.time(), False
+        while st.get("busy") and time.time() - t0 < STALE_WAIT_SECS and await pane.alive():
+            if not said and time.time() - t0 > STALE_SAY_SECS:  # (said, as leave_window does: #code-review-2 on 7780fb3)
+                said = True
+                await self.say(ch, messages.cc("wait_window", mode=messages.cc("mode_tmux")))
+            await asyncio.sleep(2)
+
+    async def print_done(self, ch):
+        """Wait for the channel's print turns, running or queued (Bot.locks, the channel's queue of them), before a
+        window is opened on its conversation: two Claudes on one conversation otherwise (the window's would read
+        it halfway through that turn, and both write the session file; #code-review-2 on 7c0ac52). A turn queued
+        meanwhile that finds the channel back at tmux is typed into the window instead (Bot.print_turn)."""
+        lock = (getattr(self.host, "locks", None) or {}).get(str(ch.id)) if isinstance(getattr(self.host, "locks", None), dict) else None
+        if isinstance(lock, asyncio.Lock) and lock.locked():
+            async with lock:
+                pass
+
     def env(self, ch):
-        env = {"DCBOT_ROOT": config.ROOT, "DCBOT_CHANNEL": str(ch.id)}  # dchook and deploy.sh report here
+        env = dict(RESUME_ENV, DCBOT_ROOT=config.ROOT, DCBOT_CHANNEL=str(ch.id), **cc_health.pinned_env())  # dchook
+        # and deploy.sh report here; a pinned older Claude Code does not update itself (C-162 section 3.1)
         if not (os.environ.get("LC_ALL") or os.environ.get("LANG")):
             env["LANG"] = "C.UTF-8"  # started from cron: no locale
         return env
@@ -609,11 +846,16 @@ class TmuxBridge(object):
         dirs: the channel's attachments folder, made on `host`, the machine it works on: None for this one; C-151),
         and gives its pane (None: could not be begun);
         `kept(pane, fresh)` when it came up (fresh: a new conversation in place of the saved one); `failed(pane)`
-        clears away one that did not (pane: what start gave, None too). The folder is made once the conversation is
+        clears away one that did not (pane: what start gave, None too), and gives what is known of why (words to
+        add when the saved one could not be taken up; None: nothing known). The folder is made once the conversation is
         to be opened at all (not when the permission mode says no), once for both tries."""
         how = await self.chosen_for(st)
         dirs = await attachments.folders(host, ch.id)
         saved = st.get("session_id")
+        why = None
+        local = host is None and cc_health.applies(st) and getattr(self, "cc", None) is not None  # C-162: failures of
+        # this machine's own Claude Code counted (a bridge made without one, as some tests make it: none)
+        version = cc_health.version_of(cc_health.binary()) if local else None  # (the file as it is started: section 2.1)
         for resume in ([saved, None] if saved else [None]):
             rt.ready.clear()
             rt.unanswered = False
@@ -624,20 +866,55 @@ class TmuxBridge(object):
                 if pane is not None and await self.wait_ready(pane, rt, ask=lambda choice, p=pane: self.startup.post(ch, p, choice)):
                     await kept(pane, bool(saved and not resume))
                     opened(st, rt)
+                    if local:
+                        st["cc_version"] = version
+                        self.cc.worked(ch.id, version=version)
+                        if saved and not resume:  # the saved one did not come up, a new one did (C-161's): counted apart
+                            await self.cc.failed("resume", ch.id, version, why=why or "", text=why or "")
+                    if st.pop("start_failed", None) is not None:  # (C-103: its mention gets its ✅)
+                        await self.call_done(ch, prefix="not_started:")
                     if saved and not resume:
-                        await self.say(ch, messages.note("claude_code.new_conversation", session=saved))
+                        await self.say(ch, messages.note("claude_code.new_conversation", session=saved) + (why or ""))
                     return True
             finally:
                 rt.opening = None
-            await failed(pane)
+            said = await failed(pane)
+            if resume:
+                why = said or ("\n" + rt.ready_why if rt.ready_why else None)
             if rt.unanswered:  # the owner did not answer its startup dialog: no new conversation in place of the saved
                 break          # one, which would ask the same again (#code-review of 5b4d448); the next message opens it
+        if local and not rt.unanswered:  # (a or b of section 2.1: it did not come up, or its claude ended at once)
+            words = said or why or ""
+            await self.cc.failed("tmux", ch.id, version, why="開不起來", text=words,
+                                    signal="9" if "被訊號 9" in words else "")
         return False
+
+    async def renamed_session(self, ch):
+        """The session of the bot's server whose Claude Code this bot started for this channel (DCBOT_ROOT and
+        DCBOT_CHANNEL in the process' own environment, as ownerless() reads them), when its name is no longer the
+        one the channel's state holds (the owner renamed it in tmux: C-201 6.3). None when there is none, or more
+        than one (not guessed), or one another channel's state names."""
+        named = sessions_named(self.host.channels_state)
+        found = []
+        for s in await tmuxio.own_sessions():
+            if s["name"] in named:
+                continue
+            for pid, command in s["panes"]:
+                fact = tmuxio.started_for(pid) if screen.is_claude(command) else None
+                if fact and os.path.realpath(fact[0]) == os.path.realpath(config.ROOT) and fact[1] == str(ch.id):
+                    found.append(s["name"])
+                    break
+        return found[0] if len(found) == 1 else None
 
     async def ensure_home(self, ch, st, rt):
         """The channel's window in the owner's tmux: there and running Claude, or opened again (in the same
         tmux session, resuming the conversation). Only windows the bot opened are ever reopened or closed."""
         how = await tmuxio.standing(st["pane"]) if st.get("pane") else "gone"
+        if how == "alive" and st.get("cc_stale") and not st["home"].get("host"):  # C-162, as in ensure()
+            await self.print_done(ch)
+            await self.stale_turn_done(ch, st, tmuxio.pane(st["pane"]))
+            await self.close(ch)  # (its end is not said: rt.closed)
+            how = "gone"
         if how == "alive":
             return
         if how == "unknown":  # its machine did not answer: the window may well be there and running. Another one
@@ -645,13 +922,16 @@ class TmuxBridge(object):
             # same conversation: not opened, and said
         st.pop("bg", None)  # what ran under the old window ended with it
         home, why = st["home"], []
+        if not home.get("host"):
+            await self.print_done(ch)  # (C-162, as in ensure())
         remote_host = home.get("host")
 
         async def start(resume, how, dirs):
-            env = {"DCBOT_CHANNEL": str(ch.id)} if remote_host else self.env(ch)  # there: dcpost's sender only
+            env = dict(RESUME_ENV, DCBOT_CHANNEL=str(ch.id)) if remote_host else self.env(ch)  # there: dcpost's sender only
             rt.opening = True  # what the new window reports is the channel's from before the channel remembers it
+            claude = await remote.claude_on(remote_host) if remote_host else None  # (that machine's own path)
             pane = await tmuxio.open_window(home["socket"], home["session"], home.get("window", ""), st["cwd"],
-                                            self.argv(ch, st, resume, dirs, how), env, host=remote_host, why=why)
+                                            self.argv(ch, st, resume, dirs, how, claude=claude), env, host=remote_host, why=why)
             rt.opening = pane
             if pane and remote_host:  # its hooks report through that machine's route table, like an attached pane
                 await routes.bind_any(pane, str(ch.id))
@@ -663,10 +943,21 @@ class TmuxBridge(object):
 
         async def failed(pane):
             if pane is not None:
+                if not why:  # (a window that opened and whose claude did not come up: its last lines say why; the
+                    try:     # message said nothing at all before: drill 11-08)
+                        shown = masking.masked(await pane.screen() or "")  # (the whole screen masked first, then cut:
+                        # a secret cut in two would not look like one; #code-review-2 on 60a8796, manager)
+                        tail = [l for l in shown.splitlines() if l.strip()][-3:]
+                        if tail:
+                            why.append("最後的畫面：" + " / ".join(t.strip()[:120] for t in tail))
+                    except Exception:
+                        pass
                 await pane.close()
 
         if await self.open(ch, st, rt, start, kept, failed, remote_host):
             return
+        if remote_host:  # (that machine's claude asked again next time: it may have moved; #code-review-2 on 7cc6236)
+            remote.CLAUDE_AT.pop(remote_host, None)
         raise NotOpened(NotOpened.NO_WINDOW, "在 tmux `%s` 裡開不起 Claude。%s" % (home["session"], ("\n-# %s" % why[-1]) if why else ""),
                         session=home["session"], said=why[-1] if why else "")
 
@@ -674,6 +965,9 @@ class TmuxBridge(object):
         """Open the channel's session right away (after the setup card), so it is there in tmux already."""
         st, rt = self.host.chan(ch), self.rt(ch)
         st["last_active"] = time.time()  # or the idle reaper takes a session nobody has talked to yet
+        way = getattr(self.host, "mode", None)
+        if callable(way) and way(st) != "tmux":  # (C-162) run in print or held down: nothing to open beforehand
+            return True
         async with rt.lock:
             try:
                 await self.ensure(ch, st, rt)
@@ -691,6 +985,7 @@ class TmuxBridge(object):
         pane = tmuxio.pane(where)
         t0 = first = time.time()
         token, ok = None, False
+        rt.ready_why = None
         try:
             while time.time() - t0 < START_SECS and time.time() - first < startup_ask.ASK_SECS:
                 if rt.ready.is_set():
@@ -715,21 +1010,39 @@ class TmuxBridge(object):
                         token = await ask(screen.startup_choice(view)) or "-"
                     t0 = time.time()  # the owner is deciding: not a start that hangs
                 await asyncio.sleep(0.5)
+            if rt.ready.is_set() or await box_shown(pane):
+                # Its SessionStart can wait in the spool behind other events (11-10: a round of 136 s; the window of
+                # #英文 had come up, and was closed as not come up). The prompt box on its screen says it is up.
+                if not rt.ready.is_set():
+                    print("bridge: no SessionStart in %d s, but the prompt box is on the screen: taken as come up" % START_SECS, flush=True)
+                ok = True
+                return True
             rt.unanswered = token is not None
+            if token is None:
+                rt.ready_why = messages.note("claude_code.no_start", secs=START_SECS)
             return False
         finally:
             if token not in (None, "-"):
                 await self.startup.done(token, "" if ok else "等太久了，這次沒有開起來；再發一則訊息會重新開，問題會再出現一次。")
 
     # ------------------------------------------------------------------ input
-    async def submit(self, message, text, out=None, now=False, confirmed=False):
+    async def submit(self, message, text, out=None, now=False, confirmed=False, typed=None):
         """Type `text` into the channel's session. `out` (for Discord's "/" menu) replaces posting to the
         channel for whatever answers the submission itself: the screen after a slash command, or a failure.
         `now`: if Claude is busy, the message waits in its queue until the tool call in progress ends; this
         presses send-now (Ctrl+X Ctrl+S), which moves that call to the background (or stops one that cannot
-        go there) so Claude reads the message in the same turn."""
+        go there) so Claude reads the message in the same turn. `typed()`: called once a plain message (not "/…")
+        went in, Enter pressed on it; never for one not sent, refused, waiting on a confirmation, /btw (C-199)."""
         ch = message.channel
         st, rt = self.host.chan(ch), self.rt(ch)
+        way = getattr(self.host, "mode", None)
+        way = way(st) if callable(way) else None
+        if isinstance(way, str) and way != "tmux":  # a print channel, or one held down (C-162): no window to type
+            # into (one would be opened). A turn of its own, queued behind the channel's others; handed over now, as
+            # typing into a window is (a post's spool file goes once this returns: waiting for the turn, up to
+            # TURN_TIMEOUT, a restart meanwhile posted and ran it again, #code-review on 7c0ac52)
+            self.host.queue_turn(message, text)
+            return None
         say = out or (lambda body: self.say(ch, body))
         original = text  # what is kept to be sent again (C-74), without the note put in front of it
 
@@ -750,6 +1063,8 @@ class TmuxBridge(object):
         if note:                                                            # the next message (dropped once it went)
             text = "%s\n%s" % (note, text)
         p = Pending(message, text)
+        if not isinstance(message, posts_mod.Origin):  # the owner answered whatever Claude asked to discuss (C-103)
+            await self.call_done(ch, prefix="discuss:")
         slash = text.startswith("/")  # handled by Claude Code itself; most of them do not start a turn
         # One message at a time per channel, typing to receipt (C-73): the lock is the channel's queue for whatever
         # is typed into it (the owner's messages, posts handed over, the retry button). It used to be let go once
@@ -764,11 +1079,13 @@ class TmuxBridge(object):
                 self.host.save()
                 r = not_opened(rt, e)
                 await self.told(say, r, keep)
+                await self.start_failed(ch, st, e)  # (C-103)
                 return r
             name = target(st)
             was_busy = bool(st.get("busy"))  # a turn runs: this message will wait in the queue (send_now)
             r = await self.checked(say, st, name, rt, keep)
             if not r:
+                await self.box_unknown(ch, st, name, r)  # (C-162)
                 return r  # not sent: note_next stays for the next one; the caller sees why (posts, unsent)
             if not slash:
                 rt.pending.append(p)
@@ -790,6 +1107,8 @@ class TmuxBridge(object):
                 return await self.told(say, r)
             if note:
                 st.pop("note_next", None)
+            if typed is not None and not slash:  # (C-199: what a paused channel held goes in after it)
+                typed()
             lost = self.stream_lost(st)  # its stream down as it went in: a receipt can only come late
             st["last_active"] = time.time()
             self.host.save()
@@ -800,7 +1119,7 @@ class TmuxBridge(object):
                     st["own_panel"] = await self.panel_open(name)  # kept with the channel: a restart of the bot keeps the claim
                     self.host.save()
                     if st["own_panel"] and await self.menus.show_panel(
-                            ch, name, lambda body, view=None: ch.send(body, view=view), text.split()[0]):
+                            ch, name, lambda body, view=None: deliver.deliver(ch, body, view=view, intent="card"), text.split()[0]):
                         if out:
                             await out("▶️ `%s` 的面板貼在頻道裡，用按鈕操作。" % text.split()[0])
                         return
@@ -849,9 +1168,13 @@ class TmuxBridge(object):
         if not await cc_typing.send_now(tmuxio.pane(name), lambda: p is not None and p.got.is_set()):
             return False
         try:
-            await message.add_reaction("⚡")
+            await (getattr(message, "card", None) or message).add_reaction("⚡")  # a post's ⚡ on its card (C-176)
         except Exception:
             pass
+        try:
+            await self.host.audit(now_said(message))
+        except Exception:
+            traceback.print_exc()
         return True
 
     async def btw_open(self, ch, question, out=None):
@@ -860,7 +1183,7 @@ class TmuxBridge(object):
         if not question:
             return await (out or (lambda t: self.say(ch, t)))("用法：`/btw <問題>`")
         try:
-            starter = await ch.send("💬 **/btw**　%s" % question[:1800])
+            starter = await deliver.deliver(ch, "💬 **/btw**　%s" % question[:1800], intent="status")
             thread = await starter.create_thread(name=events_cut("💬 " + question, 95), auto_archive_duration=60)
         except Exception:
             traceback.print_exc()
@@ -885,7 +1208,9 @@ class TmuxBridge(object):
             try:
                 await self.ensure(ch, st, rt)
             except BridgeError as e:
-                return await self.told(lambda body: self.say(where, body), not_opened(rt, e))
+                said = await self.told(lambda body: self.say(where, body), not_opened(rt, e))
+                await self.start_failed(ch, st, e)  # (C-103)
+                return said
             name = target(st)
             r = await self.checked(lambda body: self.say(where, body), st, name, rt)
             if not r:
@@ -1050,7 +1375,31 @@ class TmuxBridge(object):
         if differed:
             print("[enter] %s: the box is not what was typed (%d characters typed); Enter pressed" % (name, len(typed)), flush=True)
             self.note_differs()
+        if what is None and not again:  # (again: no receipt, the message most likely went: nothing to say)
+            await self.why_not_entered(name, typed)
         return what
+
+    async def why_not_entered(self, name, typed):
+        """Enter was not pressed: one line in the log with what the screen shows now, the box masked and cut (11-10
+        #psro: a message typed right was left unsent, and nothing said what the screen was), and the whole screen
+        kept (keep_unentered(): C-202, a box the reading did not know was taken for a dialog). Never raises."""
+        try:
+            view = await tmuxio.raw_screen(name)
+            try:
+                coloured, _ = await tmuxio.color_screen(name)
+            except Exception:
+                coloured = ""
+            box = screen.input_text(view)
+            same = box is not None and screen.same_typed(box) == screen.same_typed(typed)
+            state = screen.pane_state(view)
+            kept = keep_unentered(name, typed, view, coloured, state)
+            print("[enter] %s: not pressed; now: %s, box %s characters%s: %s%s" % (
+                name.get("id") if isinstance(name, dict) else name, state,
+                len(box) if box is not None else "none", " (now the message, as typed)" if same else "",
+                masking.masked(box or "")[:160].replace("\n", " "), "; the screen kept in %s" % kept if kept else ""),
+                flush=True)
+        except Exception:
+            traceback.print_exc()
 
     async def clear_input(self, name):
         """cc_typing.clear_input() on the channel's pane: "empty", "unchanged" or "stuck"."""
@@ -1082,7 +1431,7 @@ class TmuxBridge(object):
             button = discord.ui.Button(label=label, style=style)
             button.callback = answer(go)
             view.add_item(button)
-        await message.channel.send("⚠️ `%s` %s。確定要送進這個對話嗎？" % (cmd, CONFIRM[cmd]), view=view)
+        await deliver.deliver(message.channel, "⚠️ `%s` %s。確定要送進這個對話嗎？" % (cmd, CONFIRM[cmd]), view=view, intent="card")
 
     async def btw_copy(self, name):
         """Press "c" in the /btw answer and read what Claude Code copied: the full answer, in its own
@@ -1115,35 +1464,32 @@ class TmuxBridge(object):
             pass
         return p.got.is_set()
 
+    def menus_again(self):
+        """C-189: every channel whose state says a dialog held it up (blocked "dialog", kept in channels.json across a
+        restart): its screen read again on a task of its own (Menus.look_again(): the menu taken in, or its old card
+        closed when it was answered meanwhile). Never awaited here: it may ask another machine."""
+        for cid, st in list(self.host.channels_state.items()):
+            if isinstance(st, dict) and str(cid).isdigit() and blocked.of(st, "dialog"):
+                ch = self.host.get_channel(int(cid))
+                if ch is not None:
+                    asyncio.ensure_future(self.menus.look_again(ch, st))
+
     # ------------------------------------------------------------------ output
     async def pump(self):
         """Forever: turn hook events into Discord messages, and close sessions nobody has used for a while."""
         write_settings()
         await self.read_words()  # the installation's language and own wordings, before the first sentence is said
         await self.remember_pids()
+        while getattr(self.host, "lease", None) is not None and not leading(self.host):  # C-163: what reaches other
+            await asyncio.sleep(1)  # machines or says things waits until this machine is the bot (#code-review on
+            # abc07b3: before the first lease round no epoch went with a stream, and it cut the bot's own)
         self.unsent.kick_all()  # posts held up before the bot went down: looked at again (C-74; a task each)
+        self.menus_again()  # C-189: dialogs still open on the screen taken in again (a task each)
         await self.read_rewriter()  # which plugin lays replies out (C-71b), before the first reply
         await self.posted_left()  # a reply that was being laid out when the bot went down: posted as before
         self.start_streams()
         for cid, st in list(self.host.channels_state.items()):
-            if not (st.get("busy") or st.get("bg")):
-                continue
-            ch = self.host.get_channel(int(cid))
-            if remote.problem and ((st.get("pane") or {}).get("host") or (st.get("home") or {}).get("host")):
-                continue  # the machine list is unreadable, so that machine cannot be reached by name: do not call it gone
-            how = await tmuxio.standing(target(st)) if ch is not None and target(st) else "gone"
-            if how != "gone":  # ("unknown": its machine does not answer just now. Not said to be gone, nothing let go
-                if st.get("busy"):  # of: watch() finds out once the machine answers again)
-                    self.watch(ch, st, self.rt(ch))  # a turn kept running while the bot was down
-                continue
-            lost = [w for w, on in (("進行中的工作", st.get("busy")), ("背景工作", st.get("bg"))) if on]
-            st["busy"] = False
-            st.pop("bg", None)
-            if ch is not None:  # the machine rebooted, or someone killed the tmux server
-                await self.say(ch, "⚠️ 這個頻道的 tmux 對話不見了（機器重開過？），%s已中斷。%s" % ("和".join(lost), (
-                    "對話內容還在：在 tmux 開一個視窗，到 `%s` 跑 `%s`，再用 `/attach` 選它，會接回這個頻道。" % (
-                        st.get("cwd"), resume_command(st)) if st.get("pane") and not st.get("home")
-                    else "對話內容還在，下一則訊息會自動接回。")))
+            await self.look_again(cid, st)
         self.host.save()
         self.last_reap = time.time()
         while True:
@@ -1152,6 +1498,29 @@ class TmuxBridge(object):
             except Exception:
                 traceback.print_exc()
             await asyncio.sleep(0.1 if self.held else 0.5)  # an event is waiting for its row: look again soon
+
+    async def look_again(self, cid, st):
+        """A channel busy (or with background work) when the bot went down: its window looked at. Still there: a
+        turn kept running, watched; gone: let go of, and said. At start (pump()), and after a takeover for the old bot
+        machine's channels once they are taken over (C-163; #code-review-2 on 65ee18f)."""
+        if not (st.get("busy") or st.get("bg")) or (st.get("took_from") or {}).get("pending"):
+            return  # (C-163: the old bot machine's, not taken over yet: not looked for here, never "gone")
+        ch = self.host.get_channel(int(cid))
+        if remote.problem and ((st.get("pane") or {}).get("host") or (st.get("home") or {}).get("host")):
+            return  # the machine list is unreadable, so that machine cannot be reached by name: do not call it gone
+        how = await tmuxio.standing(target(st)) if ch is not None and target(st) else "gone"
+        if how != "gone":  # ("unknown": its machine does not answer just now. Not said to be gone, nothing let go
+            if st.get("busy"):  # of: watch() finds out once the machine answers again)
+                self.watch(ch, st, self.rt(ch))  # a turn kept running while the bot was down
+            return
+        lost = [w for w, on in (("進行中的工作", st.get("busy")), ("背景工作", st.get("bg"))) if on]
+        st["busy"] = False
+        st.pop("bg", None)
+        if ch is not None:  # the machine rebooted, or someone killed the tmux server
+            await self.say(ch, "⚠️ 這個頻道的 tmux 對話不見了（機器重開過？），%s已中斷。%s" % ("和".join(lost), (
+                "對話內容還在：在 tmux 開一個視窗，到 `%s` 跑 `%s`，再用 `/attach` 選它，會接回這個頻道。" % (
+                    st.get("cwd"), resume_command(st)) if st.get("pane") and not st.get("home")
+                else "對話內容還在，下一則訊息會自動接回。")))
 
     def waits(self, ev):
         """Is this event of this machine to be left in the spool for now? A tool call whose own row is not written
@@ -1230,7 +1599,7 @@ class TmuxBridge(object):
     def start_streams(self):
         """A stream for each other machine that has none yet. Run at start and every minute from pump_once(), so
         machines added to the list, or a list that was broken and has been fixed, come in without a restart."""
-        for name in remote.hosts():
+        for name in remote.hosts(self.host.channels_state):
             if name not in self.streaming:
                 self.streaming.add(name)
                 asyncio.ensure_future(self.stream(name))
@@ -1263,6 +1632,8 @@ class TmuxBridge(object):
             self.laps.append((what, took))
 
     async def pump_round(self):
+        if not leading(self.host):  # C-163: not the bot right now: the spool waits (only with a standby)
+            return
         t = time.time()
         if time.time() - getattr(self, "streams_checked", 0) > 60:
             try:
@@ -1270,18 +1641,25 @@ class TmuxBridge(object):
                 self.read_words()
                 self.read_rewriter()
                 await self.say_config_problem()
+                pauses = getattr(getattr(self.host, "posts", None), "pauses", None)
+                if pauses is not None:
+                    pauses.chores()  # C-184: a pause whose time has come (in a task of its own; also at the first round)
             except Exception:
                 traceback.print_exc()
             self.lap("每分鐘的檢查", t)
         self.held = set()  # channels with an event left in the spool this round (waits())
         for path, ev in events.waiting(SPOOL):
+            if ev.get("channel") == cc_probe.PROBE:  # the probe's own conversation (C-162): its, and nowhere else's
+                self.cc.probe.event(ev)
+                events.done(path)
+                continue
             if ev.get("channel") == "selftest":  # main.Bot.self_test(): the hook works, the spool is read
                 if hasattr(self.host, "ready"):
                     self.host.ready(ev)
                 events.done(path)
                 continue
             cc_hooks.normalize(ev)  # what kind of thing it is: from the event alone, before the wait is decided
-            if (ev.get("channel") in self.held and not self.receipt_meanwhile(ev)) or self.waits(ev):
+            if (ev.get("channel") in self.held and not self.receipt_meanwhile(ev)) or self.waits(ev) or self.lane_waits(ev):
                 self.held.add(ev.get("channel"))  # left where it is, and every later event of its channel behind it:
                 continue                          # the other channels' go on
             self.handling, t = True, time.time()
@@ -1312,8 +1690,11 @@ class TmuxBridge(object):
             t = time.time()
             await self.agents.tick()
             self.lap("子代理", t)
-            if getattr(self.host, "posts", None) is not None:
-                t = time.time()
+            if time.time() - getattr(self, "machines_at", 0) > 60:
+                self.machines_at = time.time()
+                await self.machine_watch()  # another machine down for long, with channels on it (C-103)
+            if getattr(self.host, "posts", None) is not None and not getattr(self.host, "adopting", False):
+                t = time.time()  # (C-163: posts wait while the old bot machine's channels are being taken over)
                 await self.host.posts.tick()  # altention dc post: posts to channels, and Claude talking to Claude
                 self.lap("posts", t)
         except Exception:
@@ -1342,7 +1723,7 @@ class TmuxBridge(object):
         # (a stream that dies at once on that machine would otherwise restart at every command; code-review)
         wakeable, woken, last_try = True, False, 0.0
         while True:
-            self.stream_down.add(host)
+            self.went_down(host)
             gap = STREAM_MIN_GAP - (time.time() - last_try)
             if gap > 0:
                 await asyncio.sleep(gap)
@@ -1363,6 +1744,8 @@ class TmuxBridge(object):
                     if host in self.stream_down and host in getattr(self, "resending", {}):
                         self.resending[host].set()  # its stream is back: what is owed to it is sent now
                     self.stream_down.discard(host)
+                    if host in getattr(self, "down_since", {}):  # (C-103: said "back" where its going was said)
+                        await self.machine_back(host)
                     try:
                         ev = json.loads(line.decode("utf-8", "replace"))
                     except ValueError:
@@ -1372,14 +1755,16 @@ class TmuxBridge(object):
                     ev["host"] = host
                     cc_hooks.normalize(ev)  # a machine whose dcremote is a step behind sends no kind: made out here
                     try:
-                        await self.handle(ev)
+                        await self.from_stream(ev)  # (only that channel waits on its lane: C-174)
                     except Exception:
                         traceback.print_exc()
+                if await proc.wait() == remote.OLD and remote.EPOCH is not None and remote.on_old is not None:
+                    remote.on_old(host)  # C-163: that machine has seen a newer bot: this one is old
             except ConnectionError as e:
                 print("stream %s: %s" % (host, e), flush=True)
             except Exception:
                 traceback.print_exc()
-            self.stream_down.add(host)
+            self.went_down(host)
             if woken and not got:
                 wakeable = False
             woken = False
@@ -1566,8 +1951,9 @@ class TmuxBridge(object):
             # sent from Discord may begin like a notice of Claude Code's ("[TODO] …", "<div> …").
             if ev.get("dc_from") == cc_hooks.PEER:  # another Claude Code session wrote to this one
                 try:
-                    await ch.send(embed=posts_mod.cards(peers.who(ev.get("dc_peer") or peers.UNNAMED, self.host.channels_state),
-                                                        masking.masked(ev.get("dc_text") or "", limit=3850))[0], silent=True)
+                    await deliver.deliver(ch, embed=posts_mod.cards(peers.who(ev.get("dc_peer") or peers.UNNAMED, self.host.channels_state),
+                                                                    masking.masked(ev.get("dc_text") or "", limit=3850))[0],
+                                          silent=True, intent="talk", framed=("card",))
                 except Exception:
                     traceback.print_exc()
             elif not ours and ev.get("dc_from") == cc_hooks.TYPED and prompt.strip() \
@@ -1578,12 +1964,18 @@ class TmuxBridge(object):
             turn = self.begin_turn(ch, st, rt, pid=ev.get("prompt_id"))
             name = ev.get("tool_name", "?")
             turn.tools[name] = turn.tools.get(name, 0) + 1
-            await self.interim(ch, rt, texts=texts)
+            turn.lines = (turn.lines + [events.progress_line(ev)])[-6:]
+            # Posted from the channel's lane, in this order, never awaited here (lanes.py: one channel's Discord
+            # request held every channel's events, 11-10)
+            lane = self.lane(ch, rt)
+            if config.INTERIM and texts:
+                lane.put("送引言", lambda texts=texts: self.interim(ch, rt, texts=texts, lane=lane))
             if what == cc_hooks.PEER_SENT and ev.get("send_to") in peers.directory(self.host.channels_state):
                 # (a message with words in it, to a conversation that has a channel: not a bare "tell me when idle")
-                await self.say(ch, "📤 **傳給 %s**\n%s" % (peers.who(ev["send_to"], self.host.channels_state),
-                                                        events.quote(masking.masked(ev.get("send_text") or ""), 1800)), silent=True)
-            await self.progress(ch, turn, events.progress_line(ev))
+                words = "📤 **傳給 %s**\n%s" % (peers.who(ev["send_to"], self.host.channels_state),
+                                              events.quote(masking.masked(ev.get("send_text") or ""), 1800))
+                lane.put("送📤", lambda words=words: self.lane_say(lane, ch, words))
+            lane.put("處理中", lambda turn=turn: self.progress(ch, turn, lane), progress=True)
         elif what == cc_hooks.TURN_END:
             turn = rt.turn
             st["bg"] = len(ev.get("background_tasks") or []) + len(ev.get("session_crons") or [])
@@ -1595,9 +1987,11 @@ class TmuxBridge(object):
             await self.end_turn(st, rt)
             st["context"] = ev.get("context")
             foot = events.footer(turn.tools if turn else {}, time.time() - turn.t0 if turn else None, st["bg"],
-                                 st["context"])
-            if turn and time.time() - turn.t0 >= LONG_TURN and config.OWNER_ID:
-                foot = (foot or "-# ") + " · <@%d>" % config.OWNER_ID
+                                 st["context"], tail=events.footer_tail(remote.this_machine(), ev.get("prompt_id"))
+                                 if getattr(self.host, "lease", None) is not None else "")  # (C-163 1.4: with a standby)
+            if turn is None and ev.get("host") and ev.get("host") == remote.old_bot_machine():  # a turn begun under the
+                # bot before the takeover, its Stop read from that machine's spool: marked as a replay is (drill 11-08)
+                foot = messages.lease("replayed_footer", tail=events.footer_tail(remote.this_machine(), ev.get("prompt_id")))
             reply = masking.masked(ev.get("last_assistant_message") or "（沒有文字回覆）")
             src = turn.src if turn else rt.where  # no turn begun: a queued message, sent in with no event until its Stop
             # where this turn begins in the transcript, for 📋. Its end is looked for when asked, by the turn's id in
@@ -1607,21 +2001,38 @@ class TmuxBridge(object):
                    "host": ev.get("host"), "prompt": turn.prompt if turn else "…",
                    "end": None if ev.get("prompt_id") or ev.get("host") or not (src and src[0]) else transcript.size(src[0])}
             spec = rewrite.wanted(reply)
-            if spec is not None:  # a plugin lays it out (C-71b): in a task of its own; the channel's events wait for it
+            seed = getattr(self.host, "seed_turns", None) if getattr(self.host, "lease", None) is not None else None
+            if seed is not None and ev.get("prompt_id"):
+                await seed(ch)  # (what the bot before this process posted there counts too: drill 11-08)
+            if getattr(self.host, "lease", None) is not None and ev.get("prompt_id") and \
+                    not self.host.claim_turn(str(ch.id), ev["prompt_id"]):
+                pass  # C-163: posted already (by the replay after a takeover): not twice (#code-review-2 on 43bfe53)
+            elif spec is not None:  # a plugin lays it out (C-71b): in a task of its own; the channel's events wait for it
                 st["rewriting"] = dict(job, reply=reply, at=time.time())
                 self.rewriting.add(str(ch.id))
                 asyncio.ensure_future(self.rewrite_and_post(ch, st, spec))
             else:
                 await self.post_reply(ch, st, self.plain_reply(reply), job)
+            gist = calls.discussed(reply)  # (C-103: Claude says it needs the owner; after the reply, which may wait)
+            if gist:
+                await self.call(ch, "discuss:%s" % (ev.get("prompt_id") or int(time.time() * 1000)), "discuss", gist)
+            await self.login_back(st)  # a turn of that machine ended well: a lost login is back
         elif what == cc_hooks.TURN_FAILED:  # the API failed (usage limit, overload, …): the turn is over, say why
             turn = rt.turn
             await self.interim(ch, rt, texts=texts)
             await self.end_turn(st, rt)
-            await self.failed(ch, ev, turn)
+            if not self.quota.handle(ch, st, ev, turn):  # a usage limit: Claude Code may wait for the reset itself
+                await self.failed(ch, ev, turn)
+        elif what in (cc_hooks.QUOTA_RESUMED, cc_hooks.QUOTA_STALE, cc_hooks.QUOTA_STOPPED):
+            self.quota.handle(ch, st, ev, None)  # how its wait ended (C-99a): said, never a dialog
         elif what == cc_hooks.DIALOG and not ask.waiting(ch.id):  # (Claude Code's notice that it sits idle is no dialog)
             await self.menus.post(ch, st, ev)  # a dialog in the terminal: shown with buttons
         if what in MOVED_ON:
             await self.menus.resolve(ch)  # the session moved on: an old dialog's buttons would mislead
+            blocked.clear(st)  # it moves again: whatever held it up is over (C-101)
+            await self.call_done(ch, prefix="failed:")  # (C-103: and its mention)
+            await self.usage_maybe_back()
+            self.quota.moved_on(ch, st, ev)
         self.host.save()
 
     def receipt_meanwhile(self, ev):
@@ -1648,31 +2059,33 @@ class TmuxBridge(object):
         buttons, its record for 📋 and its line in #audit. `job`: what the Stop left for it (final, foot, src, …).
         A message may have a third item, what each picture was made from (rewrite.read()): kept for 📝 (sources.py)."""
         foot, sent = job.get("foot"), []
+        if msgs and msgs[0][0]:  # (P0-6: a reply beginning like another channel's post, a notification… is not read so)
+            msgs = [(frames.defused(msgs[0][0]),) + tuple(msgs[0][1:])] + list(msgs[1:])
         for i, (text, pics, *more) in enumerate(msgs):
-            calls = None  # the last one's footer calls the owner after a long turn: it alone may ping them (P0-1)
             if i == len(msgs) - 1 and foot:
                 text = text + "\n" + foot if text else foot
-                calls = mentions.owner_only() if "<@" in foot else None
             parts = split_message(text) if text else []
             if not pics:
-                sent += await self.say(ch, "\n".join(parts), allowed=calls) if parts else []
+                sent += await self.say(ch, "\n".join(parts)) if parts else []
                 continue
             for part in parts[:-1]:
-                sent += await self.say(ch, part, allowed=calls)
+                sent += await self.say(ch, part)
             files = []
             try:
                 files = [discord.File(p) for p in pics]
-                sent.append(await ch.send(parts[-1] if parts else None, files=files,
-                                          **({"allowed_mentions": calls} if calls is not None else {})))
+                sent.append(await deliver.deliver(ch, parts[-1] if parts else None, files=files, intent="reply"))
                 if more:
                     sources.remember(sent[-1], ch.id, more[0], len(pics))
             except Exception:
                 traceback.print_exc()
                 if parts:
-                    sent += await self.say(ch, parts[-1], allowed=calls)  # (the footer's mention too: #code-review)
+                    sent += await self.say(ch, parts[-1])
             finally:
                 for f in files:  # (the pictures are dropped next: nothing left open on them)
                     f.close()
+        for m in sent:  # (C-172a P1a: who and what; the footer is on the last only, and only that comes off when read)
+            ledger.note(getattr(ch, "id", None), getattr(m, "id", None), "reply",
+                        framed=("status",) if foot and m is sent[-1] else ())
         if sent and getattr(self.host, "files", None) is not None:  # 📂 buttons for the files it mentions
             asyncio.ensure_future(self.host.files.add_links(ch, st, sent[-1], job.get("final") or ""))
         src = job.get("src")
@@ -1695,7 +2108,7 @@ class TmuxBridge(object):
         async def tell():
             await asyncio.sleep(rewrite.SHOW_AFTER)
             try:
-                shown.append(await ch.send("-# ⏳ 整理排版中…", silent=True))
+                shown.append(await deliver.deliver(ch, "-# ⏳ 整理排版中…", silent=True, intent="status", keep=False))  # (deleted soon: not kept)
             except Exception:
                 traceback.print_exc()
         teller = asyncio.ensure_future(tell())
@@ -1720,7 +2133,7 @@ class TmuxBridge(object):
             teller.cancel()
             for m in shown:
                 try:
-                    await m.delete()
+                    await deliver.remove(ch, m)
                 except Exception:
                     pass
             if token:
@@ -2000,15 +2413,165 @@ class TmuxBridge(object):
     async def failed(self, ch, ev, turn):
         """A StopFailure: what went wrong, with a button that asks Claude to carry on."""
         what, detail = events.failure(ev)  # (by the API's error code, as the connector passes it on)
+        st = self.host.channels_state.get(str(ch.id))
+        b = blocked.put(st, "api_error", self.machine_of(st), detail=what, why=ev.get("dc_why")) if st is not None else None
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(label="再試一次", custom_id="retry:%d" % ch.id, style=discord.ButtonStyle.primary))
+        msg = None
         try:
-            await ch.send(("⚠️ **這一輪中斷了：%s**%s%s" % (what, "\n" + events.quote(detail, 1500) if detail else "",
-                                                      "\n-# 按「再試一次」會請 Claude 從中斷的地方接著做")), view=view)
+            msg = await deliver.deliver(ch, ("⚠️ **這一輪中斷了：%s**%s%s" % (what, "\n" + events.quote(detail, 1500) if detail else "",
+                                                                        "\n-# 按「再試一次」會請 Claude 從中斷的地方接著做")),
+                                        view=view, intent="card")
             view.stop()
         except Exception:
             traceback.print_exc()
+        try:  # (C-103) the owner's mention: once for the machine or the installation when they all stop, else here
+            if st is None:
+                pass
+            elif ev.get("dc_why") == "authentication_failed":
+                await self.login_lost(ch, st)
+            elif ev.get("dc_why") == "rate_limit":  # a usage limit Claude Code does not wait out
+                await self.usage_limited(ch)
+            else:
+                await self.call(ch, "failed:%d" % int(b["since"] * 1000), "turn_failed", what, about=getattr(msg, "id", None))
+        except Exception:
+            traceback.print_exc()
         await self.host.audit("#%s：%s → 失敗（%s）" % (getattr(ch, "name", "DM"), turn.prompt if turn else "…", what))
+
+    @staticmethod
+    def machine_of(st):
+        """The machine of the channel's conversation when it is not the bot's (for `blocked`), else None."""
+        t = st.get("pane") or (st.get("home") if isinstance(st.get("home"), dict) else None)
+        return t.get("host") if isinstance(t, dict) else None
+
+    # ------------------------------------------------------------------ mentions (C-103: bot/calls.py)
+    async def call(self, ch, key, code, gist=None, about=None, **data):
+        """The owner mentioned once for `key` in this channel (calls.call())."""
+        return await calls.call(ch, self.host.chan(ch), key, code, gist, about, save=self.host.save, **data)
+
+    async def call_done(self, ch, key=None, prefix=None):
+        """What `key` (or every open key starting with `prefix`) asked for is over: its line ends with ✅."""
+        st = self.host.channels_state.get(str(ch.id))
+        if st is None:
+            return False
+        if prefix is not None:
+            return await calls.done_all(ch, st, prefix, self.host.save)
+        return await calls.done(ch, st, key, self.host.save)
+
+    async def question_asked(self, ch, ask_id, code, gist, mid, n=1):
+        await self.call(ch, "ask:" + ask_id, code, masking.masked(gist or ""), about=mid, n=n)
+
+    async def question_closed(self, ch, ask_id):
+        await self.call_done(ch, "ask:" + ask_id)
+
+    async def start_failed(self, ch, st, e):
+        """A message not sent because the conversation could not be opened: mentioned once until one opens (open()
+        marks it ✅). A machine that cannot be reached is said once for the whole machine instead (machine_watch());
+        an attached pane no longer running Claude Code is the owner's own terminal, nothing the bot failed to start."""
+        if getattr(e, "why", None) in (NotOpened.UNREACHABLE, NotOpened.PANE_GONE):
+            return
+        since = st.setdefault("start_failed", int(time.time()))
+        await self.call(ch, "not_started:%d" % since, "not_started")
+
+    async def notify_channel(self):
+        """The default notification channel (altention dc notify's), for what stops the whole installation."""
+        posts = getattr(self.host, "posts", None)
+        return await posts.channel("@notify") if posts is not None else None
+
+    @staticmethod
+    def single_machine():
+        try:
+            return len(remote.inventory().get("machines") or {}) <= 1
+        except Exception:
+            return True
+
+    async def login_lost(self, ch, st):
+        """The conversation's machine needs Claude Code logged in again: said once for that machine, in the notification
+        channel, its channels listed (C-103). Today it is known by a turn that failed with authentication_failed;
+        C-100's own look at the screen calls this too, unchanged."""
+        machine = self.machine_of(st) or remote.this_machine()
+        one = self.single_machine()
+        head = calls.line("login_one") if one else calls.line("login", machine=machine)
+        how = messages.call("login_how_one") if one else messages.call("login_how", machine=machine)
+        await calls.system(self.notify_channel, "login:" + machine, "lost", head, [how], channel=ch.id)
+
+    async def login_back(self, st):
+        """A turn of that machine ended well: its login is back (said where the loss was, mentioning nobody)."""
+        machine = self.machine_of(st) or remote.this_machine()
+        if calls.open_episode("login:" + machine) is None:
+            return
+        text = messages.call("login_back_one") if self.single_machine() else messages.call("login_back", machine=machine)
+        await calls.over(self.notify_channel, "login:" + machine, text)
+
+    async def usage_limited(self, ch, when=None):
+        """A usage limit stops this channel: said once for the installation while any channel is held by one (C-103),
+        this channel added to the list. `when`: the reset as the channel shows it."""
+        head = calls.line("usage_limit", when=when) if when else calls.line("usage_limit_unknown")
+        await calls.system(self.notify_channel, "usage_limit", "on", head, channel=ch.id)
+
+    async def usage_maybe_back(self):
+        """No channel is held by a usage limit any more: the installation's line says so, mentioning nobody."""
+        if calls.open_episode("usage_limit") is None:
+            return
+        if any(blocked.usage(st) for st in self.host.channels_state.values() if isinstance(st, dict)):
+            return  # (one Claude Code does not wait out counts too: #code-review on 3c7ad8f)
+        await calls.over(self.notify_channel, "usage_limit", messages.call("usage_back"))
+
+    def channels_on(self, host):
+        return [cid for cid, st in self.host.channels_state.items() if isinstance(st, dict) and self.machine_of(st) == host]
+
+    def working_on(self, host):
+        """The channels of `host` with work under way: a turn running, or messages waiting to be handed to it (typed
+        and not taken yet, or kept to be sent again: unsent)."""
+        out = []
+        for cid in self.channels_on(host):
+            st, rt = self.host.channels_state[cid], self.rts.get(cid)
+            if st.get("busy") or st.get("unsent") or (rt is not None and (rt.pending or rt.turn is not None)):
+                out.append(cid)
+        return out
+
+    def went_down(self, host):
+        """`host`'s stream is down (again): the moment is noted the first time, with the channels whose work it cut
+        off then (machine_watch())."""
+        self.stream_down.add(host)
+        down = self.__dict__.setdefault("down_since", {})
+        if host not in down:
+            down[host] = time.time()
+            try:  # (in the stream's own loop: what it cut off is worth noting, never worth stopping the stream for)
+                self.__dict__.setdefault("cut_off", {})[host] = self.working_on(host)
+            except Exception:
+                traceback.print_exc()
+
+    async def machine_watch(self, now=None):
+        """Another machine whose stream has been down MACHINE_DOWN_SECS: the owner is told once, in the notification
+        channel, only when work was cut off (a turn running, messages waiting for it, when it went down or since),
+        those channels listed; a machine whose channels were all idle (one the owner turned off, as the mac is when
+        not in use) gets one line in #audit and no mention: the channel says it cannot reach it when the owner next
+        writes there (manager 2026-11-03). Its line "back" only after a mention (stream(): machine_back())."""
+        now = time.time() if now is None else now
+        down, cut = self.__dict__.setdefault("down_since", {}), self.__dict__.setdefault("cut_off", {})
+        said = self.__dict__.setdefault("down_said", set())
+        for host in list(self.stream_down):
+            since = down.setdefault(host, now)
+            if now - since < MACHINE_DOWN_SECS or host in said or not self.channels_on(host):
+                continue
+            if calls.open_episode("machine:" + host) is not None:  # said before a restart, not over yet: not again
+                said.add(host)  # (#code-review-2 on d988a6b; state/calls-system.json outlives the bot)
+                continue
+            said.add(host)
+            work = sorted(set(cut.get(host) or []) | set(self.working_on(host)))
+            if not work:
+                await self.host.audit(messages.call("machine_idle", machine=host))
+                continue
+            await calls.system(self.notify_channel, "machine:" + host, str(int(since)),
+                               calls.line("machine_down", machine=host, n=len(work)), [calls.channels_text(work)])
+
+    async def machine_back(self, host):
+        for name in ("down_since", "cut_off"):
+            self.__dict__.setdefault(name, {}).pop(host, None)
+        self.__dict__.setdefault("down_said", set()).discard(host)
+        if calls.open_episode("machine:" + host) is not None:  # (only after a mention)
+            await calls.over(self.notify_channel, "machine:" + host, messages.call("machine_back", machine=host))
 
     async def on_interaction(self, interaction):
         """The "再試一次" button under a failure. Returns True if the interaction was ours."""
@@ -2077,34 +2640,151 @@ class TmuxBridge(object):
         st["busy"] = False
         st.pop("doing", None)  # (C-88) what a busy channel is doing: not busy, nothing
         turn, rt.turn = rt.turn, None
+        if turn:
+            turn.closed = True  # (a "working…" message still being sent is deleted when it comes)
         if turn and turn.msg is not None:
             try:
-                await turn.msg.delete()
+                await deliver.remove(None, turn.msg)
             except Exception:
                 pass
 
-    async def interim(self, ch, rt, final="", texts=None):
+    async def interim(self, ch, rt, final="", texts=None, lane=None):
         """Post, as quotes, what Claude said since the last look (before a tool call), read where the transcript
         is (`texts`; None: nothing was read). `final` is the reply the Stop event is about to post; the previous
-        turn's reply can also still be trickling into the file."""
+        turn's reply can also still be trickling into the file. `lane`: posted from the channel's lane (a tool
+        call's), each request waited for lanes.LANE_SECS at most; else at once (what ends a turn, its lane done)."""
         if not config.INTERIM or texts is None:
             return
         texts = [t for t in texts if t not in (final, rt.last_final)]
         if not texts:
             return
         self.said(ch, texts[-1], doing=True)
-        if rt.turn and rt.turn.msg is not None:  # the "working…" message goes back to the bottom next time
+        if rt.turn:  # the "working…" message goes back to the bottom next time (one still being sent: deleted)
+            rt.turn.gen += 1
+        if rt.turn and rt.turn.msg is not None:
+            msg, rt.turn.msg = rt.turn.msg, None
             try:
-                await rt.turn.msg.delete()
+                await (lane.call("刪掉處理中", lambda: deliver.remove(None, msg)) if lane is not None else deliver.remove(None, msg))
             except Exception:
                 pass
-            rt.turn.msg = None
         for t in texts:
             for part in split_message(masking.masked(t), 1890):
                 try:
-                    await ch.send(">>> " + part, silent=True)
+                    if lane is not None:
+                        await lane.call("送引言", lambda part=part: deliver.deliver(ch, ">>> " + part, silent=True, intent="status",
+                                                                                framed=("interim",)), new=True)
+                    else:
+                        await deliver.deliver(ch, ">>> " + part, silent=True, intent="status", framed=("interim",))
+                except lanes.TimedOut:
+                    pass
                 except Exception:
                     traceback.print_exc()
+
+    async def lane_say(self, lane, ch, text):
+        """say(), silent, from the channel's lane."""
+        for part in split_message(text):
+            try:
+                await lane.call("送訊息", lambda part=part: deliver.deliver(ch, part, silent=True, intent="status"), new=True)
+            except lanes.TimedOut:
+                pass
+            except Exception:
+                traceback.print_exc()
+
+    def lane(self, ch, rt=None):
+        """The channel's lane (lanes.py), made the first time."""
+        rt = rt or self.rt(ch)
+        if rt.lane is None:
+            rt.lane = lanes.Lane(ch.id)
+        return rt.lane
+
+    def lane_waits(self, ev):
+        """Does this event stay in the spool because its channel's lane still posts (lanes.py)? What only adds to
+        the lane goes on (a tool call); so does the receipt of a message the bot typed (submit() waits for it only
+        RECEIPT_SECS). Anything else, a turn's end above all, waits: it comes after the lane's quotes, and the
+        "working…" updates not sent yet are dropped."""
+        lane = getattr((getattr(self, "rts", None) or {}).get(str(ev.get("channel"))), "lane", None)
+        if lane is None or ev.get("dc_kind") in LANE_KINDS or not lane.busy() or self.receipt_meanwhile(ev):
+            return False
+        lane.drop_progress()
+        return True
+
+    async def lanes_done(self):
+        """Wait until every lane has posted what it holds (tests, which then look at what was posted)."""
+        for rt in list(getattr(self, "rts", {}).values()):
+            task = getattr(getattr(rt, "lane", None), "task", None)
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def from_stream(self, ev):
+        """An event from another machine's stream: handled now, or, when lane_waits() says it waits, kept for its
+        channel only (C-174), as the pump keeps it in the spool on this machine: every later event of that channel
+        stays behind it (a receipt of a message the bot typed excepted), and that machine's other channels go on.
+        Until C-174 the whole stream waited (one task for the machine)."""
+        if not hasattr(self, "lane_held"):  # (a bridge made without __init__: tests)
+            self.lane_held, self.lane_tasks = {}, set()
+        key, held = str(ev.get("channel")), self.lane_held
+        queue = held.get(key)
+        if (queue is not None and not self.receipt_meanwhile(ev)) or self.lane_waits(ev):
+            if queue is None:
+                queue = held[key] = collections.deque()
+                task = asyncio.ensure_future(self.hand_on(key, queue))
+                self.lane_tasks.add(task)
+                task.add_done_callback(self.lane_tasks.discard)
+            queue.append(ev)
+            return
+        await self.handle(ev)
+
+    def lane_kept(self):
+        """What from_stream() still keeps: [(channel id, how many, a turn's end among them)], for #audit when the bot
+        restarts or hands over before it got to them (C-174)."""
+        ends = (cc_hooks.TURN_END, cc_hooks.TURN_FAILED)
+        return [(key, len(queue), any(ev.get("dc_kind") in ends for ev in queue))
+                for key, queue in sorted((getattr(self, "lane_held", None) or {}).items()) if queue]
+
+    async def say_lane_kept(self, handover=False):
+        """One #audit line for what is still kept (lane_kept()), if anything (#code-review on d46a429, manager): a
+        restart drops it; at a handover the bot that takes over posts the replies again (replay_all). Never raises,
+        and never waits on Discord more than LANE_KEPT_SAY_SECS."""
+        rows = self.lane_kept()
+        if not rows:
+            return
+        def name(key):
+            try:
+                return getattr(self.host.get_channel(int(key)), "name", None) or key
+            except Exception:
+                return key
+        listed = "、".join("#%s %d 則%s" % (name(key), n, "（含回覆）" if end else "") for key, n, end in rows)
+        try:
+            text = LANE_KEPT_HANDOVER % listed if handover else \
+                LANE_KEPT_RESTART % listed + (LANE_KEPT_REPLY_GONE if any(end for _, _, end in rows) else "")
+            await asyncio.wait_for(self.host.audit(text), LANE_KEPT_SAY_SECS)
+        except Exception:
+            traceback.print_exc()
+
+    def still_waits(self, ev):
+        """lane_waits() for hand_on(); should it raise, the event goes on (its traceback printed) rather than every
+        event kept behind it being lost with the task (#code-review-2 on d46a429)."""
+        try:
+            return self.lane_waits(ev)
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    async def hand_on(self, key, queue):
+        """from_stream()'s kept events of one channel, handled in the order they came, each once lane_waits() lets
+        it go (at most the lane's requests left, LANE_SECS each, or LANE_HOLD)."""
+        try:
+            while queue:
+                while self.still_waits(queue[0]):
+                    await asyncio.sleep(0.2)
+                ev = queue.popleft()
+                try:
+                    await self.handle(ev)
+                except Exception:
+                    traceback.print_exc()
+        finally:
+            if self.lane_held.get(key) is queue:
+                self.lane_held.pop(key)
 
     def said(self, ch, text, doing=False):
         """Claude said `text` in the channel (C-88): one line of it (awaiting.line(): masked, first sentence, at most
@@ -2119,21 +2799,52 @@ class TmuxBridge(object):
         if doing and isinstance(st, dict):
             st["doing"] = one
 
-    async def progress(self, ch, turn, line):
-        """Keep one "working…" message up to date once a turn has run for a while."""
-        turn.lines = (turn.lines + [line])[-6:]
+    async def progress(self, ch, turn, lane):
+        """Keep one "working…" message up to date once a turn has run for a while (from the channel's lane: the
+        lines are the turn's latest when it runs)."""
         now = time.time()
-        if now - turn.t0 < 15 or now - turn.last < 5:
+        if turn.closed or turn.sending is not None or now - turn.t0 < 15 or now - turn.last < 5:
             return
         turn.last = now
         body = "處理中…（%d 秒）\n```\n%s\n```" % (now - turn.t0, "\n".join(masking.mask(line, cut=True)[0] for line in turn.lines))  # (cut to 80 already)
+        if turn.msg is not None:
+            msg = turn.msg
+            try:
+                await lane.call("更新處理中", lambda: deliver.deliver(ch, content=body, intent="status", edit=msg, keep=False))  # (not kept)
+            except Exception:
+                pass
+            return
+        gen = turn.gen
+        turn.sending = True
+
+        def came(msg):  # it came after all, after the lane stopped waiting (or failed: None)
+            turn.sending = None
+            self.working_came(turn, gen, msg)
         try:
-            if turn.msg is None:
-                turn.msg = await ch.send(body, silent=True)
-            else:
-                await turn.msg.edit(content=body)
+            msg = await lane.call("送處理中", lambda: deliver.deliver(ch, body, silent=True, intent="status", keep=False), new=True, on_late=came)
+        except lanes.TimedOut:
+            return  # (turn.sending stays until it comes: no second "working…" message meanwhile)
         except Exception:
-            pass
+            turn.sending = None
+            return
+        turn.sending = None
+        self.working_came(turn, gen, msg)
+
+    @staticmethod
+    def working_came(turn, gen, msg):
+        """A "working…" message was made: the turn's, or, when the turn moved on while it was on its way (ended, the
+        message went to the bottom, another one there), deleted at once: none is left behind."""
+        if msg is None:
+            return
+        if turn.closed or turn.gen != gen or turn.msg is not None:
+            async def drop():
+                try:
+                    await deliver.remove(None, msg)
+                except Exception:
+                    pass
+            asyncio.ensure_future(drop())
+        else:
+            turn.msg = msg
 
     def watch(self, ch, st, rt):
         if rt.typing is None or rt.typing.done():
@@ -2191,9 +2902,10 @@ class TmuxBridge(object):
         if turn is None:
             return
         turn.quiet = True
+        turn.gen += 1  # (a "working…" message on its way is deleted when it comes)
         if turn.msg is not None:
             try:
-                await turn.msg.delete()
+                await deliver.remove(None, turn.msg)
             except Exception:
                 pass
             turn.msg = None
@@ -2267,8 +2979,8 @@ class TmuxBridge(object):
         """Close sessions idle for IDLE_HOURS with nothing running in them; they resume on the next message."""
         for cid, st in list(self.host.channels_state.items()):
             name = st.get("tmux")
-            if not name or st.get("pane") or st.get("busy") or st.get("bg"):
-                continue
+            if not name or st.get("pane") or st.get("busy") or st.get("bg") or quota.holding(st):
+                continue  # (a usage-limit wait: closing Claude Code ends it for good, C-99a)
             if time.time() - st.get("last_active", 0) > config.IDLE_HOURS * 3600 and await tmuxio.alive(name):
                 await tmuxio.kill(name)
                 await self.host.audit("關閉閒置的 tmux 對話 `%s`（下一則訊息會自動接回）" % name)
@@ -2357,16 +3069,30 @@ class TmuxBridge(object):
 
     async def shutdown(self):
         """The bot is about to restart: drop the "working…" messages; the sessions themselves keep running."""
+        await self.say_lane_kept()  # (main.busy_with_work() waited for them, at most RESTART_WAIT: what is left is said)
+        for task in list(getattr(self, "lane_tasks", ())):  # events kept for a lane go as they went when the whole
+            task.cancel()                                     # stream waited on them (its task ended with the bot)
         for proc in self.streams.values():  # or an orphaned line would go on taking that machine's events
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
+        dropped = {}
+        for cid, rt in self.rts.items():
+            if rt.lane is not None:
+                n = rt.lane.stop()  # (only progress: lanes.py)
+                if n:
+                    dropped[cid] = n
+            if rt.turn:
+                rt.turn.closed = True
+        if dropped:
+            print("[lane] 重啟：%d 則還沒送的進度丟掉了（%s）" % (sum(dropped.values()), "、".join(
+                "#%s %d" % kv for kv in sorted(dropped.items()))), flush=True)
         for rt in self.rts.values():
             if rt.typing is not None:
                 rt.typing.cancel()
             if rt.turn and rt.turn.msg is not None:
                 try:
-                    await rt.turn.msg.delete()
+                    await deliver.remove(None, rt.turn.msg)
                 except Exception:
                     pass

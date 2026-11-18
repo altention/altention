@@ -1,0 +1,17 @@
+#golden spec §13.3
+{
+ "at": "number",
+ "waiting": [
+  {
+   "channel": "str",
+   "kind": "question",
+   "since": "number",
+   "text": "str"
+  },
+  {
+   "channel": "str",
+   "kind": "plan",
+   "since": "number"
+  }
+ ]
+}

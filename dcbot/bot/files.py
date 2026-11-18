@@ -27,7 +27,7 @@ import unicodedata
 
 import discord
 
-from . import config, filecore, remote
+from . import config, deliver, filecore, remote
 
 PREFIX = "fb"
 LINK = "fbl"
@@ -373,7 +373,7 @@ class Files(object):
         kwargs = {"view": v}
         if attach is not None:
             kwargs["file"] = attach
-        msg = await (send(content, **kwargs) if send else ch.send(content, **kwargs))
+        msg = await (send(content, **kwargs) if send else deliver.deliver(ch, content, intent="card", **kwargs))
         v.stop()
         if msg is not None:
             self.remember(ch, msg.id, b)
@@ -437,7 +437,7 @@ class Files(object):
             await interaction.response.defer()
             self.states(interaction.channel).pop(str(interaction.message.id), None)
             self.bot.save()
-            return await interaction.message.delete()
+            return await deliver.remove(interaction.channel, interaction.message)
         if action == "attach":
             await interaction.response.defer(thinking=True)
             got = await call(b["host"], {"op": "raw", "path": b.get("file", "")})
@@ -533,7 +533,7 @@ class Files(object):
             if old_id:
                 self.states(ch).pop(str(old_id), None)
                 try:
-                    await ch.get_partial_message(int(old_id)).delete()
+                    await deliver.remove(ch, int(old_id))
                 except Exception:
                     pass
 
@@ -569,7 +569,7 @@ class Files(object):
             for i, (path, line, given) in enumerate(links):
                 label = "📂 %s%s" % (given if len(given) <= 60 else "…" + given[-59:], ":%d" % line if line else "")
                 v.add_item(discord.ui.Button(custom_id="%s:%d" % (LINK, i), label=label[:80], style=discord.ButtonStyle.secondary))
-            await message.edit(view=v)
+            await deliver.deliver(ch, view=v, intent="reply", edit=message)
             v.stop()
             saved = st.setdefault("links", {})
             saved[str(message.id)] = links

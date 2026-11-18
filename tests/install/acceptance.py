@@ -14,7 +14,7 @@ ALT_TEST_ANY_ENGINE=1, which counts only because HOME is not the real home. s15 
 itself: they leave the variable out and run real clones of this tree (s20 to s22: the tree unpacked the way a
 downloaded archive has it, without .git), made inside the throwaway home.
 
-No scenario ever writes a bot token (~/.config/dcbot/env): with one, dcbot/install.sh starts the supervisor by
+No scenario ever writes a bot token (~/.config/altention/secrets/core/): with one, dcbot/install.sh starts the supervisor by
 an absolute path, and the bot's state folder is in the engine, not in HOME.
 
 One line per check: `PASS|FAIL|NOTE <scenario>.<check> <what>`; a NOTE is not counted. The last line is

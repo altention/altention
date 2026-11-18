@@ -1,6 +1,11 @@
 """state/waiting-on-owner.json (3b 2.6d): what waits for the owner, as of now: the menus shown, the questions and
 plans still open. Written from what the bot holds whenever one of those changes; every way one opens or closes is
 kept here, one by one (a state file's every writer)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io

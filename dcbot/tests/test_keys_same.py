@@ -2,6 +2,11 @@
 the bot's own typing tests and records every key, typing and Escape that reaches the fake pane; here it is compared
 with the baseline written on main 84b69f8 (tests/samples/keys/baseline.json). A commit that changes keys on purpose
 names each test whose keys differ, and why, in tests/samples/keys/changed.json."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import os
 import subprocess
 import sys

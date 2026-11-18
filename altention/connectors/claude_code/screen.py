@@ -195,8 +195,11 @@ def box_span(view, shell=False):
     rows = view.split("\n")
     marks = ("❯", "!") if shell else ("❯",)
     # at the row's very start: the box's own mark; the rows of a message in the box are indented, also one that
-    # quotes a screen with a "❯" under a rule of its own
-    start = next((i for i in range(len(rows) - 1, 0, -1) if rows[i].startswith(marks) and is_box_rule(rows[i - 1])), None)
+    # quotes a screen with a "❯" under a rule of its own. A box taller than Claude Code lets it be scrolls: its
+    # first rows are off the box, the rule over it says so ("─── ↑ 23 more ───", at the screen's left edge) and the
+    # row under it is the message's own (no "❯"): the box starts there (C-202, 2.1.326)
+    start = next((i for i in range(len(rows) - 1, 0, -1)
+                  if (rows[i].startswith(marks) and is_box_rule(rows[i - 1])) or scrolled_rule(rows[i - 1])), None)
     if start is None:
         return None
     return start, next((i for i in range(len(rows) - 1, start, -1) if is_box_rule(rows[i])), None)
@@ -422,6 +425,15 @@ def same_typed(text):
 def is_box_rule(row):
     row = row.strip()
     return row.startswith("─") and row.endswith("─") and row.count("─") >= 10
+
+
+SCROLLED = re.compile(r"^─{3} ↑ \d+ more ─")  # the rule over a box whose first rows are scrolled off (2.1.326)
+
+
+def scrolled_rule(row):
+    """Is this row the rule over Claude Code's input box with rows scrolled off above ("─── ↑ 23 more ───…")? Only at
+    the screen's left edge, where the box's own rules stand: a message in the box is indented."""
+    return bool(SCROLLED.match(row)) and is_box_rule(row)
 
 
 # ---- who has the keyboard, what the status line and the rows by the box say (from the bot's tmuxio.py and
@@ -657,3 +669,32 @@ def pane_state(view):
     if not has_prompt(view) or (not busy_shown(view) and DIALOG.search(under_box(view))):
         return "dialog"
     return "box"
+
+
+# Claude Code's own wait at a claude.ai usage limit (2.1.234 on; C-99). Its two lines under the box (interactive-mode
+# docs, and the strings of 2.1.310): "Usage limit reached · limit resets 3:45pm" over "Continuing automatically at
+# 3:45pm · esc to cancel"; at the reset "Continuing shortly · esc to cancel"; after a long sleep "Your usage limit has
+# reset" over "Press enter to continue". Either line may carry more after these words.
+QUOTA_ARMED = re.compile(r"^\W*Continuing automatically\s+(.*?)\s*(?:·|$)")
+QUOTA_SOON = re.compile(r"^\W*Continuing shortly\b")
+QUOTA_STALE = re.compile(r"^\W*Press enter to continue\b", re.I)
+QUOTA_RESET = re.compile(r"^\W*Your usage limit has reset\b")
+QUOTA_STATUS = re.compile(r"^\W*Usage limit reached\s*·\s*limit resets\s+(.*?)\s*(?:·|$)")
+
+
+def quota_wait(view):
+    """Claude Code's wait at a usage limit on this raw screen, read only under the box (a conversation here quotes
+    these words all the time): None, or {"phase": "armed" (it will continue on its own) | "soon" (at the reset, about
+    to) | "stale" (the limit reset, it waits for Enter), "when": when it continues, as it writes it ("at 3:45pm", or
+    "" when not said), "resets": when the limit resets, as its status line writes it ("3:45pm", or "")}."""
+    rows = [r.strip() for r in under_box(view).split("\n") if r.strip()]
+    resets = next((m.group(1) for m in map(QUOTA_STATUS.match, rows) if m), "")
+    for r in rows:
+        m = QUOTA_ARMED.match(r)
+        if m:
+            return {"phase": "armed", "when": m.group(1), "resets": resets}
+        if QUOTA_SOON.match(r):
+            return {"phase": "soon", "when": "", "resets": resets}
+        if QUOTA_STALE.match(r) and any(QUOTA_RESET.match(x) for x in rows):
+            return {"phase": "stale", "when": "", "resets": resets}
+    return None

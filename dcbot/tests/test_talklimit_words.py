@@ -1,5 +1,10 @@
 """!talklimit says that between two channels the larger of their limits counts (#discord-control set one side to 2
 and the pair went on to 10; words: #release 11-03)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import unittest
 
 from bot import main, posts

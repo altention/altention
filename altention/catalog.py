@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import config, plugin, plugin_update
+from . import plugin, plugin_update, statefile
 from .text import t as _t
 
 ORG = "altention"
@@ -77,12 +77,11 @@ def load():
 
 
 def _save(d):
+    """Whole and stamped (altention/statefile.py): a bot restart's reconcile looks at the list while the tests run,
+    and the tests' guard lets that live write pass."""
     p = path()
     os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
-    tmp = "%s.tmp-%d" % (p, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, p)
+    statefile.write_json(p, d)
 
 
 # ------------------------------------------------------------------------------------------ reading GitHub

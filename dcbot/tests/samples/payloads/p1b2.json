@@ -1,0 +1,1100 @@
+{
+ "agentanswer.pin": [
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "好，這台繼續用 Claude Code 9.9.8，7 天後再問你。\n-# 由 #lead 的 Claude 回答。",
+   {
+    "silent": true
+   }
+  ]
+ ],
+ "agentanswer.question_plan": [
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "✅ **Pick**　Which one?\n→ A\n-# 由 #lead 的 Claude 回答",
+    "view": null
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "✅ **計畫已核准**，Claude 開始執行。\n-# 由 #lead 的 Claude 回答",
+    "view": null
+   }
+  ]
+ ],
+ "ask.questions_plan_cancel": [
+  [
+   "send",
+   "c",
+   "❓ **Pick**（1/2）　Which one?\n- **A**：a\n- **B**",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "ask:7-1:0:0",
+       "A",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-1:0:1",
+       "B",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-1:0:o",
+       "其他…",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "❓ **More**（2/2）　And?　（可複選）\n- **X**\n- **Y**",
+   {
+    "view": {
+     "view": [
+      [
+       "Select",
+       "ask:7-1:1:s",
+       null,
+       "None",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-1:1:o",
+       "其他…",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔘 要你選（共 2 題）：Which one? <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1001 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "❓ **Pick**　Which one?\n- **A**：a\n- **B**",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "ask:7-2:0:0",
+       "A",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-2:0:1",
+       "B",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-2:0:o",
+       "其他…",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔘 要你選：Which one? <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1004 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "📋 **Claude 的計畫**\n1. step\n2. done",
+   {}
+  ],
+  [
+   "send",
+   "c",
+   "📋 **計畫**　Claude 寫好計畫了，要照這個執行嗎？",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "ask:7-3:0:y",
+       "核准，開始執行",
+       "ButtonStyle.success",
+       null
+      ],
+      [
+       "Button",
+       "ask:7-3:0:o",
+       "要修改…",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "📝 要你核准計畫：1. step <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1007 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "🔘 要你選（共 2 題）：Which one? <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "⌛ **Pick**　Which one?\n→ （已取消，沒有回答）",
+    "view": null
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "⌛ **More**　And?\n→ （已取消，沒有回答）",
+    "view": null
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "🔘 要你選：Which one? <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "⌛ **Pick**　Which one?\n→ （已取消，沒有回答）",
+    "view": null
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "📝 要你核准計畫：1. step <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "⌛ **計畫**　Claude 寫好計畫了，要照這個執行嗎？\n→ （已取消，沒有回答）",
+    "view": null
+   }
+  ]
+ ],
+ "ask.typed_not_taken": [
+  [
+   "send",
+   "c",
+   "❓ **Pick**　Which one?\n- **A**：a\n- **B**",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "ask:9-1:0:0",
+       "A",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:9-1:0:1",
+       "B",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "ask:9-1:0:o",
+       "其他…",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔘 要你選：Which one? <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1001 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "這則沒有當作提問的答案：這題已經有人回答了，或提問已經關了；它照一般訊息交給 Claude。",
+   {
+    "silent": true
+   }
+  ]
+ ],
+ "calls.mention_done_system_over": [
+  [
+   "send",
+   "c",
+   "ℹ️ `question`：gist=Which one? <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=900 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "ℹ️ `question`：gist=Which one? <@42> ✅"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "⛔ 用量到上限，所有頻道暫停，約 {when} 恢復後自己接著做 <@42>\n- #c\n受影響的頻道：<#5>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "⛔ 用量到上限，所有頻道暫停，約 {when} 恢復後自己接著做 <@42>\n- #c\n受影響的頻道：<#5>、<#6>"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "恢復了",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1003 channel_id=5 guild_id=None>",
+    "silent": true
+   }
+  ]
+ ],
+ "menus.changed_and_panel": [
+  [
+   "send",
+   "c",
+   "🔔 **Claude needs your permission**\n```\n  ⎿  $ touch sample-file\n Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n rig\n touch sample-file\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123-agent-home/caef03bf-3a9d-404f-ab93-9f\n      67f09302f6/scratchpad/ncrig/w/s2/base/proj from this project\n   3. Yes, and switch to auto mode · auto mode handles these prompts for you\n   4. No\n Esc to cancel · Tab to amend\n```",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:1",
+       "1. Yes",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:2",
+       "2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:3",
+       "3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:4",
+       "4. No",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:text",
+       "輸入文字…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:enter",
+       "Enter",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:esc",
+       "Esc",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔐 要你允許：⎿ $ touch sample-file Bash command <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1001 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "🔐 要你允許：⎿ $ touch sample-file Bash command <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 **Claude needs your permission**\n```\n /tmp/claude-1000001/-srv-abc-home-someone123-agent-home/caef03bf-3a9d-404f-ab93-9f67f09302f6/scratchpad/ncrig/w/s2/hom\n e/untrusted\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team). If not, take a moment to review what's in this folder first.\n Claude Code'll be able to read, edit, and execute files here.\n Security guide\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel\n```\n⚠️ 選單已經變了，沒有送出。上面是現在的畫面。",
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔔 **/model**\n```\n❯ please do the first thing\n● All done. Nothing else to report.\n✻ Baked for 14s · done 3:31 AM\n❯ a second message while busy\n● All done. Nothing else to report.\n✻ Brewed for 14s · done 3:31 AM\n❯ please touch the file\n● Running 1 shell command…\n  ⎿  Interrupted · What should Claude do instead?\n  ⎿  $ touch sample-file\n✻ Worked for 1s · done 3:32 AM\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔\n   Select model\n   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names,\n   specify with --model.\n   ❯ 1. Default (recommended) ✔  Use the default model (currently Opus 5.5) · $4/$20 per Mtok\n     2. Opus                     Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok\n     3. Fable                    Fable 5.1 · Most capable for your hardest and longest-running tasks · $10/$50 per\n                                 Mtok\n     4. Sonnet                   Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok\n     5. Haiku                    Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok ($0.50/$2.50 for\n                                 prompts over 100k)\n   ◐ Medium effort (default) ←/→ to adjust\n   Enter to set as default · s to use this session only · Esc to cancel\n```",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:kUp",
+       "↑ 上一個",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kDown",
+       "↓ 下一個",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kLeft",
+       "← adjust",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kRight",
+       "→ adjust",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kEnter",
+       "Enter set as default",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:ks",
+       "s use this session only",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kEscape",
+       "Esc cancel",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 **/model**\n```\n❯ please do the first thing\n● All done. Nothing else to report.\n✻ Baked for 14s · done 3:31 AM\n❯ a second message while busy\n● All done. Nothing else to report.\n✻ Brewed for 14s · done 3:31 AM\n❯ please touch the file\n● Running 1 shell command…\n  ⎿  Interrupted · What should Claude do instead?\n  ⎿  $ touch sample-file\n✻ Worked for 1s · done 3:32 AM\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔\n   Select model\n   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names,\n   specify with --model.\n   ❯ 1. Default (recommended) ✔  Use the default model (currently Opus 5.5) · $4/$20 per Mtok\n     2. Opus                     Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok\n     3. Fable                    Fable 5.1 · Most capable for your hardest and longest-running tasks · $10/$50 per\n                                 Mtok\n     4. Sonnet                   Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok\n     5. Haiku                    Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok ($0.50/$2.50 for\n                                 prompts over 100k)\n   ◐ Medium effort (default) ←/→ to adjust\n   Enter to set as default · s to use this session only · Esc to cancel\n```\n-# 按了「↓ 下一個」",
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:kUp",
+       "↑ 上一個",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kDown",
+       "↓ 下一個",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kLeft",
+       "← adjust",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kRight",
+       "→ adjust",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kEnter",
+       "Enter set as default",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:ks",
+       "s use this session only",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:kEscape",
+       "Esc cancel",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "menus.post_press_restore_close": [
+  [
+   "send",
+   "c",
+   "🔔 **Claude needs your permission**\n```\n  ⎿  $ touch sample-file\n Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n rig\n touch sample-file\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123-agent-home/caef03bf-3a9d-404f-ab93-9f\n      67f09302f6/scratchpad/ncrig/w/s2/base/proj from this project\n   3. Yes, and switch to auto mode · auto mode handles these prompts for you\n   4. No\n Esc to cancel · Tab to amend\n```",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:1",
+       "1. Yes",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:2",
+       "2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:3",
+       "3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:4",
+       "4. No",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:text",
+       "輸入文字…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:enter",
+       "Enter",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:esc",
+       "Esc",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔐 要你允許：⎿ $ touch sample-file Bash command <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1001 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "🔐 要你允許：⎿ $ touch sample-file Bash command <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 **Claude needs your permission**\n```\n                                                                                                    ◐ medium · /effort\n❯\n  ⏸ manual mode on · ? for shortcuts · ← for agents\n```\n✅ 選了 1（由 #lead 的 Claude 回答）",
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔔 **again**\n```\n                                                                                                    ◐ medium · /effort\n❯\n  ⏸ manual mode on · ? for shortcuts · ← for agents\n```\n-# 看不出選項：用下面的按鍵，或 `/key` 送其他按鍵",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:text",
+       "輸入文字…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:enter",
+       "Enter",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:esc",
+       "Esc",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "🔘 要你選：again <@42>",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": [],
+      "users": [
+       42
+      ]
+     }
+    },
+    "mention_author": false,
+    "reference": "<MessageReference message_id=1005 channel_id=5 guild_id=None>"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "🔔 **還開著的對話框（機器人重啟前就在了）**\n```\n  ⎿  $ touch sample-file\n Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n rig\n touch sample-file\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123-agent-home/caef03bf-3a9d-404f-ab93-9f\n      67f09302f6/scratchpad/ncrig/w/s2/base/proj from this project\n   3. Yes, and switch to auto mode · auto mode handles these prompts for you\n   4. No\n Esc to cancel · Tab to amend\n```\n-# 機器人重啟過，按鈕重新接上了",
+    "view": {
+     "view": [
+      [
+       "Button",
+       "key:1800000000000:1",
+       "1. Yes",
+       "ButtonStyle.primary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:2",
+       "2. Yes, and always allow access to /tmp/claude-1000001/-srv-abc-home-someone123…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:3",
+       "3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:4",
+       "4. No",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:text",
+       "輸入文字…",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:enter",
+       "Enter",
+       "ButtonStyle.secondary",
+       null
+      ],
+      [
+       "Button",
+       "key:1800000000000:esc",
+       "Esc",
+       "ButtonStyle.secondary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    },
+    "content": "🔘 要你選：again <@42> ✅"
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "view": null
+   }
+  ]
+ ],
+ "pauses.card_resume": [
+  [
+   "send",
+   "c",
+   "⏸️ 暫停到 17:00（#lead：usage）。到時間機器人會在這裡叫你恢復；在那之前先不要開始新的工作，手上這一步做到可以停的地方就停。",
+   {}
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "⏸️ 暫停到 17:00（#lead：usage）。到時間機器人會在這裡叫你恢復；在那之前先不要開始新的工作，手上這一步做到可以停的地方就停。（已恢復）"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "▶️ 恢復了：#lead 在 16:00 叫你暫停到 17:00（usage）。照暫停前的進度繼續。",
+   {}
+  ]
+ ],
+ "quota.armed_resumed_stale_stopped": [
+  [
+   "send",
+   "c",
+   "⏸️ **用量達到上限**，Claude Code 會在 <t:1800046800:t> 自己接著做。\n-# 在這裡打字會先送出你的訊息，等待就取消了（多半也會再撞上限）。",
+   {
+    "allowed_mentions": {
+     "allowed_mentions": {
+      "parse": []
+     }
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "▶️ 用量重置了，Claude 接著做。"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "▶️ 用量重置了，Claude 接著做。",
+   {
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "⏸️ **用量已經重置**，但 Claude Code 還在等人按 Enter（例如電腦睡著過）：在這裡用 `/key Enter`，或在終端機按 Enter。",
+   {}
+  ],
+  [
+   "send",
+   "c",
+   "⚠️ **沒有自動接著做**：\n> stopped\n-# 按「再試一次」會請 Claude 從中斷的地方接著做",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "retry:5",
+       "再試一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "unsent.handed_pressed_failed": [
+  [
+   "send",
+   "c",
+   "沒送出\n-# 對話框關掉後會自己補送",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "view": null
+   }
+  ],
+  [
+   "send",
+   "c",
+   "✅ 對話框關了，已補送",
+   {
+    "mention_author": false,
+    "reference": {
+     "message": 950
+    },
+    "silent": true
+   }
+  ],
+  [
+   "send",
+   "c",
+   "沒送出\n-# 處理好之後按下面的「再送一次」",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "edit",
+   "c",
+   "m",
+   {
+    "content": "沒送出\n✅ 已再送一次"
+   }
+  ],
+  [
+   "send",
+   "c",
+   "沒送出\n-# 處理好之後按下面的「再送一次」",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "⚠️ 再送一次時出錯（RuntimeError: tmux gone），內容還留著，可以再按一次。",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ]
+ ],
+ "unsent.offer_and_sender": [
+  [
+   "send",
+   "c",
+   "沒送出\n-# 處理好之後按下面的「再送一次」",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "c",
+   "沒送出\n-# 對話框關掉後會自己補送",
+   {
+    "view": {
+     "view": [
+      [
+       "Button",
+       "resend:5:000000000000",
+       "再送一次",
+       "ButtonStyle.primary",
+       null
+      ]
+     ]
+    }
+   }
+  ],
+  [
+   "send",
+   "lead",
+   "過期了",
+   {
+    "silent": true
+   }
+  ]
+ ]
+}

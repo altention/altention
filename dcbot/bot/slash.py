@@ -20,7 +20,7 @@ from discord import app_commands
 
 from altention.connectors.claude_code import sessions as cc_sessions
 
-from . import catalog, config, routes, sessions, tmuxio
+from . import catalog, config, messages, routes, sessions, tmuxio
 from .util import split_message
 
 SYNCED = os.path.join(config.STATE, "slash-synced")  # digest of what was last registered
@@ -56,6 +56,9 @@ def setup(bot):
         """Check the caller and defer. Returns the function that sends the answer, or None if refused."""
         if interaction.user.id != config.OWNER_ID:
             await interaction.response.send_message("只有擁有者能用這個機器人。", ephemeral=True)
+            return None
+        if getattr(bot, "lease", None) is not None and not bot.leader_ok():  # C-163 (only with a standby): 3 s to answer
+            await interaction.response.send_message(messages.lease("busy"), ephemeral=True)
             return None
         await interaction.response.defer(ephemeral=private)
 
@@ -126,7 +129,8 @@ def setup(bot):
     @app_commands.describe(mode="不選就顯示目前的模式")
     @app_commands.choices(mode=[
         app_commands.Choice(name="tmux：常駐對話，可中途補充，背景工作會回報", value="tmux"),
-        app_commands.Choice(name="print：每則訊息跑一次（備用）", value="print")])
+        app_commands.Choice(name="print：每則訊息跑一次（備用）", value="print"),
+        app_commands.Choice(name="retry：再試一次一般模式", value="retry")])
     async def mode(interaction: discord.Interaction, mode: Optional[app_commands.Choice[str]] = None):
         await builtin(interaction, "!mode " + (mode.value if mode else ""), mode is None)
 

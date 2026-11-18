@@ -1,6 +1,11 @@
 """Startup dialogs the bot does not answer for the owner (Claude Code 2.1.303's external CLAUDE.md imports): posted with
 buttons, the opening waits on them (no START_SECS limit, up to ASK_SECS), a press checks the screen again and picks the
 answer with the arrows and Enter. Real screens: altention/tests/connectors/claude_code/screens/2.1.303/extra/I/."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import os
 import unittest
@@ -175,23 +180,48 @@ class Opening(Waiting):
 
     def test_a_start_that_fails_without_asking_still_falls_back_to_a_new_conversation(self):
         started = []
-        pane = Pane([samples.screen("busy")])  # never ready, no dialog to ask about
+        pane = Pane(["Loading…"])  # never ready, no dialog to ask about, no box (a box at the end counts as up)
 
         async def start(resume, how, dirs):
             started.append(resume)
-            return pane
+            return pane if resume else Pane(["Loading…"])  # the new one comes up (below)
 
         async def nothing(*a):
             pass
 
-        bridge = self.bridge
+        bridge, said, failed = self.bridge, [], []
         async def chosen(st):
             return ("opus", "bypassPermissions")
         bridge.chosen_for = chosen
-        bridge.wait_ready = lambda where, rt, ask=None: tmux_bridge.TmuxBridge.wait_ready(bridge, where, rt, ask=ask)
-        with mock.patch.object(tmux_bridge.attachments, "folders", mock.AsyncMock(return_value=[])):  # (C-151: none made)
+        tries = []
+
+        async def wait_ready(where, rt, ask=None):
+            tries.append(where)
+            if len(tries) > 1:
+                return True
+            return await tmux_bridge.TmuxBridge.wait_ready(bridge, where, rt, ask=ask)
+        bridge.wait_ready = wait_ready
+
+        async def say(ch, text, silent=False):
+            said.append(text)
+        bridge.say = say
+
+        class Cc(object):
+            def worked(self, *a, **kw):
+                pass
+
+            async def failed(self, kind, channel, version, why="", text=""):
+                failed.append((kind, why))
+        bridge.cc = Cc()
+        with mock.patch.object(tmux_bridge.attachments, "folders", mock.AsyncMock(return_value=[])), \
+                mock.patch.object(tmux_bridge.cc_health, "applies", lambda st: True), \
+                mock.patch.object(tmux_bridge.cc_health, "version_of", lambda path: "2.1.0"), \
+                mock.patch.object(tmux_bridge.cc_health, "binary", lambda: "/x"):  # (C-151: none made)
             run(tmux_bridge.TmuxBridge.open(bridge, self.ch, {"session_id": "saved-1"}, self.rt, start, nothing, nothing, None))
         self.assertEqual(started, ["saved-1", None], "as before")
+        self.assertTrue(any("找不到輸入框" in t for t in said), "the channel is told why the saved one did not come up")
+        self.assertEqual([k for k, _ in failed], ["resume"])
+        self.assertIn("找不到輸入框", failed[0][1], "and cc_health has a why (11-10: it was empty)")
 
 
 class Press(unittest.TestCase):

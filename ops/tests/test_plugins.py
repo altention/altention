@@ -107,6 +107,41 @@ class ListAll(unittest.TestCase):
         said = [l.split(" ")[0] for l in text.splitlines() if "沒寫 uses" in l]
         self.assertEqual(said, ["提醒：rig"], "on here and external, without uses: not core, a draft, off, disabled, blocked")
 
+    def test_an_optional_use_that_cannot_be_used_is_said_not_a_problem(self):
+        """plugin.format 2: list says which optional use cannot be used and why; no 問題 line, the plugin stays on."""
+        d = {"title": "D", "uses": {"plugin.format": 2, "rig.spend": {"v": 1, "optional": True}}}
+        rows = [("core", "/e/altention", {"title": "核心"}, "on", ""), ("demo", "/r/plugins/demo", d, "on", ""),
+                ("rigp", "/r/plugins/rigp", {"title": "R", "interfaces": {"rig.spend": {"version": 1}}}, "disabled", "")]
+        out = io.StringIO()
+        with mock.patch.object(plugins.plugin, "discover", return_value=([r[:3] for r in rows], [])), \
+                mock.patch.object(plugins.plugin, "on_this_machine", return_value=(rows, [])), \
+                mock.patch.object(plugins, "catalog_part"):
+            self.assertEqual(plugins.list_all(out), 0)
+        text = out.getvalue()
+        self.assertIn("demo：選用的 rig.spend 不能用：rig.spend 由插件 rigp 提供，但 rigp 在這台沒開\n", text)
+        self.assertNotIn("問題：", text)
+        self.assertNotIn("demo 沒有啟用", text)
+
+    def test_uses_at_run_time(self):
+        """altention plugins uses NAME [--json] (plugin.format 2): exit 0 with each use; 1 for no such plugin."""
+        got = ("on", {"plugin.format": {"ok": True, "optional": False},
+                      "rig.spend": {"ok": False, "optional": True, "why": "rig.spend 由插件 rigp 提供，但 rigp 在這台沒開"}})
+        for argv, want in ((["uses", "demo", "--json"], None), (["uses", "--json", "demo"], None), (["uses", "demo"], "text")):
+            out = io.StringIO()
+            with mock.patch.object(plugins.plugin, "uses_now", return_value=got), mock.patch("sys.stdout", out):
+                self.assertEqual(plugins.main(argv), 0)
+            if want is None:
+                self.assertEqual(json.loads(out.getvalue()), {"plugin": "demo", "where": "on", "uses": got[1]})
+            else:
+                self.assertEqual(out.getvalue(), "✓ plugin.format\n✗ rig.spend（選用）：rig.spend 由插件 rigp 提供，但 rigp 在這台沒開\n")
+        out = io.StringIO()
+        with mock.patch.object(plugins.plugin, "uses_now", return_value=None), mock.patch("sys.stdout", out):
+            self.assertEqual(plugins.main(["uses", "nope", "--json"]), 1)
+        self.assertIn("沒有叫 nope 的插件", out.getvalue())
+        with mock.patch.object(plugins.plugin, "uses_now", side_effect=plugins.plugin.PluginError("x：讀不出來")), \
+                mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(plugins.main(["uses", "demo"]), 1)
+
     def test_keys_the_engine_no_longer_reads_are_a_reminder_c95(self):
         rows = [("core", "/e/altention", {"title": "核心"}),
                 ("old", "/e/old", {"title": "舊", "commands": [{"name": "x", "path": "x"}],

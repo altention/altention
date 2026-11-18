@@ -1,6 +1,11 @@
 """dchook --guard (backlog K-03): before every tool call of every Claude Code (the machine's global hooks and the
 bot's own --settings), a tool about to read, change or search a secret, or a shell command that names one, is
 refused. Run as Claude Code runs it: the hook as a process, the event on stdin, in a throwaway home."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import json
 import os
 import statistics

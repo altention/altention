@@ -2,10 +2,13 @@
 """Publish the engine: one new commit on the public repository whose tree is a committed tree of this repository
 (DESIGN.md 4.5).
 
-  python3 ops/release.py check [REV]                     every check, nothing made: may REV be published?
+  python3 ops/release.py check [REV] [--version X.Y.Z]   every check, nothing made: may REV be published as that
+                                                         version (default: CHANGELOG's first one not public yet)?
   python3 ops/release.py publish VERSION [REV] [--push]  make the public commit and its tag vVERSION; pushed only
                                                          with --push (else it is kept as refs/altention-release/next)
-  python3 ops/release.py check-plugin NAME [REV]          the same, for the external plugin NAME
+                                                         --push after that dry run makes it again with the dry run's
+                                                         times: pushed only when the hash is the dry run's
+  python3 ops/release.py check-plugin NAME [REV] [--version X.Y.Z]   the same, for the external plugin NAME
   python3 ops/release.py publish-plugin NAME VERSION [REV] [--push]
   python3 ops/release.py seen-plugin NAME VERSION        read NAME's public vVERSION as anyone would, nothing made
 
@@ -17,8 +20,13 @@ Without either, nothing is published.
 Before anything is made, every one of these must hold, else it refuses (exit 1) and says which:
 - the privacy scan of REV's tree finds nothing, with the instance's blacklist (tools/privacy-scan
   --require-blacklist: no blacklist, no release);
+- tools/lint finds nothing new in REV's tree against the baseline in it (tools/lint-baseline.json; an external
+  plugin's lint-baseline.json, without which all of it must pass), and that baseline holds nothing beyond the one the
+  public main has (the last release; but for one measured again with a new ruff, listed); no ruff of lint's version,
+  no release;
 - every COMPAT comment in the tree (# or //, then COMPAT and a colon) is in the tree's docs/compat.json, marked
-  after-release (matched by file and the text after COMPAT:; .md files are prose, not counted; entries no longer in the tree
+  after-release (matched by file and the text after COMPAT:; .md files are prose and tools/lint-baseline.json
+  holds copies of lines, neither counted; entries no longer in the tree
   are only said). What cannot carry a comment (JSON, .gitignore: registered with text "(json)") is not checked:
   those entries are listed for a person to compare by hand;
 - every commit made on the public repository since the last release (by anyone but the release author; merges
@@ -27,6 +35,21 @@ Before anything is made, every one of these must hold, else it refuses (exit 1) 
 - VERSION is X.Y.Z, its tag is not on the public repository yet and it is newer than every release tag there;
   CHANGELOG.md in REV's tree has a section "## vX.Y.Z", whose text becomes the commit's message, which is scanned
 with the same blacklist; the release author's address is a noreply one.
+- the rest of the release checklist's part A (instance docs/refactor/release-checklist.md; ops/release_gates.py):
+  CHANGELOG's shape (A7: three parts, at most six one-line zh-TW points, today's date, refused for that only with
+  --push; no older version's section changed since the last private tag), golden cases changed since then named in
+  the checklist's golden_intended (A8), the suites dcbot/deploy.sh runs on REV's tree exported, in a throwaway HOME,
+  each cut at 30 minutes, a failed one run once more (A9; a tree that passed is recorded by its hash in
+  ~/.local/state/altention/release-tests/ and not run again), REV on the checklist's branch as this repository's
+  remote has it and a fix release holding its line's previous tag (A10), every commit since the last tag brought
+  in by a "release: merge" commit (in its second parent, not its first) or named in reviewed_exceptions (A12), no
+  conflict marker (A13), every SKILL.md and agents/*.md head readable with its description whole (A14), every ! and
+  slash command in dcbot/GUIDE.md and dcbot/docs/usage.md and every altention subcommand in usage.md, but for
+  docs/release-guide-exempt.json (A15), each official plugin's newest public plugin.json read by REV's engine with
+  the interface versions it uses (A16; no network, no release), and the checklist
+  <instance>/docs/refactor/releases/vX.Y.Z-checklist.md naming REV with B1-B12 ticked and proved (A17; B11 and
+  B12 may wait without --push). check takes the version with --version, else CHANGELOG's first "## vX.Y.Z" not
+  public yet. An external plugin gets A7, A13 and A14 of these.
 The commit: REV's tree, its one parent the public repository's main (none for the first release), author and
 committer the release author (dates now). The main and the tag are pushed in one atomic push, without force (the
 public main moved meanwhile, or either ref refused: neither is taken, nothing half done).
@@ -54,14 +77,17 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tokenize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(HERE)  # the repository whose commit is published (tests point it elsewhere)
 SCAN = os.path.join(ENGINE, "tools", "privacy-scan")
+LINT = os.path.join(ENGINE, "tools", "lint")
 sys.path.insert(0, ENGINE)
 from altention import config, plugin as alt_plugin, plugin_update, text as alt_text  # noqa: E402
+import release_gates as gates  # noqa: E402
 
 VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
@@ -138,9 +164,59 @@ def privacy(rev, said):
     return False
 
 
+def lint(rev, said, name=None, last=None):
+    """tools/lint on REV's tree, exported (never the working directory): True when it finds nothing new. last: the
+    public main (the last release), whose baseline REV's may not widen (lint --against; none there: not compared)."""
+    tmp = tempfile.mkdtemp(prefix="altention-lint-")
+    rel = "lint-baseline.json" if name else "tools/lint-baseline.json"
+    try:
+        p = subprocess.run(["git", "-C", here(), "archive", "--format=tar", rev], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=600)
+        if p.returncode != 0:
+            raise Failed("git archive：%s" % p.stderr.decode(errors="replace").strip()[:200])
+        with tarfile.open(fileobj=io.BytesIO(p.stdout)) as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(tmp, filter="data")
+            else:
+                tar.extractall(tmp)
+        against = []
+        old = git("show", "%s:%s" % (last, rel)) if last else None
+        if old is not None and old.returncode == 0:
+            path = tmp + "-old.json"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(old.stdout)
+            against = ["--against", path]
+        p = subprocess.run([sys.executable, LINT, "--root", tmp, "--baseline", os.path.join(tmp, rel)] + against,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=600)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if os.path.exists(tmp + "-old.json"):
+            os.remove(tmp + "-old.json")
+    out = p.stdout.replace(tmp + os.sep, "").strip()
+    for line in out.splitlines():
+        print("  " + line)
+    if p.returncode == 0:
+        return True
+    key = {1: "release.lint_new", 3: "release.lint_no_ruff"}.get(p.returncode, "release.lint_failed")
+    said.append(alt_text.t(key, code=p.returncode))
+    return False
+
+
+def golden_changed(rev, last):
+    """C-148: the golden cases (fixed interfaces) changed since LAST, the last release here (its private tag)."""
+    tool = os.path.join(ENGINE, "tools", "golden")
+    if not last or not os.path.exists(tool):
+        return []
+    p = subprocess.run([sys.executable, tool, "changed", last, rev], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True, timeout=120)
+    return p.stdout.split() if p.returncode == 0 else []
+
+
 def compat_lines(rev):
-    """{(file, text)} of every COMPAT: comment in REV's tree, .md files aside."""
-    p = git("grep", "-I", "-n", "-E", "(#|//)[[:space:]]*COMPAT:", rev, "--", ".", ":(exclude)*.md")
+    """{(file, text)} of every COMPAT: comment in REV's tree, .md files and lint's baseline (copies of code lines)
+    aside."""
+    p = git("grep", "-I", "-n", "-E", "(#|//)[[:space:]]*COMPAT:", rev, "--", ".", ":(exclude)*.md",
+            ":(exclude)tools/lint-baseline.json")
     if p.returncode not in (0, 1):
         raise Failed("git grep：%s" % p.stderr.strip()[:200])
     found = set()
@@ -346,6 +422,7 @@ def plugin_json(rev, name, said, notes):
 DCBOT_PATH = re.compile(r"\bdcbot/[A-Za-z0-9_.][A-Za-z0-9_./-]*")
 SKILL_RUNS = re.compile(r"\b(?:dcbot|ops)/[A-Za-z0-9_.][A-Za-z0-9_./-]*")  # engine files a skill may tell Claude to run
 DC_USE = re.compile(r"\bdc\b[\"']?\s*,?\s*[\"']?(post|notify|read)\b")  # altention dc post, [.., "dc", "post"]
+USES_RUN = re.compile(r"\bplugins\b[\"']?\s*,?\s*[\"']?uses\b")  # altention plugins uses, [.., "plugins", "uses"]
 SKILL_FILE = re.compile(r"(^|/)skills/.*\.md$|(^|/)SKILL\.md$")
 SKIPPED = re.compile(r"(^|/)(tests?|docs)/|(^|/)test_[^/]*\.py$|\.md$")  # not what the plugin runs
 
@@ -463,6 +540,16 @@ def code_lines(path, text):
         return list(enumerate(text.splitlines(), 1))
 
 
+def official_offers():
+    """The interfaces the plugins found here declare (on, off or drafts): an optional use none offers never works."""
+    drafts = []
+    try:
+        found = alt_plugin.discover(drafts=drafts)[0]
+    except Exception:
+        return set()
+    return set(n for _n, _f, d in found + drafts for n in ((d or {}).get("interfaces") or {}))
+
+
 def derived_uses(path, text):
     """{interface: line} that the words of file `path` show it uses although no engine file is named (#display-review,
     manager 2026-10-24): altention dc post/notify/read, $DCBOT_CHANNEL, and in plugin.json a {token}."""
@@ -472,6 +559,8 @@ def derived_uses(path, text):
             out.setdefault("dc." + m.group(1), n)
         if "DCBOT_CHANNEL" in line or (path == "plugin.json" and alt_plugin.TOKEN.search(line)):
             out.setdefault("tokens", n)
+        if path != "plugin.json" and USES_RUN.search(line):
+            out.setdefault("plugin.format", n)
     return out
 
 
@@ -498,7 +587,22 @@ def engine_use(rev, d, said, notes):
     except alt_plugin.PluginError as e:
         said.append(alt_text.t("release.interfaces_unreadable", error=e))
         return False
-    by_path = {p: n for n, e in offered.items() for p in e.get("paths", [])}
+    by_path = {}  # path: the interface, or the first of those sharing it ("commands" tell them apart: which())
+    shared = {}
+    for n, e in offered.items():
+        for p in e.get("paths", []):
+            by_path.setdefault(p, n)
+            shared.setdefault(p, []).append(n)
+
+    def which(path, content):
+        """The interfaces a file whose text is `content` uses by running `path`: of those sharing it, each whose
+        "commands" the text names as a word (dcremote files, dcremote tmux-list), else all of them (not told)."""
+        names = shared.get(path) or []
+        if len(names) < 2:
+            return names
+        named = [n for n in names if any(re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(c), content)
+                                         for c in offered[n].get("commands") or [])]
+        return named or names
     by_module = {m: n for n, e in offered.items() for m in e.get("modules", [])}
     tree = [f for f in git("ls-tree", "-r", "--name-only", rev).stdout.splitlines() if f]
     files = [f for f in tree if not SKIPPED.search(f)]
@@ -526,12 +630,13 @@ def engine_use(rev, d, said, notes):
                 for p in (p for p in by_path if p.startswith(value + "/")):  # the folder first, the file's name later:
                     m = re.search(r"[\"']%s[\"']" % re.escape(p[len(value) + 1:]), content)  # counts as that file
                     if m:
-                        used.setdefault(by_path[p], "%s:%d" % (f, content.count("\n", 0, m.start()) + 1))
+                        for name in which(p, content):
+                            used.setdefault(name, "%s:%d" % (f, content.count("\n", 0, m.start()) + 1))
             elif kind == "path":
-                name = by_path.get(value)
-                if name is None:
+                if value not in by_path:
                     said.append(alt_text.t("release.path_private", at=at, path=value))
-                used.setdefault(name, at) if name else None
+                for name in which(value, content):
+                    used.setdefault(name, at)
             elif kind == "module":
                 name = by_module.get(value)
                 if name is None:
@@ -548,9 +653,44 @@ def engine_use(rev, d, said, notes):
     if isinstance(d.get("activity"), dict) and d["activity"].get("pages"):
         used.setdefault("activity.pages", "plugin.json")
     uses = d.get("uses") or {}
+    token = next((m.group(0) for n in d.get("needs") or [] if isinstance(n, dict) and isinstance(n.get("install"), dict)
+                  for c in n["install"].values() if isinstance(c, str) for m in [alt_plugin.TOKEN.search(c)] if m), None)
+    want = alt_plugin.want_of(uses.get("tokens"))[0]
+    if token and isinstance(want, int) and want < 2:  # a v0.5.x engine shows it as written
+        said.append(alt_text.t("release.install_tokens_v1", token=token))
+    optional = sorted(n for n, v in uses.items() if alt_plugin.want_of(v)[1])
+    format_need = 2  # what plugin.format the words used need at least: 2 for optional uses and `plugins uses`
+    standby = any("standby" in alt_plugin._names(step.get("on")) for key in ("cron", "setup", "secrets", "schedules")
+                  for step in d.get(key) or [] if isinstance(step, dict))
+    if standby:  # C-163: "on": "standby" is format 3 (an older engine takes the word for a machine)
+        format_need = 3
+        used.setdefault("plugin.format", "plugin.json")
+        got = alt_plugin.want_of(uses.get("plugin.format"))[0]
+        if not (isinstance(got, int) and got >= 3):
+            said.append(alt_text.t("release.standby_format"))
+    if d.get("standby") is True:  # "standby": true on a machines-one plugin is format 4 (an older engine ignores it)
+        format_need = 4
+        used.setdefault("plugin.format", "plugin.json")
+        got = alt_plugin.want_of(uses.get("plugin.format"))[0]
+        if not (isinstance(got, int) and got >= 4):
+            said.append(alt_text.t("release.standby_key_format"))
+    if optional:
+        used.setdefault("plugin.format", "plugin.json")
+        got = alt_plugin.want_of(uses.get("plugin.format"))[0]
+        if not (isinstance(got, int) and got >= 2):  # (3, said for another reason, holds it as well)
+            said.append(alt_text.t("release.optional_format"))
+        known = set(core) | set(offered) | official_offers()
+        for name in (n for n in optional if n not in known):
+            notes.append(alt_text.t("release.optional_unknown", name=name))
+    if any(isinstance(p, dict) and p.get("opens_files") for p in (d.get("activity") or {}).get("pages") or []) \
+            and isinstance(alt_plugin.want_of(uses.get("activity.pages"))[0], int) \
+            and alt_plugin.want_of(uses["activity.pages"])[0] < 2:  # C-116; an optional entry's version too
+        notes.append(alt_text.t("release.opens_files_v1"))
     for name, at in sorted(used.items()):
-        if name not in uses:
-            said.append(alt_text.t("release.uses_needed", at=at, name=name, version=offered[name]["version"]))
+        if name not in uses:  # (plugin.format: the least the words used need, not the newest: a plugin that asks
+            # for more than it needs is refused by an engine that would have run it)
+            said.append(alt_text.t("release.uses_needed", at=at, name=name,
+                                   version=format_need if name == "plugin.format" else offered[name]["version"]))
         if offered[name].get("transitional"):
             notes.append(alt_text.t("release.transitional", at=at, name=name, words=offered[name]["transitional"]))
     for name in sorted(n for n in (d.get("interfaces") or {}) if n in core):  # its own offers: not the engine's names
@@ -620,11 +760,15 @@ def message(version, text, name=None):
     return "%s v%s\n\n%s\n" % ("Altention" if name is None else name, version, text)
 
 
-def make_commit(tree, parent, version, text, author, name=None):
+def make_commit(tree, parent, version, text, author, name=None, dates=None):
+    """dates: (author date, committer date) as git's raw "<seconds> <zone>", those of the dry run's commit, so the
+    commit made again for --push is the very one the dry run showed; None: now."""
     env = dict(os.environ, GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1], GIT_COMMITTER_NAME=author[0],
                GIT_COMMITTER_EMAIL=author[1])
     for k in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
         env.pop(k, None)
+    if dates:
+        env["GIT_AUTHOR_DATE"], env["GIT_COMMITTER_DATE"] = dates
     args = ["-c", "commit.gpgsign=false", "commit-tree", tree] + (["-p", parent] if parent else [])
     commit = git(*args, inp=message(version, text, name), env=env, check=True).stdout.strip()
     # what was made is what was meant: the tree, the one parent, the author and committer
@@ -632,6 +776,25 @@ def make_commit(tree, parent, version, text, author, name=None):
     if shown[0] != tree or shown[1].strip() != (parent or "") or shown[2] != author[1] or shown[3] != author[1]:
         raise Failed("做出來的 commit 跟要的不一樣（%r）" % shown[:4])
     return commit
+
+
+def dry_run_made(tree, parent, msg):
+    """The commit the dry run left (NEXT_REF) and its times: (commit, (author date, committer date)) when it was made
+    of this tree, on this parent, with this message; (commit, None) when it is of something else (a dry run of another
+    tree or version, or the public main moved since); (None, None) when there is none (no dry run: made now)."""
+    p = git("rev-parse", "-q", "--verify", NEXT_REF + "^{commit}")
+    if p.returncode != 0 or not p.stdout.strip():
+        return None, None
+    old = p.stdout.strip()
+    raw = git("cat-file", "commit", old, check=True).stdout
+    head, _, body = raw.partition("\n\n")
+    fields = [line.split(" ", 1) for line in head.split("\n") if " " in line]
+    parents = [v for k, v in fields if k == "parent"]
+    stamp = lambda who: next((v for k, v in fields if k == who), "").rsplit(" ", 2)[1:]
+    when = tuple(" ".join(stamp(k)) for k in ("author", "committer"))
+    same = dict(fields).get("tree") == tree and parents == ([parent] if parent else []) and body == msg \
+        and all(len(w.split()) == 2 for w in when)
+    return old, (when if same else None)
 
 
 META = "RELEASE-MESSAGE"  # the message, as a file of a throwaway commit on top of REV, for the privacy scan
@@ -657,6 +820,44 @@ def meta_scan(rev, message, said):
     return True
 
 
+def gate(commit, tree, version, push, name, said, notes):
+    """The checks of the release checklist's part A that came after the first ones (release_gates.py): for an external
+    plugin only the CHANGELOG's shape (A7), conflict markers (A13) and skill heads (A14)."""
+    last = gates.last_tag(git, commit, version)
+    gates.changelog_shape(git, commit, version, last, push, said, notes)
+    gates.markers(git, commit, said)
+    gates.heads(git, commit, said)
+    if name is not None:
+        return
+    paper = []  # what the checklist (or the branch, the tags) must say: the tree may be tested meanwhile
+    record = gates.read_checklist(version)
+    if record is None:
+        paper.append(alt_text.t("release.checklist_missing", path=gates.checklist_path(version)))
+    gates.checklist(record, commit, push, paper)
+    gates.golden(golden_changed(commit, last), last, record, paper)
+    try:
+        gates.version_line(git, commit, version, record, private_remote(), paper)
+    except Failed as e:
+        paper.append(str(e))
+    gates.reviewed(git, commit, last, record, paper)
+    gates.guides(git, commit, said)
+    base = tempfile.mkdtemp(prefix="altention-release-")
+    try:
+        try:
+            root = gates.export(here(), commit, base)
+        except RuntimeError as e:
+            said.append(alt_text.t("release.export_failed", error=e))
+            return
+        gates.plugins_load(root, said)
+        if said:  # the tree must change first, and a new tree is tested anew anyway; the checklist only does not
+            notes.append(alt_text.t("release.tests_skipped"))
+            return
+        gates.tests(tree, root, base, said, notes)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+        said.extend(paper)
+
+
 def run(action, version, rev, push, name=None):
     """name: an external plugin's (REPO is then its folder), else the engine."""
     said, notes = [], []
@@ -664,26 +865,37 @@ def run(action, version, rev, push, name=None):
     commit, tree = resolve(rev)
     print("要發佈的：%s%s（tree %s）" % ("插件 %s 的 " % name if name else "", commit[:12], tree[:12]))
     clean = privacy(commit, said)
-    registered = compat(commit, said, notes) if name is None else plugin_json(commit, name, said, notes)
     main, tags = fetch_public(repo)
     print("公開 repo：%s" % ("main 在 %s，發佈過 %s" % (main[:12], "、".join(sorted(tags)) or "（沒有 tag）") if main else "還是空的（這是第一版）"))
+    linted = lint(commit, said, name, last=main or None)
+    registered = compat(commit, said, notes) if name is None else plugin_json(commit, name, said, notes)
     took = imported(commit, main, author, said)
     text = None
-    if action in ("publish", "publish-plugin"):
-        remote = private_remote()
-        tagged = private_tag(remote, version, commit, said) if VERSION.match(version or "") else False
+    remote = private_remote() if action in ("publish", "publish-plugin") else None
+    if not version:  # check: the first version in the CHANGELOG not public yet (#release 11-11)
+        version = gates.first_unpublished(git, commit, tags)
+        if version:
+            print(alt_text.t("release.version_found", version=version))
+        else:
+            said.append(alt_text.t("release.no_version"))
+    tagged = False
+    if version:
+        if action in ("publish", "publish-plugin"):
+            tagged = private_tag(remote, version, commit, said) if VERSION.match(version) else False
         good_version = version_ok(version, tags, said)
         text = changelog(commit, version, said) if good_version else None
         if text:
             own_words(version, text, notes)
+        if good_version:
+            gate(commit, tree, version, push, name, said, notes)
     for n in notes:
         print("提醒：" + n)
-    if said or not (clean and registered and took):
+    if said or not (clean and linted and registered and took):
         for s in said:
             print("拒絕：" + s)
         return 1
     if action in ("check", "check-plugin"):
-        print("可以發佈：個資掃描、%s、公開 repo 的貢獻都過了" % ("COMPAT: 登記" if name is None else "plugin.json"))
+        print(alt_text.t("release.check_passed", version=version, what="COMPAT: 登記" if name is None else "plugin.json"))
         return 0
     if text is None:
         return 1
@@ -691,17 +903,22 @@ def run(action, version, rev, push, name=None):
         for s in said:
             print("拒絕：" + s)
         return 1
-    new = make_commit(tree, main, version, text, author, name)
+    before, dates = dry_run_made(tree, main, message(version, text, name)) if push else (None, None)
+    new = make_commit(tree, main, version, text, author, name, dates=dates)
+    if before and new != before:  # the commit pushed is the one the dry run showed, or none (manager 11-11)
+        print("拒絕：" + alt_text.t("release.not_the_dry_run", made=new[:12], dry=before[:12], ref=NEXT_REF))
+        return 1
     git("update-ref", NEXT_REF, new, check=True)
     mine = ("這個 repo 的 remote %s 已經有 v%s 在 %s，不用再打" if tagged else "也會在這個 repo 的 remote %s 把 v%s 打在 %s") \
         % (remote, version, commit[:12])
     if not push:
-        print("做好了 %s（%s，parent %s），沒有推。要推：加 --push 重跑（會重做同一個 commit）；看內容：git show %s"
-              % (new[:12], "v" + version, main[:12] or "沒有", NEXT_REF))
+        print(alt_text.t("release.made_not_pushed", made=new[:12], version=version, parent=main[:12] or "沒有",
+                         ref=NEXT_REF))
         print("推的時候" + mine)
         return 0
     # both or neither (no force: if the public main moved meanwhile, git refuses the whole push)
     git("push", "--atomic", repo, "%s:refs/heads/main" % new, "%s:refs/tags/v%s" % (new, version), check=True)
+    git("update-ref", "-d", NEXT_REF)  # published: no dry run is left to match the next one against
     print("發佈了 v%s：%s 推到 %s" % (version, new[:12], repo))
     code = 0
     if tagged:
@@ -723,7 +940,15 @@ def run(action, version, rev, push, name=None):
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
     global REPO
+    asked = None
+    if "--version" in argv:  # check [REV] --version X.Y.Z (#release 11-11)
+        i = argv.index("--version")
+        asked = argv[i + 1] if i + 1 < len(argv) else ""
+        argv = argv[:i] + argv[i + 2:]
     args = [a for a in argv if a != "--push"]
     push = "--push" in argv
     name = None
@@ -747,7 +972,10 @@ def main(argv):
         print(__doc__.split("\n\n")[1])
         return 2
     action = args[0] + ("-plugin" if name is not None else "")
-    version = args[1] if args[0] == "publish" else None
+    if asked is not None and (args[0] != "check" or not VERSION.match(asked)):
+        print(__doc__.split("\n\n")[1])
+        return 2
+    version = args[1] if args[0] == "publish" else asked
     rev = (args[2] if len(args) > 2 else "HEAD") if args[0] == "publish" else (args[1] if len(args) > 1 else "HEAD")
     try:
         if name is not None:

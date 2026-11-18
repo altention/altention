@@ -34,12 +34,14 @@ def _prompt(d):
 
 
 def summarize(path):
-    """{"id", "mtime", "title", "first", "last", "prompts"} for one transcript, or None if nobody typed in it."""
-    title, first, last, n = "", "", "", 0
+    """{"id", "mtime", "title", "first", "last", "prompts"} for one transcript, or None if nobody typed in it. The title
+    is the name given with /rename (a "custom-title" row; the newest), else the one Claude Code made up (ai-title),
+    as Claude Code's own /resume list shows them (C-201 6.4)."""
+    title, named, first, last, n = "", "", "", "", 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
-                if '"type":"user"' not in line and '"type":"ai-title"' not in line:
+                if '"type":"user"' not in line and '"type":"ai-title"' not in line and '"type":"custom-title"' not in line:
                     continue
                 try:
                     d = json.loads(line)
@@ -49,6 +51,8 @@ def summarize(path):
                     continue
                 if d.get("type") == "ai-title":
                     title = d["aiTitle"] if isinstance(d.get("aiTitle"), str) and d["aiTitle"] else title
+                elif d.get("type") == "custom-title":
+                    named = d["customTitle"] if isinstance(d.get("customTitle"), str) and d["customTitle"].strip() else named
                 elif d.get("type") == "user":
                     text = _prompt(d)
                     if text:
@@ -58,7 +62,7 @@ def summarize(path):
         return None
     if not n:
         return None
-    return {"id": os.path.basename(path)[:-len(".jsonl")], "mtime": mtime, "title": title, "first": first,
+    return {"id": os.path.basename(path)[:-len(".jsonl")], "mtime": mtime, "title": named or title, "first": first,
             "last": last, "prompts": n}
 
 

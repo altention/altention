@@ -1,5 +1,10 @@
 """tests/fakepane.py itself: a replacement that cannot take is said aloud, and a test with a fake pane in use that
 reaches a real tmux or ssh fails (2026-10-11: what makes the moves of stage 3b loud instead of silent)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import contextlib
 import io

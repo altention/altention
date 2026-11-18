@@ -1,5 +1,10 @@
 """Buttons from a panel's hint line (the connector's panels.py, the generic layer): only the keys the line names, never numbers;
 an Escape goes through the gate. The hint lines are real ones, captured from Claude Code on 2026-10-06."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import unittest
 from unittest import mock

@@ -1,0 +1,73 @@
+#golden spec §11, usage.spend v1
+{
+ "at": "number",
+ "channels": "null",
+ "channels_why": "str",
+ "folders": [
+  {
+   "agent": "str",
+   "cost": {
+    "1": "number",
+    "30": "number",
+    "7": "number",
+    "all": "number"
+   },
+   "cwd": "str",
+   "last": "str",
+   "machine": "str",
+   "project": "str",
+   "tokens": {
+    "1": "number",
+    "30": "number",
+    "7": "number",
+    "all": "number"
+   }
+  }
+ ],
+ "limits": {
+  "at": "number",
+  "session": {
+   "resets_at": "number",
+   "used": "number"
+  },
+  "week": {
+   "resets_at": "number",
+   "used": "number"
+  }
+ },
+ "machines": [
+  {
+   "machine": "str"
+  },
+  {
+   "error": "str",
+   "machine": "str"
+  }
+ ],
+ "since": {
+  "lap": "str"
+ },
+ "since_all": "str",
+ "today": "str",
+ "unmatched": {
+  "cost": {
+   "1": "number",
+   "30": "number",
+   "7": "number",
+   "all": "number"
+  },
+  "tokens": {
+   "1": "number",
+   "30": "number",
+   "7": "number",
+   "all": "number"
+  }
+ },
+ "v": 1,
+ "windows": [
+  "1",
+  "7",
+  "30",
+  "all"
+ ]
+}

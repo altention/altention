@@ -89,6 +89,30 @@ def nested(chain=None):
     return sum(1 for _, comm in (chain if chain is not None else ancestors()) if comm == "claude") > 1
 
 
+def owner_epoch():
+    """The biggest bot epoch this machine has seen (dcremote's ~/.local/share/altention/dcremote-owner; 0 none)."""
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".local", "share", "altention", "dcremote-owner")) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def stale(entry, chain):
+    """A route an older bot wrote here (dcremote bind records the asking bot's epoch) that no longer names this pane:
+    its process is not among this hook's ancestors. A standby that was the bot bound this machine's pane, and after
+    the failback the bot here opened its own window with the same pane number: that old entry took the new window's
+    events for good (C-163 drill 11-08). An older route still naming its pane is kept: the bot now binds its routes
+    again with its own epoch (rebind_far), but a machine may see the new epoch before that (#code-review,
+    #code-review-2 on 7ab6d1a; manager: no gap). Entries with no epoch (this machine's own bot) are never stale."""
+    if not (isinstance(entry, dict) and isinstance(entry.get("epoch"), int)) or entry["epoch"] >= owner_epoch():
+        return False
+    pid = entry.get("pid")
+    if not pid:  # (a route with no process to tell its pane by: kept, as before the epochs; #code-review-2 on ac4e72e)
+        return False
+    return not any(str(p) == str(pid) for p, _ in chain)
+
+
 def route_of(table, socket, pane):
     """The route table's entry for a pane of the tmux server at `socket`. The table's keys hold the socket's path
     as the bot wrote it; $TMUX holds it as tmux itself names it. The two are the same file under two names where
@@ -143,6 +167,8 @@ def routed(root, where=None):
     if not channel:
         return None
     chain = ancestors()
+    if stale(entry, chain):  # (an older bot's route to a pane number that is another pane now: drill 11-08)
+        return None
     now = None
     if pid and not any(str(p) == str(pid) for p, _ in chain):
         now = pane_process(chain)  # same pane number, but not the process that was attached
@@ -592,6 +618,8 @@ def main():
     source = came_from()  # for the channel named by the environment: the bot takes the event only from its window
     routed_pane = respawned = None
     if "--global" in sys.argv[1:]:
+        if os.environ.get("ALT_PROBE"):  # the bot's probe of Claude Code (C-162): reported by its own hooks only
+            return
         source = None
         # Only the route table counts here. A session the bot started is never in it (the hooks in its own
         # --settings report for it), and DCBOT_* may be inherited by a tmux server started from such a session.

@@ -278,7 +278,14 @@ def say(text):
     print("%s %s" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), " ".join(str(text).split())), flush=True)
 
 
-def main():
+def main(argv=()):
+    argv = list(argv)
+    if "-h" in argv or "--help" in argv:  # spec §11.1 (C-150): says how, does nothing
+        print(__doc__)
+        return 0
+    if argv:  # cron gives none: anything else is a mistake, never a reason to run a round
+        print("不認得 %s（這支平常由排程呼叫，不收參數；-h 看說明），什麼都沒做" % " ".join(argv))
+        return 2
     why = elsewhere()
     if why:  # another checkout: nothing run, nothing written but this line on stdout (the cron line keeps it)
         say("不是這台的正式引擎：%s；什麼都沒做" % why)
@@ -317,4 +324,4 @@ def round_or_fallback():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

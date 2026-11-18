@@ -12,7 +12,7 @@ import json
 import os
 import traceback
 
-from . import sessions
+from . import deliver, sessions
 from .util import split_message
 
 KEEP = 50     # conversations remembered as shown, per channel
@@ -45,7 +45,7 @@ async def show(bot, ch, st, session_id, path, force=False, held=None):
     if seen(st, session_id, held) and not force:
         recap = sessions.recap_text(sessions.recap(path))
         for part in split_message(AGAIN % (session_id[:8], recap)):
-            await ch.send(part, silent=True)
+            await deliver.deliver(ch, part, silent=True, intent="status")
         return True
     mark(st, session_id)
     bot.save()
@@ -119,7 +119,8 @@ async def _show_remote(bot, ch, st, host, session_id, path, force, remote, held=
         print("history: the history of %s (on %s) came after its channel %s had moved on; not posted" % (session_id[:8], host, ch.id), flush=True)
         return False
     if why:
-        await ch.send("📜 接回的對話 `%s` 的紀錄在 %s 上，%s，所以沒有貼出來。" % (session_id[:8], host, why), silent=True)
+        await deliver.deliver(ch, "📜 接回的對話 `%s` 的紀錄在 %s 上，%s，所以沒有貼出來。" % (session_id[:8], host, why), silent=True,
+                              intent="status")
         return False
     messages = sessions.backfilled(got) if got else []
     if not messages:
@@ -127,7 +128,7 @@ async def _show_remote(bot, ch, st, host, session_id, path, force, remote, held=
     if seen(st, session_id, held) and not force:
         pairs = [(sessions.worded(kind, text), reply) for kind, text, reply, _stamp in got["turns"][-SEEN_AGAIN:]]
         for part in split_message(AGAIN % (session_id[:8], sessions.recap_text(pairs))):
-            await ch.send(part, silent=True)
+            await deliver.deliver(ch, part, silent=True, intent="status")
         return True
     mark(st, session_id)
     bot.save()

@@ -1,0 +1,7 @@
+#golden spec §15.6
+({'session': 'work', 'window': '2'}, 'proj') → work-2
+({'session': 'work', 'window': '2', 'window_name': 'My Tests'}, 'proj') → work-my-tests
+({'session': '3', 'window': '0'}, '回測') → 回測-3-0
+({'session': 'a b.c', 'window': '1'}, 'p') → a-b-c-1
+({'session': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 'window': '1'}, 'p') → xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+({'session': '---', 'window': '!'}, 'p') → session

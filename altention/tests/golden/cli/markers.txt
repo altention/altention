@@ -1,0 +1,17 @@
+#golden spec §11.13
+ALT-ENGINE-OK
+ALT-INSTANCE-JOINED
+ALT-PY
+ALT-STEP-OK
+ALT-STEP-OK chatlog
+ALT-STEP-OK dcbot
+ALT-STEP-OK dcbot-uninstall
+ALT-STEP-OK instance-join
+ALT-STEP-OK instance-pull
+ALT-STEP-OK plugins-apply
+ALT-STEP-OK progress
+ALT-STEP-OK usage
+ALT-SYNC-DONE
+ALT-TOLD
+ALT-UPDATE-DONE
+ok core.done (install.sh's last line starts so)

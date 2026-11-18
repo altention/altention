@@ -1,5 +1,10 @@
 """📋 on a reply of a Claude on another machine (stage 3b step 1.10): the record, `dcremote turn` over there, the
 turn sent back as data and worded here, and what the owner is told when it cannot be had."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import importlib.machinery
 import importlib.util

@@ -1,0 +1,16 @@
+#golden spec §11.8, plugin.format v2
+{
+ "plugin": "str",
+ "uses": {
+  "plugin.format": {
+   "ok": "bool",
+   "optional": "bool"
+  },
+  "rig.spend": {
+   "ok": "bool",
+   "optional": "bool",
+   "why": "str"
+  }
+ },
+ "where": "on"
+}

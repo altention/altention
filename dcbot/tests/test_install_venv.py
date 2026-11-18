@@ -1,6 +1,11 @@
 """dcbot/install.sh, the block that makes the bot's venv: a venv left without pip by a first try (Debian/Ubuntu
 without python3-venv) is made again, and a venv that cannot be made says what to install (support-4's dry run on a
 clean ubuntu:24.04). Run on its own, with stand-ins for python3 and for the venv's python: nothing is installed."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import os
 import subprocess
 import tempfile

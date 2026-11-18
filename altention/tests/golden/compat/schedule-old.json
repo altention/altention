@@ -1,0 +1,64 @@
+#golden spec §17.4
+{
+ "channel": "secretary",
+ "items": [
+  {
+   "at": 480,
+   "days": null,
+   "do": {
+    "channel": "secretary",
+    "log": null,
+    "message": "早報",
+    "retry": false
+   },
+   "enabled": true,
+   "kind": "at",
+   "late": 10800,
+   "mark": "at 480 daily",
+   "name": "morning",
+   "order": 0,
+   "scheduler": true,
+   "timezone": null
+  },
+  {
+   "at": 1260,
+   "days": [
+    6
+   ],
+   "do": {
+    "channel": "secretary",
+    "log": null,
+    "message": "回顧",
+    "retry": false
+   },
+   "enabled": false,
+   "kind": "at",
+   "late": 10800,
+   "mark": "at 1260 sun",
+   "name": "weekly",
+   "order": 1,
+   "scheduler": true,
+   "timezone": null
+  },
+  {
+   "do": {
+    "channel": "secretary",
+    "log": null,
+    "message": "x",
+    "retry": false
+   },
+   "enabled": true,
+   "every": 1800,
+   "kind": "every",
+   "late": 1800,
+   "mark": "every 1800 0",
+   "name": "new",
+   "offset": 0,
+   "offset_by": null,
+   "offset_note": null,
+   "order": 2,
+   "scheduler": true,
+   "timezone": null
+  }
+ ]
+}

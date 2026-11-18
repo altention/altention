@@ -10,6 +10,11 @@ The ways, by where their text goes out:
     picture and the text kept for 📝 (screens.post), a shell's output in a terminal channel and the file of
     all of it (terminal.body, terminal.full_output), the question Claude Code asks before it starts
     (startup_ask)."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import unittest
 from unittest import mock

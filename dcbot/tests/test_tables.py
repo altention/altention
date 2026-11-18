@@ -1,5 +1,10 @@
 """C-71a: Markdown tables in Claude's final reply, made readable on Discord: a small ASCII table becomes an aligned
 code block, a Chinese (or too wide) one a list; big ones, and anything inside ``` blocks, stay as they are."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import io
 import os

@@ -113,10 +113,21 @@ FAR = {
 
 # Said along the way: not a failure.
 NOTES = {
+    # messaging review P0 (C-186): a Claude's post into its own channel that begins with a frame only the bot uses
+    "reserved_own": "⚠️ 這則沒有貼出：開頭「{frame}」是機器人自己用的格式，讀回時會被當成別的頻道傳來的、通知、看板或終端機輸入。請換個開頭再貼。",
+    "board_files": "看板「{name}」只能附一個檔案，這次沒有更新",
+    "board_files_audit": "{sender} 更新 #{channel} 的看板「{name}」時附了不只一個檔案，沒有更新（看板只放一個）",
+    # P0-2: the channel a post's own environment names is not the one its Claude Code runs for (sent all the same)
+    "held_full": "這則沒有交給 #{channel} 的 Claude，也沒有留住：停在來回上限、等使用者決定的訊息已經有 {most} 則。等使用者處理 #{channel} 那張卡（繼續轉交或停下來）之後，有需要再傳一次。",  # (manager 11-16)
+    "claimed": "{who} 傳到 #{channel} 的訊息自稱來自 {claimed}（照查到的寄件人送出）",
     'claude_code.resent':
         'ℹ️ 上一則訊息第一次沒有送進去（按了 Enter 還留在輸入框裡），已經重送。',
     'claude_code.new_conversation':
         '接不回原本的對話（`{session}`），已開始新的對話。',
+    'claude_code.no_start':
+        '-# 等了 {secs} 秒沒收到 Claude Code 開好的通知，畫面上也找不到輸入框。',
+    'claude_code.resume_ended':
+        '-# 接回時 Claude Code 自己結束了（{how}），最後的畫面：',
     'masked': '-# 有 {n} 處像金鑰的字被遮掉了',
     # C-74 (bot/unsent.py): a message not sent for now, sent again
     'resend.done': '✅ 已再送一次',
@@ -136,6 +147,7 @@ SECRET = {
     "default": "按下面的按鈕，填入 {plugin} 要的 {label}。",
     "note": "-# 只有擁有者按得動。值會經過 Discord，輸入時看得到字（Discord 的輸入框不會遮）；不想經過 Discord，就在終端機跑 `altention secret set {plugin} {name}`。",
     "button": "填入 {label}",
+    "filled": "✅ 已填入 {label}（再按可以換）",
     "box_title": "{label}",
     "box_field": "{label}（貼上後按送出）",
     "box_hint": "只存在機器人那台，不會出現在頻道裡；超過 4000 字請用終端機",
@@ -149,7 +161,240 @@ SECRET = {
     "unreadable": "讀不到插件的設定",
     "told": "（機器人回覆你的 altention dc post --secret）沒有貼出：{why}。",
 }
-GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR, "secret": SECRET}
+# C-99a: a usage limit and Claude Code's own wait for its reset (bot/quota.py; #release 10-26)
+QUOTA = {
+    "armed": "⏸️ **用量達到上限**，Claude Code 會在 {when} 自己接著做。",
+    "armed_unknown": "⏸️ **用量達到上限**，Claude Code 會在用量重置後自己接著做。",
+    "armed_note": "-# 在這裡打字會先送出你的訊息，等待就取消了（多半也會再撞上限）。",
+    "resumed": "▶️ 用量重置了，Claude 接著做。",
+    "stale": "⏸️ **用量已經重置**，但 Claude Code 還在等人按 Enter（例如電腦睡著過）：在這裡用 `/key Enter`，或在終端機按 Enter。",
+    "stopped": "⚠️ **沒有自動接著做**：{why}",
+    "retry_note": "-# 按「再試一次」會請 Claude 從中斷的地方接著做",
+    "audit_armed": "#{channel}：用量達到上限，Claude Code 會在 {when} 自己接著做",
+    "audit_armed_unknown": "#{channel}：用量達到上限，Claude Code 會在重置後自己接著做",
+    "audit_resumed": "#{channel}：用量重置，Claude 接著做",
+    "audit_stale": "#{channel}：用量重置了，等人按 Enter",
+    "audit_stopped": "#{channel}：沒有自動接著做（{why}）",
+}
+# C-103 (bot/calls.py): the one line that @-mentions the owner, when something needs them. What is needed comes first
+# (a phone shows a notification's first words), the owner's mention last; {gist} is cut to calls.GIST characters, the
+# words before it never. Words: #release 2026-11-03.
+CALLS = {
+    "ask": "🔘 要你選：{gist}",
+    "ask_many": "🔘 要你選（共 {n} 題）：{gist}",
+    "plan": "📝 要你核准計畫：{gist}",
+    "permission": "🔐 要你允許：{gist}",
+    "menu": "🔘 要你選：{gist}",
+    "talk_limit": "⏸️ 兩個 Claude 來回 {n} 次了，要繼續嗎？",
+    "turn_failed": "⚠️ 這一輪中斷了，要你處理：{gist}",
+    "not_started": "⚠️ Claude 沒有啟動成功，訊息沒有送出",
+    "discuss": "💬 要跟你討論：{gist}",
+    # (installation-wide, in the notification channel, once for each time it happens; the lines after it and the
+    # line that says it is over do not mention anyone)
+    "usage_limit": "⛔ 用量到上限，所有頻道暫停，約 {when} 恢復後自己接著做",
+    "usage_limit_unknown": "⛔ 用量到上限，所有頻道暫停，恢復時間不確定",
+    "usage_back": "✅ 用量恢復了，各頻道接著做",
+    "login": "🔑 {machine} 的 Claude 要重新登入，那台的頻道都停住",
+    "login_one": "🔑 Claude 要重新登入，頻道都停住",
+    "login_how": "在 {machine} 的終端機打開 claude，輸入 /login 照畫面登入",
+    "login_how_one": "在終端機打開 claude，輸入 /login 照畫面登入",
+    "login_back": "✅ {machine} 的登入恢復了",
+    "login_back_one": "✅ 登入恢復了",
+    "rollback": "🛠️ 機器人新版有問題，已退回上一版，照常運作",
+    "restarting": "🛠️ 機器人一直重啟，沒辦法上線",
+    "restarting_where": "原因在 {machine} 的 {path}",
+    "restarting_back": "✅ 機器人恢復了",
+    "machine_down": "📡 {machine} 連不上，那台的 {n} 個頻道停住",  # (the channels whose work it cut off)
+    "machine_back": "✅ {machine} 連回來了",
+    "machine_idle": "{machine} 連不上，那台的頻道都閒著，沒有 @ 使用者",  # (#audit only)
+    "channels": "受影響的頻道：{channels}",
+    "done": " ✅",  # added to a mention's line when what it asked for is over (answered, cancelled, cleared)
+}
+# C-162: Claude Code that the bot cannot use as it is (bot/cc_health.py). Words: #release 11-05 (design section 10);
+# down_json, back_json, wait_window, retry_trying: #release 11-07 (second batch).
+# retry_*, status_* and mode_usage: #release 11-07 (the level is the machine's: "這台" in retry_free; retry_held gains
+# "如果還是認不得畫面，會再退回…" once a failed retry goes back down by itself, the detection step).
+CC = {
+    "footer_print": "-# 簡易模式",
+    "footer_text": "-# 純文字模式",
+    "missing": "暫時沒有：按鈕提問（改用文字問）、計畫核准、權限選單（需要允許的會被拒絕）、/btw、背景工作、"
+               "Claude 做事時你補充的話（要等這一輪做完才送進去）、定時叫醒 Claude 的排程",
+    "retry_held": "已回到一般模式，下一則訊息會重新開 Claude Code，接續原本的對話。",
+    "retry_free": "這台現在就是一般模式，不用重試。",
+    "retry_held_after": "如果還是認不得畫面，會再退回{mode}並告訴你。",
+    "retry_failed": "再試了一次，還是認不得 Claude Code {version} 的畫面（{why}），先留在{mode}。",
+    "down_print": "⚠️ 機器人認不得 Claude Code {version} 的畫面，所有頻道改用簡易模式（沒有選單和按鈕），回覆照常",
+    "down_json": "⚠️ 這台 Claude Code {version} 的簡易模式不能用了：原本用簡易模式的頻道先改用純文字模式，照常能回，"
+                 "只是看不到 Claude 做到哪一步。恢復時會自動換回。",  # (no mention: nothing for the owner to do, C-103)
+    "back_json": "✅ 這台 Claude Code {version} 的簡易模式又能用了，那些頻道已經換回簡易模式。",
+    "wait_window": "Claude Code 還在做上一件事，做完就會用{mode}回這則，不用重傳。",
+    "status_json": "純文字模式（這台 Claude Code {version} 的簡易模式不能用，可以用 `!mode retry` 再試）",  # (#release 11-07)
+    # (only `!mode print` meets it: with stream-json alone broken `!mode tmux` simply runs tmux; #release 11-07)
+    "mode_held_json": "已記下這個頻道要用簡易模式，但這台 Claude Code {version} 的簡易模式不能用，暫時用純文字模式；"
+                      "`!mode retry` 可以再試，或用 `!mode tmux` 回到一般模式。",
+    "retry_failed_json": "再試了一次，這台 Claude Code {version} 的簡易模式還是不能用（{why}），先留在純文字模式。",
+    "pinned": "⚠️ Claude Code {new} 在機器人這邊不能用，已退回 {old} 繼續用",
+    "pin_long": "⏳ 機器人停在 Claude Code {old} 已經 {days} 天，新版一直沒通過檢查。要繼續停著，還是改用新版的簡易模式？",
+    "pin_keep_button": "繼續停 {days} 天",
+    "pin_new_button": "改用新版的簡易模式",
+    "pin_kept": "好，這台繼續用 Claude Code {old}，{days} 天後再問你。",  # (#release 11-07, from here)
+    "pin_left": "好，這台改用 Claude Code {new}，先用簡易模式。",
+    "pin_by_keep": "由 {by} 回答。要改用新版：在任何頻道打 `!cctest`，新版通過檢查就不再停在舊版。",  # (C-187)
+    "pin_by_new": "由 {by} 回答。新版之後又出問題時，機器人會自己再退回留下的舊版。",
+    "cctest_start": "🧪 正在檢查 Claude Code {version}：會跑大約 5 次 Haiku 對話（用掉一點用量），要幾分鐘…",
+    "cctest_ok": "✅ Claude Code {version} 檢查通過（一般模式、簡易模式、純文字模式都能用），之後新版壞了會退回這一版。",
+    "cctest_ok_nokeep": "✅ Claude Code {version} 檢查通過，但沒有留下備份（{why}），所以還不能當作退回用的版本。",
+    "cctest_fail": "❌ Claude Code {version} 檢查沒通過：{what}。新版壞了時，還是退回 {good}。",
+    "cctest_fail_none": "❌ Claude Code {version} 檢查沒通過：{what}。目前還沒有可以退回的版本。",
+    "drilled": "Claude Code {version} 自動檢查：能啟動 {start}、畫面 {screen}、簡易模式 {print}（用測試用的假連線，不花用量）。"
+               "要把它記成退回用的版本，請跑 `!cctest`。",  # (#release 11-08; #audit only)
+    "retry_trying": "正在重試一般模式，可能要幾分鐘，好了會告訴你。",
+    "down_text": "⚠️ 機器人認不得 Claude Code {version} 的畫面，所有頻道改用純文字模式（看不到它做到哪）",
+    "back": "✅ 機器人認得 Claude Code {version} 的畫面了，回到一般模式",
+    "attached_pane": "認不得這個窗格裡 Claude Code {version} 的畫面，這個頻道暫時沒辦法把訊息送進去。這是你自己開的窗格，"
+                     "機器人不會動它：你可以直接在終端機用；或關掉那個窗格後，用 `!mode print` 在這裡接著原本的對話。",
+    "status_print": "簡易模式（認不得 Claude Code {version} 的畫面，可以用 `!mode retry` 再試）",
+    "status_text": "純文字模式（認不得 Claude Code {version} 的畫面，可以用 `!mode retry` 再試）",
+    "mode_usage": "這個頻道目前是{mode}。用法：`!mode tmux`（一般模式）、`!mode print`（簡易模式）、`!mode retry`（再試一次一般模式）",
+    "queued": "這台暫時用{mode}，同時最多處理 {most} 則；前面還有 {n} 則在等，輪到時會自動開始，不用重傳。",
+    "mode_held": "已記下這個頻道要用 `{want}` 模式，但這台認不得 Claude Code {version} 的畫面，暫時還是用{mode}；"
+                 "`!mode retry` 可以再試。",  # (#release 11-07: in place of the plain answer, not after it)
+    "mode_tmux": "一般模式",
+    "mode_print": "簡易模式",
+    "mode_text": "純文字模式",
+}
+# C-163: the lease (bot/lease.py). Words: #release 11-05 (design section 10).
+LEASE = {
+    "busy": "機器人正在換機器，請過幾秒再按一次",
+    "audit_took_over": "接手：{standby}（第 {epoch} 次換機器），{primary} 最後心跳 {beat}，{ssh}，接手前檢查 {checks}",  # ({ssh}: dclease's ssh_veto
+    # words, "ssh 通…" or "ssh 不通": "ssh {ssh}" said "ssh ssh 通", drill 11-09)
+    "audit_pane_followed": "#{channel}：窗格 {where} 裡的 Claude 重新啟動過（程序 {was} → {pid}），還是同一個對話（{session}），頻道照常接著",
+    "gate_setup": "啟動前讀不到 #{channel}（{why}），先照沒有備援的方式啟動。備援的機器也讀不到它，所以這台掛了時不會有別台接手；"
+                  "請跑 doctor 看怎麼修。",  # (#release 11-08: #audit is read too, plain words)
+    "gate_connection": "啟動前有 {minutes} 分鐘連不上 Discord（{why}），這段時間機器人沒有上線，現在恢復了。",
+    "took_over": "⚠️ {primary} 上的機器人停了，{standby} 接手了。{primary} 那台的 {n} 個頻道暫時不能用，別台的頻道照常；"
+                 "提醒和用量看板也暫停，等 {primary} 回來才恢復。",  # (#release 11-08)
+    "took_over_joined": "⚠️ {primary} 上的機器人停了，{standby} 接手了。所有頻道照常能用（{primary} 那台的也接上了）；"
+                        "提醒和用量看板暫停，等 {primary} 回來才恢復。",
+    # the takeover that is the DAY_MOST-th in 24 hours: none automatic after it, no failback either (#release 11-10)
+    "took_over_last": "⚠️ {primary} 上的機器人停了，{standby} 接手了。{primary} 那台的 {n} 個頻道暫時不能用，別台的頻道照常；"
+                      "提醒和用量看板也暫停，等切回 {primary} 才恢復。這是 24 小時內第 3 次換機器：接下來 24 小時內不會再自動"
+                      "切換，{primary} 回來也不會自己切回，請看一下 {primary} 怎麼了。",
+    "took_over_joined_last": "⚠️ {primary} 上的機器人停了，{standby} 接手了。所有頻道照常能用（{primary} 那台的也接上了）；"
+                             "提醒和用量看板暫停，等切回 {primary} 才恢復。這是 24 小時內第 3 次換機器：接下來 24 小時內不會再"
+                             "自動切換，{primary} 回來也不會自己切回，請看一下 {primary} 怎麼了。",
+    "engines_differ": "（兩台的引擎版本不同：{primary} 是 {theirs}，{standby} 是 {mine}；有空把兩台更新成同一版）",  # (not
+    # blocking: manager 11-08; #release 11-08: a release's name when there is one, else 7 characters of the commit)
+    "failed_back": "✅ {primary} 回來了，機器人已經切回 {primary}",  # (#release 11-05, design section 10; no mention)
+    "failback_ask": "✅ {primary} 回來了，現在由 {standby} 在跑。要切回 {primary} 嗎？",
+    "failback_button": "切回 {primary}",
+    "failback_pressed": "✅ {primary} 回來了，已經按下切回，現在由 {primary} 在跑。",  # (the ask's message once done: #release 11-10)
+    "failback_stale": "這個按鈕已經過期了（之後又換過機器），請按最新那則的按鈕。",  # (#release 11-08)
+    "failback_not_now": "現在沒辦法切回 {primary}，細節記在 #audit；過幾分鐘再按一次",
+    "failback_draining": "要切回 {primary}，還有 {n} 則傳話在送：新的先排到 {primary}，等這些送完（最多 {mins} 分鐘）再切回。",  # (C-188)
+    "failback_drain_late": "切回 {primary}：等了 {mins} 分鐘還有 {n} 則傳話沒送完（{names}），照樣切回；它們留在 {standby} 的佇列，下次 {standby} 當機器人時才會送。",
+    "failback_drain_moved": "切回 {primary}：等了 {mins} 分鐘還有 {n} 則傳話沒送完，搬到 {primary} 的佇列，由它接著交。",  # (C-188)
+    "failback_moved": "切回 {primary}：交還時 {standby} 的佇列還有 {n} 則傳話，搬到 {primary} 的佇列，由它接著交。",  # (C-193)
+    "failback_left": "切回 {primary}：交還時還有 {n} 則傳話（{names}）沒辦法搬到 {primary}，留在 {standby} 的佇列，下次 {standby} 當機器人時才會送。",
+    "failback_back": "沒有切回 {primary}：等待期間送到 {primary} 的 {n} 則傳話已經搬回 {standby}，照常交。",
+    "failback_back_left": "沒有切回 {primary}：等待期間送到 {primary} 的 {n} 則傳話搬回 {standby} 了，但 {primary} 那邊沒刪掉（{names}），{primary} 下次當機器人時可能會再交一次。",
+    "failback_back_failed": "沒有切回 {primary}：等待期間送到 {primary} 的傳話沒辦法搬回 {standby}（{why}），留在 {primary} 的佇列，它下次當機器人時才會送。",
+    "failback_push_failed": "切回 {primary} 沒做成：沒辦法把目前的狀態交給 {primary}（{why}），過幾分鐘會自動再試。",
+    "replayed_footer": "-# 換機器時補貼 · {tail}",  # (#release 11-08)  # (#release 11-05, design section 10: the footer of a reply posted
+    # after a takeover, with the machine and the turn's id as every reply's footer ends with a standby)
+    "watch_down": "⛔ {primary} 上的機器人停了超過 5 分鐘（{standby} 發現的；沒有設定自動接手）",  # (#release 11-05, sec 10)
+    "proxy_on": "⚠️ 這次連線經過 proxy（{proxy}）：這只給演練用，正式的機器人不該看到這行；請把 DCBOT_PROXY 拿掉",
+    "drill_sender_on": "⚠️ 演練用：webhook 發的訊息當成使用者的（DCBOT_DRILL_SENDER）。只在演練的 rig 裡有效；正式的機器人不該看到這行",
+    "drill_failback_on": "⚠️ 演練用：主機回來 {secs} 秒就切回（DCBOT_DRILL_FAILBACK_SECS，平常是 30 分鐘）。只在演練的 rig 裡有效；正式的機器人不該看到這行",
+    "drill_failback_off": "⚠️ 設了 DCBOT_DRILL_FAILBACK_SECS，但這裡不是演練的 rig（或值不對），已經忽略；請把它拿掉",
+    "drill_read_fail_on": "⚠️ 演練用：run/ 裡的檔在的時候，讀 #bot-lease 一律當作失敗（DCBOT_DRILL_LEASE_READ_FAIL）。只在演練的 rig 裡有效；正式的機器人不該看到這行",
+    "drill_read_fail_off": "⚠️ 設了 DCBOT_DRILL_LEASE_READ_FAIL，但這裡不是演練的 rig，已經忽略；請把它拿掉",
+    "stepped_down_note": "（剛才那則「已上線」是這台發的，它沒有接手）",
+    "drill_sender_off": "⚠️ 設了 DCBOT_DRILL_SENDER，但這裡不是演練的 rig，已經忽略；請把它拿掉",
+    "watch_no_primary": "⚠️ {primary} 已經 {minutes} 分鐘沒在 #bot-lease 留下紀錄，備援沒辦法判斷它還在不在，所以 {primary} 停了也不會接手。請跑 doctor。",
+    "watch_discord": "⚠️ {primary} 上的機器人連不上 Discord 已經 10 分鐘，訊息暫時沒人回",
+    "stale_owner": "⚠️ {host} 把現在的機器人當成過時的，拒收它送的東西：它還記得之前有備援時的機器人，但這邊已經沒有在跑"
+                   "備援（#bot-lease 被刪了，或拿掉了備援角色）。那台的頻道收不到東西，請跑 doctor，照它說的做。",  # (#release)
+    "audit_recovered": "{primary} 重新上線：{standby} 接手後自己也停了，沒有交還。照它 {when} 傳來的頻道狀態接回；"
+                       "接手期間在 {standby} 開的對話，留在 {standby}。",  # (#release 11-08)
+    "audit_failed_back": "切回：{standby} 交還，{primary} 重新接手（這是第 {epoch} 次換機器）。",
+    "checks_ok": "通過",
+    "checks_stale": "通過（用的是 {when} 的頻道設定）",
+    "cannot_take_over": "⛔ {primary} 上的機器人停了，{standby} 沒辦法接手：{why}。請去看 {primary} 那台。",
+    "why_no_state": "還沒收到 {primary} 傳來的狀態",
+    "why_protocol": "兩台的引擎差太多，沒辦法互相接手（請把兩台都更新到最新的發佈版本）",
+    "why_requirements": "兩台裝的套件不一樣",
+    "day_stopped": "⚠️ 機器人 24 小時內換了 3 次機器，先留在 {here}，不再自動切換，請看一下 {primary} 怎麼了",
+}
+# C-184 (bot/pauses.py): a channel paused until a time by another Claude (altention dc post --pause-until), resumed by
+# the bot then. {until}, {at}: clock times (altention/dc/pausetime.shown()); {by}, {who}: "#channel" or "<machine> 上的 Claude".
+PAUSE = {
+    "paused": "⏸️ 暫停到 {until}（{by}：{why}）。到時間機器人會在這裡叫你恢復；在那之前先不要開始新的工作，"
+              "手上這一步做到可以停的地方就停。",
+    "resumed": "▶️ 恢復了：{by} 在 {at} 叫你暫停到 {until}（{why}）。照暫停前的進度繼續。{late}",
+    "resumed_early": "▶️ 提早恢復（{who}：{early_why}）：原本 {by} 在 {at} 叫你暫停到 {until}（{why}）。照暫停前的進度繼續。",
+    "late": "（晚了 {minutes} 分鐘：那時機器人沒在跑）",
+    "done_mark": "（已恢復）",
+    "held_line": "（暫停期間 {at} 由 {sender} 傳來）",
+    "card_held": "暫停中，{until} 恢復時、或使用者在這裡說話時交給 Claude",
+    "told_held": "#{channel} 暫停到 {until}（{why}），這則已經留著，屆時交給它；急的話用 --unpause --why 先叫醒它",
+    "held_full": "#{channel} 暫停中，留著的訊息已經有 {most} 則，這則沒有留住：請在它恢復後再傳",
+    "refused": "#{channel} 暫停到 {until}，要先 --unpause --why",
+    "not_paused": "#{channel} 沒有在暫停",
+    "not_conversation": "#{channel} 不是有 Claude 的對話頻道，不能暫停",
+    "said_paused": "已暫停 #{channel} 到 {until}",
+    "said_changed": "已改成暫停 #{channel} 到 {until}（原本到 {old}，{old_by} 停的）",
+    "said_unpaused": "已恢復 #{channel}，留著的 {held} 則接著交給它",
+    "audit_paused": "{who} 暫停 #{channel} 到 {until}：{why}",
+    "audit_changed": "{who} 把 #{channel} 的暫停改成到 {until}（原本到 {old}，{old_by} 停的）：{why}",
+    "audit_resumed": "#{channel} 恢復了（{by} 停到 {until}）{late}，留著的 {held} 則接著交給它",
+    "audit_unpaused": "{who} 提早恢復 #{channel}：{why}",
+    "audit_held_failed": "#{channel} 恢復後，留著的訊息交不進去（{why}），還剩 {left} 則，下一分鐘再試",
+    "audit_card_failed": "#{channel} 恢復了，但 ▶️ 卡片沒貼出來（{why}），下一分鐘再貼；那裡的 Claude 照樣會收到",
+    "audit_told_failed": "#{channel} 恢復了，但那裡的 Claude 沒收到「恢復了」（{why}），下一分鐘再交一次",
+    "resent_mark": "（重送）",
+    "audit_held_dropped": "#{channel} 恢復了，但那裡已經沒有 Claude 對話，留著的 {left} 則沒有交（卡片都還在頻道裡）",
+    # C-199: the owner speaking in a paused channel takes what was held along; --drop-held
+    "audit_woken": "#{channel} 暫停中，使用者說話時把留著的 {n} 則接在後面交給了 Claude（暫停照舊到 {until}{left}）",
+    "woken_left": "；還有 {left} 則沒交進去，之後再交",
+    "audit_woken_failed": "#{channel} 暫停中，使用者說話後要把留著的訊息接著交，交不進去（{why}），還剩 {left} 則：恢復時或使用者下次說話時再交",
+    "drop_refused": "只有 #{channel} 自己的 Claude（查證過的）能清它留著的訊息",
+    "drop_none": "#{channel} 沒有留著的訊息",
+    "said_dropped": "清掉了 #{channel} 留著的 {n} 則；恢復時不會再交",
+    "audit_dropped": "{who} 清掉了 #{channel} 留著的 {n} 則（暫停中，不交了）：{why}",
+    "audit_drop_refused": "{who} 想清 #{channel} 留著的訊息，被拒：不是那個頻道自己的 Claude（查證過的）（理由：{why}）",
+}
+# C-189: a dialog on the screen taken in again (the bot restarted; bot/menus.py look_again())
+MENUS = {
+    "restored_title": "還開著的對話框（機器人重啟前就在了）",
+    "restored": "機器人重啟過，按鈕重新接上了",
+}
+# C-191: the bot's own permissions (bot/perms.py; why and "works without it": manager 11-17)
+PERMS = {
+    "card": "🔑 **要不要給機器人「管理員」權限？**\n"
+            "**為什麼要**：之後的功能需要它，例如替你把伺服器設成社群伺服器、設定規則和公告頻道。Discord 不讓機器人自己拿權限，要你授權一次。\n"
+            "**不給也照常能用**：現在所有功能都只用原本的 14 項權限，不理這張卡什麼都不會壞。\n"
+            "**要給的話**：打開下面的連結，伺服器已經選好。畫面會寫「新增至伺服器」，第二頁會列出「管理者」（Discord 畫面上管理員權限叫這個名字），按「授權」就好。"
+            "這不是重裝：機器人不會被踢掉，頻道和設定都不變。伺服器開了「管理員要兩步驟驗證」的話，你的帳號要先開。\n"
+            "<{grant}>\n"
+            "不想用連結：伺服器設定 → 身分組 → 機器人的身分組 → 打開「管理者」。\n"
+            "**之後想收回**：用這個連結再授權一次，只會回到原本的 14 項：<{revert}>，或在身分組關掉「管理者」。\n"
+            "-# 這張卡只貼這一次；之後系統檢查（doctor）會一直列著，直到給了為止。",
+    "granted": "✅ 機器人已經有「管理員」權限了（{when}）。\n"
+               "之後想收回：用這個連結再授權一次，只會回到原本的 14 項，不會踢掉機器人：<{revert}>，或在伺服器設定 → 身分組關掉「管理者」。",
+    "audit_now": "[權限] 機器人目前的權限：{state}（值 {bits}）",
+    "audit_changed": "[權限] 機器人的權限變了：{before} → {after}（值 {was} → {bits}；Discord 的審核日誌不記這件事）",
+    "admin": "有管理員",
+    "no_admin": "沒有管理員",
+    "missing": "少了 {names}",
+    "need_admin": "這件事要機器人有「管理員」權限，現在沒有：到 #update 的「管理員權限」卡片按授權連結（不給的話其他功能照常）",
+}
+# What Claude puts at the start of a final reply that needs the owner (calls.discussed()); in the system note (C-103).
+# TODO(v0.7.0, i18n): the marker follows the language, and the bot knows it in every language (#release 11-03).
+DISCUSS_MARK = "💬 要跟你討論："
+GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR, "secret": SECRET, "quota": QUOTA,
+          "calls": CALLS, "cc": CC, "lease": LEASE, "pause": PAUSE, "menus": MENUS,
+          "perms": PERMS}
 
 
 def enter():
@@ -175,7 +420,8 @@ def about(data):
 # sentences (setting "dcbot.text": {"<group>.<code>": "…"}, the keys as in GROUPS and "cleared.<how>"). Read by
 # load(), never where a sentence is taken: that is the event loop, and the settings file is read from disk, with
 # waits when it is broken (step 2.4b: a broken settings file is not waited for in the event loop).
-loaded = {"lang": alt_text.DEFAULT, "own": {}, "stamp": False, "talk_limit": None, "small_tables": True}
+loaded = {"lang": alt_text.DEFAULT, "own": {}, "stamp": False, "talk_limit": None, "small_tables": True,
+          "json_mentions": "owner"}
 
 
 def talk_limit_of(said):
@@ -196,7 +442,7 @@ def load():
     """Read what the installation says of the words into memory. Off the event loop (the bridge runs it in a
     thread at start and once a minute); the settings file is read again only when it has changed. Settings that
     cannot be read: the default words, one line in the log, nothing raised. True when it read."""
-    stamp, lang, own, talk, tables = None, alt_text.DEFAULT, {}, None, True
+    stamp, lang, own, talk, tables, pings = None, alt_text.DEFAULT, {}, None, True, "owner"
     try:
         inst = alt_text.config.instance_dir()
         path = os.path.join(inst, "plugins.json") if inst else None
@@ -214,11 +460,13 @@ def load():
         own = dict((k, v) for k, v in said.items() if isinstance(k, str) and isinstance(v, str) and v) if isinstance(said, dict) else {}
         talk = talk_limit_of(alt_text.config.setting("dcbot.talk_limit"))  # read here too: off the event loop, once per change
         tables = small_tables_of(alt_text.config.setting("dcbot.small_tables"))
+        pings = "any" if alt_text.config.setting("dcbot.json_mentions") == "any" else "owner"  # (whom a tool's message
+        # may ping, bot/rules.py: C-172a P1c)
     except Exception as e:
-        lang, own, talk, tables = alt_text.DEFAULT, {}, None, True
+        lang, own, talk, tables, pings = alt_text.DEFAULT, {}, None, True, "owner"
         print("messages: the installation's settings cannot be read (%s: %s); the default words are used" % (type(e).__name__, e),
               flush=True)
-    loaded.update(lang=lang, own=own, stamp=stamp, talk_limit=talk, small_tables=tables)
+    loaded.update(lang=lang, own=own, stamp=stamp, talk_limit=talk, small_tables=tables, json_mentions=pings)
     return True
 
 
@@ -254,8 +502,37 @@ def far(code, **data):
     return words("far", code, data, GENERAL_NOTE)
 
 
+def lease(code, **data):
+    return words("lease", code, data, GENERAL_NOTE)
+
+
+def perms(code, **data):
+    """C-191's words (PERMS)."""
+    return words("perms", code, data, GENERAL_NOTE)
+
+
+def cc(code, **data):
+    """C-162's words (CC)."""
+    return words("cc", code, data, GENERAL_NOTE)
+
+
+def menus(code, **data):
+    """C-189's words (MENUS)."""
+    return words("menus", code, data, GENERAL_NOTE)
+
+
+def pause(code, **data):
+    """C-184's words (PAUSE)."""
+    return words("pause", code, data, GENERAL_NOTE)
+
+
 def note(code, **data):
     return words("notes", code, data, GENERAL_NOTE)
+
+
+def call(code, **data):
+    """A line of bot/calls.py (CALLS), without the mention."""
+    return words("calls", code, data, GENERAL_NOTE)
 
 
 def common(code):

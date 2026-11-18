@@ -21,7 +21,7 @@ import re
 import shlex
 import subprocess
 
-from altention import config, plugin, plugin_steps
+from altention import plugin, plugin_steps
 
 DAYS = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
 NEW_MARK = re.compile(r"#\s*altention:([A-Za-z0-9_-]+)(?:/([A-Za-z0-9_.-]+))?\s*$")  # what apply writes at the end of a line

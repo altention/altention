@@ -1,6 +1,11 @@
 """`!resume` in a channel whose conversation is on another machine (#issues 35): this machine's folder of the same
 path was listed, and a conversation of it "switched to". Now the other machine is asked (`dcremote sessions`), and
 the list, the choice and the history are worded as for a conversation here."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import json
 import os

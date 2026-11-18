@@ -1,6 +1,11 @@
 """The kinds the connector gives events (hooks.normalize, stage 3b step 2.1) say what the bot's own recognisers say
 today: handle() is not changed in this step, so each of them is held against the kind that will replace it in 2.2.
 And every event that reaches handle() bears a kind, by either road."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import io
 import json

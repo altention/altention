@@ -14,6 +14,316 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## Unreleased
+
+## v0.6.0 — 2026-11-19
+
+### For people
+
+- **The boards are always on, and a deleted #dashboard comes back by itself.** Installing no longer asks whether you
+  want them; a deleted #dashboard is made again at most once an hour, and #audit says so. If you answered 「不要」 when
+  you installed, updating turns the status and usage boards on and makes #dashboard; #audit says so once. To turn them
+  off, tell Claude 「關掉看板」: they are turned off as any plugin is, and stay off.
+- **The machines board says which machine is the bot.** With a standby it also says whether the standby is ready, or
+  since when the standby has been the bot; after a takeover the status board keeps being updated, from the standby. If
+  both machines ever think they are the bot, neither posts, and #audit says so.
+- **When you hit a usage limit, the channel says when Claude will carry on by itself.** When a claude.ai usage limit
+  stops Claude, Claude Code waits and continues the task once the limit resets. The channel now says so, with the
+  time in your own time zone, instead of offering 「再試一次」 (typing in the channel ends the wait). When the limit
+  resets, the message changes to say Claude is carrying on. The window is not closed for being idle while it waits.
+- **The status board lists the channels that are held up.** Under 在等你的事, a new part lists the channels held up
+  for now: by a usage limit (with when it resets) or by an API error. A dialog waiting on the terminal is listed with
+  the questions.
+- **The 「近 7 天」 on the project board now counts only what was spent in those 7 days.** Before, a conversation
+  used at all in the last week counted with everything it had ever cost, so a long-running conversation made it too
+  high. The numbers will drop after updating; the board itself looks the same.
+- **Files Claude posts can be opened in Discord with one button.** When a plugin page opens files (such as Activity's
+  file viewer), every file posted with `altention dc post --file` gets a button under it that opens that file on its
+  machine. A message has five buttons at most (one row); files after that, or with a very long path, get none.
+- **`altention dc post --new-claude` opens the channel's Claude on the machine it is run from.** On another machine
+  than the bot's it goes into your tmux there, as when that machine is picked on the setup card; `--on <machine>`
+  names another one. A folder or machine that is not there is said with the machine's name, and no channel is made.
+- **The bot's token now lives with the other secrets.** The Discord token and the owner and server IDs move from
+  `~/.config/dcbot/env` into Altention's secrets folder, and the bot's other settings into `plugins.json` under
+  `dcbot`. Updating or installing moves them by itself and says so: nothing for you to do. If something stops the
+  move, nothing changes and it says why.
+- **The install line #setup and doctor give for a plugin's tool is a full path.** It works from any folder you run it
+  in.
+- **A plugin can treat another plugin as optional.** When that one is off, only the part that needs it stops working,
+  not the whole plugin; `plugins.py list` and doctor say which part and why.
+- **The bot @-mentions you only when it needs you, and says why first.** A long turn no longer ends with a mention.
+  You are mentioned once when Claude asks you to choose, waits for a plan or a permission, two Claudes reach their
+  limit, something failed and needs you, or Claude says it wants to discuss something; the message starts with what
+  is needed, so the notification shows it. A usage limit, a lost login, a rolled-back bot or an unreachable machine
+  is said once for the whole installation in the notification channel.
+- **Plugins can read a large file on another machine in parts.** dcremote files' raw takes an offset and a length (up
+  to 512 KB a part); every part is checked again, and a file replaced or changed between parts is refused rather than
+  read half old, half new. Both machines need this version.
+- **A Claude Code in another machine's tmux can be attached to Discord from any machine.** altention tmux list shows
+  the panes of a machine's tmux servers as tmux://machine/session:window.pane#%id, with what runs there and the
+  channel it is attached to; altention tmux read shows a pane's last lines, and refuses when a different pane has taken
+  that place. altention dc post --attach takes such an identifier, so you can ask Claude to attach a pane on another
+  machine instead of doing it on that machine.
+- **/attach lists only panes that really run Claude Code.** Other node programs, such as a dev server, no longer show
+  up; a Claude started from a script is now listed, and is still recognised as running after you attach it.
+- **Plugins can list and read tmux panes on any machine through dcremote.tmux.** Tokens and keys it recognises are
+  masked in what they read.
+- **A plugin is no longer said to need something the engine lacks when this machine is missing from the machine
+  list, or another plugin's plugin.json cannot be read.** It now says which plugin offers it, or may offer it, and why
+  it cannot be told here.
+- **Taking a conversation back no longer stops on Claude Code's "resume from a summary?" question.** When one cannot be
+  taken back, the channel now shows why Claude Code ended, with its last screen.
+- **Claude can type into a tmux pane on any machine with altention tmux send.** It looks at the pane twice and writes
+  what it types to #audit first; a Claude Code that is not at its plain input box or already has text typed in it, a
+  program of another user, a new line and a leading sudo are refused, with the reason.
+- **A machine you pick can take over as the bot when the bot's machine stops.** Say 「設備援」 in #setup and pick
+  another machine. When the bot's machine has been down for about 5 minutes, that machine takes over and @-mentions
+  you once with which channels still work; channels on the stopped machine carry on over ssh while it can still be
+  reached. While the standby is the bot, it also runs the system check, so the boards keep showing every machine.
+  Reminders and the usage board pause meanwhile. Once the first machine has been working for 30 minutes in a
+  row, the bot switches back by itself, or when you press 「切回」 if `dcbot.failback` is `ask`. With 「只通知」 the
+  other machine only tells you the bot has stopped. After a third switch within 24 hours the bot stays where it is
+  and asks you to look.
+- **The bot keeps working when a new Claude Code breaks.** When the bot cannot read a new Claude Code's screen, it
+  goes back to the last version that passed `!cctest` (a check with the real Claude Code, about 5 short Haiku
+  turns); with none, every channel switches to simple mode (no menus or buttons) and replies as usual, and comes back
+  by itself once a version passes. After each Claude Code update the bot rehearses on a fake API (no login, no usage)
+  and writes the result to #audit. Kept on an older version for 7 days, it asks whether to stay or use the new one in
+  simple mode. `!mode retry` tries the normal mode again.
+- **An outside notice for when the bot and its standby are both down.** Say 「設外部通知」 in #setup to add a free
+  healthchecks.io check; whichever machine is the bot pings it, so healthchecks.io tells you when none does.
+- **One machine or one slow request no longer holds every channel up.** An event from another machine waiting its
+  turn, or a Discord request that hangs, holds only its own channel, and saving the channels' state no longer stalls
+  the bot.
+- **Messages sent while the bot was reconnecting are caught up.** The bot catches up after every reconnect to
+  Discord, not only when it starts.
+- **A Claude can make its message to another channel go in right away, as your `!!` does.** With
+  `altention dc post <channel> --now "…"`, when that channel's Claude is busy, the bot presses send-now so the
+  message is read at once instead of after the current tool. #audit notes every such press, now also for your own
+  `!!`. Messages held when two Claudes stop at their talk limit survive a restart of the bot, or a takeover by the
+  standby.
+- **Another channel's Claude can answer for you when a channel is stuck waiting on you.** It looks with
+  `altention dc post <channel> --waiting` and answers a question, a permission menu or a plan with `--answer`, the
+  way your buttons do; the card says which Claude answered, and #audit notes each one. So can the reminder in the
+  notification channel about staying on an old Claude Code version. After the bot restarts, a menu still open gets
+  its buttons back, for you and for other Claudes. It is on by default; turn it
+  off for a channel with `!agentanswers off`. Auto mode's countdown before a risky delete stays yours to press. When two channels' Claudes
+  hit the talk limit, one of them may let it go on (`--talk-continue`, twice a day per pair).
+- **The projects board can show several folders as one project.** Set `usage.project_names` in the instance's
+  `plugins.json` (`{"folder": "name"}`); folders given the same name become one row with their costs added. Folders
+  not listed are shown as before.
+- **A channel can be paused until a time, and the bot wakes it then.** A Claude (asked by you, or a script such as a
+  usage guard) runs `altention dc post <channel> --pause-until 00:00 --why "…"`. That channel's Claude is asked to
+  stop where it can. Until then, what other Claudes send it is shown but kept; your own messages still reach it, and
+  what was kept so far is handed over right after yours. At that time the bot tells it to carry on and hands over what
+  was kept, in order. If the bot was down at that time, it does this as soon as it is back, saying how late.
+  `--unpause --why "…"` wakes it early. The waiting board lists the paused channels.
+- **Messages that only pretend to come from elsewhere are no longer taken at their word.** What another channel
+  sends a Claude is handed over quoted, so a line in it that looks like the bot or like you is plainly part of the
+  message. A Claude or a script can no longer post a message that starts like another channel's card, a
+  notification, a board or the terminal; when Claude's own reply happens to start that way, it is shown as it is but
+  not read back as one. `dcctl edit` changes only messages `dcctl send` posted, and every `dcctl send` is logged in
+  #audit. The 「來自」 on a card is now checked: `altention dc post` finds the Claude Code that ran it and the channel
+  that Claude belongs to, rather than trusting what the command says (a different claim is noted in #audit). A message from a
+  schedule or a script reads 「<machine> 上的程式（<folder>）」 and does not count toward the talk limit; one from a
+  Claude Code without a channel of its own still does. These guard against mistakes and casual imitation, not
+  against a program set on forging.
+- **Small fixes to cards and buttons.** After a plan is approved or sent back, the line about it in the channel that
+  passed it on turns to ✅; when two Claudes stop at their talk limit, messages that come later wait on the same card
+  instead of replacing it; a `!!` message is no longer taken as the answer when one question is left; a fill-in button
+  says 「已填入」 once saved; the refusal to archive a terminal channel names the right button (Ctrl-C).
+- **Claude sees boxes, buttons and pictures in Discord messages.** When it reads a channel, or a message you reply to
+  or forward, it gets the text of boxes, buttons, menus, pictures and files; a sticker or a poll sent alone now
+  reaches it too (it used to get nothing).
+- **doctor lists channels whose tmux pane is gone.** It now warns (dcbot.panes-gone) about routes and channels that
+  still point at a tmux pane that no longer exists. It removes nothing: /attach the channel to a pane again, or
+  /detach it.
+- **The /resume list shows the names you gave conversations.** A conversation renamed with /rename is listed by that
+  name, ahead of the title Claude made up.
+- **Renaming #audit no longer gives you a second one.** The bot remembers the channel by its ID, keeps using it
+  after a rename and says so there.
+- **Renaming one of the bot's tmux sessions no longer starts a second Claude.** The bot takes the renamed session
+  back instead of opening another Claude on the same conversation, and says so in #audit.
+- **The bot asks for Administrator, and works the same without it.** A new installation's invite link includes it;
+  on an existing one the bot posts a card in #update once, with the link that grants it, and doctor lists it too.
+  Later features, such as making the server a Community server with rules and announcement channels, need it, and
+  Discord does not let a bot take it by itself. Everything today uses only the 14 permissions the bot already had:
+  if you don't grant it, or take it back later (with the link doctor shows, or by turning off Administrator on the
+  bot's role), the bot keeps those 14 and stays in the server. Changes to the bot's permissions are written to
+  #audit, since Discord's audit log does not record them.
+- **Long messages from another channel no longer vanish on Claude Code 2.1.326.** A message of about 40 lines or
+  more scrolled the input box, the bot did not recognize it and never pressed Enter, so the message was lost and
+  nobody knew. It now recognizes the scrolled box; if Enter still cannot be pressed, the screen at that moment is
+  saved so the cause can be found.
+
+### For people (zh-TW)
+
+- **機器人更不怕出事：那台停了有另一台接手，Claude Code 新版壞了也照常能用。**在 #setup 說「設備援」指定另一台：機器人那台停了大約 5 分鐘就接手並 @ 你一次，原本那台回來、連續 30 分鐘正常就自動切回（也可以設成按按鈕才切回，或只通知）；說「設外部通知」再加一道 healthchecks.io 的檢查，兩台都停了也會通知你。機器人認不得 Claude Code 新版的畫面時，先退回用 `!cctest` 檢查通過的那一版，沒有就改用簡易模式（沒有選單和按鈕）照常回覆，新版通過檢查後自己回來。別台或一個卡住的請求只影響那個頻道，斷線重連後也會補上漏掉的訊息。看板一律開著，寫現在哪台在當機器人；以前答了「不要」的也會打開，真的不要就跟 Claude 說「關掉看板」。Claude Code 2.1.326 上，別的頻道傳來 40 行以上的長訊息不會再不見。
+- **機器人只在真的需要你時才 @ 你；卡住和暫停中的頻道都看得到。**跑很久的一輪不再 @；要你選、計畫或權限等你、兩個 Claude 來回到上限、出錯要你處理、Claude 說要跟你討論時才 @ 一次，開頭就寫要做什麼。撞到用量上限時，頻道照實寫幾點重置（你的當地時間），之後 Claude 自己接著做。頻道也可以暫停到某個時間（`altention dc post <頻道> --pause-until 00:00 --why "…"`），到時間機器人叫它恢復；暫停期間別的 Claude 傳來的話先留著，你在那裡說話時會一起交。status 看板「在等你的事」列出卡住和暫停中的頻道。
+- **Claude 之間傳話更可靠，也能替你回答。**頻道卡在等你回答時（提問、權限選單、計畫、要不要繼續停在舊版 Claude Code 的提醒），別的頻道的 Claude 可以替你答，卡片寫是誰答的、每次記在 #audit；不想要就打 `!agentanswers off`。Claude 看得到訊息裡的框、按鈕和圖；傳話加 `--now` 可以像你的 `!!` 一樣立刻送出；假裝成別處傳來的訊息不會再被當真。機器人重啟或換到備援後，開著的選單會重新接上按鈕，來回上限時留著的訊息也不會丟。另有卡片和按鈕的幾個小修正。
+- **任何一台的 Claude Code 都能從任何一台接上、操作。**別台 tmux 裡的 Claude Code 可以直接接到 Discord，/attach 只列真的在跑 Claude Code 的窗格；`altention tmux send` 在窗格打字前檢查兩次、記進 #audit；`--new-claude` 開在下指令的那台。接回對話不會再停在「要不要從摘要接回」，`/resume` 清單會用你 /rename 取的名字；改了 #audit 或機器人 tmux 的名字，機器人會接著用改名後的那個；doctor 會列出窗格已經不在的頻道。
+- **機器人會多要一項「管理者」權限，不給也照常能用。**新安裝的邀請連結會帶這一項；已經裝好的，機器人上線後會在 #update 貼一張附授權連結的卡（只貼一次），doctor 也會列。之後的功能（例如把伺服器設成社群伺服器）需要它，而 Discord 不讓機器人自己拿。現在的功能都只用原本的 14 項權限：不給，或給了再收回，都只是回到那 14 項，機器人不會被踢掉。權限有變動時會記在 #audit。
+- **檔案一鍵打開、插件能做的更多，token 跟其他祕密放在一起。**有插件能開檔案時（例如 Activity），Claude 貼的檔案下面有打開按鈕。插件可以讀別台的大檔、列和讀各台的 tmux 窗格、把別的插件當選用的；#setup 和 doctor 給的工具裝法改成完整路徑。機器人的 token 更新時自動搬進 altention 的祕密資料夾，不用做什麼。專案看板的「近 7 天」改成只算這 7 天花的（數字會變小），幾個資料夾也可以合成一個專案（`usage.project_names`）。
+
+### For agents
+
+1. Claude Code's Notifications `quota_auto_resume_fired`, `quota_auto_resume_stale` and `quota_auto_resume_disabled`
+   are now their own kinds in the connector's `normalize()`: `quota_resumed`, `quota_stale`, `quota_stopped`. They
+   are no longer `dialog`, which posted them as a menu. Its prompt at a reset ("Your claude.ai usage limit has reset.
+   …") is a `notice` input, not typed at the terminal. Nothing to do when updating.
+2. Plugin interface `activity.pages` is now version 2 (1 still accepted). A page with `"opens_files": true` and the
+   plugin's `uses` at `"activity.pages": 2` gets the file buttons; a plugin that says 1 works as before, without them.
+   Nothing to change in an installation.
+3. `altention dc post --new-claude` run on a machine other than the bot's now opens the channel there; add `--on
+   <the bot's machine>` to open it where it opened before.
+4. The bot's settings are read from `plugins.json` under `dcbot.<key>`; its token and IDs from the core secrets.
+   `~/.config/dcbot/env` is still read, and still guarded, while the version is 0.x.
+5. A plugin's `needs[].install` may use `{plugin}`, `{python}` and the other tokens `check` takes; such a plugin says
+   `"tokens": 2` in `uses` and is blocked on a v0.5.x engine.
+6. `usage/spend.py --json --v 2` (`"usage.spend": 2`) adds `days`, `limits_history` and `plan`; without `--v 2` it is v1
+   as before.
+7. `uses` may say `{"v": N, "optional": true}` (with `"plugin.format": 2`); `altention plugins uses <plugin> --json` says
+   at run time which can be used.
+8. From v0.6.0 the plugin interfaces only grow. When one really has to change, its version goes up under the rules
+   in `docs/plugins/interfaces.md`, the old version keeps working for a while (`also`), and the change is announced
+   in the CHANGELOG first.
+9. `dcbot/supervisor.py -h`/`--help` prints how it works and starts nothing; before, it ignored the argument and
+   started the watchdog (and the bot, where it was not running). Any argument but `--check-engine` is refused with
+   exit 2.
+10. The engine's commands now take -h/--help: it prints how to use it and does nothing (exit 0). The cron entries
+    (cron_update.py, cron_sync.py, cron_schedule.py, usage/collect.py) and bin/home-pull now refuse an argument they do
+    not know (exit 2); before, they ignored it and ran a round.
+11. Standby is off until it is set up: `altention standby setup <machine> auto|notify` on the bot's machine, or
+    「設備援」 in #setup. `auto` puts a copy of the bot's token in the standby's secrets folder. Both machines need this
+    version; if their engines are too far apart, the standby only notifies. To pause it, put an empty file
+    `dcbot/state/stop` in the standby's engine. To remove it, follow the steps in `dcbot/docs/usage.md` (there is no
+    one-line command yet).
+12. `altention dc post <channel> --now` sets `"now": true` on the post; the bot hands it to Claude with
+    `submit(now=True)`, the owner's `!!` path (send-now pressed only when the turn is busy and the screen shows the
+    hint). A post's ⚡ goes on its "📨" card. Every press is one #audit line, the owner's `!!` included. Not with
+    `--attach`, `--new-claude`, `--resume`, `--history`, `--move-to`, `--board`, `--activity`, `--secret`.
+13. `altention dc post <channel> --waiting` (also `altention dc read <channel> --waiting`) prints what that channel
+    waits on (questions and plans as `q-<ask id>`, Claude Code menus as `m-<token>`); `--answer <id>` with `--pick`
+    (one per question left, in order), `--text`, `--key <n>|enter`, `--approve` or `--revise "…"`, and a required
+    `--why`, answers it through the buttons' own code (bot/agentanswer.py). `--talk-continue --why` releases a post
+    held by the talk limit (twice a day per pair, kept in the holding channel's `talk_continued`). These posts are
+    answered through the receipt (`posts.replied()`), printed by the CLI (exit 4 when not done). A channel's
+    `agent_answers: false` (`!agentanswers off`) refuses answers; menus that look like Claude Code's last check
+    before a risky call always refuse: an auto-deny countdown read, a row starting "⚠ Claude Code will", or
+    "Dangerous" in what the card shows. The connector reads 2.1.322's countdown wording too ("automatically block
+    … to avoid holding up an unattended session"), so the owner's card counts it down again.
+14. #setup no longer has the `dashboard` question (`plugins.dashboard_question` is gone). `setup.py reconcile` makes a
+    board channel that is not set or is gone (`fill` `dashboard`, `dashboard(check_gone=True)`); an installation whose
+    `setup.answered.dashboard` is `off` has its board plugins taken out of this machine's `disabled_on` once and the
+    answer set to `opened`. `setup.py board-gone <channel id>` (run by the bot when a channel is deleted) makes a board
+    channel again, at most once an hour per setting (`~/.local/state/altention/board-remade.json`).
+15. usage: the instance's `usage.project_names` (`{"folder": "shown name"}`) renames each machine's projects in
+    collect.py before the projects board and the chart (`merged()`: same name and agent → one row, cost and tokens
+    added, latest `last`). spend.json keeps the folder names; usage/remote.py is unchanged (other machines need no
+    update). A value that is not such a map is not used: said in ~/.cache/usage.out and noted as `names_problem` in
+    ~/.cache/usage/state.json (cleared by the next round without it), which doctor shows as `usage.project-names`
+    (warn).
+16. With a standby, run `python3 ops/apply.py <standby>` once after updating, so the status boards and the system
+    check (core's watch) are scheduled on the standby too; the watch runs only on whichever machine is the bot now.
+17. `altention dc post <channel> --pause-until <time> --why "…"` (HH:MM, YYYY-MM-DD HH:MM, 30m/2h/1d, in
+    core.timezone, at most 7 days) and `--unpause --why "…"`; `altention dc read --paused` lists them. While a channel
+    is paused, `--answer` and `--talk-continue` to it are refused; `--waiting` works. A usage guard that pauses
+    channels should use this instead of a plain message, so nobody has to remember to wake them. A paused channel's
+    own Claude, having read what is kept, may drop it with --drop-held --why "…" (written to #audit; another
+    channel's Claude cannot).
+18. What a post hands to a channel's Claude is now quoted line by line ("> "), as a forward is. `dcctl send`,
+    `send-json` and `edit` refuse a text that begins with `📨 **來自 …**`, `🔔 **[…]**`, `📌 **…**` or
+    `⌨️ **終端機那邊輸入**` (and send-json an embed whose author is `📨 來自 …`), as does a post into the sender's own
+    channel. `dcctl edit` changes only the newest 500 messages `dcctl send` / `send-json` posted, never one with
+    buttons or embeds. `dcctl send` is now logged in #audit; send, send-json and edit lines say who ran them (looked
+    up since item 26). A board post with more than one file is refused.
+19. `altention dc post` takes its sender from the nearest Claude Code above it (that process's DCBOT_CHANNEL /
+    TMUX_PANE), not from its own environment; a DCBOT_CHANNEL of its own naming another channel is sent as looked up
+    and logged in #audit. Run outside Claude Code (cron, a script), it has no sender channel and from_name is
+    "<machine> 上的程式（<folder>）"; such posts never count toward the talk limit. A Claude Code with no channel
+    counts against the target channel's limit. The post JSON gains `verified` and `claimed_channel`. Like point 18,
+    it guards against mistakes and casual imitation, not a program set on forging.
+20. `dcctl edit` can change a dcctl message pinned with `dcctl pin`, however many are sent after it (it used to know
+    only the newest 500); one pinned by hand in Discord counts once `dcctl pin` is run on it while it is still among
+    the newest 500.
+21. `altention dc read` / `dcctl history` (and the reply context, forwards) read a message's whole tree: a box's
+    lines start with 「▌」 and its colour is named (「〔黃〕」); buttons read 「〔按鈕：完成〕」 or 「〔按鈕：A｜B〕」, a
+    select 「〔選單：…〕」, pictures 「〔圖 2 張：…〕」, files 「〔檔案：name〕」; an embed's title, fields (「名稱：值」)
+    and footer are read too; a reply gets a line 「↪ 回覆 誰：…」; stickers, polls and voice messages a line each.
+22. The bot records who posted each of its messages and what kind it is in `dcbot/state/ledger.json` (synced to a
+    standby), and reads messages back by it rather than by how they begin; without it (an old message, the file
+    deleted) it guesses as before. Small print in a reply's own words such as 「-# … ×3 · 10 秒」 is no longer cut
+    off as if it were the status line.
+23. `dcctl send-json` and `dcctl edit` now go through the bot: dcctl checks as before and queues the message, the
+    bot posts or edits it and writes the #audit line, and dcctl waits up to 20 seconds for it. While the bot is not
+    running they no longer go out at once: dcctl says 「機器人還沒處理到，已排著，會送，不用重送（ID 到時記在 #audit）」 and
+    exits 3; the message goes once the bot is back, so do not send it again. A message Discord refuses exits 4 with
+    Discord's reason. `dcctl send` still goes straight to Discord (it works while the bot is down).
+24. What a tool posts goes by stricter rules. `dcctl edit` changes only a message the same channel's Claude (or the
+    same script) posted with `dcctl send` or `send-json`, as the bot's ledger has it: no longer any of the newest 500
+    dcctl sent. Messages sent before this version can no longer be edited, except pinned ones: the bot finds those
+    once after the update (slowly, in the background; one #audit line when done) and keeps them. `dcctl pin` keeps a
+    message editable however old it is (50 a channel); `dcctl-pinned.json` is renamed to `dcctl-pinned.json.merged`.
+    `dcctl pin` of a message the ledger does not have pins it all the same and says it still cannot be edited.
+    `@everyone` or `@here` written in `dcctl send`, `send-json` or `edit` is refused. `send-json` buttons and menus need
+    a custom_id beginning `user:` (link buttons need none); pressing one says it has no handler yet. `send-json
+    --mention owner` lets your `<@ID>` in the message ping you (one more #audit line when it does; without
+    `<@ID>` in its words nobody is pinged and nothing more is logged); a user or a role only with `dcbot.json_mentions:
+    "any"` in the instance settings. What these rules refuse (a reserved opening, `@everyone`/`@here`, a custom_id, a
+    ping, an edit of a message that is not the caller's) exits 4 in `dcctl send`, `send-json` and `edit`, as a text over 2000 characters does: nothing was sent and
+    sending it again will not help (it was exit 1 before; a script that retried on 1 should not retry on 4). What a
+    subagent or workflow thread logs is no longer kept in the ledger.
+25. A post from another channel or a forwarded message, as a channel's Claude is handed it, has its quoted words
+    between two lines 「<<<原文 <mark> 開始>>>」 and 「<<<原文 <mark> 結束>>>」, the mark new each time, so a line in the
+    words cannot pass for the end of the quote; the line before says so.
+26. `dcctl send`, `send-json` and `edit` look up who runs them, as `altention dc post` does: the Claude Code above
+    the command, by that Claude's own environment (its channel, else its machine and folder; no Claude Code above:
+    a program), never the command's own `DCBOT_CHANNEL`. On a machine that does not run the bot, dcctl looks it up
+    there and sends it along (`ALTENTION_SENDER`), so a channel's Claude on another machine is that channel's
+    Claude, no longer 「<the bot's machine> 上的程式」; from an engine older than this one nothing is sent, and the
+    sender is taken for a program of the bot's machine. `dcctl whoami` prints who dcctl takes you for. The bot's
+    ledger keeps senders as fixed keys (`channel:<id>`, `claude:<machine>:<folder>`, `program:<machine>:<folder>`),
+    so a channel renamed is still the same sender; the senders written before are turned into keys once after the
+    update (one #audit line: how many turned, how many left). Left as they were, and no longer editable with `dcctl
+    edit`: a channel name two channels share or none has now, and a tmux pane's number. Since a channel's
+    Claude is the same key whichever tool it used, the plain messages it posted into its own channel with
+    `altention dc post` can now be changed with `dcctl edit` too (cards in other channels still cannot). #audit lines say
+    「（查證過）」 for a Claude found, and 「從 <machine> 轉來」 for one on another machine. All Claudes run under one
+    system account: a program set on it can still pass for another (this guards against mistakes, not forgery).
+27. `altention dc post <channel> --json payload.json` posts one Discord message's payload as it is (text, embeds,
+    Components V2, buttons beginning `user:`), from any machine, through the bot; `-` reads it from stdin. It is a
+    post, never handed to the channel's Claude. In another channel than the sender's own (or a thread of it) a small
+    line 「-# 📨 來自 #sender」 goes on top (a Text Display for V2); when it does not fit, nothing is sent and the reason
+    is given (never cut). With it: `--file` (referred to as `attachment://name`), `--edit <message id>` (a message you
+    posted; in another's channel it keeps its 「來自」 line, and a 📨 relay card cannot be edited at all, by
+    `dcctl edit` either: post anew), `--thread-new "name"` (prints the thread's id), `--reply-to <message id>`, `--silent`, `--no-embeds`,
+    `--mention owner`. It waits up to 30 seconds by default: the message's id, or why not (exit 4). A plain `altention
+    dc post` takes `--reply-to` and `--silent` too. A text or payload from a tool beginning `📨 來自 ` (not bold), or a
+    reserved opening after `-# `, is now refused as a reserved opening.
+28. `dcctl send-json <channel>` is now the same as `altention dc post <channel> --json -`: in another channel
+    than the sender's own it gets the 「-# 📨 來自」 line on top, and its #audit line begins `[dc post --json]`.
+    A framed board: `altention dc post <channel> --board <name> --json board.json`, one payload or a list of up to
+    10 (one message each), kept up to date in place like a text board; the bot adds no heading and no 更新於 (write
+    your own time); a framed message back to plain is posted anew and keeps its pin.
+29. `dcctl send` from a Claude to another channel than its own (or a thread of it) now gets the 「-# 📨 來自」
+    line on top too; from a program (the supervisor, cron, a script) it does not. An edit (`dcctl edit` or
+    `--json --edit`) of a post in another's channel keeps that line, and is refused (exit 4) when it does not fit.
+    A Claude's post in another's channel from before this version has no such line and can no longer be edited
+    there; a program's posts are edited by its key alone, as before.
+30. doctor has two new checks: dcbot.administrator (a warning while the bot lacks Administrator, with the link) and
+    dcbot.permissions-missing (one of the 14 permissions is missing). Nothing to run.
+31. `dcctl edit` and `altention dc post --json … --edit` now work in a thread Discord has archived: the bot opens the
+    thread, edits the message and leaves the thread open (Discord archives it again later), and says so in #audit. A
+    thread the bot cannot open is refused with the reason.
+32. `dcbot.cc_pin_days` (default 7) is how long the bot stays on an older Claude Code before asking the owner.
+    Nothing to move or run.
+33. The outside notice's ping address is the secret `core/healthchecks-url`, set with
+    `altention dc post <channel> --secret core/healthchecks-url`; core's `healthchecks` schedule runs on the bot and
+    the standby (overridable like the other core schedules), and `python3 altention/health.py check` tests it.
+34. When the bot types a message and Enter cannot be pressed, the screen of that moment is saved to
+    `dcbot/state/samples/not-entered/<time>-<pane>.json` (mode 0600, the newest 50 kept). Keys are masked first,
+    but the lines of the message visible in the input box are in it. Nothing to run.
+
 ## v0.5.5 — 2026-11-19
 
 ### For people

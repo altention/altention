@@ -1,5 +1,10 @@
 """C-91: what a picture was made from (altention/sources.py), taken in on altention dc post --file (a sidecar) and on
 a rewritten reply (rewrite.py's "sources"), kept by the bot (bot/sources.py) and given back when the owner taps 📝."""
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from altention import testing as _testing  # noqa: E402
+_testing.guard_home()  # tests never touch the real home (altention/testing.py; 11-08: one left a real dcremote-owner)
 import asyncio
 import base64
 import importlib.machinery

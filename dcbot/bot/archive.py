@@ -26,13 +26,13 @@ import traceback
 
 import discord
 
-from . import config, kinds, layout, routes, tmuxio
+from . import config, deliver, kinds, layout, routes, tmuxio
 from .util import target
 
 PREFIX = "arch"
 SHELF_MAX = 50  # Discord's limit of channels in one category
 LEGACY = "archive"  # the category tools/dcctl archive moved channels into before C-63: archived as well
-KEEP = ("permission", "talk_limit", "talk_free")  # a conversation's own settings, back with it
+KEEP = ("permission", "talk_limit", "talk_free", "agent_answers")  # a conversation's own settings, back with it
 KEPT_HISTORY = ("shown", "history")  # what a channel has shown and held: kept when it is put away (owner's report 2026-10-20)
 STAY = ("boards", "board_fails") + KEPT_HISTORY  # kept in an archived conversation's state: a board in it is still
 # edited in place; and the conversations it has (a !resume of one of them posts only its last turns)
@@ -235,10 +235,11 @@ class Archive(object):
         rec = (self.bot.channels_state.get(str(ch.id)) or {}).get("archived")
         if rec and not conversation_record(rec):
             v = view(ch.id, restore=True)
-            await ch.send("📦 這個頻道已經封存。要恢復嗎？", view=v)
+            await deliver.deliver(ch, "📦 這個頻道已經封存。要恢復嗎？", view=v, intent="card")
             return v.stop()
         v = view(ch.id, can_return=bool(rec and (rec.get("pane") or rec.get("session_id"))))
-        await ch.send("🗄️ 這個頻道已經封存，剛剛的訊息沒有送給 Claude；接回或開新對話後，請再送一次。要怎麼繼續？", view=v)
+        await deliver.deliver(ch, "🗄️ 這個頻道已經封存，剛剛的訊息沒有送給 Claude；接回或開新對話後，請再送一次。要怎麼繼續？", view=v,
+                              intent="card")
         v.stop()
 
     async def unarchive(self, ch, rec, cwd, fallback=None):
@@ -269,7 +270,7 @@ class Archive(object):
         except Exception:  # Discord refused the move (a full category, no permission): the channel goes on being set up
             traceback.print_exc()  # where it is, never left half done by the caller (#code-review); moved by hand later
             try:
-                await ch.send("⚠️ 頻道沒能搬出封存，請手動移到原分類。（頻道照常可以用）")
+                await deliver.deliver(ch, "⚠️ 頻道沒能搬出封存，請手動移到原分類。（頻道照常可以用）", intent="status")
             except Exception:
                 traceback.print_exc()
             return False
@@ -314,7 +315,7 @@ class Archive(object):
                                          style=discord.ButtonStyle.danger))
             return "這個頻道的 Claude 正在工作（或有背景工作在跑），封存會把它中斷。要等它做完，還是現在就封存？", v
         if kind == kinds.TERMINAL and ch.id in getattr(self.bot.terminal, "running", {}):
-            return "這個終端機有指令在跑，封存會把 shell 關掉。等它跑完（或按 ⏹ 停掉）再封存。", None
+            return "這個終端機有指令在跑，封存會把 shell 關掉。等它跑完（或按 Ctrl-C 停掉）再封存。", None
         place = where_from(ch, guild)
         if conversation:
             rec = dict(record(st, kinds.ADOPTED if adopt else kinds.BY_OWNER), **place)
@@ -417,7 +418,7 @@ class Archive(object):
         await interaction.response.edit_message(content="📦 恢復中…", view=None)
         cat = await self.unarchive(ch, rec, st.get("cwd"))
         self.offered.discard(ch.id)
-        await ch.send("📦 已恢復，頻道搬回「%s」。" % (cat.name if cat is not None else NONE))
+        await deliver.deliver(ch, "📦 已恢復，頻道搬回「%s」。" % (cat.name if cat is not None else NONE), intent="status")
 
     async def on_interaction(self, interaction):
         if interaction.type != discord.InteractionType.component:
@@ -435,7 +436,7 @@ class Archive(object):
             if what == "force":  # /archive of a channel at work: the owner says go
                 await interaction.response.edit_message(content="📦 封存中…", view=None)  # (closing can take longer than Discord waits)
                 text, _ = await self.put(ch, force=True)
-                await ch.send(text)
+                await deliver.deliver(ch, text, intent="status")
                 return True
             if what == "restore":
                 if not st.get("archived") or conversation_record(rec):
@@ -499,19 +500,19 @@ class Archive(object):
             self.bot.save()
             await self.unarchive(ch, rec, st["cwd"])
             self.offered.discard(ch.id)
-            return await ch.send("🔗 已接回原本的對話（%s）。" % tmuxio.label(pane))
+            return await deliver.deliver(ch, "🔗 已接回原本的對話（%s）。" % tmuxio.label(pane), intent="status")
         if not rec.get("session_id"):
             self.bot.channels_state.pop(str(ch.id), None)
             self.bot.save()
-            return await ch.send("原本的對話已經結束，也沒有記下對話 ID，接不回來。可以按「在這裡開新對話」。")
+            return await deliver.deliver(ch, "原本的對話已經結束，也沒有記下對話 ID，接不回來。可以按「在這裡開新對話」。", intent="status")
         if rec.get("tmux") and not rec.get("home") and not pane:  # a session on the bot's own server (/archive): opened
             # again there, as after the idle reaper, resuming the conversation
             self.bot.save()
             await self.unarchive(ch, rec, st["cwd"])
             self.offered.discard(ch.id)
-            await ch.send("🔗 接回原本的對話中…")
+            await deliver.deliver(ch, "🔗 接回原本的對話中…", intent="status")
             if await self.bot.tmux.start_now(ch):
-                await ch.send("🔗 已接回原本的對話，可以在這裡繼續。")
+                await deliver.deliver(ch, "🔗 已接回原本的對話，可以在這裡繼續。", intent="status")
             return
         # the window is gone: open the conversation again, in a new window of the same tmux session, on the machine
         # it was on (a pane of another machine's: its tmux there, where the conversation's file is; until 2026-10-14
@@ -524,8 +525,8 @@ class Archive(object):
         await self.unarchive(ch, rec, st["cwd"])
         self.offered.discard(ch.id)
         where = st["home"].get("host")
-        await ch.send("🔗 原本的視窗已經不在了，在%s tmux `%s` 開新視窗接回同一個對話…" % (" %s 的" % where if where else "", st["home"]["session"]))
+        await deliver.deliver(ch, "🔗 原本的視窗已經不在了，在%s tmux `%s` 開新視窗接回同一個對話…" % (" %s 的" % where if where else "", st["home"]["session"]), intent="status")
         if await self.bot.tmux.start_now(ch):  # (not opened: start_now has said why)
             # said when it is there: "opening…" alone, and the owner took a window that had opened and taken the
             # conversation back for one that had failed (manager 2026-10-14, #real-stochastic-0)
-            await ch.send("🔗 已接回原本的對話（%stmux `%s` 的新視窗），可以在這裡繼續。" % ("%s 的 " % where if where else "", st["home"]["session"]))
+            await deliver.deliver(ch, "🔗 已接回原本的對話（%stmux `%s` 的新視窗），可以在這裡繼續。" % ("%s 的 " % where if where else "", st["home"]["session"]), intent="status")
