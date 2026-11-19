@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -1021,3 +1022,188 @@ exec "%s" "$@"
         self.assertNotIn("roll back", self.last_log())
         self.assertEqual(sh(self.origin, "git", "rev-parse", "main").stdout.strip(), self.upstream, "nothing pushed")
         self.assertEqual(self.sup.read("last_good"), self.good)
+
+
+def big(n=3100):
+    return "".join("LINE_%d = %d\n" % (i, i) for i in range(n))
+
+
+class TooFar(Rig):
+    """manager 11-19 (the 11-18 rollback): a new version too far from last_good (HOLD_*: commits, lines or files in
+    dcbot/ and altention/) that will not start is not rolled back on its own: it is restarted as a good version would
+    be, the owner told once (with how to roll back), each later down one quiet line."""
+
+    def test_sizes_count_only_dcbot_and_altention(self):
+        self.commit({"ops/big.py": big()}, "big, elsewhere")
+        self.assertEqual(self.sup.change_size(self.good), (0, 0, 0))
+        self.assertIsNone(self.sup.too_far(self.good))
+        self.commit({"altention/big.py": big()}, "big, in altention")
+        self.assertEqual(self.sup.change_size(self.good), (1, 3100, 1))
+        self.assertEqual(self.sup.too_far(self.good), (1, 3100, 1))
+
+    def test_many_commits_or_files_count_too(self):
+        for i in range(21):
+            self.commit({"dcbot/bot/c%d.py" % i: "C = %d\n" % i}, "c%d" % i, push=False)
+        self.assertEqual(self.sup.too_far(self.good), (21, 21, 21))
+        self.assertIsNone(self.sup.too_far(self.head()), "nothing between")
+        self.assertIsNone(self.sup.too_far("0" * 40), "git cannot tell: rolled back as before")
+
+    def test_a_far_version_that_will_not_start_is_kept_and_said_once(self):
+        self.sup.STABLE_SECS, self.sup.TRIAL_SECS = 1, 30
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        self.commit({"altention/big.py": big()}, "a lot of new code")
+        bad = self.break_altention()
+        t = self.run_main()
+        self.assertTrue(self.wait(lambda: len([p for p in self.pings if p.startswith("(quiet)")]) >= 2, 60),
+                        "down again twice, a quiet line each: %r" % self.pings)
+        self.assertEqual(self.head(), bad, "not rolled back")
+        self.assertNotIn("roll back", self.last_log())
+        loud = [p for p in self.pings if not p.startswith("(quiet)")]
+        self.assertEqual(len(loud), 1, "the owner is told once: %r" % self.pings)
+        self.assertIn("沒有自動退回", loud[0])
+        self.assertIn("!rollback", loud[0])
+        self.assertIn("rollback-requested", loud[0], "the bot is down: a way that does not need it")
+        self.assertIn("2 個 commit", loud[0])
+        self.assertIn("啟動失敗（exit 1）", loud[0])
+        self.assertIn("又停了", self.pings[-1])
+        self.assertEqual(self.sup.read_json(self.sup.HELD)["head"], bad)
+        # the owner asks for the rollback: it is done, and the hold goes with the head
+        open(os.path.join(self.dc, "state", "rollback-requested"), "w").close()
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log() and self.ready_for_head(), 60), self.last_log())
+        self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+        self.assertTrue(self.wait(lambda: self.sup.read_json(self.sup.HELD) is None))
+        # the version rolled back to goes down before it is up STABLE_SECS, more than once (the real-process rig: the
+        # held version's downs counted, and the owner was mentioned a second time, for "keeps restarting")
+        self.sup.STABLE_SECS, before = 600, len(self.pings)
+        pid = self.sup.read("bot.pid")
+        subprocess.run(["kill", pid])
+        self.assertTrue(self.wait(lambda: self.sup.read("bot.pid") not in ("", pid)), "started again")
+        self.assertEqual([p for p in self.pings[before:] if not p.startswith("(quiet)")], [],
+                         "no second mention: the held version's downs went with it")
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)
+
+    def test_the_hold_says_how_the_trial_ended(self):
+        """#code-review-2 on fbe1cfa6, low 1: killed for failed events or for never coming up is not "啟動失敗（exit -9）"."""
+        head = self.head()
+        self.sup.hold(head, self.good, (1, 3100, 1), -9, "events", 3)
+        self.assertIn("試用時把 3 個事件標成失敗，被停掉", self.pings[-1])
+        self.sup.hold(head, self.good, (1, 3100, 1), -9, "never_up")
+        self.assertIn("%d 秒內沒上線，被停掉" % self.sup.TRIAL_SECS, self.pings[-1])
+        self.assertNotIn("exit -9", "".join(self.pings))
+
+    def test_a_held_version_that_comes_up_is_good_and_the_hold_goes(self):
+        self.sup.STABLE_SECS = 1
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        new = self.commit({"altention/big.py": big()}, "a lot of new code")
+        self.sup.write_json(self.sup.HELD, {"head": new, "good": self.good, "size": [1, 3100, 1], "downs": 1})
+        t = self.run_main()
+        self.assertTrue(self.wait(lambda: self.sup.read("last_good") == new))
+        self.assertIsNone(self.sup.read_json(self.sup.HELD))
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)
+
+    def test_a_rollback_asked_for_cuts_the_backoff_of_a_held_version_short(self):
+        """Found in the real-process rig: the backoff had grown to 40 s and the owner's rollback-requested waited it
+        out (up to 300 s)."""
+        self.sup.POLL = 0.1
+        t0 = time.time()
+        threading.Timer(0.5, lambda: open(os.path.join(self.dc, "state", "rollback-requested"), "w").close()).start()
+        self.sup.held_nap(30)
+        self.assertLess(time.time() - t0, 5)
+
+    def test_a_hold_about_another_head_goes(self):
+        self.sup.write_json(self.sup.HELD, {"head": "1" * 40})
+        self.assertIsNone(self.sup.held_for(self.head()))
+        self.assertIsNone(self.sup.read_json(self.sup.HELD))
+
+
+class OtherMachinesGood(Rig):
+    """manager 11-19 (the 11-18 rollback): last_good moves only while this machine runs the bot; the engine the other
+    machine marked good (state-standby/meta.json "last_good") is gone by when newer and in HEAD's history; never its
+    "engine" (its HEAD when sent: #code-review on fbe1cfa6)."""
+
+    def meta(self, good, raw=None, engine=None):
+        write(os.path.join(self.dc, "state-standby", "meta.json"),
+              raw if raw is not None else '{"from": "lap", "engine": "%s", "last_good": "%s", "protocol": 2}'
+              % (engine or good, good))
+
+    def test_the_engine_sent_is_not_gone_by(self):
+        """#code-review on fbe1cfa6: the other machine's HEAD (on trial, or merged and not run) never counts."""
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        bad = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "never marked good anywhere")
+        self.meta("", engine=bad)
+        self.assertEqual(self.sup.good_here(), self.good)
+        self.meta("", raw='{"from": "lap", "engine": "%s", "protocol": 2}' % bad)  # (an older bot's meta: no last_good)
+        self.assertEqual(self.sup.good_here(), self.good)
+
+    def test_going_by_it_is_said_once(self):
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        ran = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "marked good there")
+        self.meta(ran)
+        self.sup._going_by.clear()
+        said = []
+        with mock.patch.object(self.sup, "log", said.append):
+            for _ in range(3):
+                self.assertEqual(self.sup.good_here(), ran)
+        self.assertEqual(len([x for x in said if "going by it" in x]), 1)
+
+    def test_a_version_on_trial_there_is_tried_and_rolled_back_here(self):
+        """#code-review's b2, small: own last_good GOOD, HEAD BAD (exits at once), meta.engine BAD, meta.last_good
+        GOOD: a trial, rolled back to GOOD."""
+        self.sup.STABLE_SECS, self.sup.TRIAL_SECS = 1, 30
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        self.break_altention()
+        self.meta(self.good, engine=self.head())
+        t = self.run_main()
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log() and self.ready_for_head(), 60), self.last_log())
+        self.assertEqual(self.sup.tree(), self.sup.tree(self.good))
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)
+
+    def test_newer_and_in_history_is_taken(self):
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        ran = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "what the other machine ran")
+        self.commit({"ops/x.py": "X = 9\n"}, "later")
+        self.meta(ran)
+        self.assertEqual(self.sup.good_here(), ran)
+
+    def test_anything_not_plain_is_own_last_good(self):
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        self.assertEqual(self.sup.good_here(), self.good, "no file")
+        self.meta("", raw="{not json")
+        self.assertEqual(self.sup.good_here(), self.good, "unreadable")
+        self.meta("", raw="[1]")
+        self.assertEqual(self.sup.good_here(), self.good, "not an object")
+        self.meta("f" * 40)
+        self.assertEqual(self.sup.good_here(), self.good, "not a commit here")
+        side = self.head()
+        sh(self.engine, "git", "checkout", "-q", "-b", "side")
+        other = self.commit({"dcbot/bot/side.py": "S = 1\n"}, "on another branch", push=False)
+        sh(self.engine, "git", "checkout", "-q", "main")
+        self.meta(other)
+        self.assertEqual(self.sup.good_here(), self.good, "not in HEAD's history")
+        newer = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "newer, own")
+        write(os.path.join(self.dc, "state", "last_good"), newer)
+        self.meta(side)
+        self.assertEqual(self.sup.good_here(), newer, "older than own")
+
+    def test_none_of_own_takes_the_other_machines(self):
+        ran = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "what the other machine ran")
+        self.meta(ran)
+        self.assertEqual(self.sup.good_here(), ran)
+
+    def test_a_takeover_on_what_the_primary_ran_is_no_trial_and_a_failure_goes_back_only_to_it(self):
+        """The 11-18 scene, small: the standby's last_good days old, the primary ran `ran`; HEAD == ran starts as no
+        trial; a broken version on top of it rolls back to `ran`, not to the standby's old last_good."""
+        self.sup.STABLE_SECS, self.sup.TRIAL_SECS = 1, 30
+        write(os.path.join(self.dc, "state", "last_good"), self.good)
+        ran = self.commit({"dcbot/bot/extra.py": "E = 1\n"}, "what the primary ran")
+        self.meta(ran)
+        self.break_altention()
+        t = self.run_main()
+        self.assertTrue(self.wait(lambda: "roll back" in self.last_log() and self.ready_for_head(), 60), self.last_log())
+        self.assertEqual(self.sup.tree(), self.sup.tree(ran), "back to what the primary ran")
+        self.assertTrue(os.path.exists(os.path.join(self.engine, "dcbot", "bot", "extra.py")))
+        open(os.path.join(self.dc, "state", "stop"), "w").close()
+        t.join(10)

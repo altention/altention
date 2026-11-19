@@ -61,7 +61,7 @@ if not hasattr(_tmux_bridge.installation, "real"):
 if not tmuxio._set.get("done"):  # a test file run alone, without the bot's bridge (which tells tmuxio from the bot's settings)
     tmuxio.configure(socket="dcbot-test-none")  # a name no server has: whatever gets past the guard reaches nothing
 
-FUNCTIONS = ("tmux", "alive", "start", "kill", "open_window", "kill_pane", "pane_pid", "exists",
+FUNCTIONS = ("tag", "untag", "tmux", "alive", "start", "kill", "open_window", "kill_pane", "pane_pid", "exists",
              "raw_screen", "color_screen", "screen", "cursor", "in_mode", "vim_mode",
              "keys", "type_text", "escape", "clipboard", "buffers", "take_buffer",
              "claude_panes", "local_claude_panes", "user_sessions", "own_sessions", "started_for", "children",
@@ -136,6 +136,9 @@ def patchers(fake=None, **named):
     if not any(n in named or hasattr(fake, n) for n in ("own_sessions", "tmux")):  # (C-201 6.3: ensure() looks for a
         out.append(replace("own_sessions", no_sessions))  # renamed session) a fake without it has none; one standing in
         # for tmux itself answers it through the real own_sessions()
+    for name in ("tag", "untag"):  # C-201: a pane's channel tag (binding writes it): nothing on a fake pane unless it says
+        if name not in named and not hasattr(fake, name) and not hasattr(fake, "tmux"):
+            out.append(replace(name, nothing))
     for name, default in (("ended", no_end), ("settled", nothing)):  # C-161: a fake without them ends as a session
         if name not in named and not hasattr(fake, name):            # always did, and shows nothing of it
             out.append(replace(name, default))

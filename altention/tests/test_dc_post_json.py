@@ -78,12 +78,42 @@ class Build(unittest.TestCase):
         got, _ = self.build("lab", "--board", "本週", "--json", "p.json", "--wait", "5")
         self.assertEqual((got["json"], got["wait"]), ({"content": "hi"}, 5))
 
+    def test_delete_one_of_ones_own(self):
+        got, read = self.build("lab", "--delete", "900", "--why", "寫錯了")
+        self.assertEqual((got["delete_message"], got["why"], got["wait"], read), ("900", "寫錯了", 30, []))
+        for argv, words in ((("lab", "--delete", "x", "--why", "w"), "--delete 要給訊息 ID"),
+                            (("lab", "--delete"), "--delete 要給訊息 ID"),
+                            (("lab", "--delete", "900"), "要帶 --why"),
+                            (("lab", "--delete", "900", "--why", "w", "還有字"), "單獨用"),
+                            (("lab", "--delete", "900", "--unpause", "--why", "w"), "不能一起用"),
+                            (("lab", "--json", "p.json", "--delete", "900"), "不能再帶")):
+            self.assertIn(words, self.refused(*argv), argv)
+
     def test_a_plain_post_may_answer_a_message_and_go_silently(self):
         got, _ = self.build("lab", "--reply-to", "555", "--silent", "報告")
         self.assertEqual((got["text"], got["reply_to"], got["silent"]), ("報告", "555", True))
         self.assertNotIn("json", got)
         self.assertNotIn("wait", got, "not waited for unless asked, as before")
 
+
+
+class Reset(Build):
+    """v0.6.1 item 4: --reset --why "…" [--then "…"] (the bot's side: dcbot/tests/test_resets.py)."""
+    def test_what_goes_to_the_bot(self):
+        got, read = self.build("lab", "--reset", "--why", "context 滿了")
+        self.assertEqual((got["reset"], got["why"], got["wait"], got["text"], "then" in got, read),
+                         (True, "context 滿了", 30, "", False, []), "stdin not read")
+        got, _ = self.build("lab", "--reset", "--why", "w", "--then", " 接續請讀 docs/h.md ")
+        self.assertEqual(got["then"], "接續請讀 docs/h.md")
+
+    def test_what_is_refused(self):
+        for argv, said in ((("lab", "--reset"), "--why"),
+                           (("lab", "--then", "x", "--why", "w"), "只跟 --reset"),
+                           (("lab", "--reset", "--why", "w", "--then", " "), "--then 要給"),
+                           (("lab", "--reset", "--why", "w", "hello"), "單獨用"),
+                           (("lab", "--reset", "--why", "w", "--unpause"), "不能跟"),
+                           (("lab", "--reset", "--why", "w", "--json", "p.json"), "--json")):
+            self.assertIn(said, self.refused(*argv), argv)
 
 if __name__ == "__main__":
     unittest.main()

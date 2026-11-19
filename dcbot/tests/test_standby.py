@@ -90,6 +90,16 @@ class Bundle(unittest.TestCase):
         with open(os.path.join(mine, "routes.json")) as f:
             self.assertEqual(json.load(f), {"/standby-socket|%0": {"channel": "2", "epoch": 93}}, "this machine's own, kept")
 
+    def test_meta_sends_what_was_marked_good_not_only_head(self):
+        """#code-review on fbe1cfa6: the other machine's supervisor goes by state/last_good, never by the HEAD sent."""
+        root = tempfile.mkdtemp()
+        self.assertEqual(standby.meta(root, "host-a")["last_good"], "", "none yet")
+        os.makedirs(os.path.join(root, "state"))
+        for text, want in (("a" * 40 + "\n", "a" * 40), ("not a commit", ""), ("A" * 40, "")):
+            with open(os.path.join(root, "state", "last_good"), "w") as f:
+                f.write(text)
+            self.assertEqual(standby.meta(root, "host-a")["last_good"], want)
+
     def test_take_in_and_checks(self):
         target = os.path.join(tempfile.mkdtemp(), "state-standby")
         standby.unpack(standby.bundle(self.state, standby.meta(HERE, "host-a")), target)

@@ -14,9 +14,12 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 import time
+
+from . import where
 
 SYNCED = ("channels.json", "seen.json", "calls-system.json", "waiting-on-owner.json",
           "ownerless-sessions.json", "archive-left-said.json", "botmove-said", "cc_health.json",
@@ -50,6 +53,19 @@ def engine_version(root):
         return ""
 
 
+def last_good(root):
+    """The version the supervisor here last saw come up and marked good (dcbot/state/last_good: written only after
+    the bot's ready check), "" when none or not a commit id. Sent in meta(): the other machine's supervisor goes by
+    it after a takeover (manager 11-19), never by the HEAD sent with it, which may be a version still on trial or
+    one merged and not yet run (#code-review on fbe1cfa6)."""
+    try:
+        with open(os.path.join(root, "state", "last_good"), encoding="utf-8") as f:
+            got = f.read().strip()
+    except OSError:
+        return ""
+    return got if re.fullmatch(r"[0-9a-f]{40}", got) else ""
+
+
 def release_name(root):
     """The release (tag vX.Y.Z) the engine's HEAD is, or ""."""
     try:
@@ -79,7 +95,8 @@ SETTINGS = ("BRIDGE", "MODEL", "TMUX_SOCKET", "NOTIFY_CHANNEL", "AUDIT_CHANNEL")
 
 def meta(root, machine, now=None):
     settings = settings_now()
-    return {"at": now or time.time(), "from": machine, "engine": engine_version(root), "requirements": requirements(root),
+    return {"at": now or time.time(), "from": machine, "engine": engine_version(root), "last_good": last_good(root),
+            "requirements": requirements(root),
             "settings": settings, "protocol": PROTOCOL, "release": release_name(root), "token_hash": token_hash(),
             "health_hash": token_hash("healthchecks-url")}
 
@@ -183,18 +200,23 @@ def failback_channels(channels, me, primary, found):
                 continue
             for k in ("home", "pane", "files"):
                 if t.get(k) and isinstance(st.get(k), dict):
-                    st[k] = {f: v for f, v in st[k].items() if f != "host"}
+                    without = {f: v for f, v in st[k].items() if f != "host"}
+                    if k == "files":
+                        st[k] = without
+                    else:
+                        where.put(st, remake=False, **{k: without})
             if "tmux" in t:
-                st["tmux"] = t["tmux"] or (st.get("home") or {}).get("session")
-                st.pop("home", None)
-                st.pop("pane", None)
+                where.put(st, remake=False, tmux=t["tmux"] or (st.get("home") or {}).get("session"), home=None, pane=None)
             if t.get("mode"):
                 st["mode"] = t["mode"]
         elif isinstance(t, dict) and t.get("local"):
             st.pop("took_from")
             for k in t["local"]:
                 if isinstance(st.get(k), dict):
-                    st[k] = dict(st[k], host=me)
+                    if k in where.PLACE_FIELDS:
+                        where.put(st, remake=False, **{k: dict(st[k], host=me)})
+                    else:
+                        st[k] = dict(st[k], host=me)
         elif unplaced(st):
             from . import kinds
             if kinds.channel_kind(st) == kinds.FILES:
@@ -203,14 +225,15 @@ def failback_channels(channels, me, primary, found):
             if st.get("home") or st.get("pane"):  # a window in the owner's tmux here, or a pane of theirs
                 for k in ("home", "pane"):
                     if st.get(k):
-                        st[k] = dict(st[k], host=me)
+                        where.put(st, remake=False, **{k: dict(st[k], host=me)})
             elif st.get("tmux") or st.get("session_id"):  # the bot's own tmux server here; or a print-mode
-                name = st.pop("tmux", None) or "dc-%s" % str(cid)[-4:]  # conversation with no window yet
+                name = st.get("tmux") or "dc-%s" % str(cid)[-4:]  # conversation with no window yet
                 pane = next((p for p in found.get("panes") or [] if p.get("session") == name), None)
-                st["home"] = {"host": me, "socket": (pane or {}).get("socket") or found.get("socket"), "session": name,
-                              "window": ""}
-                if pane:
-                    st["pane"] = {"host": me, "socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}
+                where.put(st, remake=False, tmux=None,
+                          home={"host": me, "socket": (pane or {}).get("socket") or found.get("socket"), "session": name,
+                                "window": ""},
+                          **({"pane": {"host": me, "socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}}
+                             if pane else {}))
             else:
                 continue  # no conversation yet: the primary opens it there when there is one
             if st.get("mode") == "print":  # (its print turns would run there, without the session file)

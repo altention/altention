@@ -27,22 +27,42 @@ def routed_to(pane, table):
     return pane.get("routed") if pane.get("host") else routed_channel(table, key(pane), pane.get("pid"))
 
 
-async def bind_any(pane, channel_id):
-    """bind(), also for a pane on another machine (its route table lives there, next to its hook)."""
+async def bind_any(pane, channel_id, tag=True):
+    """bind(), also for a pane on another machine (its route table lives there, next to its hook); the pane tagged
+    with the channel (C-201: the tag follows the binding, manager 11-17; one not written is the look's to write).
+    `tag` False: a pane bound again where it already was (its process came back, its pid learnt): the look tags it,
+    one tmux call (an ssh for another machine's) fewer here (#code-review on 0fff85ee)."""
     if pane.get("host"):
         from . import remote
         await remote.dcremote(pane["host"], "bind", "%s|%s" % (pane["socket"], pane["id"]), str(channel_id),
                               str(pane.get("pid") or ""))
     else:
         bind(pane, channel_id)
+    if tag:
+        await retag(pane, channel_id)
 
 
-async def unbind_any(channel_id, host=None):
+async def unbind_any(channel_id, host=None, pane=None):
     if host:
         from . import remote
         await remote.dcremote(host, "unbind", str(channel_id))
     else:
         unbind(channel_id)
+    if isinstance(pane, dict) and pane.get("socket") and pane.get("id"):
+        await retag(pane, channel_id, away=True)
+
+
+async def retag(pane, channel_id, away=False):
+    """The pane's channel tag written, or taken away while it still says this channel (C-201); never in the way."""
+    from . import tmuxio
+    try:
+        if away:
+            await tmuxio.untag(pane["socket"], pane["id"], channel_id, host=pane.get("host"))
+        elif pane.get("socket") and pane.get("id"):
+            await tmuxio.tag(pane["socket"], pane["id"], channel_id, host=pane.get("host"))
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 
 def bind(pane, channel_id):
@@ -80,6 +100,13 @@ def topic(host, pane):
     pane it was made for, and this is how it is recognised (so its path stays shortened as it always was, also for
     another machine's pane: a topic written before must still match)."""
     return "%s 上的 Claude Code：tmux %s:%s，%s" % (host, pane["session"], pane["window"], short_cwd(pane["cwd"]))
+
+
+def topic_of_attach(text, host, cwd):
+    """Is `text` a topic topic() wrote for an attached pane of `host` working in `cwd` (any session and window)? One
+    the owner wrote is not."""
+    head, tail = "%s 上的 Claude Code：tmux " % host, "，%s" % short_cwd(cwd)
+    return bool(text) and text.startswith(head) and text.endswith(tail) and ":" in text[len(head):len(text) - len(tail)]
 
 
 def archived_channel(channels, host, pane, project):

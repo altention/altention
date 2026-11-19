@@ -38,7 +38,7 @@ class Reuse(unittest.TestCase):
         self.bot.archive = archive.Archive(self.bot)
         self.bot.get_channel = lambda cid: next((c for c in self.g.text_channels if c.id == cid), None)
         self.bot.backfill = self.backfill
-        self.standing, self.unbound, self.bound, self.backfills = {}, [], [], []
+        self.standing, self.unbound, self.bound, self.backfills, self.pane_then = {}, [], [], [], []
 
     async def backfill(self, ch, messages):
         self.backfills.append(ch.id)
@@ -57,11 +57,12 @@ class Reuse(unittest.TestCase):
         async def standing(t):
             return self.standing.get(t["id"], "gone")
 
-        async def bind_any(p, cid):
+        async def bind_any(p, cid, tag=True):
             self.bound.append((p["id"], cid))
 
-        async def unbind_any(cid, host=None):
+        async def unbind_any(cid, host=None, pane=None):
             self.unbound.append((cid, host))
+            self.pane_then.append((pane, (self.bot.channels_state.get(str(cid)) or {}).get("pane")))
 
         async def go():
             self.bot.loop = asyncio.get_running_loop()
@@ -81,6 +82,7 @@ class Reuse(unittest.TestCase):
         self.assertEqual((st["pane"]["id"], st["pane"]["pid"], st["session_id"], st["busy"]), ("%3", "900", "sid-x", False))
         self.assertNotIn("bg", st, "what ran in the old pane ended with it")
         self.assertEqual(self.unbound, [(ch.id, "lap")], "the old pane's route goes first")
+        self.assertEqual(self.pane_then, [(OLD, None)], "the old pane out of the record before (#code-review-2 on 1a4cad50)")
         self.assertEqual(self.bound, [("%3", ch.id)])
         self.assertEqual(self.backfills, [], "the channel holds its history")
         self.assertIn("重新接上了", ch.sent[-1], "the same conversation: nothing more to say")
@@ -175,6 +177,22 @@ class TakenOrNot(unittest.TestCase):
         ch = self.channel(pane={"host": "lap", "socket": "/s", "id": "%3", "pid": "900"})
         said, got = self.attach_ref(ch.id)
         self.assertEqual((said, got), ("這個對話已經接在 <#%d> 了。" % ch.id, []))
+
+    def test_a_pane_a_record_points_to_with_no_route_is_taken(self):
+        """#code-review on 1a4cad50, manager 11-18: the route lost, !attach went by the table only and a second channel
+        came to point to the pane. The records are asked too (the same machine, socket, number and process)."""
+        self.bot._where_context = ("cgi", "/bot.sock")
+        ch = self.channel(pane={"host": "lap", "socket": "/s", "id": "%3", "pid": "900"})
+        pane = dict(NEW)
+        pane.pop("routed", None)
+        self.assertEqual(self.bot.recorded_on(pane), str(ch.id))
+        said, got = self.attach_ref("")
+        self.assertEqual((said, got), ("這個對話已經接在 <#%d> 了。" % ch.id, []))
+        self.assertIsNone(self.bot.recorded_on(dict(NEW, pid="901")), "another process with the old number")
+        self.assertIsNone(self.bot.recorded_on(dict(NEW, host="mac")), "another machine's")
+        self.assertIsNone(self.bot.recorded_on(dict(NEW, socket="/t")))
+        self.bot._where_context = ("lap", "/bot.sock")
+        self.assertEqual(self.bot.recorded_on(dict(NEW, host=None)), str(ch.id), "this machine's, written either way")
 
     def test_a_number_given_out_again_is_free_in_the_list_and_for_all(self):
         table = {"/s|%3": {"channel": "9", "pid": "100"}, "/s|%4": {"channel": "8", "pid": "901"}, "/s|%5": "7"}

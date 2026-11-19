@@ -247,6 +247,30 @@ class Records(unittest.TestCase):
         finally:
             shutil.rmtree(home, ignore_errors=True)
 
+    def test_the_probe_reads_what_the_bots_look_wrote(self):
+        """C-201: where.seen as dcbot/bot/reconcile.py writes it (state, known, at): gone (also while not known since),
+        unsure, not known; the newest look's time; none when nothing was looked at."""
+        home = tempfile.mkdtemp(prefix="dcq")
+        try:
+            eng = os.path.join(home, "engine")
+            os.makedirs(os.path.join(eng, "dcbot", "state"))
+            chans = {"1": {"where": {"seen": {"state": "here", "known": "here", "at": 100}}},
+                     "2": {"where": {"seen": {"state": "gone", "known": "gone", "at": 200}}},
+                     "3": {"where": {"seen": {"state": "unknown", "known": "gone", "at": 150}}},
+                     "4": {"where": {"seen": {"state": "unsure", "known": "here", "at": 150}}},
+                     "5": {"where": {"seen": {"state": "unknown", "known": "here", "at": 150}}},
+                     "6": {"where": {"seen": {"state": "closed", "known": "closed", "at": True}}},
+                     "7": {"where": "junk"}, "8": {"plain": True}}
+            with open(os.path.join(eng, "dcbot", "state", "channels.json"), "w") as f:
+                json.dump(chans, f)
+            r = subprocess.run([sys.executable, "-"], input="ENGINE = %r\n" % eng + doctor.PROBE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, HOME=home), cwd=home,
+                               timeout=120)
+            o = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual(o.get("where_seen"), {"gone": ["2", "3"], "unsure": ["4"], "unknown": ["5"], "at": 200})
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
     def test_the_probe_lists_routes_and_channels_whose_pane_is_gone(self):
         """C-201 6.1: a route or a channel's pane of this machine whose tmux server is gone, whose pane tmux does not
         have, or whose pane number runs another process, is listed; a live one, an old route with no process, another
@@ -2179,6 +2203,27 @@ class Records(unittest.TestCase):
         self.assertEqual(items(None), {})
         for rid in ("dcbot.administrator", "dcbot.permissions-missing"):
             self.assertNotIn(rid, doctor.WATCHED + doctor.WATCHED_WARN)
+
+    def test_what_the_bots_look_found(self):
+        """C-201: dcbot/bot/reconcile.py's findings in channels.json (where.seen): panes gone, panes whose identity is
+        not sure (no process recorded), a look that stopped; shown, not told."""
+        def item(**probe):
+            _, recs = self.records({"host-a": healthy(**probe)})
+            return next((r for r in recs if r["id"] == "dcbot.where"), None)
+        now = 2000000000
+        r = item(now=now, where_seen={"gone": ["11", "12"], "unsure": [], "unknown": [], "at": now - 60})
+        self.assertEqual((r["status"], r["value"]), ("warn", {"gone": 2, "unsure": 0}))
+        self.assertIn("2 個頻道的窗格不見了（頻道 11、12）", r["msg"])
+        self.assertIn("/attach", r["fix"])
+        r = item(now=now, where_seen={"gone": [], "unsure": ["13"], "unknown": [], "at": now - 60})
+        self.assertIn("不確定窗格是不是同一個（頻道 13）", r["msg"])
+        self.assertIn("/detach 再 /attach", r["fix"])
+        r = item(now=now, where_seen={"gone": [], "unsure": [], "unknown": [], "at": now - 3600})
+        self.assertIn("之後沒有再對", r["msg"])
+        self.assertEqual(item(now=now, where_seen={"gone": [], "unsure": [], "unknown": ["9"], "at": now - 60})["status"], "ok",
+                         "not known is no finding")
+        self.assertIsNone(item(), "nothing looked at yet")
+        self.assertNotIn("dcbot.where", doctor.WATCHED + doctor.WATCHED_WARN)
 
     def test_notifications_the_bot_could_show_nowhere(self):
         """Manager 2026-10-11 (#issues 7): a notification kept in dcbot/state/posts-failed/ is a warning."""

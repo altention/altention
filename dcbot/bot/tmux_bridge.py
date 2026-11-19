@@ -30,6 +30,7 @@ from . import agents, ask, attachments, awaiting, calls, cc_btw, cc_health, cc_p
 from .claude_bridge import deny
 from .posts import Origin
 from .util import same_socket, split_message, target
+from . import where as where_mod
 
 SPOOL = os.path.join(config.STATE, "events")
 SETTINGS_FILE = os.path.join(config.STATE, "claude-settings.json")
@@ -278,6 +279,7 @@ def stranger(st, ev):
 
 
 STALE_SAY_SECS = 5
+AGAIN_SECS = 2  # C-198: a new process in an attached pane whose record could not be read: asked again this much later
 STALE_WAIT_SECS = 300  # C-162: how long a window to be reopened is let finish the turn it runs
 PANE_SAID_SECS = 6 * 3600  # an attached pane whose screen is not known: said at most this often (C-162)
 CLOSED_KEPT = 5
@@ -513,6 +515,16 @@ def events_cut(text, n):
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
+def gist(words, most=160):
+    """The first sentence of a not-sent notice, as plain words (C-202: what the sender's channel is told)."""
+    text = re.sub(r"[*`]", "", words).strip()
+    text = re.sub(r"^[^\w（(/]+", "", text)  # (its mark in front)
+    first = re.split(r"(?<=[。！？])", text.split("\n")[0], maxsplit=1)[0].strip()
+    first = re.sub(r"[，,、]?\s*(?:這則|所以|因此|就)?\s*(?:沒有|沒)送出[。.]?$", "。", first)  # (#discord-lab: said already)
+    first = first if first.endswith(("。", "！", "？", "…")) else first + "。"
+    return first if len(first) <= most else first[:most - 1] + "…"
+
+
 UNENTERED_KEPT = 50  # screens kept of the times Enter was not pressed (state/samples/not-entered/)
 
 
@@ -555,6 +567,8 @@ class TmuxBridge(object):
 
     def __init__(self, host):
         self.host, self.rts = host, {}
+        self.not_known_yet = set()  # channel ids whose pane pane_again() last found running a Claude Code whose
+        # conversation could not be read yet (just restarted): ensure() says that, not "runs no Claude Code"
         self.asks = ask.Asker(host.audit)
         self.asks.on_owed = self.start_resends  # a result for a hook on another machine: sent by that machine's task
         if getattr(host, "posts", None) is not None:
@@ -577,6 +591,7 @@ class TmuxBridge(object):
         self.stream_wake = {}     # machine -> the Event its stream sleeps on before reconnecting
         self.lane_held = {}       # channel id -> its events from another machine's stream that wait on its lane (C-174)
         self.lane_tasks = set()   # the tasks handing those on, one per channel while it has any
+        self.tell_tasks = set()   # telling a sender's Claude what became of its post (held: a task nobody holds may go)
         self.let_go_said = set()  # channels put away whose events were dropped, and #audit told once (this run)
         self.kept = {}  # channel id -> [when the first was kept, events, being released?]: of channels Discord does
         #                 not hand out just now
@@ -670,27 +685,58 @@ class TmuxBridge(object):
         return await asyncio.get_running_loop().run_in_executor(None, self.with_, dict(st))
 
     async def pane_again(self, ch, st):
-        """An attached pane whose pid is not the one recorded, the same pane number running Claude Code with the
-        channel's own conversation: the record follows it (pid), said in #audit; True then. Anything else (another
-        conversation there, none known, not Claude): False, the pane gone as before (C-163 drill problem A, manager
-        11-09 (a): a pane attached again whose new pid never reached the standby)."""
+        """An attached pane whose pid is not the one recorded, the same pane number running Claude Code (or an agent
+        passing for it) again: the record follows it (pid), said in #audit; True then (C-163 drill problem A, manager
+        11-09 (a): a pane attached again whose new pid never reached the standby). Its conversation is the proof when
+        it can be read: the channel's own, followed; another, not (C-201 2a's rules for another conversation).
+        An adapter (pi, Codex: no Claude Code process record) is followed only by facts it left itself (C-198,
+        manager 11-18): the pane tagged for this channel (the tag stays through respawn-pane) and a valid mark of
+        its own (tmuxio.marked_agent(): "<agent>|<pid>", the pid the pane's process or under it); its conversation
+        id, when it gives one, must be the channel's (2a's rules). Followed so, it is said in the channel too,
+        quietly, so an agent the owner changed there is seen. Followed either way, the route table takes the new
+        process too, as repin() does (#code-review-2 on e30ad2b3: its events were dropped as a stranger's). None
+        when it cannot be told now (the Claude Code record could not be read): asked again later. Anything else (no
+        agent there, no mark, no tag of its own, another conversation): False, the pane gone as before."""
         pane = st["pane"]
         now = await tmuxio.moved_on(pane)
-        if now is None or not st.get("session_id"):
+        if now is None:
             return False
-        try:
-            sid = await self.host.pane_session_id(dict(pane, id=pane["id"], session=now["session"], cwd=now["cwd"] or st.get("cwd")))
-        except Exception:
-            traceback.print_exc()
-            return False
-        if sid != st["session_id"]:
-            return False
+        sid = None
+        if now.get("agent"):
+            if now.get("tag") != str(ch.id):
+                return False
+            if now.get("agent_session") and st.get("session_id") and now["agent_session"] != st["session_id"]:
+                return False
+        else:
+            try:
+                sid = await self.host.pane_session_id(dict(pane, id=pane["id"], session=now["session"], cwd=now["cwd"] or st.get("cwd")))
+            except Exception:
+                traceback.print_exc()
+                return None
+            if not sid or sid != st.get("session_id"):
+                if not sid:  # (still False, as before; only what the channel is told differs: manager 11-20)
+                    self.not_known_yet.add(str(ch.id))
+                return False
         was = pane.get("pid")
-        st["pane"] = dict(pane, pid=int(now["pid"]) if str(now["pid"]).isdigit() else now["pid"])
+        pane = dict({k: v for k, v in pane.items() if k != "agent"}, pid=int(now["pid"]) if str(now["pid"]).isdigit() else now["pid"])
+        if now.get("agent"):  # (the adapter's name in the record: where.record()'s kind, rename types nothing; C-198)
+            pane["agent"] = now["agent"]
+        where_mod.put(st, pane=pane)
         self.host.save()
+        if not st.get("home") or st["home"].get("host"):  # (a window this bot opened here reports through its
+            if pane.get("host"):                          # --settings, no route: remember_pids()); awaited:
+                await self.bind_far(pane, ch.id)          # moved_on() above asked that machine already
+            else:
+                routes.bind(pane, ch.id)
+        name, where = getattr(ch, "name", "?"), tmuxio.label(pane)
         try:
-            await self.host.audit(messages.lease("audit_pane_followed", channel=getattr(ch, "name", "?"), where=tmuxio.label(pane),
-                                                 was=was, pid=now["pid"], session=str(sid)[:8]))
+            if sid:
+                await self.host.audit(messages.lease("audit_pane_followed", channel=name, where=where, was=was,
+                                                     pid=now["pid"], session=str(sid)[:8]))
+            else:
+                await self.host.audit(messages.lease("audit_pane_followed_tag", channel=name, where=where, was=was,
+                                                     pid=now["pid"], agent=now["agent"]))
+                await deliver.deliver(ch, messages.lease("pane_followed_tag"), silent=True, intent="status")
         except Exception:
             traceback.print_exc()
         return True
@@ -709,8 +755,17 @@ class TmuxBridge(object):
                 return
             if how == "unknown":
                 raise unreachable(st["pane"])
-            if await self.pane_again(ch, st):
+            self.not_known_yet.discard(str(ch.id))
+            again = await self.pane_again(ch, st)
+            if again is None:  # its Claude Code record could not be read: asked once more, then gone as before
+                await asyncio.sleep(AGAIN_SECS)  # (C-198)
+                again = await self.pane_again(ch, st)
+            if again:
                 return
+            if str(ch.id) in self.not_known_yet:  # (a new Claude Code there, not yet known to be this channel's)
+                self.not_known_yet.discard(str(ch.id))
+                raise NotOpened(NotOpened.PANE_GONE, "這個頻道的窗格剛重開（%s），還在確認是不是同一個對話，訊息沒有送出，"
+                                "等一下再試。" % attached.label, where=attached.label)
             if st.pop("bg", None):  # what ran under it ended with it
                 self.host.save()
             resume = resume_command(st)
@@ -718,13 +773,16 @@ class TmuxBridge(object):
                             "訊息沒有送出。窗格還在的話，在那裡跑 `%s` 就會自動接回。窗格不在了（例如機器重開過）："
                             "在 tmux 開一個視窗，到 `%s` 跑同一行，再用 `/attach` 選它，會接回這個頻道。不要了就用 `!detach` 卸下。"
                             % (attached.label, resume, st.get("cwd")), where=attached.label)
-        name = st.setdefault("tmux", tmuxio.session_name(getattr(ch, "name", "dm"), ch.id))
+        if "tmux" not in st:
+            where_mod.put(st, getattr(ch, "name", None), tmux=tmuxio.session_name(getattr(ch, "name", "dm"), ch.id))
+        name = st["tmux"]
         own = tmuxio.pane(name)
         alive = await own.alive()
         if not alive:  # renamed in tmux? (C-201 6.3) its Claude is taken again, not a second one opened on the same conversation
             renamed = await self.renamed_session(ch)
             if renamed:
-                was, st["tmux"], name = name, renamed, renamed
+                was, name = name, renamed
+                where_mod.put(st, tmux=renamed)
                 own = tmuxio.pane(name)
                 self.host.save()
                 await self.host.audit("#%s 的 tmux 對話 `%s` 在 tmux 被改名為 `%s`：照用改名後的，沒有另開"
@@ -938,7 +996,7 @@ class TmuxBridge(object):
             return tmuxio.pane(pane) if pane else None
 
         async def kept(pane, fresh):
-            st["pane"] = pane.t
+            where_mod.put(st, pane=pane.t)
             self.host.save()
 
         async def failed(pane):
@@ -1079,6 +1137,7 @@ class TmuxBridge(object):
                 self.host.save()
                 r = not_opened(rt, e)
                 await self.told(say, r, keep)
+                await self.tell_sender(message, r)
                 await self.start_failed(ch, st, e)  # (C-103)
                 return r
             name = target(st)
@@ -1086,6 +1145,7 @@ class TmuxBridge(object):
             r = await self.checked(say, st, name, rt, keep)
             if not r:
                 await self.box_unknown(ch, st, name, r)  # (C-162)
+                await self.tell_sender(message, r)
                 return r  # not sent: note_next stays for the next one; the caller sees why (posts, unsent)
             if not slash:
                 rt.pending.append(p)
@@ -1104,7 +1164,9 @@ class TmuxBridge(object):
                 rt.left = text
                 r.refuse("claude_code.box_differs")
                 r.state = "typed_not_entered"
-                return await self.told(say, r)
+                said = await self.told(say, r)
+                await self.tell_sender(message, r)
+                return said
             if note:
                 st.pop("note_next", None)
             if typed is not None and not slash:  # (C-199: what a paused channel held goes in after it)
@@ -1306,6 +1368,34 @@ class TmuxBridge(object):
         await self.told(say, r, keep)
         return r
 
+    async def tell_sender(self, message, r):
+        """A post (another channel's Claude's) not handed over for good, or typed but not entered: said in the
+        channel it came from too (C-202; manager 11-18: those two, a post held up for now is kept and handed again as
+        C-74 has it), and told to the Claude there, which knows nothing of it otherwise. That Claude is told as the
+        owner's messages are typed (Posts.tell: no sender of its own), so what becomes of it is said in that channel
+        only, never sent back again: no two channels telling each other over and over. Never raises."""
+        try:
+            sender = str(getattr(message, "sender", "") or "")
+            if not getattr(message, "auto", False) or not sender.isdigit() or r:
+                return
+            entered = getattr(r, "state", None) == "typed_not_entered"
+            if not entered and messages.retry(r.code) != messages.PERMANENT:
+                return
+            to = getattr(message.channel, "name", "?")
+            text = messages.note("post.not_entered", to=to) if entered else \
+                messages.note("post.refused", to=to, why=gist(messages.not_sent(r.code, **r.data)))
+            ch = self.host.get_channel(int(sender))
+            if ch is None:
+                return await self.host.audit(text)
+            await deliver.deliver(ch, text, silent=True, intent="status")
+            posts = getattr(self.host, "posts", None)
+            if posts is not None and posts_mod.listens(self.host.channels_state.get(sender) or {}):
+                task = asyncio.ensure_future(posts.tell(ch, "（機器人通知）" + text))  # (its own queue: not waited on here)
+                self.tell_tasks.add(task)  # (#code-review on b8fbb3fd)
+                task.add_done_callback(self.tell_tasks.discard)
+        except Exception:
+            traceback.print_exc()
+
     async def told(self, say, r, keep=None):
         """Say what a typing check came to (Typing): what it noted along the way, and, when the message was not
         sent, why, in the words messages.py has for its code. True to go on. A note is said once: told() is called
@@ -1479,7 +1569,7 @@ class TmuxBridge(object):
         """Forever: turn hook events into Discord messages, and close sessions nobody has used for a while."""
         write_settings()
         await self.read_words()  # the installation's language and own wordings, before the first sentence is said
-        await self.remember_pids()
+        asyncio.ensure_future(self.remember_pids())  # (asks other machines: never waited for here, manager 11-19)
         while getattr(self.host, "lease", None) is not None and not leading(self.host):  # C-163: what reaches other
             await asyncio.sleep(1)  # machines or says things waits until this machine is the bot (#code-review on
             # abc07b3: before the first lease round no epoch went with a stream, and it cut the bot's own)
@@ -1488,9 +1578,9 @@ class TmuxBridge(object):
         await self.read_rewriter()  # which plugin lays replies out (C-71b), before the first reply
         await self.posted_left()  # a reply that was being laid out when the bot went down: posted as before
         self.start_streams()
-        for cid, st in list(self.host.channels_state.items()):
-            await self.look_again(cid, st)
-        self.host.save()
+        for cid, st in list(self.host.channels_state.items()):  # a task each: a machine that does not answer keeps
+            asyncio.ensure_future(self.look_again_saved(cid, st))  # only its own channels waiting, never this loop
+        self.host.save()  # (the 11-18 rollback: ssh timeouts in a row here kept the self test unread past the trial)
         self.last_reap = time.time()
         while True:
             try:  # nothing may end this loop: every channel's output and altention dc post go through it
@@ -1498,6 +1588,14 @@ class TmuxBridge(object):
             except Exception:
                 traceback.print_exc()
             await asyncio.sleep(0.1 if self.held else 0.5)  # an event is waiting for its row: look again soon
+
+    async def look_again_saved(self, cid, st):
+        """look_again() on a task of its own at start, the state saved after it."""
+        try:
+            await self.look_again(cid, st)
+            self.host.save()
+        except Exception:
+            traceback.print_exc()
 
     async def look_again(self, cid, st):
         """A channel busy (or with background work) when the bot went down: its window looked at. Still there: a
@@ -1508,7 +1606,10 @@ class TmuxBridge(object):
         ch = self.host.get_channel(int(cid))
         if remote.problem and ((st.get("pane") or {}).get("host") or (st.get("home") or {}).get("host")):
             return  # the machine list is unreadable, so that machine cannot be reached by name: do not call it gone
-        how = await tmuxio.standing(target(st)) if ch is not None and target(st) else "gone"
+        asked = target(st)
+        how = await tmuxio.standing(asked) if ch is not None and asked else "gone"
+        if asked and target(st) != asked:
+            return  # the channel moved to another window while its machine was asked (a message meanwhile): not ours
         if how != "gone":  # ("unknown": its machine does not answer just now. Not said to be gone, nothing let go
             if st.get("busy"):  # of: watch() finds out once the machine answers again)
                 self.watch(ch, st, self.rt(ch))  # a turn kept running while the bot was down
@@ -1793,7 +1894,8 @@ class TmuxBridge(object):
             return
         print("bridge: channel %s: its conversation goes on in a new process in pane %s (%s → %s); the route follows it"
               % (ch.id, pane.get("id"), pane.get("pid"), pid), flush=True)
-        pane["pid"] = pid
+        pane = dict(pane, pid=pid)
+        where_mod.put(st, pane=pane)
         self.host.save()
         if pane.get("host"):
             asyncio.ensure_future(self.bind_far(pane, ch.id))
@@ -1802,19 +1904,23 @@ class TmuxBridge(object):
 
     async def bind_far(self, pane, cid):
         try:
-            await routes.bind_any(pane, cid)
+            await routes.bind_any(pane, cid, tag=False)  # (its process came back where it was: the look tags it)
         except Exception:
             traceback.print_exc()
 
     async def remember_pids(self):
         """Panes attached before process ids were recorded get theirs now (while they are surely the same)."""
         changed = False
-        for cid, st in self.host.channels_state.items():
+        for cid, st in list(self.host.channels_state.items()):
             pane = st.get("pane")
             if pane and not pane.get("pid") and await tmuxio.alive(pane):
-                pane["pid"] = await tmuxio.pane_pid(pane)
+                pid = await tmuxio.pane_pid(pane)
+                if st.get("pane") is not pane:  # (a task now: the channel took another pane while this one was asked)
+                    continue
+                pane = dict(pane, pid=pid)
+                where_mod.put(st, pane=pane)
                 if not st.get("home") or st["home"].get("host"):
-                    await routes.bind_any(pane, cid)
+                    await routes.bind_any(pane, cid, tag=False)  # (its pid learnt: bound again where it was)
                 changed = True
         if changed:
             self.host.save()
@@ -1959,6 +2065,8 @@ class TmuxBridge(object):
             elif not ours and ev.get("dc_from") == cc_hooks.TYPED and prompt.strip() \
                     and not any(events.matches(prompt, t) for t in rt.typed):  # typed at the terminal, not in Discord
                 await self.say(ch, "⌨️ **終端機那邊輸入**\n" + events.quote(masking.masked(prompt), 1500), silent=True)
+            if st.get("reset_after"):  # (dc post --reset asked in a turn that did not end well: dropped)
+                await self.host.posts.resets.new_turn(ch, st, ev.get("prompt_id"))
             self.begin_turn(ch, st, rt, prompt, task=ev.get("dc_from") == cc_hooks.TASK, pid=ev.get("prompt_id"))
         elif what in (cc_hooks.PROGRESS, cc_hooks.PEER_SENT):
             turn = self.begin_turn(ch, st, rt, pid=ev.get("prompt_id"))
@@ -2015,8 +2123,15 @@ class TmuxBridge(object):
                 await self.post_reply(ch, st, self.plain_reply(reply), job)
             gist = calls.discussed(reply)  # (C-103: Claude says it needs the owner; after the reply, which may wait)
             if gist:
-                await self.call(ch, "discuss:%s" % (ev.get("prompt_id") or int(time.time() * 1000)), "discuss", gist)
+                await calls.discuss(ch, self.host.chan(ch), "discuss:%s" % (ev.get("prompt_id") or int(time.time() * 1000)),
+                                    gist, save=self.host.save)  # (one mention while the owner has not answered: v0.6.1)
+            elif (ev.get("last_assistant_message") or "").strip():  # a reply that needs nobody: what was discussed is
+                # over (manager 11-20); the next mark rings. Claude's own words: `reply` says （沒有文字回覆） for none
+                # (#code-review on 314211bf, low)
+                await self.call_done(ch, prefix="discuss:")
             await self.login_back(st)  # a turn of that machine ended well: a lost login is back
+            if st.get("reset_after"):  # its Claude asked for a new conversation during this turn (dc post --reset)
+                self.host.posts.resets.after_turn(ch, st, ev.get("prompt_id"))  # (a task: its receipt is an event)
         elif what == cc_hooks.TURN_FAILED:  # the API failed (usage limit, overload, …): the turn is over, say why
             turn = rt.turn
             await self.interim(ch, rt, texts=texts)
@@ -2932,7 +3047,8 @@ class TmuxBridge(object):
         !detach): only stop following it, whoever opened it."""
         st, rt = self.host.chan(ch), self.rt(ch)
         if kill and st.get("home") and st.get("pane"):  # a window the bot opened itself: closed, reopened on demand
-            gone = st.pop("pane")
+            gone = st["pane"]
+            where_mod.put(st, pane=None)
             if st.get("session_id"):  # (its end comes after: from_elsewhere(). Without an id it could not be told: not kept)
                 rt.closed = (rt.closed + [dict(gone, at=time.time(), session=st["session_id"])])[-CLOSED_KEPT:]
             await tmuxio.kill_pane(gone)

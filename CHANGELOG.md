@@ -16,6 +16,82 @@ Each version has these sections:
 
 ## Unreleased
 
+## v0.7.0 — 2026-11-20
+
+### For people
+
+- **/where tells you where a channel's Claude is.** /where (or !where) shows the machine, whether the tmux is the
+  bot's or yours, the session and window (or pane), the conversation's id and name, the folder, and which of these
+  follow when you rename the channel.
+- **The bot tells you when a channel's pane is gone.** Every 2 minutes it checks that each channel's tmux pane is
+  still there. Only when it is sure the pane is gone does it say so, once, in that channel, with how to attach it
+  again, and once more when it is back; a machine it cannot reach counts as unknown, not gone. Renaming a session or
+  naming a window in tmux is written to #audit.
+- **/rename renames everything at once.** /rename (or the 〔改名…〕 button under /where) renames the channel, its
+  Claude Code conversation and its tmux window, and the tmux session too when the bot opened it for that channel. The
+  reply lists each one: ✅ renamed, ❌ not renamed and why (Discord lets a channel be renamed only twice in ten
+  minutes), ➖ not for this channel. Renaming the channel by hand in Discord, or the window with rename-window in tmux,
+  takes the others along too; the names tmux gives a window by itself do not count. Another channel's Claude can do
+  the same with `altention dc post <channel> --rename <name> --why "…"`; the reply and #audit say which one did.
+- **The bot pings you less: only for something you yourself must decide or do.** A reply that is waiting on another
+  channel or another Claude, or that only reports, no longer pings you, and the same matter pings you once until you
+  answer.
+- **A big update that fails to start is no longer rolled back on its own.** When a new version of the bot is very far
+  from the last one that worked (more than 20 commits, 3000 lines or 60 files) and does not start, the bot keeps
+  trying it instead of taking all of that back, and tells you once, with how to roll back (!rollback, or touch
+  dcbot/state/rollback-requested when the bot is down). A standby that takes over now rolls back only to the
+  version the primary last saw start and work, not to the older version it ran itself.
+- **When a message from another channel's Claude does not reach this channel's Claude, the sender is told.** If
+  the bot typed it but could not press Enter, or the channel cannot take it for a reason that will not go away by
+  itself, the channel that sent it gets a note in small text, without a ping, and its Claude is told too, with what
+  to do next.
+- **A Claude can start a new conversation in a channel, as your !reset does.** When its conversation gets long, a
+  Claude writes a handover and starts afresh in its own channel once its turn ends; another channel's Claude can do
+  it only while that channel is idle. The old conversation stays for !resume, and each one is written to #audit.
+
+### For people (zh-TW)
+
+- **/where 看得到頻道的 Claude 現在在哪裡，窗格不見了機器人會說。**/where（或 !where）列出機器、tmux 是機器人的還是你的、session 和 window、對話和它的名字、資料夾，以及頻道改名時哪些跟著變。機器人每 2 分鐘看一次每個頻道的窗格，確定不見了才在那個頻道說一次、附上怎麼接回，回來了再說一次；連不上的機器不算不見。在 tmux 裡改 session 名或給 window 取名，會記在 #audit。
+- **/rename 一次改完所有名字。**/rename（或 /where 下面的〔改名…〕按鈕）會一起改頻道名、Claude Code 的對話名、tmux 的 window 名；session 是機器人替這個頻道開的，也一起改。回覆逐項寫 ✅ 改了、❌ 沒改成和原因（Discord 限制 10 分鐘只能改兩次頻道名）、➖ 這個頻道不適用。在 Discord 手動改頻道名，或在 tmux 用 rename-window 改 window 名，其他的也會跟著變。別的頻道的 Claude 也能用 `altention dc post <頻道> --rename <名字> --why "…"` 改，回覆和 #audit 會寫是誰改的。
+- **機器人更少 @ 你：只有你本人要決定或動手的事才 @。**在等別的頻道或別的 Claude、或只是回報的回覆不再 @ 你；同一件事在你回之前只 @ 一次。
+- **大更新起不來時不再自己退回。**新版跟上一個正常版本差很多（超過 20 個 commit、3000 行或 60 個檔）又起不來時，機器人照常重試，不會把這些全部退掉，並通知你一次、附上怎麼退回（打 !rollback；機器人停著時 touch dcbot/state/rollback-requested）。備援接手時，只會退回主機最後確認能正常跑的版本，不會退到它自己很久以前跑的舊版。
+- **別的頻道的 Claude 傳的話沒送到時，傳的那個頻道會知道。**字打進去卻沒能按 Enter，或對方因為不會自己消失的原因收不了，傳話的頻道會出現一行不響的小字，它的 Claude 也會收到，並說接下來怎麼做。
+- **Claude 可以替頻道開新對話，跟你打 !reset 一樣。**對話太長時，Claude 寫好交接、等這一輪結束就在自己的頻道開新對話；替別的頻道開，只能在那裡閒著時。舊對話還能用 !resume 接回，每次都記在 #audit。
+
+### For agents
+
+1. doctor has a new check, dcbot.where: panes gone, panes the look cannot be sure of (no process is recorded for
+   them), or a look that stopped.
+2. The bot tags each channel's pane with the tmux option @altention_channel; leave it in place. dcremote has a new
+   read-only look command (JSON); on a machine whose engine has no look yet, its panes count as unknown. A tag left
+   on a pane its channel no longer uses is taken away and written to #audit.
+3. A program in a pane on another machine (an adapter) learns which channel it is with `altention dc read --map`
+   (or `--where`), which asks the bot's machine; `dcctl map --pane` run on that machine reads only its own state.
+   After respawn-pane, an adapter is taken back only by facts it leaves itself: set the pane option
+   @altention_agent to "<agent>|<your pid>" when you start (and @altention_session to your conversation id if you
+   have one), and clear it (set-option -u) when you end. The pid must be your adapter's own process (exec it after
+   setting $$; a mark naming a shell, or a pane whose foreground program is a shell, does not count, so the
+   adapter itself must not be a shell script), the pane's process or one under it, so a value left before a
+   respawn does not count;
+   with @altention_session it must match the channel's conversation. The pane's @altention_channel tag must be the
+   channel's. The route table then takes the new process id, and from then on the bot types into and reads that
+   pane as it does a Claude Code's while the mark stays valid. Without the mark, the pane counts as gone. dcremote
+   has a new read-only command, pid-under.
+4. `altention dc post <channel> --reset --why "…" [--then "…"]` starts a new conversation in a channel, the way the
+   owner's !reset does (the old one stays for !resume; nothing is typed into the terminal). In your own channel it
+   waits for your turn to end, then tells the new conversation to read your handover (or gives it --then's words);
+   if that turn is stopped or fails and a new one begins, the reset is dropped and the channel says so.
+   In another channel it is done only while that channel is idle (no turn, background work, subagent, workflow or
+   queued message), otherwise refused with the reason; there is no force. Each one is written to #audit and said in
+   that channel.
+5. `altention dc post <channel> --delete <message id> --why "…"` takes back a message the bot's records show you
+   posted: not the bot's cards, boards, Claude's replies or notices, and in another channel only one that carries a
+   "from" line or a 📨 card. Each one is written to #audit with the reason and its first words; one already gone is
+   no error. What another channel's Claude has already read cannot be taken back.
+6. The new rollback rule (no rollback of a version far from the last good one) is in the supervisor, and the
+   supervisor already running keeps the old rule: until it restarts (a reboot, or as SUPERVISOR-RESCUE.md says), a
+   new version that fails to start is rolled back whole, as before.
+
 ## v0.6.0 — 2026-11-19
 
 ### For people

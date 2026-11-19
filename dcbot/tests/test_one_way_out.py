@@ -38,7 +38,8 @@ CALLS = {
     ("archive.py", "cat.edit(position="): "the archive category moved: not a message",
     ("archive.py", "ch.edit(category="): "a channel moved into or out of the archive (with its topic): not a message",
     ("archive.py", "ch.edit(topic="): "an archived channel's topic: not a message",
-    ("main.py", "ch.edit(name="): "a channel renamed (!rename): not a message",
+    ("reconcile.py", "ch.edit(topic="): "an attached channel's topic following its tmux session (C-201 2a): not a message",
+    ("rename.py", "ch.edit(name="): "a channel renamed (/rename and what follows it, C-201 2b): not a message",
     ("main.py", "ch.edit(category="): "a channel put in the archive with its topic: not a message",
 }
 

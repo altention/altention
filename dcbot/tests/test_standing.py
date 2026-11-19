@@ -216,24 +216,87 @@ class Callers(unittest.TestCase):
         class Stop(Exception):
             pass
 
+        nap = asyncio.sleep
+
         async def go(answers):
             self.answers = answers
             with fakepane.use(alive=self.alive), mock.patch.object(tmux_bridge, "write_settings", lambda: None), \
                     mock.patch.object(self.bridge, "read_words", mock.AsyncMock()), mock.patch.object(self.bridge, "remember_pids", mock.AsyncMock()), \
                     mock.patch.object(self.bridge, "start_streams", lambda: None), mock.patch.object(self.bridge, "watch", lambda *a: watched.append(1)), \
                     mock.patch.object(self.bridge, "pump_once", mock.AsyncMock(side_effect=Stop())), \
-                    mock.patch.object(tmux_bridge.remote, "problem", None), mock.patch("traceback.print_exc"), \
-                    mock.patch.object(tmux_bridge.asyncio, "sleep", mock.AsyncMock(side_effect=Stop())):
-                try:
-                    await self.bridge.pump()
-                except Stop:
-                    pass
+                    mock.patch.object(tmux_bridge.remote, "problem", None), mock.patch("traceback.print_exc"):
+                with mock.patch.object(tmux_bridge.asyncio, "sleep", mock.AsyncMock(side_effect=Stop())):
+                    try:
+                        await self.bridge.pump()
+                    except Stop:
+                        pass
+                for _ in range(5):  # look_again() runs on a task of its own (manager 11-19): let it finish
+                    await nap(0)
         asyncio.run(go([None]))
         self.assertEqual(self.said(), "")
         self.assertEqual((self.st.get("busy"), self.st.get("bg"), watched), (True, 2, [1]), "kept, and watched until its machine answers")
         asyncio.run(go([False]))
         self.assertIn("tmux 對話不見了", self.said(), "gone for a fact: said as ever")
         self.assertEqual((self.st.get("busy"), self.st.get("bg")), (False, None))
+
+    def test_a_machine_that_hangs_keeps_no_event_waiting_at_start(self):
+        """The 11-18 rollback (manager 11-19): at start pump() asked each busy channel's machine in turn (look_again(),
+        remember_pids()) before its first round; ssh timeouts in a row kept the self test unread past the trial.
+        Now each on a task of its own: the first round comes at once, whatever the machines do."""
+        self.st.update({"busy": True})
+        self.st["pane"] = {k: v for k, v in FAR.items() if k != "pid"}  # (remember_pids() asks for it too)
+        self.bridge.host.get_channel = lambda cid: self.ch
+        self.bridge.host.channels_state = {str(self.ch.id): self.st}
+        asked, rounds = [], []
+
+        class Stop(Exception):
+            pass
+
+        async def hangs(t):
+            asked.append(t)
+            await asyncio.Event().wait()  # never answers
+
+        async def first_round():
+            rounds.append(len(asked))
+            raise Stop()
+
+        async def go():
+            with fakepane.use(alive=hangs), mock.patch.object(tmux_bridge, "write_settings", lambda: None), \
+                    mock.patch.object(self.bridge, "read_words", mock.AsyncMock()), \
+                    mock.patch.object(self.bridge, "start_streams", lambda: None), \
+                    mock.patch.object(self.bridge, "pump_once", first_round), \
+                    mock.patch.object(tmux_bridge.remote, "problem", None), mock.patch("traceback.print_exc"):
+                real = asyncio.sleep
+                with mock.patch.object(tmux_bridge.asyncio, "sleep", mock.AsyncMock(side_effect=Stop())):
+                    try:
+                        await asyncio.wait_for(self.bridge.pump(), 5)
+                    except Stop:
+                        pass
+                await real(0.05)
+                left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+                for t in left:  # (the two still asking)
+                    t.cancel()
+                await asyncio.gather(*left, return_exceptions=True)
+        asyncio.run(go())
+        self.assertEqual(len(rounds), 1, "the first round came")
+        self.assertGreaterEqual(len(asked), 2, "both asked meanwhile, on tasks of their own: %r" % asked)
+        self.assertEqual(self.said(), "", "nothing said of a machine that has not answered")
+        self.assertTrue(self.st.get("busy"))
+
+    def test_an_answer_about_a_window_the_channel_left_meanwhile_is_not_acted_on(self):
+        """look_again() on a task: a message moved the channel to another window while the old one's machine was
+        asked; its "gone" is not this channel's any more."""
+        self.st.update({"busy": True})
+        self.bridge.host.get_channel = lambda cid: self.ch
+
+        async def gone_later(t):
+            self.st["pane"] = dict(FAR, id="%9")  # meanwhile
+            tmuxio.asked(t, answered=True)
+            return False
+        with fakepane.use(alive=gone_later), mock.patch.object(tmux_bridge.remote, "problem", None):
+            asyncio.run(self.bridge.look_again(str(self.ch.id), self.st))
+        self.assertEqual(self.said(), "")
+        self.assertTrue(self.st.get("busy"))
 
     def far_silent(self):
         self.answers = [None]

@@ -360,21 +360,37 @@ class PaneFollowed(Base):
         with mock.patch.object(tmux_bridge.tmuxio, "UNANSWERED", set()):
             return super().run(result)
 
-    def ensure(self, now, sid):
+    def ensure(self, now, sid, session_id="conv-1", pane=None, home=None):
         self.st.pop("tmux", None)
-        self.st.update({"pane": dict(self.PANE), "session_id": "conv-1"})
+        self.st.update({"pane": dict(pane or self.PANE)})
+        if home:
+            self.st["home"] = home
+        self.st.pop("session_id", None)
+        if session_id:
+            self.st["session_id"] = session_id
         tmux, audits, asked = Tmux(self), [], []
 
         async def pane_session_id(pane):
             asked.append(pane)
+            if isinstance(sid, Exception):
+                raise sid
             return sid
 
         async def audit(text):
             audits.append(text)
         self.bridge.host.pane_session_id, self.bridge.host.audit = pane_session_id, audit
-        with mock.patch.object(tmux_bridge.tmuxio, "moved_on", mock.AsyncMock(return_value=now)):
+        with mock.patch.object(tmux_bridge.tmuxio, "moved_on", mock.AsyncMock(return_value=now)), \
+                mock.patch.object(tmux_bridge, "AGAIN_SECS", 0):
             err = self.go(self.bridge.ensure(self.ch, self.st, self.rt), tmux)
         return err, audits, asked
+
+    def rebound(self):
+        """bind_any() calls (go() puts an AsyncMock there: self.bound)."""
+        return [(c.args[0]["pid"], c.args[0].get("host"), c.args[1], c.kwargs.get("tag", True)) for c in self.bound.await_args_list]
+
+    def marked(self, **kw):
+        """What moved_on() says of an adapter that marked its pane (C-198: @altention_agent, valid)."""
+        return dict({"pid": "222", "session": "pa", "cwd": "/w", "tag": str(self.ch.id), "agent": "pi", "agent_session": ""}, **kw)
 
     def test_the_same_conversation_in_the_same_pane_is_followed(self):
         err, audits, asked = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, "conv-1")
@@ -384,6 +400,7 @@ class PaneFollowed(Base):
         self.assertEqual(len(audits), 1)
         self.assertIn("111 → 222", audits[0])
         self.assertIn("conv-1", audits[0])
+        self.assertEqual(self.rebound(), [(222, "lap", self.ch.id, False)], "the route follows too")
 
     def test_another_conversation_there_is_the_pane_gone_as_before(self):
         err, audits, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, "conv-2")
@@ -391,9 +408,103 @@ class PaneFollowed(Base):
         self.assertEqual(self.st["pane"]["pid"], 111, "the record left as it was")
         self.assertEqual(audits, [])
 
-    def test_a_conversation_not_known_is_the_pane_gone(self):
+    def test_a_conversation_not_known_is_said_as_being_made_sure_of(self):
+        """Manager 11-20 (C-198 drill, the words): a new Claude there whose conversation is not known yet is not
+        "runs no Claude Code any more"; not sent all the same."""
         err, _, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, None)
         self.assertEqual(err.why, N.PANE_GONE)
+        self.assertIn("剛重開", str(err))
+        self.assertIn("還在確認是不是同一個對話", str(err))
+        self.assertNotIn("沒有在跑 Claude Code", str(err))
+        err, _, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w"}, "conv-2")
+        self.assertIn("沒有在跑 Claude Code", str(err), "another conversation there: as before")
+
+    def test_an_adapter_that_marked_its_pane_is_followed_by_the_tag_and_said_quietly(self):
+        """C-198 (manager 11-18): an adapter's pane respawned writes no Claude Code process record; the pane's tag for
+        this channel (kept through respawn-pane) and the adapter's own mark are the proof, said in the channel too,
+        quietly. No Claude Code record is asked for."""
+        for session_id, agent_session in (("conv-1", ""), (None, ""), ("conv-1", "conv-1"), (None, "pi-1")):
+            with self.subTest(session_id=session_id, agent_session=agent_session):
+                self.ch.sent = []
+                err, audits, asked = self.ensure(self.marked(agent_session=agent_session), "conv-x", session_id=session_id)
+                self.assertIsNone(err)
+                self.assertEqual((self.st["pane"]["pid"], asked), (222, []))
+                self.assertEqual(len(audits), 1)
+                self.assertIn("111 → 222", audits[0])
+                self.assertIn("換成 pi，照窗格上這個頻道的標籤和它自己留的標記接回", audits[0])
+                said = [m for m in self.ch.sent if "窗格重開過" in (m.content or "")]
+                self.assertEqual([(m.content, m.silent) for m in said], [("-# 這個頻道的窗格重開過，已經接回同一個窗格", True)])
+                self.assertEqual(self.rebound(), [(222, "lap", self.ch.id, False)],
+                                 "another machine's route written there (#code-review-2 on e30ad2b3)")
+
+    def test_an_adapter_with_another_conversation_is_not_followed(self):
+        err, audits, _ = self.ensure(self.marked(agent_session="pi-2"), None, session_id="pi-1")
+        self.assertEqual(err.why, N.PANE_GONE, "C-201 2a's rules for another conversation (manager 11-18)")
+        self.assertEqual((self.st["pane"]["pid"], audits, self.rebound()), (111, [], []))
+
+    def test_no_mark_is_never_followed_by_the_tag(self):
+        """Manager 11-18: nothing guessed: no Claude Code record and no adapter's mark is the pane gone, as before;
+        the record that could not be read is asked once more first."""
+        tagged = {"pid": "222", "session": "pa", "cwd": "/w", "tag": str(self.ch.id), "agent": "", "agent_session": ""}
+        for sid, times in ((None, 1), (RuntimeError("no answer"), 2)):
+            with self.subTest(sid=sid):
+                self.ch.sent = []
+                err, audits, asked = self.ensure(tagged, sid)
+                self.assertEqual(err.why, N.PANE_GONE)
+                self.assertEqual((self.st["pane"]["pid"], audits, self.rebound()), (111, [], []))
+                self.assertEqual(len(asked), times)
+                self.assertFalse([m for m in self.ch.sent if "窗格重開過" in (m.content or "")])
+
+    def test_a_pane_of_this_machine_followed_by_the_tag_takes_the_route_and_its_events_come_in(self):
+        """#code-review-2 on e30ad2b3: the route kept the old pid, so the new process's events were a stranger's."""
+        import tempfile
+        from bot import routecore, routes
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        local = {"socket": "/tmp/x/default", "id": "%7", "pid": 111}
+        with mock.patch.object(routecore, "ROUTES", os.path.join(d, "routes.json")):
+            routes.bind(local, self.ch.id)
+            err, _, _ = self.ensure(self.marked(), None, session_id=None, pane=local)
+            self.assertIsNone(err)
+            self.assertEqual(routecore.load(), {"/tmp/x/default|%7": {"channel": str(self.ch.id), "pid": "222"}})
+
+    def test_a_window_this_bot_opened_here_writes_no_route(self):
+        """#code-review low on b6420e2d: a window the bot opened in this machine's tmux reports through its
+        --settings; its route table entry is left as it is (as remember_pids())."""
+        import tempfile
+        from bot import routecore
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        local = {"socket": "/tmp/x/default", "id": "%7", "pid": 111}
+        st = {"pane": local, "home": {"session": "work"}, "cwd": "/w"}
+
+        async def audit(text):
+            pass
+        self.bridge.host.audit = audit
+        with mock.patch.object(routecore, "ROUTES", os.path.join(d, "routes.json")), \
+                mock.patch.object(tmux_bridge.tmuxio, "moved_on", mock.AsyncMock(return_value=self.marked())):
+            import asyncio
+            self.assertTrue(asyncio.run(self.bridge.pane_again(self.ch, st)))  # (the look asks it: ensure() opens home windows apart)
+            self.assertEqual(st["pane"]["pid"], 222)
+            self.assertEqual(routecore.load(), {})
+            st = {"pane": dict(local, host="lap"), "home": {"session": "work", "host": "lap"}, "cwd": "/w"}
+            with mock.patch.object(tmux_bridge.routes, "bind_any", mock.AsyncMock()) as bound:
+                self.assertTrue(asyncio.run(self.bridge.pane_again(self.ch, st)))
+            self.assertEqual(bound.await_count, 1, "one opened on another machine: its route written there")
+
+    def test_its_conversation_read_and_another_is_not_followed_whatever_its_tag(self):
+        err, audits, _ = self.ensure({"pid": "222", "session": "pa", "cwd": "/w", "tag": str(self.ch.id), "agent": ""}, "conv-2")
+        self.assertEqual(err.why, N.PANE_GONE, "another conversation: C-201 2a's rules, not the tag (manager 11-18)")
+        self.assertEqual(self.st["pane"]["pid"], 111)
+        self.assertEqual(audits, [])
+
+    def test_marked_and_tagged_for_another_channel_or_none_is_the_pane_gone(self):
+        for tag in ("99", ""):
+            with self.subTest(tag=tag):
+                err, audits, _ = self.ensure(self.marked(tag=tag), None)
+                self.assertEqual(err.why, N.PANE_GONE)
+                self.assertEqual(self.st["pane"]["pid"], 111)
+                self.assertEqual(audits, [])
 
     def test_no_claude_there_is_the_pane_gone(self):
         err, _, asked = self.ensure(None, "conv-1")
@@ -402,23 +513,114 @@ class PaneFollowed(Base):
 
 
 class MovedOn(unittest.TestCase):
-    def ask(self, pane, out, under=None):
+    def ask(self, pane, out, under=None, agent=""):
         import asyncio
         from bot import tmuxio
 
         async def tmux(*a, **k):
             return 0, out
         with mock.patch.object(tmuxio, "tmux", tmux), mock.patch.object(tmuxio, "claude_under", mock.AsyncMock(return_value=under)), \
+                mock.patch.object(tmuxio, "marked_agent", mock.AsyncMock(return_value=agent)), \
                 mock.patch.object(tmuxio, "UNANSWERED", set()):
             return asyncio.run(tmuxio.moved_on(pane))
 
     def test_moved_on(self):
         pane = {"socket": "/tmp/x/default", "id": "%7", "pid": 111}
-        self.assertEqual(self.ask(pane, "claude\t222\tpa\t/w\n"), {"pid": "222", "session": "pa", "cwd": "/w"})
+        self.assertEqual(self.ask(pane, "claude\t222\tpa\t/w\t\n"), {"pid": "222", "session": "pa", "cwd": "/w", "tag": "",
+                                                                    "agent": "", "agent_session": ""})
+        self.assertEqual(self.ask(pane, "python3\t222\tpa\t/w\t5\tpi|222\tpi-1\n", under=False, agent="pi"),
+                         {"pid": "222", "session": "pa", "cwd": "/w", "tag": "5", "agent": "pi", "agent_session": "pi-1"},
+                         "an adapter's valid mark: no Claude needed (C-198)")
+        self.assertEqual(self.ask(pane, "claude\t222\tpa\t/w\t5\n")["tag"], "5", "the channel it is tagged for (C-198)")
         self.assertIsNone(self.ask(pane, "claude\t111\tpa\t/w\n"), "the same pid: nothing moved")
         self.assertIsNone(self.ask(pane, "bash\t222\tpa\t/w\n", under=False), "a shell there")
         self.assertIsNone(self.ask(dict(pane, pid=None), "claude\t222\tpa\t/w\n"), "no pid recorded")
         self.assertIsNone(self.ask(dict(pane, shell=True), "claude\t222\tpa\t/w\n"))
+
+
+class MarkedAgent(unittest.TestCase):
+    """C-198 (manager 11-18): an adapter's mark "<agent>|<pid>" counts only when its pid is the pane's process or one
+    under it: a mark left before a respawn-pane names a process no longer the pane's."""
+
+    def test_this_machine(self):
+        import asyncio
+        from bot import tmuxio
+        me, parent = os.getpid(), os.getppid()
+        cases = (("pi|%d" % me, me, "pi"), ("codex|%d" % me, parent, "codex"), ("pi|%d" % parent, me, ""),
+                 ("pi|999999999", me, ""), ("pi", me, ""), ("|%d" % me, me, ""), ("", me, ""), ("pi|x", me, ""),
+                 ("a|b|%d" % me, me, "a|b"))
+        for mark, pane_pid, want in cases:
+            with self.subTest(mark=mark, pane_pid=pane_pid):
+                self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7"}, str(pane_pid), mark)), want)
+
+    def test_a_shell_named_by_the_mark_does_not_count(self):
+        """#code-review-2 low on 6d91c5b7 (manager: fixed now): a mark naming a shell (set from an interactive shell,
+        or a wrapper's $$ with no exec) would keep the shell "an adapter" after the adapter ended, typed into."""
+        import asyncio
+        import subprocess
+        from bot import tmuxio
+        me = os.getpid()
+        for argv, want in ((["bash", "-c", "sleep 30; :"], ""), (["sh", "-c", "sleep 30; :"], ""), (["sleep", "30"], "pi")):
+            with self.subTest(argv=argv[0]):
+                p = subprocess.Popen(argv)
+                self.addCleanup(p.wait)
+                self.addCleanup(p.kill)
+                import time
+                for _ in range(100):  # (its own name once it has exec'd)
+                    if tmuxio.cc_process.name_of(p.pid) == argv[0]:
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7"}, str(me), "pi|%d" % p.pid)), want)
+        with mock.patch.object(tmuxio.cc_process, "name_of", lambda pid: "zsh"):
+            self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7"}, str(me), "pi|%d" % me)), "")
+        for shell in ("dash", "fish"):
+            self.assertIn(shell, tmuxio.cc_process.SHELLS)
+
+    def test_another_machine(self):
+        import asyncio
+        from bot import remote, tmuxio
+        for code, out, want in ((0, "1\n", "pi"), (0, "0\n", ""), (1, "", None), (255, "", None)):  # (no answer: not
+            # known, None; manager 11-20, both reviews of b641f556)
+            with self.subTest(code=code, out=out):
+                ask = mock.AsyncMock(return_value=(code, out))
+                with mock.patch.object(remote, "dcremote", ask):
+                    self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7", "host": "lap"}, "222", "pi|333")), want)
+                self.assertEqual(ask.await_args.args, ("lap", "pid-under", "222", "333"))
+
+
+class AliveByMark(unittest.TestCase):
+    """C-198 (#code-review-2 on fffc1f4a, manager 11-18): alive() takes an adapter by its valid mark too, judged by the
+    same marked_agent() as moved_on(); a Claude needs no mark, and a pane without one is asked nothing more."""
+
+    def alive(self, out, under, agent):
+        import asyncio
+        from bot import tmuxio
+
+        async def tmux(*a, **k):
+            return 0, out
+        marked = mock.AsyncMock(return_value=agent)
+        with mock.patch.object(tmuxio, "tmux", tmux), mock.patch.object(tmuxio, "claude_under", mock.AsyncMock(return_value=under)), \
+                mock.patch.object(tmuxio, "marked_agent", marked), mock.patch.object(tmuxio, "UNANSWERED", set()):
+            got = asyncio.run(tmuxio.alive({"socket": "/tmp/x/default", "id": "%7", "pid": 222}))
+        return got, [c.args[1:] for c in marked.await_args_list]
+
+    def test_alive(self):
+        self.assertEqual(self.alive("node\t222\tpi|222\n", False, "pi"), (True, [("222", "pi|222", "node")]))
+        self.assertEqual(self.alive("node\t222\tpi|111\n", False, ""), (False, [("222", "pi|111", "node")]), "a mark not valid")
+        self.assertEqual(self.alive("node\t222\t\n", False, ""), (False, [("222", "", "node")]))
+        self.assertEqual(self.alive("claude\t222\t\n", None, ""), (True, []), "Claude itself: no mark asked")
+        self.assertEqual(self.alive("node\t222\n", True, ""), (True, []), "Claude under it")
+        self.assertEqual(self.alive("node\t333\tpi|333\n", False, "pi"), (False, []), "another pid than the recorded one")
+
+    def test_back_at_a_shell_is_not_alive_whatever_the_mark(self):
+        """#code-review low 1 on 6d91c5b7 (manager): tmux's foreground program a shell: not taken by the mark."""
+        import asyncio
+        from bot import tmuxio
+        for shell in ("bash", "zsh", "sh", "dash", "fish", "-bash"):
+            with self.subTest(shell=shell), mock.patch.object(tmuxio.cc_process, "adapter_pid", lambda top, pid: True):
+                self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7"}, "222", "pi|222", shell)), "")
+        with mock.patch.object(tmuxio.cc_process, "adapter_pid", lambda top, pid: True):
+            self.assertEqual(asyncio.run(tmuxio.marked_agent({"id": "%7"}, "222", "pi|222", "node")), "pi")
 
 
 class SettingsFile(unittest.TestCase):

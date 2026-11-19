@@ -553,6 +553,25 @@ try:  # routes and the bot's channels that point at a pane that is no longer the
     o["panes_gone"] = {k: sorted(v) for k, v in _gone.items()}
 except Exception:
     pass
+try:  # C-201: what the bot's look last found of each channel's pane (dcbot/bot/reconcile.py: where.seen)
+    _cs = rj(os.path.join(H(ENGINE), "dcbot/state/channels.json"))
+    _w = {"gone": [], "unsure": [], "unknown": [], "at": 0}
+    for _cid, _st in (_cs.items() if isinstance(_cs, dict) else []):
+        _seen = ((_st.get("where") or {}).get("seen") or {}) if isinstance(_st, dict) and isinstance(_st.get("where"), dict) else {}
+        if not isinstance(_seen, dict) or not _seen:
+            continue
+        if isinstance(_seen.get("at"), (int, float)) and not isinstance(_seen.get("at"), bool):
+            _w["at"] = max(_w["at"], _seen["at"])
+        if _seen.get("state") == "unsure":
+            _w["unsure"].append(str(_cid))
+        elif _seen.get("known") == "gone" and _seen.get("state") in ("gone", "unknown"):
+            _w["gone"].append(str(_cid))
+        elif _seen.get("state") == "unknown":
+            _w["unknown"].append(str(_cid))
+    if _w["at"]:
+        o["where_seen"] = {k: (sorted(v) if isinstance(v, list) else v) for k, v in _w.items()}
+except Exception:
+    pass
 _pf = os.path.join(H(ENGINE), "dcbot/state/posts-failed")  # the bot: notifications it could show nowhere
 o["posts_failed"], o["cards_failed"] = 0, 0  # an update card ("card", C-57 D2) is the bot's to retry: said once it kept failing
 for _n in (os.listdir(_pf) if os.path.isdir(_pf) else []):
@@ -824,7 +843,7 @@ def tidy(o):
     fix(o, "skills_expected", texts)
     for key in ("sync", "last_ok", "cron_logs", "update_skipped", "update_blocked", "timezone", "schedule_record", "instance_held",
                 "fallbacks", "engine_paths", "typed_as_paste", "enter_differs", "ownerless", "cron_added", "usage_failed", "planner_secretary",
-                "entry_links", "bot_permissions"):
+                "entry_links", "bot_permissions", "where_seen"):
         fix(o, key, obj, dict)
     fix(o, "intervals", obj)
     fix(o, "chatlog_big", lambda v: isinstance(v, list) and all(isinstance(i, (list, tuple)) and len(i) == 2 and text(i[0]) and num(i[1])
@@ -1774,6 +1793,19 @@ def check(name, m, head, instance_repo=None):
                           if (_r or _c) else "",
                           "只列出，沒有刪：還要的頻道在新的窗格 /attach 接回；不要的在那個頻道 /detach 卸下" if (_r or _c) else "",
                           {"routes": len(_r), "channels": len(_c)}))
+    if isinstance(o.get("where_seen"), dict) and "dcbot" in roles:  # shown, not told (C-201): the look's last findings
+        _ws = o["where_seen"]
+        _g, _t = [c for c in _ws.get("gone") or [] if isinstance(c, str)], [c for c in _ws.get("unsure") or [] if isinstance(c, str)]
+        _at = _time(_ws.get("at"))
+        _late = _at is not None and o.get("now") and o["now"] - _at > WHERE_LATE
+        out.append(record("dcbot.where", name, "warn" if (_g or _t or _late) else "ok",
+                          "；".join(([("%d 個頻道的窗格不見了（頻道 %s）" % (len(_g), "、".join(_g[:5])))] if _g else []) +
+                                   ([("%d 個頻道的紀錄沒有窗格的程序，對帳不確定窗格是不是同一個（頻道 %s）" % (len(_t), "、".join(_t[:5])))] if _t else []) +
+                                   ([("機器人上次對帳是 %s，之後沒有再對（機器人沒在跑，或對帳停了）" % stamp(_at))] if _late else []))
+                          if (_g or _t or _late) else "",
+                          "窗格不見了的：在那台把 Claude Code 開起來再 /attach，或不要了就在那個頻道 /detach；不確定的：在那個頻道 "
+                          "/detach 再 /attach 一次（會記下程序）；對帳停了：看 %s 上 dcbot/state/supervisor.out 裡 [look] 開頭的行" % name
+                          if (_g or _t or _late) else "", {"gone": len(_g), "unsure": len(_t)}))
     if "ownerless" in o and "dcbot" in roles:  # shown, not told: for the owner to decide, nothing is failing
         kept = (o.get("ownerless") or {}).get("kept")
         kept = [k for k in kept if isinstance(k, dict) and isinstance(k.get("name"), str)] if isinstance(kept, list) else []
@@ -2260,6 +2292,7 @@ WRONG_LOGIN = {  # how the bot's last run ended, as discord.py names it in super
                 "%s 上的機器人下一次重試就會連上（引擎 %s）"),
 }
 ENTER_DIFFERS = 3  # times in a week the bot's own box differed from what it typed before doctor warns
+WHERE_LATE = 600  # seconds since the bot's last look (C-201: every 2 minutes) before doctor says it stopped
 REPORT_STALE = 45  # minutes: an apply report older than this is no report (one is worked out every 15)
 REPORT_AHEAD = 5   # minutes: one dated further ahead than this is not believed (clocks differ by seconds, not minutes)
 

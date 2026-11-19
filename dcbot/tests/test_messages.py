@@ -30,6 +30,7 @@ class Words(unittest.TestCase):
              "notes.resend.done", "notes.resend.handed", "notes.resend.expired", "notes.resend.still",
              "notes.resend.given_up", "notes.resend.failed", "notes.resend.press_failed",
              "notes.resend.recovered",  # (C-74)
+             "notes.post.not_entered", "notes.post.refused",  # (C-202)
              "notes.claude_code.resume_ended",  # (C-161)
              "notes.claude_code.no_start"}  # (wait_ready gave up: why)
 
@@ -43,7 +44,7 @@ class Words(unittest.TestCase):
             for code, row in rows.items():
                 now["%s.%s" % (group, code)] = row[-1] if isinstance(row, tuple) else row
         now.update({"cleared.%s" % how: said for how, said in messages.CLEARED.items()})
-        self.SINCE = self.SINCE | set(key for key in now if key.startswith(("far.", "secret.", "quota.", "calls.", "cc.", "lease.", "pause.", "menus.", "perms.")))  # (2.6f, C-77 G3b, C-103, C-162, C-163, C-184, C-189, C-191:
+        self.SINCE = self.SINCE | set(key for key in now if key.startswith(("far.", "secret.", "quota.", "calls.", "cc.", "lease.", "pause.", "menus.", "perms.", "where.", "reconcile.", "rename.", "reset.")))  # (v0.6.1 --reset; 2.6f, C-77 G3b, C-103, C-162, C-163, C-184, C-189, C-191, C-201:
         # groups of after the move)
         self.assertEqual(sorted(set(now) - self.SINCE), sorted(self.before), "a code without its sentence of before, or the other way round")
         self.assertTrue(self.SINCE <= set(now), "a code said to be new is not there")

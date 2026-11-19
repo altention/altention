@@ -36,7 +36,7 @@ from altention.connectors.claude_code import sessions as cc_sessions
 from altention.sources import check as srccheck
 
 from . import agentanswer, config, deliver, events, files, frames, fromkeys, kinds, layout, ledger, messages, payloads, pending, \
-    pinimport, postbox, rawpost, remote, rules, senders, sentids, sources, tmuxio, util
+    masking, pinimport, postbox, rawpost, remote, rules, senders, sentids, sources, tmuxio, util
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 CONTINUE_PER_DAY = 2  # a Claude's --talk-continue, per pair and day (C-176, manager 11-11)
@@ -325,6 +325,8 @@ class Posts(object):
         self.timing = {}  # id(post) -> {"shown", "handing", "locked": when}: for slow()'s line (C-75)
         from .pauses import Pauses
         self.pauses = Pauses(self)  # C-184: channels paused until a time (altention dc post --pause-until)
+        from .resets import Resets
+        self.resets = Resets(self)  # v0.6.1: a new conversation asked by a Claude (altention dc post --reset)
 
     def later(self, coro):
         """Run `coro` in a task of its own; what it raises is printed (not asyncio's "never retrieved")."""
@@ -524,8 +526,14 @@ class Posts(object):
             return replied(*await self.pauses.pause(ch, sender_ch, sender, post))
         if post.get("unpause"):
             return replied(*await self.pauses.unpause(ch, sender, post))
+        if post.get("reset"):  # v0.6.1: a new conversation, as the owner's !reset (bot/resets.py)
+            p = self.pauses.of(ch.id)
+            return replied(*await self.resets.ask(ch, sender_ch, sender, post,
+                                                  paused=self.pauses.shown_until(p) if p else None))
         if post.get("drop_held"):  # C-199: what a paused channel holds, dropped by its own Claude
             return replied(*await self.pauses.drop(ch, sender_ch, sender, post))
+        if post.get("rename"):  # C-201 2b: as /rename, the card saying whose (bot/rename.py)
+            return replied(*await self.bot.renamer.by_agent(ch, sender_ch, post))
         if post.get("answer") or post.get("talk_continue"):  # they would set a paused channel's Claude working
             refused = self.pauses.refused(ch)
             if refused:
@@ -536,6 +544,8 @@ class Posts(object):
             return replied(*await agentanswer.answer(self.bot.tmux, ch, sender_ch, post))
         if post.get("talk_continue"):  # C-176: one more stretch past the talk limit, as 繼續轉交
             return replied(*await self.talk_continue(ch, sender_ch, post))
+        if post.get("delete_message"):  # altention dc post --delete: a post of the sender's own taken away
+            return await self.delete_post(ch, sender_ch, sender + vouched(post), post)
         if "json" in post and post.get("board"):  # --board --json: a framed board (C-172a P1d)
             return await self.board_json(ch, post["board"], post, sender + vouched(post))
         if "json" in post:  # altention dc post --json: a payload posted as it is, never handed to a Claude (C-172a P1d)
@@ -610,6 +620,57 @@ class Posts(object):
                                  len(got))
             else:
                 sent(await deliver.deliver(ch, part, allowed_mentions=quiet, intent="post", frm=sender_said(), **asked(i)))
+
+    async def delete_post(self, ch, sender_ch, words, post):
+        """altention dc post --delete <message id> --why (manager 11-17, the rules the design put in bot/rules.py):
+        only a post the ledger has as the sender's own (rules.change_refused(delete=True)): never a card, a board, a
+        reply or notice of the bot's; in another's channel only one that says where it comes from (its source line or
+        its 📨 card; a Claude's posted there before P1d has neither), a program's by its key alone (it never gets the
+        line). Taken away (deliver.remove(): its ledger entry goes too) and said in #audit with the reason given; a
+        message already gone is no error. Answered through the receipt (altention dc post waits for it)."""
+        mid, why_given = str(post.get("delete_message") or ""), str(post.get("why") or "").strip()
+        how = "post --delete"
+        key = sender_key(post, sender_ch)
+        server = getattr(self.bot, "get_guild", lambda gid: None)(config.GUILD_ID)
+        entry = ledger.entry(mid, ch.id) if mid.isdigit() else None
+        why = ("--delete 要給訊息 ID" if not mid.isdigit() else None) \
+            or rules.change_refused(entry, key, how, fromkeys.ids_in(server), delete=True)
+        if not why and not ({"source", "card"} & set(entry.get("framed") or ())):
+            got = senders.parse(key)
+            own = got and got[0] == "channel" and await self.home(got[1]) == await self.home(ch.id)
+            if not (own or (got and got[0] == "program")):
+                why = "%s：沒有刪：這則在別人的頻道卻沒有來源行（%s 之前發的），看不出是誰發的，不能用工具刪" % (util.tool(how), "C-172a P1d")
+        if why:
+            await self.bot.audit("[altention dc post --delete] #%s：%s（%s）" % (ch.name, why, words))
+            return replied(False, why)
+        said = await self.said_in(ch, int(mid))  # (what it said, for #audit: the other Claude may have read it; manager)
+        try:
+            await deliver.remove(ch, int(mid))
+            gone = False
+        except discord.NotFound:
+            gone = True  # (deleted by hand already: its entry went with it)
+        except discord.HTTPException as e:
+            said = "Discord 沒收（%s %s）：%s" % (e.status, e.code, str(e.text)[:300])
+            await self.bot.audit("[altention dc post --delete] #%s：沒有刪訊息 %s：%s（%s）" % (ch.name, mid, said, words))
+            return replied(False, "%s：沒有刪：%s" % (util.tool(how), said))
+        await self.bot.audit("[altention dc post --delete] #%s %s訊息 %s（%s 發的%s；理由：%s）" % (
+            ch.name, "要刪的已經不在了：" if gone else "刪了", mid, words, "，內容：「%s」" % said if said else "", why_given))
+        return replied(True, "訊息 %s %s" % (mid, "已經不在了（之前就刪掉了）" if gone else "刪掉了"))
+
+    DELETED_SHOWN = 60  # characters of a deleted post kept in #audit
+    FETCH_SECS = 5
+
+    async def said_in(self, ch, mid):
+        """The first words of a message (its text, its 📨 card's, its Components V2's), masked, on one line; None when
+        it cannot be read (gone, no answer in FETCH_SECS)."""
+        try:
+            msg = await asyncio.wait_for(ch.fetch_message(mid), self.FETCH_SECS)
+        except Exception:
+            return None
+        text = (getattr(msg, "content", "") or "") or util.embed_text(getattr(msg, "embeds", None)) \
+            or util.components_text(getattr(msg, "components", None))
+        text = " ".join(masking.mask(text)[0].split())
+        return (text[:self.DELETED_SHOWN] + "…" if len(text) > self.DELETED_SHOWN else text) or None
 
     async def from_json(self, ch, sender_ch, words, post):
         """altention dc post --json (C-172a P1d): one message's payload, posted as it is (--edit: that message of the

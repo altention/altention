@@ -94,6 +94,42 @@ def runs_claude(command, pid, procs=None):
     return any(claude_argv(procs[p][1]) for p in under(pid, procs) if p in procs and procs[p][2] == front)
 
 
+def pid_under(top, pid, procs=None):
+    """Is process `pid` process `top` itself or one under it (table())? False when either is not in the table or
+    either is no process id. C-198: an adapter's mark (@altention_agent) counts only for a process of the pane."""
+    try:
+        top, pid = int(top), int(pid)
+    except (TypeError, ValueError):
+        return False
+    procs = table() if procs is None else procs
+    return top in procs and pid in procs and pid in under(top, procs)
+
+
+SHELLS = ("bash", "zsh", "sh", "dash", "fish")
+
+
+def name_of(pid):
+    """The process's own name (/proc/<pid>/comm; elsewhere `ps -o comm=`), without a login shell's "-"; "" when it
+    cannot be read."""
+    try:
+        with open("/proc/%d/comm" % int(pid)) as f:
+            name = f.read().strip()
+    except (OSError, ValueError):
+        try:
+            name = subprocess.run(["ps", "-o", "comm=", "-p", str(int(pid))], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, universal_newlines=True, timeout=TIMEOUT).stdout.strip()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return ""
+    return os.path.basename(name).lstrip("-")
+
+
+def adapter_pid(top, pid, procs=None):
+    """May process `pid` stand for an adapter in the pane whose process is `top` (C-198 @altention_agent)? It is
+    `top` or under it (pid_under()), and no shell (SHELLS, by its own name): a mark naming a shell would make the
+    shell an adapter after the adapter ended, and messages typed into it (#code-review-2 on 6d91c5b7, manager)."""
+    return pid_under(top, pid, procs) and name_of(pid) not in SHELLS
+
+
 class Lazy:
     """For a listing: table() read the first time a pane needs it, then kept (one listing reads it at most once). A
     pane whose processes cannot be told goes by its name, as before C-92 b."""

@@ -46,6 +46,13 @@ RUNTIME_SCHEDULER = ("dry.", "files-dry.", "round-dry.", "said-dry.", "would-run
                      "apply-report.")
 # there only while a round samples: may come and go during the tests, never compared
 PASSING_SCHEDULER = ("trace-sample.", "apply-reporting.")
+# v0.6.1 item 3 (manager 11-19): folders in ~/.local/state/altention that real rounds write while tests run and no test
+# writes into the real home: the plugins' git clones (install.sh / apply fetch them: FETCH_HEAD) and the usage guard's
+# files (its cron at :10 and :40). Not looked into, as a plugin's own folder is not.
+LIVE_FOLDERS = ("plugin-src", "usage-guard")
+# compared by what they hold, not when they were written: the bot rewrites bot-host every lease round with the same
+# words ({"machine", "epoch"}: dcbot/bot/main.py); a test that writes other words there is caught as before
+BY_CONTENT = ("bot-host",)
 _started = None
 LIVE_LINE = "✓ 正式程序在測試期間改了"  # deploy.sh shows these lines of a run that passed
 
@@ -79,7 +86,7 @@ def _snapshot(home, plugins=()):
         top = os.path.join(home, rel)
         for folder, dirs, files in os.walk(top):
             if folder == top and rel == ".local/state/altention":
-                dirs[:] = [d for d in dirs if d not in plugins]
+                dirs[:] = [d for d in dirs if d not in plugins and d not in LIVE_FOLDERS]
             for name in files:
                 path = os.path.join(folder, name)
                 base = name[:-4] if name.endswith(".tmp") else name
@@ -90,7 +97,13 @@ def _snapshot(home, plugins=()):
                 if runtime and base != unrotated:
                     continue  # a log the real round rotated during the run
                 try:
-                    seen[path] = None if runtime else os.stat(path).st_mtime
+                    if runtime:
+                        seen[path] = None
+                    elif base in BY_CONTENT and folder == os.path.join(home, ".local/share/altention"):
+                        with open(path, "rb") as f:
+                            seen[path] = ("content", f.read())
+                    else:
+                        seen[path] = os.stat(path).st_mtime
                 except OSError:
                     pass
             for name in dirs:

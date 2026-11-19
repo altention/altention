@@ -769,6 +769,43 @@ class HomeGuard(unittest.TestCase):
         finally:
             shutil.rmtree(home)
 
+    def test_the_plugin_clones_and_the_usage_guard_are_not_looked_into(self):
+        """v0.6.1 item 3 (manager 11-19): install.sh's fetch of a plugin clone (plugin-src/*/FETCH_HEAD) and the usage
+        guard's cron (usage-guard/) wrote while the suites ran, and an L3 merge had to pause cron for it."""
+        from altention import testing
+        home = tempfile.mkdtemp(prefix="家 ")
+        try:
+            d = os.path.join(home, ".local", "state", "altention")
+            write(os.path.join(d, "plugin-src", "x.git", "FETCH_HEAD"), "x")
+            write(os.path.join(d, "usage-guard", "state.json"), "{}")
+            write(os.path.join(d, "usage-guard-other", "kept.json"), "x")
+            write(os.path.join(d, "scheduler", "plugin-src", "kept.json"), "x")
+            seen = testing._snapshot(home)
+            self.assertFalse([k for k in seen if os.path.join(d, "plugin-src") in k or os.path.join(d, "usage-guard") + "/" in k], seen)
+            for path in (os.path.join(d, "usage-guard-other", "kept.json"), os.path.join(d, "scheduler", "plugin-src", "kept.json")):
+                self.assertIsNotNone(seen[path], "%s: only those two folders, at the top" % path)
+        finally:
+            shutil.rmtree(home)
+
+    def test_bot_host_by_what_it_holds(self):
+        """v0.6.1 item 3: the bot rewrites bot-host every lease round with the same words; other words are a test's."""
+        from altention import testing
+        home = tempfile.mkdtemp(prefix="家 ")
+        try:
+            path = os.path.join(home, ".local", "share", "altention", "bot-host")
+            write(path, '{"machine": "lap", "epoch": 7}')
+            before = testing._snapshot(home)
+            os.utime(path, (1, 1))
+            write(path, '{"machine": "lap", "epoch": 7}')  # (rewritten, the same words)
+            self.assertEqual(testing._snapshot(home)[path], before[path])
+            write(path, '{"machine": "rig", "epoch": 1}')
+            self.assertNotEqual(testing._snapshot(home)[path], before[path], "other words: caught")
+            other = os.path.join(home, ".local", "share", "altention", "dcremote-owner")
+            write(other, "x")
+            self.assertIsInstance(testing._snapshot(home)[other], float, "the rest by time as before")
+        finally:
+            shutil.rmtree(home)
+
     def test_the_names_come_from_the_plugins_known(self):
         from altention import testing
         root = tempfile.mkdtemp(prefix="插件 ")

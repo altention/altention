@@ -131,6 +131,83 @@ class InTheChannel(Base):
             self.assertTrue(mention.content.endswith(" ✅"))
         asyncio.run(go())
 
+    def test_one_mention_till_the_owner_answers(self):
+        """v0.6.1 (manager 11-19, wrong @s): a second reply with the mark while the first is open mentions nobody; the
+        open line takes the new gist. The owner speaks: the next one mentions again."""
+        async def go():
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go", prompt_id="p1"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p1", last_assistant_message="💬 要跟你討論：A 還是 B"))
+            first = self.ch.sent[-1]
+            self.assertEqual(first.content, "💬 要跟你討論：A 還是 B <@42>")
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="(a post from another channel)", prompt_id="p2"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p2", last_assistant_message="💬 要跟你討論：還是 A 還是 B（補了數字）"))
+            self.assertEqual(len(self.mentions()), 1, [m.content for m in self.ch.sent])
+            self.assertEqual(first.content, "💬 要跟你討論：還是 A 還是 B（補了數字） <@42>", "the open line, its new gist")
+            self.assertFalse(self.rings(self.ch.sent[-1]) and self.ch.sent[-1] is not first)
+            await self.bridge.call_done(self.ch, prefix="discuss:")  # (the owner's next message in the channel)
+            self.assertTrue(first.content.endswith(" ✅"))
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="B", prompt_id="p3"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p3", last_assistant_message="💬 要跟你討論：B 的第二步"))
+            self.assertEqual(len(self.mentions()), 2)
+            self.assertEqual(self.ch.sent[-1].content, "💬 要跟你討論：B 的第二步 <@42>")
+            self.assertTrue(self.rings(self.ch.sent[-1]))
+        asyncio.run(go())
+
+    def test_a_mention_that_could_not_be_sent_is_sent_next_time(self):
+        """#code-review on 47184957, low 1: the first mention failed (rec[0] None): the next mark mentions."""
+        from bot import calls as calls_mod
+        st = {}
+
+        async def go():
+            with mock.patch.object(calls_mod.deliver, "deliver", mock.AsyncMock(side_effect=RuntimeError("down"))):
+                self.assertIsNone(await calls_mod.discuss(self.ch, st, "discuss:p1", "A 還是 B"))
+            got = await calls_mod.discuss(self.ch, st, "discuss:p2", "A 還是 B（再說一次）")
+            self.assertIsNotNone(got)
+            self.assertEqual(got.content, "💬 要跟你討論：A 還是 B（再說一次） <@42>")
+        asyncio.run(go())
+
+    def test_a_reply_without_the_mark_closes_the_discussion(self):
+        """Manager 11-20: a later final reply without the mark says that matter is over: the line gets its ✅ and the
+        next mark mentions again (the owner may have answered elsewhere)."""
+        async def go():
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="(a post from another channel)", prompt_id="p1"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p1", last_assistant_message="💬 要跟你討論：A 還是 B"))
+            first = self.ch.sent[-1]
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="(manager: B)", prompt_id="p2"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p2", last_assistant_message="照 B 做完了。"))
+            self.assertTrue(first.content.endswith(" ✅"), first.content)
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="(another)", prompt_id="p3"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p3", last_assistant_message="💬 要跟你討論：C 呢"))
+            self.assertEqual(len(self.mentions()), 2)
+            self.assertTrue(self.rings(self.ch.sent[-1]))
+        asyncio.run(go())
+
+    def test_a_turn_with_no_words_closes_nothing(self):
+        """#code-review on 314211bf, low: a turn that ends with no text (the reply says （沒有文字回覆）) is no reply."""
+        async def go():
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go", prompt_id="p1"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p1", last_assistant_message="💬 要跟你討論：A 還是 B"))
+            first = self.ch.sent[-1]
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="(a post)", prompt_id="p2"))
+            await self.bridge.handle(self.ev("Stop", prompt_id="p2", last_assistant_message=""))
+            self.assertFalse(first.content.endswith(" ✅"), first.content)
+        asyncio.run(go())
+
+    def test_an_open_discussion_older_than_a_day_mentions_again(self):
+        """Manager 11-20 (#code-review on 47184957, low 2): answered elsewhere, the line stays open; a day on, the next
+        mark mentions again instead of editing an old line nobody sees."""
+        from bot import calls as calls_mod
+        st = {}
+
+        async def go():
+            self.assertIsNotNone(await calls_mod.discuss(self.ch, st, "discuss:p1", "A 還是 B"))
+            self.assertIsNone(await calls_mod.discuss(self.ch, st, "discuss:p2", "還是 A 還是 B"), "within the day: edits")
+            st["calls"]["discuss:p1"][1] -= calls_mod.OPEN_HOURS * 3600 + 1
+            got = await calls_mod.discuss(self.ch, st, "discuss:p3", "C 呢")
+            self.assertIsNotNone(got)
+            self.assertEqual(got.content, "💬 要跟你討論：C 呢 <@42>")
+        asyncio.run(go())
+
     def test_what_does_not_mention(self):
         async def go():
             await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go"))

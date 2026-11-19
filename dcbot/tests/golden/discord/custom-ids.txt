@@ -10,6 +10,7 @@ ask:7-1:0:o
 ask:7-1:0:s
 ask:7-1:0:y
 att:{d}:{pane key, or project:<name>}
+c201rn:{s}
 ccpin:keep
 ccpin:new
 failback:{d}

@@ -19,7 +19,10 @@ The episode is kept in state/calls-system.json; over() says it is over there, me
 the same kind mentions again. The channels show their own state as before, without a mention.
 
 What Claude itself says needs the owner (the first line of a final reply starts with messages.DISCUSS_MARK, which the
-system note asks for) is mentioned too: discussed(). The owner's next message in that channel closes it."""
+system note asks for) is mentioned too: discussed(). The owner's next message in that channel closes it, and so
+does a later final reply without the marker (that matter is over; manager 11-20). Until then, and for a day at most,
+a next reply with the marker mentions nobody again: the open line takes the new gist (discuss(); v0.6.1, manager
+11-19: the owner counted 94 mentions in two days, about half not theirs to act on)."""
 import json
 import os
 import time
@@ -30,6 +33,8 @@ import discord
 from . import config, deliver, messages
 
 GIST = 60          # characters of the gist; the purpose before it is never cut
+OPEN_HOURS = 24  # a discussion mentioned longer ago than this mentions again (manager 11-20: the owner may have answered
+#                 elsewhere, through another channel, and the line stayed open)
 KEEP_DAYS = 7      # a channel's mentions are forgotten after this long (only that they were made: the lines stay)
 SYSTEM_FILE = "calls-system.json"  # in config.STATE: {kind: {"episode", "msg", "channel", "channels": [ids], "at",
 #                                    "head", "more": the words as first said, kept when channels are added}}
@@ -110,6 +115,36 @@ async def call(ch, st, key, code, gist=None, about=None, save=None, **data):
     if save is not None:
         save()
     return msg
+
+
+async def discuss(ch, st, key, gist, save=None):
+    """Claude's final reply says it needs the owner (discussed()): mentioned once (call(), code "discuss") while no
+    discussion of this channel is open; with one open (the owner has not spoken in the channel since), no second
+    mention: that line is edited to the new gist (an edit rings nobody) and stays open. One that could not be sent
+    counts as none, and so does one mentioned more than OPEN_HOURS ago. A final reply without the marker closes
+    the open ones (the bridge: done_all). The message sent (a new mention), or None."""
+    calls = _calls(st)
+    now = time.time()
+    open_ = [(k, v) for k, v in calls.items() if k.startswith("discuss:") and not v[2] and v[0] is not None
+             and now - (v[1] or 0) < OPEN_HOURS * 3600]  # (a mention that could not be sent rang nobody: the next one
+    # is sent; #code-review on 47184957, low 1. One older than OPEN_HOURS: answered elsewhere, most likely; low 2)
+    if not open_:
+        return await call(ch, st, key, "discuss", gist, save=save)
+    k, rec = max(open_, key=lambda kv: kv[1][1] or 0)
+    text = line("discuss", gist)
+    if len(rec) < 4:
+        rec.append(text)
+    else:
+        rec[3] = text
+    if save is not None:
+        save()
+    if rec[0] is not None:
+        try:
+            await deliver.deliver(ch, content=text, allowed_mentions=discord.AllowedMentions.none(), intent="status",
+                                  key=k, edit=rec[0])
+        except Exception:
+            traceback.print_exc()
+    return None
 
 
 async def done(ch, st, key, save=None):

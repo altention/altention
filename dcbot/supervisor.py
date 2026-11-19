@@ -19,6 +19,15 @@ outage, *.net.json, do not count), the supervisor rolls back:
   without touching links or ignored paths: good..HEAD changes .gitignore/.gitattributes, or a path tracked in good
   is now a link, inside one, or ignored (a move into the instance in between), or uncommitted edits could not
   be saved.
+Which last_good (manager 11-19, the 11-18 rollback): this machine's moves only while it runs the bot, so a standby
+taking over goes by the engine the other machine's bot ran when that is newer (dcbot/state-standby/meta.json
+"engine": own last_good in its history, itself in HEAD's; anything else, own last_good alone: good_here()). It
+decides a trial and what a rollback goes back to.
+Too far to roll back (manager 11-19): a new version more than HOLD_COMMITS commits, HOLD_LINES lines or HOLD_FILES
+files (in dcbot/ and altention/) from last_good that fails its trial is not rolled back: state/rollback-held.json
+holds that head, which then runs as a good version would (crash backoff, no trial), the owner is told once (with
+!rollback, and touch dcbot/state/rollback-requested for a bot that is down), each later down one line mentioning
+nobody. The hold goes when that head is marked good or HEAD moves (a deploy, !rollback).
 Uncommitted edits (other channels share the work tree) to the files being put back are copied first to
 <git dir>/altention-saved/<time>-rollback/ and listed in the notice; other edits and untracked files are left alone.
 A rollback takes the git lock every automated job shares (waiting up to LOCK_WAIT, then going ahead anyway: a
@@ -91,6 +100,11 @@ DEPS_LOCK_WAIT = 660  # update.py's own pip may hold its lock this long (its PIP
 DEPS_RETRY = 600  # packages that would not install: tried again this often, the bot down meanwhile
 STEP_BACK_AFTER = 1800  # pip for one new version failing this long: back to last_good on this machine meanwhile (C-44)
 STEPPED, FAILING, INSTALLED = "stepped-back.json", "deps-failing.json", "venv-requirements"
+# a new version this far from last_good (in dcbot/ and altention/) that will not start is not rolled back on its own:
+# taking back that much on one failed start does more harm than a bot down a while (the 11-18 rollback, manager 11-19)
+HOLD_COMMITS, HOLD_LINES, HOLD_FILES = 20, 3000, 60
+HELD = "rollback-held.json"  # in STATE: {"head", "good", "size", "at", "downs"}: that head runs on without a trial
+STANDBY_META = ("state-standby", "meta.json")  # (under ROOT) what the other machine's bot sent last: its "engine" HEAD
 # the subject put_back gives a step back (altention/sync.py and update.py read it with the same pattern; a test holds them)
 STEP_BACK_SUBJECT = re.compile(r"^dcbot: step back to ([0-9a-f]{7}) while packages install \([0-9a-f]{7}\)$")
 OURS = "agent-rebase"  # altention.sync's mark for a rebase that is ours to undo
@@ -575,6 +589,118 @@ def failed_events_since(start):
         return []
 
 
+def other_engine():
+    """The version the other machine's supervisor last marked good (its state/last_good, sent with the bot's state:
+    dcbot/state-standby/meta.json "last_good", bot/standby.py meta()); "" when there is none or it cannot be read.
+    Never the "engine" sent with it: that is its HEAD when sent, maybe a version on trial or merged and not yet run
+    (#code-review on fbe1cfa6: trial protection gone for a version no bot ever ran)."""
+    try:
+        with open(os.path.join(ROOT, *STANDBY_META)) as f:
+            got = json.load(f)
+        engine = got.get("last_good") if isinstance(got, dict) else None
+    except (OSError, ValueError):
+        return ""
+    return engine if isinstance(engine, str) and re.fullmatch(r"[0-9a-f]{40}", engine) else ""
+
+
+def good_here():
+    """The version to go by (trial or not, what a rollback goes back to): this machine's last_good, or the version the
+    other machine marked good (other_engine()) when that is newer: own last_good in its history, and itself in HEAD's.
+    last_good moves only while this machine runs the bot, so a standby that last ran it days ago would take back
+    everything the primary ran since (the 11-18 rollback, manager 11-19). Anything not plain (no file, not a commit
+    here, not in HEAD's history, own last_good not in its history): own last_good alone, no guessing."""
+    own = read("last_good")
+    other = other_engine()
+    if not other or other == own or git("merge-base", "--is-ancestor", other, "HEAD")[0] != 0:
+        return own
+    if own and git("merge-base", "--is-ancestor", own, other)[0] != 0:
+        return own
+    if _going_by.get("said") != (other, own):  # (once per pair: it is asked twice a round, every restart too)
+        _going_by["said"] = (other, own)
+        log("last_good: the other machine marked %s good, newer than this machine's %s: going by it" % (other[:7], own[:7] or "(none)"))
+    return other
+
+
+_going_by = {}  # good_here()'s last line said
+
+
+def change_size(good):
+    """(commits, lines, files) in dcbot/ and altention/ from `good` to HEAD; None when git cannot tell."""
+    rc, count, _ = git("rev-list", "--count", "%s..HEAD" % good, "--", *PATHS)
+    rc2, stat, _ = git("diff", "--numstat", "-z", "--no-renames", good, "HEAD", "--", *PATHS, strip=False)
+    if rc or rc2 or not count.isdigit():
+        return None
+    lines, files = 0, 0
+    for entry in stat.split("\0"):
+        parts = entry.split("\t")
+        if len(parts) == 3:
+            files += 1
+            lines += sum(int(n) for n in parts[:2] if n.isdigit())  # ("-" for a binary file)
+    return int(count), lines, files
+
+
+def too_far(good):
+    """(commits, lines, files) when HEAD is too far from `good` to roll back on its own (HOLD_*), else None (also
+    when it cannot be told: rolled back as before)."""
+    size = change_size(good) if good else None
+    if size and (size[0] > HOLD_COMMITS or size[1] > HOLD_LINES or size[2] > HOLD_FILES):
+        return size
+    return None
+
+
+def held_for(head):
+    """state/rollback-held.json when it is about `head`; one about another head goes (a new version, a rollback)."""
+    rec = read_json(HELD)
+    if rec and rec.get("head") != head:
+        drop(HELD)
+        return None
+    return rec
+
+
+HELD_WHY = {  # why the trial ended, as hold() says it (#code-review-2 on fbe1cfa6, low 1: a version killed for its
+    # failed events was said "啟動失敗（exit -9）")
+    "exit": ("rollback_held_exit", "啟動失敗（exit {exit}）"),
+    "events": ("rollback_held_events", "試用時把 {n} 個事件標成失敗，被停掉"),
+    "never_up": ("rollback_held_never_up", "{secs} 秒內沒上線，被停掉"),
+}
+
+
+def hold(head, good, size, code, why="exit", n=0):
+    """A new version too far from `good` did not start: not rolled back; it runs on as a good one would (crash
+    backoff, no trial), and the owner is told once, with how to roll back. `why`: how its trial ended (HELD_WHY:
+    "exit" on its own, killed for "events" it set aside as failed (`n` of them), or "never_up")."""
+    write_json(HELD, {"head": head, "good": good, "size": list(size), "at": time.time(), "downs": 1})
+    key, default = HELD_WHY.get(why) or HELD_WHY["exit"]
+    how = said_words(key, default, exit=code, n=n, secs=TRIAL_SECS)
+    text = said_words("rollback_held", "🛠️ 機器人新版 `{head}` {how}，但它跟上一個正常版本 `{good}` 差了 "
+                      "{commits} 個 commit、{lines} 行、{files} 個檔（dcbot/、altention/），太多了，沒有自動退回，照常重試。"
+                      "要退回：在 Discord 打 `!rollback`，或在 {machine} 的引擎 `touch dcbot/state/rollback-requested`",
+                      head=head[:7], how=how, good=good[:7], commits=size[0], lines=size[1], files=size[2],
+                      machine=this_machine())
+    log("version %s did not start but is %d commits, %d lines, %d files from %s: not rolled back" % (
+        head[:7], size[0], size[1], size[2], good[:7]))
+    notice(text)
+    ping(text)
+
+
+def held_nap(secs):
+    """The crash backoff of a held version: cut short by a rollback asked for (the way the owner was told, while the
+    bot is down) or the stop flag, so neither waits up to the 300 s the backoff grows to."""
+    until = time.time() + secs
+    while time.time() < until:
+        if os.path.exists(os.path.join(STATE, "rollback-requested")) or os.path.exists(os.path.join(STATE, "stop")):
+            return
+        time.sleep(min(POLL, max(0, until - time.time())))
+
+
+def held_down(head, rec, code):
+    """The held version went down again: one more line, mentioning nobody."""
+    rec["downs"] = int(rec.get("downs") or 1) + 1
+    write_json(HELD, rec)
+    say_quietly(said_words("rollback_held_again", "🛠️ 新版 `{head}` 又停了（exit {exit}，第 {n} 次），照常重試；要退回打 `!rollback`",
+                           head=head[:7], exit=code, n=rec["downs"]))
+
+
 CRASH_WINDOW, CRASH_COUNT = 15 * 60, 3  # a good version down this many times within this long, never up STABLE_SECS
 # in between: the bot keeps restarting, and the owner is told once (C-103)
 RESTART_LOOP = "restart-loop"  # in STATE: the restart loop said and not over yet (the time it was said)
@@ -1011,6 +1137,7 @@ def main(argv=()):
     write("supervisor.pid", str(os.getpid()))
     backoff = BACKOFF
     crashes = []  # when the good version went down lately (restart_loop())
+    held_head = None  # the held version the downs in `crashes` were of (hold())
     while True:
         if os.path.exists(os.path.join(STATE, "stop")):
             log("stop flag present; exiting")
@@ -1024,13 +1151,16 @@ def main(argv=()):
             continue
         if os.path.exists(os.path.join(STATE, "rollback-requested")):
             os.remove(os.path.join(STATE, "rollback-requested"))
-            if safe_rollback(read("last_good"), "使用者要求退回") is False:
+            if safe_rollback(good_here(), "使用者要求退回") is False:
                 notice("沒有可以退回的版本（目前就是最後一個正常版本）")
         head = git("rev-parse", "HEAD")[1]
         ver, btree = version(), bot_tree()
-        good = read("last_good")
+        good = good_here()  # (this machine's last_good, or what the other machine's bot ran when newer)
         stepped = left_behind()  # C-44: a step-back commit never becomes last_good
-        trial = not good or version(good) != ver
+        held = held_for(head)  # a version too far to roll back that would not start: runs on without a trial
+        if held_head and held_head != head:  # it went (!rollback, a deploy): its downs are no reason to mention the
+            crashes, held_head = [], None  # owner again (restart_loop()) if the next version goes down too
+        trial = (not good or version(good) != ver) and not held
         start = time.time()
         try:
             os.remove(os.path.join(STATE, "ready"))
@@ -1051,12 +1181,14 @@ def main(argv=()):
         proc = subprocess.Popen([PY, "-m", "bot.main"], cwd=ROOT, env=env)
         write("bot.pid", str(proc.pid))
         marked, followed, next_step = False, 0, start + DEPS_RETRY
+        killed, bad_n = "exit", 0  # (why the trial ended, for hold())
         while proc.poll() is None:
             time.sleep(POLL)
             up = time.time() - start
             ready = read("ready").startswith(btree)
             if trial and not marked and len(failed_events_since(start)) >= BAD_MIN:
                 log("version %s set events aside as failed during its trial; killing" % head[:7])
+                killed, bad_n = "events", len(failed_events_since(start))
                 proc.kill()
                 break
             if not marked and up > STABLE_SECS and ready:
@@ -1066,6 +1198,7 @@ def main(argv=()):
                 log("version %s is good" % head[:7])
                 crashes = []
                 restart_over()  # (C-103)
+                drop(HELD)
                 drop("lease-down.json")  # C-163: no longer marked down in #bot-lease (tools/dclease, drill item 20)
             if marked and time.time() - followed > FOLLOW_SECS:  # commits elsewhere: last_good follows HEAD
                 followed, now = time.time(), git("rev-parse", "HEAD")[1]
@@ -1077,6 +1210,7 @@ def main(argv=()):
                 log("stepped back: %s" % (step_forward(read_json(STEPPED), True) or "moved forward; restarting"))
             if trial and not marked and up > TRIAL_SECS and not ready:
                 log("version %s never came up; killing" % head[:7])
+                killed = "never_up"
                 proc.kill()
         proc.wait()
         code = proc.returncode
@@ -1111,6 +1245,21 @@ def main(argv=()):
             notice(text)
             tell_once(head, "⚠️ 機器人停著：" + text)
             time.sleep(DEPS_RETRY)
+            continue
+        if held and not marked:  # the held version down again: a line each time, no more mentions, no rollback
+            held_down(head, held, code)
+            crashes.append(time.time())
+            held_head = head  # (for the lease gate; restart_loop() would mention the owner again)
+            held_nap(backoff)
+            backoff = min(backoff * 2, 300)
+            continue
+        size = too_far(good) if trial and not marked else None
+        if size:  # too far from last_good to take back on one failed start: kept, restarted as a good version would be
+            hold(head, good, size, code, killed, bad_n)
+            crashes.append(time.time())
+            held_head = head
+            held_nap(backoff)
+            backoff = min(backoff * 2, 300)
             continue
         if trial and not marked:
             if safe_rollback(good, "新版本 `%s` 啟動失敗（exit %s）" % (head[:7], code)):

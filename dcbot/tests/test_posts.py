@@ -1165,6 +1165,14 @@ class SenderLookup(unittest.TestCase):
                 self.assertEqual(dcctl.machine_name("nowhere"), "nowhere")
                 self.assertIsNone(dcctl.sender_channel("HostC|/s|%2"))
                 self.assertEqual(dcctl.sender_channel("%s|/s|%%3" % me), "33", "a window the bot opened here")
+                with open(os.path.join(tmp, "channels.json"), "w") as f:  # C-198: a window the bot opened in the
+                    # owner's tmux on another machine (its pane keeps that machine's name, tmuxio.open_window())
+                    json.dump({"55": {"home": {"host": "HostB", "socket": "/u", "session": "w", "window": "x"},
+                                      "pane": {"socket": "/u", "id": "%5", "host": "HostB", "pid": 9}}}, f)
+                self.assertEqual(dcctl.sender_channel("hostb|/u|%5"), "55", "a window the bot opened on another machine")
+                self.assertIsNone(dcctl.sender_channel("%s|/u|%%5" % me), "the same pane number here: not it")
+                with open(os.path.join(tmp, "channels.json"), "w") as f:
+                    json.dump({"22": {"pane": {"socket": "/s", "id": "%2", "host": "HostB"}}, "33": {"pane": {"socket": "/s", "id": "%3"}}}, f)
                 # #issues 25: a Mac's tmux names its socket /private/tmp/…, the bot wrote /tmp/… (a link there)
                 with open(os.path.join(tmp, "channels.json"), "w") as f:
                     json.dump({"44": {"pane": {"socket": "/tmp/tmux-501/default", "id": "%8", "host": "mac"}},

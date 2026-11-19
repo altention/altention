@@ -24,6 +24,7 @@
 - `/resume`, `!resume`: 列出最近的對話，選一個接回（會把那個對話的紀錄貼進頻道）。`!resume <id 開頭 8 碼>` 可以接回清單外更舊的。
 - `/stop`, `!stop`: 中止正在跑的工作，對話保留。
 - `/recap`, `!recap`: 顯示這個頻道的對話最近幾輪（預設 3 輪，最多 20）。
+- `/where`, `!where`: 這個頻道的 Claude 現在在哪裡：哪台機器、哪個 tmux 的哪個 session、哪個對話、哪個資料夾；〔改名…〕按鈕可以直接改名。
 - `/screen`, `!screen`: 看 Claude 的終端機畫面（圖片，按 📝 看文字）。
 - `/key`, `!key`: 送按鍵到終端機，例如 `Escape`、`Enter`、`Down Enter`。
 - `/mode`, `!mode`: 切換 `tmux`（預設，常駐對話）或 `print`（每則訊息跑一次，備用）；`!mode retry` 再試一次一般模式。
@@ -31,7 +32,7 @@
 - `!agentanswers on|off`：別的頻道的 Claude 能不能替你回答這個頻道的提問、終端機選單和計畫（預設開著；不加字是看現在的設定）。
 - `/cwd`, `!cwd`: 設定這個頻道的工作目錄，會開新對話。
 - `/files`, `!files`: 檔案瀏覽器（見「終端機和檔案」）。
-- `/rename`, `!rename`: 頻道和 Claude Code 的對話一起改名。
+- `/rename`, `!rename`: 頻道、Claude Code 對話、tmux window（機器人開的 session 也一起）一起改名；在 Discord 或 tmux 手動改，其他的也跟著變。
 - `/setup`, `!setup`: 重新叫出這個頻道的設定卡。
 - `/attach`, `!attach`: 把 tmux 裡自己開的 Claude Code 接到頻道（見「接上你自己開的 Claude」）。
 - `/detach`, `!detach`: Discord 不再跟著這個對話，對話本身不受影響，頻道移到封存。
@@ -53,7 +54,7 @@ Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字
 ## 接上你自己開的 Claude
 - `/attach`：列出 tmux 裡的 Claude Code，點一下就開頻道接上，並貼出之前的對話。
 - `/detach`：頻道不再跟著，對話照跑；之後在封存的頻道打字可以接回。
-- `/rename`：頻道和對話一起改名。
+- `/rename`：頻道、對話、tmux 的名字一起改。
 
 ## 終端機和檔案
 - **終端機頻道**：設定卡選 💻，每則訊息是一行指令，輸出貼回來；`/run` 找跑過的指令。

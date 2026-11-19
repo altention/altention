@@ -184,13 +184,13 @@ class Bot(unittest.TestCase):
     def test_the_channels_conversation_in_a_new_process_is_taken_and_the_route_follows_it(self):
         self.turn()
         self.assertTrue([m for m in self.ch.sent if (m.content or "").startswith("REPLY")], [m.content for m in self.ch.sent])
-        self.assertEqual(self.pane["pid"], "222")
+        self.assertEqual(self.host.channels_state["5"]["pane"]["pid"], "222")
         self.assertEqual(self.table(), {"/tmp/sock|%7": {"channel": "5", "pid": "222"}})
 
     def test_another_conversation_is_left_out_and_nothing_moves(self):
         self.turn("NEW")
         self.assertEqual([m.content for m in self.ch.sent], [])
-        self.assertEqual((self.pane["pid"], self.host.channels_state["5"]["session_id"]), ("111", "S"))
+        self.assertEqual((self.host.channels_state["5"]["pane"]["pid"], self.host.channels_state["5"]["session_id"]), ("111", "S"))
         self.assertEqual(self.table(), {"/tmp/sock|%7": {"channel": "5", "pid": "111"}})
         self.assertFalse(self.bridge.waits(tmux_bridge.cc_hooks.normalize(self.ev("Stop", "NEW"))), "not held in the spool either")
         with open(os.path.join(self.tmp.name, tmux_bridge.UNPLACED_LOG)) as f:
@@ -199,7 +199,7 @@ class Bot(unittest.TestCase):
     def test_a_channel_that_knows_no_conversation_takes_none(self):
         del self.host.channels_state["5"]["session_id"]
         self.turn()
-        self.assertEqual((self.pane["pid"], [m.content for m in self.ch.sent]), ("111", []))
+        self.assertEqual((self.host.channels_state["5"]["pane"]["pid"], [m.content for m in self.ch.sent]), ("111", []))
 
     def test_a_question_of_another_conversation_is_handed_back(self):
         handed = []
@@ -220,12 +220,59 @@ class Bot(unittest.TestCase):
         self.pane["host"] = "lap"
         bound = []
 
-        async def bind_any(pane, cid):
-            bound.append((dict(pane), cid))
+        async def bind_any(pane, cid, tag=True):
+            bound.append((dict(pane), cid, tag))
         with mock.patch.object(routes, "bind_any", bind_any):
             self.turn(host="lap")
-        self.assertEqual([(p["pid"], p["host"], c) for p, c in bound], [("222", "lap", 5)], "once, not for every event")
+        self.assertEqual([(p["pid"], p["host"], c, t) for p, c, t in bound], [("222", "lap", 5, False)],
+                         "once, not for every event; where it was: the look tags it (C-201, one ssh fewer)")
         self.assertEqual(self.table()["/tmp/sock|%7"]["pid"], "111", "this machine's table is not that pane's")
+
+    def test_an_adapter_taken_back_by_its_tag_has_its_reply_reach_the_channel(self):
+        """C-198 (#code-review-2 on e30ad2b3, manager 11-18): the owner types, ensure() takes the respawned adapter's
+        pane back by its tag and its mark; the route takes its process, so the hook (the real tools/dchook routed()) no longer
+        marks its events as another process's, and its Stop reaches the channel. Before, the route kept the old pid:
+        marked, a stranger's (no conversation recorded, or another id), dropped."""
+        import importlib.machinery
+        import importlib.util
+        root = os.path.join(self.tmp.name, "hookroot")
+        os.makedirs(os.path.join(root, "state"))
+        hook = os.path.join(root, "dchook")
+        shutil.copy(os.path.join(ROOT, "tools", "dchook"), hook)
+        loader = importlib.machinery.SourceFileLoader("dchook_c198", hook)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("dchook_c198", loader))
+        loader.exec_module(mod)
+        del self.host.channels_state["5"]["session_id"]  # (an adapter's channel: no Claude Code conversation)
+        self.ch.id = 5
+        p = mock.patch.object(routecore, "ROUTES", os.path.join(root, "state", "routes.json"))
+        p.start()
+        self.addCleanup(p.stop)
+        routes.bind(self.pane, 5)
+
+        def stop(text):
+            where = {}
+            with mock.patch.dict(os.environ, {"TMUX": "/tmp/sock,1,0", "TMUX_PANE": "%7"}), \
+                    mock.patch.object(mod, "ancestors", lambda: [(30, "python3"), (222, "claude"), (10, "tmux: server")]):
+                for name in ("DCBOT_CHANNEL", "DCBOT_ROOT"):
+                    os.environ.pop(name, None)
+                self.assertEqual(mod.routed(root, where), "5")
+            ev = {"channel": "5", "hook_event_name": "Stop", "session_id": "pi-sess", "dc_routed": True,
+                  "dc_pane": {"socket": "/tmp/sock", "pane": "%7"}, "last_assistant_message": text}
+            if where.get("respawned"):
+                ev["dc_respawned"] = where["respawned"]
+            asyncio.run(self.bridge.handle(ev))
+            return [m.content for m in self.ch.sent if (m.content or "").startswith(text)]
+        self.assertEqual(stop("BEFORE"), [], "the route's old pid: a stranger's, as the review found")
+
+        async def audit(text):
+            pass
+        self.host.audit = audit
+        self.host.pane_session_id = mock.AsyncMock(return_value=None)
+        with mock.patch.object(tmuxio, "moved_on", mock.AsyncMock(return_value={"pid": "222", "session": "work", "cwd": "/w", "tag": "5",
+                                                                               "agent": "pi", "agent_session": ""})):
+            self.assertTrue(asyncio.run(self.bridge.pane_again(self.ch, self.host.channels_state["5"])))
+        self.assertEqual(routecore.load(), {"/tmp/sock|%7": {"channel": "5", "pid": "222"}})
+        self.assertTrue(stop("AFTER"), [m.content for m in self.ch.sent])
 
     def test_after_a_restart_the_pane_is_typed_into_and_its_events_come_unmarked(self):
         """The bot's state and the route table keep the new process: a bot started again types into the pane (alive()

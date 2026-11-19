@@ -18,6 +18,7 @@ import discord
 import json
 
 from . import config, deliver, files, remote, routes, tmuxio
+from . import where as where_mod
 
 PREFIX = "setup"
 
@@ -286,9 +287,9 @@ class Setup(object):
             await interaction.response.defer()
             if self.folder.get(ch.id):
                 st["cwd"] = self.folder.pop(ch.id)
-            st.update({"home": {"socket": os.path.join(tmuxio.socket_dir(), config.TMUX_SOCKET),
-                                "session": tmuxio.session_name(ch.name, ch.id), "window": ""}, "kind": "terminal",
-                       "mode": "tmux"})
+            st.update({"kind": "terminal", "mode": "tmux"})
+            where_mod.put(st, getattr(ch, "name", None), home={"socket": os.path.join(tmuxio.socket_dir(), config.TMUX_SOCKET),
+                                             "session": tmuxio.session_name(ch.name, ch.id), "window": ""})
             await self.done(ch, st, "💻 終端機會開在機器人自己管的 tmux（`tmux -L %s attach -t %s`），工作目錄 `%s`。" % (
                 config.TMUX_SOCKET, st["home"]["session"], routes.short_cwd(st["cwd"])))
         elif what in ("new", "tnew"):
@@ -383,10 +384,10 @@ class Setup(object):
             return "%s 上找不到資料夾：`%s`" % (host, folder), None
         if new and session in dict(await tmuxio.user_sessions(info["socket"], host)):
             return "%s 的 tmux 裡已經有叫 `%s` 的 session 了。換個名字，或改用「加到現有的 tmux」。" % (host, session), None
-        st.update({"home": {"socket": info["socket"], "session": session, "window": window, "host": host},
-                   "cwd": info["folder"], "mode": "tmux"})
+        st.update({"cwd": info["folder"], "mode": "tmux"})
         if terminal:
             st["kind"] = "terminal"
+        where_mod.put(st, home={"socket": info["socket"], "session": session, "window": window, "host": host})
         return None, "%s會開在 %s 上你的 tmux `%s` 的%s視窗%s，工作目錄 `%s`。在 %s 上用 `tmux attach -t %s` 就看得到。" % (
             "💻 終端機" if terminal else "", host, session, "第一個" if new else "新", "「%s」" % window if window else "",
             info["folder"].replace(info.get("home") or "\0", "~"), host, session)
@@ -412,10 +413,10 @@ class Setup(object):
             return await interaction.response.send_message(
                 "tmux 裡已經有叫 `%s` 的 session 了。換個名字，或改用「加到現有的 tmux」。" % session, ephemeral=True)
         await interaction.response.defer()
-        st.update({"home": {"socket": tmuxio.user_socket(), "session": session, "window": window}, "cwd": cwd,
-                   "mode": "tmux"})
+        st.update({"cwd": cwd, "mode": "tmux"})
         if terminal:
             st["kind"] = "terminal"
+        where_mod.put(st, getattr(ch, "name", None), home={"socket": tmuxio.user_socket(), "session": session, "window": window})
         await self.done(ch, st, "%s會開在你的 tmux `%s` 的%s視窗%s，工作目錄 `%s`。電腦上用 `tmux attach -t %s` 就看得到。%s" % (
             "💻 終端機" if terminal else "", session, "第一個" if new else "新", "「%s」" % window if window else "",
             routes.short_cwd(cwd), session, "\n之後每則訊息就是一行指令；`/run` 可以從跑過的指令裡挑。" if terminal else ""))

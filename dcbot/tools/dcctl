@@ -412,7 +412,7 @@ def notify_target(post, chans, sender_category=None):
 
 RESERVED = ("@audit", "@notify")  # targets the bot finds from its own settings: its #audit, the default notification channel
 NOT_RESERVED = ("attach", "new_claude", "resume", "history", "move_to", "archive", "now", "waiting", "answer",
-                "talk_continue")  # these name a channel to change
+                "talk_continue", "rename")  # these name a channel to change
 
 
 def reserved(post):

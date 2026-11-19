@@ -21,6 +21,7 @@ import traceback
 import discord
 
 from . import config, deliver, masking, remote, tmuxio
+from . import where as where_mod
 from .termrc import done_count, rc_files, shell  # noqa: F401  (shared with tools/dcremote)
 
 PREFIX = "term"
@@ -131,7 +132,7 @@ class Terminal(object):
                 break
             await asyncio.sleep(0.2)
         pane["shell"] = True  # not Claude: tmuxio.alive() only checks it is there
-        st["pane"] = pane
+        where_mod.put(st, pane=pane)
         self.bot.save()
         return pane
 

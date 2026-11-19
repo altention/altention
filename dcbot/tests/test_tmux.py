@@ -371,10 +371,17 @@ class WhichServers(unittest.TestCase):
             def run(self, *a, **kw):
                 seen.update(tmuxio._set)
 
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(main, "Bot", Bot), mock.patch.object(main, "STATE", tmp), \
-                mock.patch.multiple(config, TOKEN="t", OWNER_ID=1, TMUX_SOCKET="dcbot-test-main", USER_TMUX="/the/owner's"):
-            with self.assertRaises(SystemExit):
-                main.main()
+        import logging
+        log = logging.getLogger("discord")
+        before = list(log.handlers), log.level, log.propagate
+        try:
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(main, "Bot", Bot), mock.patch.object(main, "STATE", tmp), \
+                    mock.patch.multiple(config, TOKEN="t", OWNER_ID=1, TMUX_SOCKET="dcbot-test-main", USER_TMUX="/the/owner's"):
+                with self.assertRaises(SystemExit):
+                    main.main()
+        finally:  # (main() hangs discord_warnings()'s handler on the "discord" logger: a later test of it saw it there
+            # and wrote nothing of its own; #code-review on 74b5e7da)
+            log.handlers[:], log.level, log.propagate = before
         self.assertEqual((seen["socket"], seen["user_tmux"], seen["skip"]), ("dcbot-test-main", "/the/owner's", ()))
 
     def test_servers_whose_panes_are_not_the_owners_to_attach(self):

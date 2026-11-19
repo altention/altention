@@ -50,9 +50,25 @@
                                                                    handed over when the bot tells it to carry on at that time;
                                                                    the owner's own messages still reach it. Said in #audit
   altention dc post st-0 --unpause --why "…"                       carry on now instead (the posts kept go in after it)
+  altention dc post st-0 --reset --why "…" [--then "…"]           a new conversation for that channel, as the owner's !reset (the
+                                                                   old one stays for !resume). Your own channel: done when this
+                                                                   turn ends, then the new conversation is told to read your
+                                                                   handover (or gets --then's words). Another channel: only while
+                                                                   it is idle (no turn, background work, subagent or workflow),
+                                                                   else refused with why; --then is then handed to it as your
+                                                                   post. Said in #audit and in that channel; the answer is printed
+  altention dc post st-0 --delete <message id> --why "…"            take away a message you posted there (the bot's ledger
+                                                                   has it as yours: never a card, a board, a reply; in
+                                                                   another's channel one with its 來自 line or 📨 card).
+                                                                   Said in #audit; the bot's answer is printed. Only the
+                                                                   Discord message goes: another channel's Claude has read
+                                                                   it already
   altention dc post st-0 --drop-held --why "…"                     drop the posts a paused channel keeps (its own Claude only,
                                                                    having read them itself); the owner speaking there hands
                                                                    them over after that message anyway. Said in #audit
+  altention dc post st-0 --rename 回測 --why "…"                    rename that channel and what its record takes along (its Claude
+                                                                   Code conversation, its tmux window, the bot's own session of
+                                                                   it), as /rename; the card there and #audit say whose
   altention dc post 新頻道 --create "…"                            a channel that does not exist yet is made (a plain one, for records);
                                                                    without --create an unknown name is an error, with the closest names
   altention dc post 100000000000000020 "…"                         a channel by its ID: still right after the channel is renamed
@@ -387,6 +403,31 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
     drop_held = "--drop-held" in args  # C-199: what a paused channel keeps, dropped by its own Claude
     if drop_held:
         args.remove("--drop-held")
+    reset = "--reset" in args  # v0.6.1: a new conversation for that channel, as the owner's !reset (dcbot/bot/resets.py)
+    if reset:
+        args.remove("--reset")
+    then = None  # --then "…": with --reset, what the new conversation is told first
+    if "--then" in args:
+        i = args.index("--then")
+        then = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        if not then.strip():
+            sys.exit("altention dc post：--then 要給新對話的第一句話")
+    rename = None  # C-201 2b: --rename <name>, with --why: the channel and everything its record follows renamed
+    if "--rename" in args:
+        i = args.index("--rename")
+        rename = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        if not rename.strip():
+            sys.exit("altention dc post：--rename 要給新名字")
+    delete_mid = None  # --delete <message id>: a post of one's own taken away (manager 11-17)
+    if "--delete" in args:
+        i = args.index("--delete")
+        delete_mid = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+        if not delete_mid.strip().isdigit():
+            sys.exit("altention dc post：--delete 要給訊息 ID")
+        delete_mid = delete_mid.strip()
     board = None
     if "--board" in args:
         i = args.index("--board")
@@ -418,7 +459,8 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         others = [k for k, v in (("--attach", attach), ("--resume", resume), ("--history", history),
                                  ("--new-claude", new_claude), ("--move-to", move_to), ("--activity", activity),
                                  ("--secret", secret), ("--now", now), ("--pause-until", pause_at), ("--unpause", unpause),
-                                 ("--drop-held", drop_held))
+                                 ("--drop-held", drop_held), ("--rename", rename), ("--delete", delete_mid),
+                                 ("--reset", reset), ("--then", then))
                   if v] + ["--" + k.replace("_", "-") for k in asked]
         if others or args:
             sys.exit("altention dc post：--json 是一則訊息的 payload，不能再帶%s" % ("、".join(others) if others else "文字"))
@@ -451,13 +493,13 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         if only:
             sys.exit("altention dc post：%s 只跟 --json 一起用" % "、".join("--" + f for f in only))
         if json_opts and any((board, attach, resume, history, new_claude, move_to, activity, secret, pause_at, unpause,
-                              drop_held)) \
+                              drop_held, delete_mid, reset)) \
                 or json_opts and asked:
             sys.exit("altention dc post：--reply-to 和 --silent 只用在貼訊息")
     if "reply-to" in json_opts and not json_opts["reply-to"].isdigit():
         sys.exit("altention dc post：--reply-to 要給訊息 ID")
     if not args and callable(stdin_text) and payload is None:  # stdin is read only when no text was given here
-        stdin_text = "" if any((attach, resume, history, new_claude, move_to)) or asked or pause_at or unpause or drop_held \
+        stdin_text = "" if any((attach, resume, history, new_claude, move_to)) or asked or pause_at or unpause or drop_held or delete_mid or reset \
             else stdin_text()
     text = " ".join(args) if args else ("" if payload is not None else stdin_text or "")
     post = {"channel": argv[0].lstrip("#"), "text": text.strip(),
@@ -482,11 +524,33 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         if any((board, attach, resume, history, new_claude, move_to, activity, secret)):
             sys.exit("altention dc post：--now 只用在交給 Claude 的訊息")
         post["now"] = True
-    if pause_at is not None or unpause or drop_held:
-        flag = "--pause-until" if pause_at is not None else "--unpause" if unpause else "--drop-held"
+    if then is not None and not reset:
+        sys.exit("altention dc post：--then 只跟 --reset 一起用")
+    if reset:
         why = asked.pop("why", None)
-        if (pause_at is not None) + unpause + drop_held > 1:
-            sys.exit("altention dc post：--pause-until、--unpause、--drop-held 不能一起用")
+        if pause_at is not None or unpause or drop_held or delete_mid or rename is not None:
+            sys.exit("altention dc post：--reset 不能跟 --pause-until、--unpause、--drop-held、--delete、--rename 一起用")
+        if asked or now or args or any((board, attach, resume, history, new_claude, move_to, activity, secret, file_paths)):
+            sys.exit("altention dc post：--reset 單獨用（只帶 --why 和 --then，不能帶訊息、--file 或其他旗標）")
+        if not why:
+            sys.exit("altention dc post：--reset 要帶 --why \"為什麼\"（會記在 #audit，也寫在那個頻道）")
+        post["reset"], post["why"], post["wait"] = True, why, wait or 30
+        if then is not None:
+            post["then"] = then.strip()
+    if rename is not None:
+        why = asked.pop("why", None)
+        if asked or now or args or pause_at is not None or unpause or drop_held or delete_mid or \
+                any((board, attach, resume, history, new_claude, move_to, activity, secret, file_paths)):
+            sys.exit("altention dc post：--rename 單獨用（只帶 --why，不能帶訊息、--file 或其他旗標）")
+        if not why:
+            sys.exit("altention dc post：--rename 要帶 --why \"為什麼\"（會記在 #audit，也寫在頻道裡）")
+        post["rename"], post["why"], post["wait"] = rename.strip(), why, wait or 60
+    if pause_at is not None or unpause or drop_held or delete_mid:
+        flag = "--pause-until" if pause_at is not None else "--unpause" if unpause else "--drop-held" if drop_held \
+            else "--delete"
+        why = asked.pop("why", None)
+        if (pause_at is not None) + unpause + drop_held + bool(delete_mid) > 1:
+            sys.exit("altention dc post：--pause-until、--unpause、--drop-held、--delete 不能一起用")
         if asked or now or args or any((board, attach, resume, history, new_claude, move_to, activity, secret, file_paths)):
             sys.exit("altention dc post：%s 單獨用（只帶 --why，不能帶訊息、--file 或其他旗標）" % flag)
         if not why:
@@ -499,8 +563,10 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
             post["pause"] = until
         elif unpause:
             post["unpause"] = True
-        else:
+        elif drop_held:
             post["drop_held"] = True
+        else:
+            post["delete_message"] = delete_mid
         post["why"], post["wait"] = why, wait or 30  # the bot's answer is what this is for: waited for, and printed
     if asked:
         kinds = [k for k in ("waiting", "answer", "talk_continue") if asked.get(k)]
@@ -587,7 +653,7 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
             post["more_files"] = files[1:]
     if not post["text"] and not files and not any(k in post for k in ("json", "new_claude", "resume", "history", "move_to", "secret",
                                                                        "waiting", "answer", "talk_continue", "pause",
-                                                                       "unpause", "drop_held")):
+                                                                       "unpause", "drop_held", "rename", "delete_message", "reset")):
         sys.exit("altention dc post：沒有內容")
     return post
 

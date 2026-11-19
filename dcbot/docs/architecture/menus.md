@@ -1,0 +1,7 @@
+# 選單、圖的原文、畫面截圖
+
+從 `dcbot/CLAUDE.md` 的「架構」搬來，原文沒改（2026-11-19）。路徑相對於 `dcbot/`；接頭指 `altention/connectors/claude_code/`。
+
+- `bot/menus.py`：沒有 hook 可以接手的終端機選單（權限確認、舊對話的計畫核准、選擇器）。收到 `Notification` 時從畫面讀出編號選項（`parse_menu()`；畫面上有輸入框就不算選單），每個選項一顆按鈕，按下去就是對 tmux 送那個數字鍵（Claude Code 的選單按數字會直接選定）；另有「輸入文字…」、Enter、Esc。按完會重讀畫面更新那則訊息；對話往下走（`UserPromptSubmit`、`PreToolUse`、`Stop`）時舊選單的按鈕會被拿掉。選單只在記憶體：重啟後（`TmuxBridge.menus_again()`：頻道狀態還記著 `blocked` dialog 的）和補送卡在對話框時（`Unsent.hand_again()`），`Menus.look_again()` 讀一次畫面（不按鍵）：還是那個選單就把頻道記著的那張卡換上新按鈕（不另貼、不再 @），`--waiting` 看得到、能代答；卡片標題換成「還開著的對話框」那句、在 await 之前就先登記（同一刻來的 Notification 只會留一個）；沒有卡的記錄時只有一般的選項對話框（`plain_menu()`：提示列沒有自己的字母鍵或左右鍵，/model 那種面板不算）才另貼一張；畫面已經是輸入框就把舊卡的按鈕拿掉、@ 打勾、`blocked` 清掉（C-189）。別的 Claude 在選單上除了數字、Enter、文字，也能按 Esc、方向鍵、Tab、空白（`agentanswer.KEYS`）。
+- `bot/sources.py`（C-91）：機器人貼出的圖附了原文時（`altention/sources.py` 的 {kind, lang, tool, source}；`altention dc post --file` 旁邊的 `<檔>.source.json` 進 spool 的 `file_source`／`more_files[i].source`，改寫回覆的訊息物件 `sources`：{圖片路徑: 原文}），`Posts`（卡片、貼回自己頻道）和 `post_reply()` 貼出後 `sources.remember()` 記在 `state/sources/<訊息 ID>.json`（第幾個附件、原文和 kind、tool 先 `masking.mask()`；30 天、500 則）。擁有者按 📝：`on_raw_reaction_add` 先給 `screens.show_text()`（/screen 的），不是才給 `sources.show()`；只回同一頻道、有記錄的訊息，原文一樣的圖合成一段（「第 1–3 張：」），放不進一則（1900 字）或原文裡有 ``` 的改附檔。機器人不先加 📝。
+- `bot/screens.py`、`bot/screenshot.py`：`!screen`／`/screen` 貼成 PNG（`capture-pane -e` 的顏色逐格畫出，寬字元佔兩格，字型缺的符號換成近似的，見 `SUBSTITUTE`；用 Pillow），機器人先在圖上加 📝，擁有者按了就回文字版（截圖當下的文字記在 `st["screens"]`）。畫不出來就退回文字。

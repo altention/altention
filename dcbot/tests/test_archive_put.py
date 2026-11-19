@@ -115,10 +115,11 @@ class Base(unittest.TestCase):
         self.g = Guild()
         self.bot = Bot()
         self.arch = archive.Archive(self.bot)
-        self.unbound, self.killed = [], []
+        self.unbound, self.killed, self.pane_then = [], [], []
 
-        async def unbind_any(cid, host=None):
+        async def unbind_any(cid, host=None, pane=None):
             self.unbound.append(cid)
+            self.pane_then.append((pane, (self.bot.channels_state.get(str(cid)) or {}).get("pane")))
 
         async def exists(pane):
             return True
@@ -189,6 +190,8 @@ class Conversations(Base):
         text, _ = self.put(ch)
         self.assertEqual(self.bot.tmux.closed, [(ch.id, False)])
         self.assertEqual(self.unbound, [ch.id])
+        self.assertEqual(self.pane_then, [(dict(P, host="lap"), None)],
+                         "its pane handed over, out of the record before (#code-review-2 on 1a4cad50)")
         self.assertEqual(self.state(ch)["archived"]["pane"]["host"], "lap")
         self.assertIn("你接上的對話還在原處繼續跑（lap:%5）", text)
 
@@ -423,10 +426,15 @@ class Detach(unittest.TestCase):
             closed.append(kill)
         bot.tmux = type("T", (), {"close": staticmethod(close)})()
 
-        async def unbind_any(cid, host=None):
-            pass
+        unbound = []
+
+        async def unbind_any(cid, host=None, pane=None):
+            unbound.append((cid, pane, bot.channels_state[str(cid)].get("pane")))
         with mock.patch.object(routes, "unbind_any", unbind_any), mock.patch.object(tmuxio, "label", lambda p: "lap"):
             text = run(botmain.Bot.detach(bot, ch, bot.channels_state[str(ch.id)]))
+        self.assertEqual(unbound, [(ch.id, P, None)], "its pane handed over: its channel tag taken away (C-201); out of "
+                         "the record before the awaits (#code-review-2 on 1a4cad50: a look meanwhile bound it again)")
+        self.assertEqual(bot.channels_state[str(ch.id)]["archived"]["pane"], P, "its record for 接回 has it")
         rec = bot.channels_state[str(ch.id)]["archived"]
         self.assertEqual((rec["from"], rec["why"], closed), ({"id": proj.id, "name": "proj"}, kinds.DETACHED, [False]))
         self.assertEqual(ch.category.name, config.ARCHIVE_CATEGORY)
@@ -668,7 +676,7 @@ class AttachInto(Base):
             backfills.append(messages)
         bot.backfill = backfill
 
-        async def bind_any(pane, cid):
+        async def bind_any(pane, cid, tag=True):
             pass
 
         async def dcremote(host, *args, **kw):

@@ -76,6 +76,17 @@ def drop_older(epoch, named=()):
     return len(table) - len(kept)
 
 
+def unbind_key(pane_key, channel_id):
+    """The route of that one pane taken away, only while it is still the channel's (the look's repair, C-201 2a): its
+    other routes stay. True when one went."""
+    table = load()
+    if channel_of(table.get(pane_key)) != str(channel_id):
+        return False
+    table.pop(pane_key)
+    save(table)
+    return True
+
+
 def unbind(channel_id):
     save(dict((k, v) for k, v in load().items() if channel_of(v) != str(channel_id)))
 

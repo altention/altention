@@ -114,6 +114,10 @@ class Servers(unittest.TestCase):
         r = run("tmux-at", ident.split("#")[0] + "#%9999")
         self.assertEqual(r.returncode, 3)
         self.assertEqual(run("tmux-read", "tmux://nope").returncode, 2)
+        r = run("pid-under", str(os.getppid()), str(os.getpid()))
+        self.assertEqual((r.returncode, r.stdout), (0, "1\n"), "C-198: this test is under its parent")
+        r = run("pid-under", str(os.getpid()), str(os.getppid()))
+        self.assertEqual((r.returncode, r.stdout), (0, "0\n"))
         for word in ("tmux-list", "tmux-read", "tmux-at", "claude-at"):  # a word missing is 2: 1 is only "too old"
             r = run(word)
             self.assertEqual((r.returncode, json.loads(r.stdout)["code"]), (2, 2), word)

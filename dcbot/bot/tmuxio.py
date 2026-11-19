@@ -191,13 +191,15 @@ def key_name(key):
 
 
 async def alive(t):
-    """Is the session there? For a pane address: is it still running Claude (not back at a shell)?"""
+    """Is the session there? For a pane address: is it still running Claude (not back at a shell), or an adapter
+    whose mark on the pane is valid (marked_agent(): the one judgement of a mark, also moved_on()'s)?"""
     if isinstance(t, dict) and t.get("shell"):  # a terminal channel's shell: there is enough
         return await exists(t)
     if isinstance(t, dict):
-        code, out = await tmux("display-message", "-p", "-t", t["id"], "#{pane_current_command}\t#{pane_pid}", **on(t))
+        code, out = await tmux("display-message", "-p", "-t", t["id"], "#{pane_current_command}\t#{pane_pid}\t#{%s}" % AGENT_MARK,
+                               **on(t))
         asked(t, answered=not (t.get("host") and code == 255))  # ssh's own failure: the question never got an answer
-        command, _, pid = out.strip().partition("\t")
+        command, pid, mark = (out.strip("\n").split("\t") + ["", ""])[:3]
         if t.get("pid") and pid != str(t["pid"]):
             return False  # pane numbers start over when a tmux server restarts: that is someone else's pane now
         if code != 0:
@@ -205,25 +207,32 @@ async def alive(t):
         if command == "claude" or cc_screen.CLAUDE_VERSION.match(command or ""):  # Claude's own binary
             return True
         said = await claude_under(t, pid)  # node (npm's Claude or any Node program), a script's shell: what runs under
-        return cc_screen.is_claude(command) if said is None else said  # it (C-92 b); the name only when not known
+        if (cc_screen.is_claude(command) if said is None else said):  # it (C-92 b); the name only when not known
+            return True
+        return bool(await marked_agent(t, pid, mark, command))  # an adapter by the mark it left itself (C-198, manager 11-18)
     return (await dead(t)) is False  # a session kept after its Claude ended (start()) is not one that runs
 
 
 async def moved_on(t):
     """A pane address whose recorded pid is not the pane's now (alive() says no for that alone): what the same pane
-    number runs now, {"pid", "session", "cwd"}, when that is Claude Code; None else (no pid recorded, the pid the
-    same, the pane gone or at a shell, the machine not answering). Whether it is the same conversation is the
+    number runs now, {"pid", "session", "cwd", "tag", "agent", "agent_session"} (tag: the channel the pane is tagged
+    for, TAG, or ""; agent: the agent an adapter's valid mark names, marked_agent(), or ""; agent_session: its
+    AGENT_SESSION), when that is Claude Code (or an agent passing for it: alive()) or a marked adapter; None else
+    (no pid recorded, the pid the same, the pane gone or at a shell, the machine not answering). Whether it is the same conversation is the
     caller's to tell (C-163 drill problem A: the pid of a pane attached again, never pushed to the standby)."""
     if not isinstance(t, dict) or t.get("shell") or not t.get("pid"):
         return None
     code, out = await tmux("display-message", "-p", "-t", t["id"],
-                           "#{pane_current_command}\t#{pane_pid}\t#{session_name}\t#{pane_current_path}", **on(t))
-    command, pid, session, cwd = (out.strip().split("\t") + ["", "", "", ""])[:4]
+                           "#{pane_current_command}\t#{pane_pid}\t#{session_name}\t#{pane_current_path}\t#{@altention_channel}"
+                           "\t#{%s}\t#{%s}" % (AGENT_MARK, AGENT_SESSION), **on(t))
+    command, pid, session, cwd, tag, mark, agent_session = (out.strip("\n").split("\t") + [""] * 7)[:7]
     if code != 0 or not pid or pid == str(t["pid"]):
         return None
-    if not await alive(dict(t, pid=None)):
+    agent = await marked_agent(t, pid, mark, command) or ""
+    if not agent and not await alive(dict(t, pid=None)):
         return None
-    return {"pid": pid, "session": session, "cwd": cwd}
+    return {"pid": pid, "session": session, "cwd": cwd, "tag": tag.strip(), "agent": agent,
+            "agent_session": agent_session.strip()}
 
 
 async def dead(name):
@@ -548,6 +557,52 @@ async def claude_under(t, pid):
     return await asyncio.get_running_loop().run_in_executor(None, cc_process.runs_claude, "", pid)
 
 
+AGENT_MARK = "@altention_agent"  # C-198 (manager 11-18): "<agent>|<its pid>", set by an adapter on its own pane
+AGENT_SESSION = "@altention_session"  # with it: the adapter's conversation id, when it has one
+
+
+async def marked_agent(t, pane_pid, mark, command=""):
+    """The agent an adapter's mark on pane `t` names ("<agent>|<pid>", AGENT_MARK), when the mark is the pane's
+    process's: its pid the pane's process (`pane_pid`) or one under it (a mark left by the process before a
+    respawn-pane names a pid no longer the pane's), and no shell (cc_process.adapter_pid(): a shell named there would
+    stay "an adapter" after the adapter ended, and be typed into). "" when it is known to be no adapter's: no mark, a
+    mark not that (judged here, or another machine answered it is not). None when it cannot be told: another machine
+    did not answer (ssh failed, a dcremote too old). A mark left behind by an adapter that ended is "" so, not "not
+    known": the pane is Claude Code's again (manager 11-20, both reviews of b641f556). Never guessed from command
+    lines (manager 11-18)."""
+    name, _, pid = (mark or "").strip().rpartition("|")
+    if not name.strip() or not pid.isdigit() or not str(pane_pid).isdigit():
+        return ""
+    if os.path.basename(command or "").lstrip("-") in cc_process.SHELLS:  # the pane's foreground program (tmux's
+        return ""  # pane_current_command, read already) a shell: back at it, whatever the mark says (#code-review)
+    if t.get("host"):
+        from . import remote
+        code, out = await remote.dcremote(t["host"], "pid-under", str(pane_pid), pid, timeout=20)
+        if code != 0 or out.strip() not in ("0", "1"):
+            return None  # (no answer: not known)
+        ok = out.strip() == "1"
+    else:
+        ok = await asyncio.get_running_loop().run_in_executor(None, cc_process.adapter_pid, pane_pid, pid)
+    return name.strip() if ok else ""
+
+
+async def agent_now(t):
+    """The agent that runs in pane `t` now, by the adapter's own mark (marked_agent(), the one judgement of it): its
+    name ("pi", "codex"); "" when known to be none (no mark, or a mark not valid: one left by an adapter that ended
+    included); None when not known (no pane address, the pane gone or not the recorded process, its machine not
+    answering): the caller keeps what it had. Never guessed from command lines (C-198, manager 11-18; drill of d0f26f25, A)."""
+    if not isinstance(t, dict) or t.get("shell") or not t.get("id"):
+        return None
+    code, out = await tmux("display-message", "-p", "-t", t["id"], "#{pane_current_command}\t#{pane_pid}\t#{%s}" % AGENT_MARK,
+                           **on(t))
+    command, pid, mark = (out.strip("\n").split("\t") + ["", ""])[:3]
+    if code != 0 or not pid or (t.get("pid") and pid != str(t["pid"])):
+        return None
+    if not mark.strip():
+        return ""
+    return await marked_agent(t, pid, mark, command)
+
+
 def socket_dir():
     return os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", "tmux-%d" % os.getuid())
 
@@ -601,6 +656,87 @@ async def local_claude_panes():
         if code == 0:  # a socket file with no server behind it just fails
             found += parse_panes(socket, out)
     return found
+
+
+# C-201: every pane of a server, with the channel a pane was tagged with (set -p @altention_channel); read only
+LOOK_FORMAT = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_pid}\t#{@altention_channel}\t#{automatic-rename}"
+TAG = "@altention_channel"
+GONE_SAID = ("no server running", "error connecting to", "can't find pane", "can't find session")  # tmux's words for a
+# server or a pane that is not there (as doctor's _pane_gone(), C-201 6.1); anything else it says: not known
+
+
+def parse_look(out):
+    """`list-panes -a -F LOOK_FORMAT` -> [{id, session, window, window_name, pid, channel}] (channel: "" untagged;
+    window_name only when the owner named the window: tmux's own follows the program running, as PANE_FORMAT)."""
+    found = []
+    for row in out.split("\n"):
+        f = row.split("\t")
+        if len(f) == 7 and f[0].startswith("%"):
+            found.append({"id": f[0], "session": f[1], "window": f[2], "window_name": f[3] if f[6] == "0" else "",
+                          "pid": f[4], "channel": f[5]})
+    return found
+
+
+async def look_sockets(with_bot=True):
+    """C-201's look at this machine: {socket path: {"panes": [...]} or {"gone": True} (the socket's server is not
+    there) or {"error": why} (not known)} for every server in this user's own socket folder (socket_dir(): only this
+    uid's), the bot's own too when `with_bot`; never the test servers (dcbot-*, dctest*). Read only. The folder
+    itself not readable: {"error": why} (a socket's key is its path, never "error")."""
+    d, out = socket_dir(), {}
+    try:
+        names = sorted(os.listdir(d))
+    except FileNotFoundError:
+        return {}  # (no tmux server at all here: none of its panes is there)
+    except OSError as e:
+        return {"error": str(e)}
+    for n in names:
+        if n.startswith(("dcbot-", "dctest")) or n in _set.get("skip", ()) or (n == _set.get("socket") and not with_bot):
+            continue
+        sock, err = os.path.join(d, n), []
+        code, text = await tmux("list-panes", "-a", "-F", LOOK_FORMAT, socket=sock, err=err)
+        if code == 0:
+            out[sock] = {"panes": parse_look(text)}
+        elif any(w in " ".join(err).lower() for w in GONE_SAID):
+            out[sock] = {"gone": True}
+        else:
+            out[sock] = {"error": " ".join(err)[:200] or "exit %d" % code}
+    return out
+
+
+async def tag(socket, pane_id, channel_id, host=None):
+    """Write the channel a pane is (C-201): what binding a pane and the look write. True when tmux took it."""
+    code, _ = await tmux("set-option", "-p", "-t", pane_id, TAG, str(channel_id), socket=socket, host=host)
+    return code == 0
+
+
+async def untag(socket, pane_id, channel_id=None, host=None):
+    """Take a pane's channel tag away (C-201: unbinding it; a tag the look found stale): only while it still says
+    `channel_id` (when given), so a pane tagged for another channel since is left alone. True when it was taken."""
+    if channel_id is not None:
+        code, said = await tmux("show-options", "-p", "-t", pane_id, "-v", TAG, socket=socket, host=host)
+        if code != 0 or said.strip() != str(channel_id):
+            return False
+    code, _ = await tmux("set-option", "-p", "-u", "-t", pane_id, TAG, socket=socket, host=host)
+    return code == 0
+
+
+async def rename_window(socket, target, name, host=None, err=None):
+    """Name the window of `target` (a pane's %N, or session:window) `name` (C-201 2b: a rename takes the window
+    along). tmux turns the window's automatic-rename off with it, as for a name the owner gives: the look tells the
+    bot's own from the owner's by the name the bot wrote (bot/rename.py). tmux's exit code (255: another machine
+    not reached)."""
+    return (await tmux("rename-window", "-t", target, name, socket=socket, host=host, err=err))[0]
+
+
+async def rename_session(socket, session, name, host=None, err=None):
+    """Name the session `session` (its exact name) `name` (C-201 2b: the bot's own session of one channel). tmux's
+    exit code."""
+    return (await tmux("rename-session", "-t", "=" + session, name, socket=socket, host=host, err=err))[0]
+
+
+async def has_session(socket, session, host=None):
+    """Is there a session of this exact name on the server at `socket` (None: the bot's own)?"""
+    return (await tmux("has-session", "-t", "=" + session, socket=socket, host=host))[0] == 0
 
 
 async def own_sessions():

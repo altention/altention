@@ -6,9 +6,13 @@ hook (`dchook --global`) writes events and reads the route table exactly as on t
 machine's own engine (dcbot/state/). The bot reaches it over SSH:
 
   dcremote panes                    Claude Code panes in this user's tmux, as JSON (with project, route)
+  dcremote look                     every pane of this user's tmux servers here, with the channel it was tagged with
+                                    (C-201's look; read only): JSON {socket: {"panes"} | {"gone"} | {"error"}}
   dcremote stream                   events as JSON lines, forever (with what Claude said since the last one)
   dcremote bind KEY CHANNEL PID     route a pane ("socket|%id") to a channel
   dcremote unbind CHANNEL
+  dcremote routes                   this machine's route table (C-201 2a; read only): JSON
+  dcremote unbind-key KEY CHANNEL   that pane's route only, while it is still the channel's: JSON {"unbound"}
   dcremote answer ASK_ID            hand a question's answer (JSON on stdin) to the waiting hook
   dcremote backfill PANE SESSION    the session's earlier conversation: its turns, as data (JSON)
   dcremote turn FILE START [ID]     one turn of a conversation of this machine, for 📋: as data, made small (JSON)
@@ -31,6 +35,8 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
                                     what to type as JSON on stdin {"text" | "keys", "enter", "caller", "reason"}
   dcremote claude-at PID            1 when Claude Code runs as process PID or under it in its terminal's foreground
                                     (by the command lines), 0 when not, ? when that cannot be told
+  dcremote pid-under TOP PID         1 when process PID is process TOP or one under it and no shell, 0 when not
+                                    (C-198: an adapter's @altention_agent mark counts only for such a process)
   dcremote attachdir CHANNEL        make state/attachments/CHANNEL/ and print its path (handed to the channel's
                                     Claude when the bot opens it here, in its settings)
 """
@@ -75,7 +81,7 @@ def command_of(pid):
 
 
 OLD = 75  # C-163: a request of a bot older (a smaller epoch) than one this machine has seen: refused
-NOT_THE_BOTS = ("tmux-list", "tmux-read", "tmux-send", "tmux-at", "claude-at", "owner-clear", "-h", "--help")  # what the altention
+NOT_THE_BOTS = ("tmux-list", "tmux-read", "tmux-send", "tmux-at", "claude-at", "pid-under", "owner-clear", "-h", "--help")  # what the altention
 # command line asks of this machine (the owner's, a Claude's), never a bot: no epoch to send, never refused for it
 
 
@@ -542,6 +548,8 @@ def main(argv):
         print(__doc__)
     elif argv[0] == "panes":
         panes()
+    elif argv[0] == "look":  # C-201: every pane of this user's tmux servers here, with its channel tag (read only)
+        print(json.dumps(asyncio.run(tmuxio.look_sockets()), ensure_ascii=False))
     elif argv[0] == "owner-clear":  # C-163: the standby taken out of the list: no epoch to remember (doctor says when)
         from altention import config as engine_config
         if any("dcbot-standby" in ((m or {}).get("roles") or []) for m in engine_config.machines().values()):
@@ -576,6 +584,10 @@ def main(argv):
         routecore.bind_key(argv[1], argv[2], argv[3] if len(argv) > 3 else "", epoch=epoch)
     elif argv[0] == "unbind":
         routecore.unbind(argv[1])
+    elif argv[0] == "routes":  # C-201 2a: this machine's route table as it is (read only), for the look's repair
+        print(json.dumps(routecore.load(), ensure_ascii=False))
+    elif argv[0] == "unbind-key" and len(argv) >= 3:  # C-201 2a: one pane's route, while still that channel's
+        print(json.dumps({"unbound": routecore.unbind_key(argv[1], argv[2])}))
     elif argv[0] == "answer":
         answer(argv[1])
     elif argv[0] == "termrc":
@@ -603,6 +615,9 @@ def main(argv):
         from altention.connectors.claude_code import process
         said = process.runs_claude("", argv[1])
         print("?" if said is None else "1" if said else "0")
+    elif argv[0] == "pid-under" and len(argv) >= 3:
+        from altention.connectors.claude_code import process
+        print("1" if process.adapter_pid(argv[1], argv[2]) else "0")
     elif argv[0] == "tmux-send" and len(argv) >= 2:
         tmux_send(argv[1])
     elif argv[0] == "tmux-at" and len(argv) >= 2:

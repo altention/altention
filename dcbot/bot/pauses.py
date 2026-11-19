@@ -156,6 +156,10 @@ class Pauses(object):
                                             why=str(post.get("why") or "").strip()))
         return True, messages.pause("said_dropped", channel=ch.name, n=n)
 
+    def shown_until(self, p):
+        """A pause's end as the owner reads it."""
+        return clock(p["until"])
+
     def refused(self, ch):
         """Why --answer / --talk-continue is refused now, or None (the channel is not paused)."""
         p = self.of(ch.id)

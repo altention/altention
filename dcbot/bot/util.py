@@ -135,6 +135,19 @@ def target(st):
     return st.get("pane") or st.get("tmux")
 
 
+def socket_key(path, here=False):
+    """One spelling of a tmux socket's path, for a key: what same_socket() takes as the same comes to the same key
+    (macOS's /private in front taken away; this machine's own path with its links followed)."""
+    import os
+    path = str(path or "")
+    if here and path:
+        try:
+            path = os.path.realpath(path)
+        except (OSError, ValueError):
+            pass
+    return path[len("/private"):] if path.startswith("/private/") else path
+
+
 def same_socket(a, b, here=False):
     """Do two paths name the same tmux socket? As written; or, both being of this machine (`here`), the same
     file (links followed); or the same but for macOS's /private in front (there /tmp, /var and /etc are links

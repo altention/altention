@@ -28,6 +28,7 @@ import discord
 
 from . import config, deliver, kinds, layout, routes, tmuxio
 from .util import target
+from . import where as where_mod
 
 PREFIX = "arch"
 SHELF_MAX = 50  # Discord's limit of channels in one category
@@ -324,7 +325,9 @@ class Archive(object):
             host = (st.get("pane") or {}).get("host")
             kill = not st.get("pane") if adopt else not attached
             await self.bot.tmux.close(ch, kill=kill)  # a window the bot opened: closed as the idle reaper does
-            await routes.unbind_any(ch.id, host)
+            gone = st.get("pane")
+            where_mod.put(st, pane=None)  # (out of the record before the awaits: a look meanwhile binds no route again, #code-review-2 on 1a4cad50)
+            await routes.unbind_any(ch.id, host, gone)
             kept = dict((k, st[k]) for k in STAY if k in st)
             self.bot.channels_state[str(ch.id)] = dict(kept, archived=rec, cwd=st.get("cwd"))
             said = ("你接上的對話還在原處繼續跑（%s），機器人不再跟著它" % where if attached
@@ -333,7 +336,8 @@ class Archive(object):
             rec = dict(place, why=kinds.ADOPTED if adopt else kinds.BY_OWNER, kind=kind)
             said = ""
             if kind == kinds.TERMINAL and st.get("pane") and not adopt:
-                gone = st.pop("pane")
+                gone = st["pane"]
+                where_mod.put(st, pane=None)
                 if await tmuxio.exists(gone):
                     await tmuxio.kill_pane(gone)
                 said = "shell 視窗關掉了（指令紀錄留著），"
@@ -492,10 +496,8 @@ class Archive(object):
         if rec.get("session_id"):
             st["session_id"] = rec["session_id"]
         if alive:
-            st.update({"pane": pane, "pane_session": rec.get("pane_session")})
-            if rec.get("home"):
-                st["home"] = rec["home"]
-            else:
+            where_mod.put(st, getattr(ch, "name", None), pane=pane, pane_session=rec.get("pane_session"), home=rec.get("home"))
+            if not rec.get("home"):
                 await routes.bind_any(pane, ch.id)
             self.bot.save()
             await self.unarchive(ch, rec, st["cwd"])
@@ -518,9 +520,9 @@ class Archive(object):
         # it was on (a pane of another machine's: its tmux there, where the conversation's file is; until 2026-10-14
         # one was opened on the bot's machine, which has no such conversation)
         far = (pane or {}).get("host")
-        st["home"] = rec.get("home") or dict({"socket": pane.get("socket") if far else tmuxio.user_socket(), "window": "",
-                                              "session": rec.get("pane_session") or tmuxio.safe_session(ch.name)},
-                                             **({"host": far} if far else {}))
+        where_mod.put(st, getattr(ch, "name", None), home=rec.get("home") or dict(
+            {"socket": pane.get("socket") if far else tmuxio.user_socket(), "window": "",
+             "session": rec.get("pane_session") or tmuxio.safe_session(ch.name)}, **({"host": far} if far else {})))
         self.bot.save()
         await self.unarchive(ch, rec, st["cwd"])
         self.offered.discard(ch.id)

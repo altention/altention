@@ -436,6 +436,102 @@ class Json(Base):
         self.assertIn("Discord 沒收（400 50035）", got["why"])
 
 
+class Delete(Base):
+    """altention dc post --delete (manager 11-17, the rules of bot/rules.py): a post of the sender's own, by the ledger."""
+    def delete(self, cid, mid, sender="1", **kw):
+        return self.post(channel=str(cid), delete_message=str(mid), why="寫錯了", from_channel=sender, wait=30, **kw)
+
+    def test_ones_own_taken_away_and_said(self):
+        ledger.note(1, 600, "post", frm="channel:1", framed=())  # (its own channel: no line wanted)
+        got = self.delete(1, 600)
+        self.assertEqual((got["ok"], got["text"]), (True, "訊息 600 刪掉了"))
+        self.assertEqual(self.a.deleted, [600])
+        self.assertIsNone(ledger.entry(600, 1), "its entry goes too")
+        self.assertIn("[altention dc post --delete] #st-1 刪了訊息 600（#st-1（查證過） 發的；理由：寫錯了）", self.bot.audits,
+                      "what it said cannot be read here: left out")
+
+    def test_what_it_said_is_kept_in_audit(self):
+        """manager 11-17: the other Claude may have read it; #audit says what it said (its first words, masked)."""
+        ledger.note(1, 605, "post", frm="channel:1", framed=())
+        words = "第一行 " + "很長的內容" * 20
+
+        async def fetch_message(mid):
+            return types.SimpleNamespace(content=words, embeds=[], components=[])
+        self.a.fetch_message = fetch_message
+        self.assertTrue(self.delete(1, 605)["ok"])
+        line = self.bot.audits[-1]
+        self.assertIn("刪了訊息 605（#st-1（查證過） 發的，內容：「第一行 很長的內容", line)
+        self.assertIn("…」；理由：寫錯了）", line)
+        self.assertEqual(len(line.split("「")[1].split("」")[0]), posts.Posts.DELETED_SHOWN + 1)
+        ledger.note(1, 606, "post", frm="channel:1", framed=("card",))
+
+        async def card(mid):
+            return types.SimpleNamespace(content="", embeds=[discord.Embed(description="轉傳的話")], components=[])
+        self.a.fetch_message = card
+        self.assertTrue(self.delete(1, 606)["ok"])
+        self.assertIn("內容：「", self.bot.audits[-1])
+        self.assertIn("轉傳的話", self.bot.audits[-1], "a 📨 card's words")
+        ledger.note(1, 607, "post", frm="channel:1", framed=())
+        key = "sk-ant-" + "a" * 30  # (as tests/test_masking.py's: a made-up key of the shape masking knows)
+
+        async def secret(mid):
+            return types.SimpleNamespace(content="token " + key, embeds=[], components=[])
+        self.a.fetch_message = secret
+        self.assertTrue(self.delete(1, 607)["ok"])
+        self.assertNotIn(key, self.bot.audits[-1], "masked before it goes to #audit (#code-review on 4dd7d92d)")
+        self.assertIn("內容：「token [REDACTED]", self.bot.audits[-1])
+
+    def test_in_anothers_channel_with_where_it_comes_from(self):
+        ledger.note(2, 601, "post", frm="channel:1", framed=("source",))
+        ledger.note(2, 602, "post", frm="channel:1", framed=("card",))  # (a 📨 relay card: the sender's own post)
+        ledger.note(2, 603, "post", frm="channel:1", framed=())  # (a Claude's from before P1d: no line)
+        ledger.note(2, 604, "post", frm="program:host-a:x", framed=())  # (a program's: never a line, by its key)
+        self.assertTrue(self.delete(2, 601)["ok"])
+        self.assertTrue(self.delete(2, 602)["ok"])
+        got = self.delete(2, 603)
+        self.assertFalse(got["ok"])
+        self.assertIn("沒有來源行", got["text"])
+        got = self.post(channel="2", delete_message="604", why="w", from_name="host-a 上的程式（x）", from_host="host-a",
+                        from_machine="host-a", from_folder="x", verified=False, wait=30)
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(self.b.deleted, [601, 602, 604])
+
+    def test_never_anothers_a_card_a_board_or_a_reply(self):
+        ledger.note(1, 610, "post", frm="channel:2", framed=())
+        ledger.note(1, 611, "card", frm=None)
+        ledger.note(1, 612, "board", frm=None)
+        ledger.note(1, 613, "reply", frm=None)
+        for mid, words in ((610, "只能刪自己發的"), (611, "機器人的卡片"), (612, "看板"), (613, "不是用工具發的訊息"),
+                           (699, "紀錄（ledger）裡沒有這則")):
+            got = self.delete(1, mid)
+            self.assertFalse(got["ok"], mid)
+            self.assertIn(words, got["text"], mid)
+            self.assertTrue(got["text"].startswith("altention dc post --delete：沒有刪："), got["text"])
+        self.assertFalse(hasattr(self.a, "deleted"), "nothing taken away")
+        self.assertIn("[altention dc post --delete] #st-1：altention dc post --delete：沒有刪：", self.bot.audits[-1])
+
+    def test_one_gone_already_or_refused_by_discord(self):
+        ledger.note(1, 620, "post", frm="channel:1", framed=())
+        ledger.note(1, 621, "post", frm="channel:1", framed=())
+
+        def partial(mid):
+            class Gone(object):
+                id = mid
+
+                async def delete(self):
+                    if mid == 620:
+                        raise discord.NotFound(types.SimpleNamespace(status=404, reason="x"), {"code": 10008, "message": "Unknown Message"})
+                    raise discord.Forbidden(types.SimpleNamespace(status=403, reason="x"), {"code": 50013, "message": "Missing Permissions"})
+            return Gone()
+        self.a.get_partial_message = partial
+        got = self.delete(1, 620)
+        self.assertEqual((got["ok"], got["text"]), (True, "訊息 620 已經不在了（之前就刪掉了）"))
+        got = self.delete(1, 621)
+        self.assertFalse(got["ok"])
+        self.assertIn("Discord 沒收（403 50013）", got["text"])
+        self.assertIsNotNone(ledger.entry(621, 1), "not taken away: its entry stays")
+
+
 class Board(Base):
     """--board --json: a framed board, a payload a message, kept up to date in place (manager 11-16 design, P1d)."""
     def board(self, parts, **kw):

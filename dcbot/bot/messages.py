@@ -137,6 +137,10 @@ NOTES = {
     'resend.failed': '⚠️ 補交給 #{to} 的 Claude 時出錯（{why}），這則還留著，下次再試：{text}',
     'resend.recovered': '✅ 剛才補交給 #{to} 的 Claude 出錯的那則，已經交到了：{text}',
     'resend.press_failed': '⚠️ 再送一次時出錯（{why}），內容還留著，可以再按一次。',
+    # C-202: a post another channel's Claude sent, not handed to this channel's Claude: said where it came from
+    'post.not_entered': '⚠️ 你傳給 #{to} 的訊息沒有送到它的 Claude：字打進了輸入框，但它的畫面不是在等人打字，所以沒有按 Enter。'
+                        '字可能還在它的輸入框裡，視窗關掉就不見了。要的話晚點再送一次（先用 `altention dc read {to}` 看它有沒有收到，免得重複）。',
+    'post.refused': '⚠️ 你傳給 #{to} 的訊息沒有送到它的 Claude：{why}這個原因不會自己消失，現在重送也一樣，要等那邊處理好再送。',
     'resend.given_up': '⚠️ 這則一直沒能交給 #{to} 的 Claude（{hours} 小時內那個頻道的終端機都不是一般的輸入框），已經放棄：{text}',
 }
 
@@ -201,6 +205,14 @@ CALLS = {
     "login_back": "✅ {machine} 的登入恢復了",
     "login_back_one": "✅ 登入恢復了",
     "rollback": "🛠️ 機器人新版有問題，已退回上一版，照常運作",
+    # (a new version too far from the last good one to roll back on its own: supervisor.py hold(), held_down())
+    "rollback_held_exit": "啟動失敗（exit {exit}）",
+    "rollback_held_events": "試用時把 {n} 個事件標成失敗，被停掉",
+    "rollback_held_never_up": "{secs} 秒內沒上線，被停掉",
+    "rollback_held": "🛠️ 機器人新版 `{head}` {how}，但它跟上一個正常版本 `{good}` 差了 {commits} 個 commit、"
+                     "{lines} 行、{files} 個檔（dcbot/、altention/），太多了，沒有自動退回，照常重試。要退回：在 Discord 打 "
+                     "`!rollback`，或在 {machine} 的引擎 `touch dcbot/state/rollback-requested`",
+    "rollback_held_again": "🛠️ 新版 `{head}` 又停了（exit {exit}，第 {n} 次），照常重試；要退回打 `!rollback`",
     "restarting": "🛠️ 機器人一直重啟，沒辦法上線",
     "restarting_where": "原因在 {machine} 的 {path}",
     "restarting_back": "✅ 機器人恢復了",
@@ -268,6 +280,8 @@ LEASE = {
     "busy": "機器人正在換機器，請過幾秒再按一次",
     "audit_took_over": "接手：{standby}（第 {epoch} 次換機器），{primary} 最後心跳 {beat}，{ssh}，接手前檢查 {checks}",  # ({ssh}: dclease's ssh_veto
     # words, "ssh 通…" or "ssh 不通": "ssh {ssh}" said "ssh ssh 通", drill 11-09)
+    "audit_pane_followed_tag": "#{channel}：窗格 {where} 重開過（程序 {was} → {pid}），換成 {agent}，照窗格上這個頻道的標籤和它自己留的標記接回",
+    "pane_followed_tag": "-# 這個頻道的窗格重開過，已經接回同一個窗格",
     "audit_pane_followed": "#{channel}：窗格 {where} 裡的 Claude 重新啟動過（程序 {was} → {pid}），還是同一個對話（{session}），頻道照常接著",
     "gate_setup": "啟動前讀不到 #{channel}（{why}），先照沒有備援的方式啟動。備援的機器也讀不到它，所以這台掛了時不會有別台接手；"
                   "請跑 doctor 看怎麼修。",  # (#release 11-08: #audit is read too, plain words)
@@ -389,12 +403,130 @@ PERMS = {
     "missing": "少了 {names}",
     "need_admin": "這件事要機器人有「管理員」權限，現在沒有：到 #update 的「管理員權限」卡片按授權連結（不給的話其他功能照常）",
 }
+# C-201: /where's card (bot/where.py card()); 📍 is where and who a channel is (notice-design.md)
+WHERE = {
+    "title": "📍 #{channel} 現在在哪裡",
+    "machine": "- 機器：{machine} · {server} · session {session} · window {window}",
+    "machine_pane": "- 機器：{machine} · {server} · session {session} · 窗格 {pane}",
+    "server_bot": "tmux（機器人的）",
+    "server_user": "tmux（你的）",
+    "unknown": "？",
+    "conversation": "- 對話：Claude Code · {id}…{title}",
+    "no_conversation": "- 對話：還沒有（下一則訊息會開一個）",
+    "conversation_agent": "- 對話：{agent} · {id}…",  # (an adapter's pane: C-198)
+    "no_conversation_agent": "- 對話：{agent}（轉接層沒有給對話 id）",
+    "folder": "- 資料夾：{folder}",
+    "follow": "- 改名時跟著變：{names}",
+    "follow_channel": "頻道",
+    "follow_conversation": "對話",
+    "follow_window": "window",
+    "follow_session": "session",
+    "seen_here": "- 上次對帳：{at} 在",
+    "seen_gone": "- ⚠️ 上次對帳：{at} 窗格不見了",
+    "seen_unknown": "- 上次對帳：{at} 那台連不上，不知道",
+    "seen_respawned": "- 上次對帳：{at} 窗格重開過，正在確認是不是同一個",
+    "seen_unsure": "- 上次對帳：{at} 那個窗格號還在，但紀錄沒有它的程序，不確定是不是同一個（重新 /attach 一次就確定了）",
+    "none": "📍 #{channel} 沒有 Claude 對話（不是對話頻道，或已經封存）",
+}
+# C-201: the look (bot/reconcile.py): a channel's pane not where its record says
+RECONCILE = {
+    "gone": "⚠️ 這個頻道的窗格不見了（{machine} · {pane}），最後一次看到是 {at}。{what}",
+    "never": "（之前沒看到過）",
+    "what_attached": "要接回：在那台把 Claude Code 開起來（`claude --resume` 接同一個對話），再用 /attach 接到這個頻道。",
+    "what_window": "下一則訊息會在原本的地方重開它。",
+    "back": "✅ 這個頻道的窗格回來了（{machine} · {pane}）。",
+    "audit_gone": "[對帳] {machine}：{n} 個頻道的窗格不見了：{channels}",
+    "audit_first": "[對帳] 第一次對帳：{n} 個頻道的紀錄指向已經不在的窗格：{channels}（只記這一次，沒有在頻道說）",
+    "audit_back": "[對帳] #{channel} 的窗格回來了（{machine} · {pane}）",
+    "audit_moved": "[對帳] #{channel} 的窗格在 tmux 裡換了位置：{old} → {new}",
+    "audit_stale": "[對帳] 拿掉 {n} 個舊的頻道標記（標的頻道現在不接那個窗格）：{panes}",
+    "audit_bound": "[對帳] 補上路由：{machine} 的窗格 {pane} → #{channel}（原本：{was}）",
+    "audit_unbound": "[對帳] 拿掉路由：{machine} 的窗格 {pane}（原本給 #{channel}；{why}）",
+    "unbound_gone": "窗格已經不在",
+    "unbound_process": "窗格裡換了別的程式",
+    "unbound_tag": "窗格標記的是別的頻道",
+    "unbound_unpaned": "那個頻道現在沒有接任何窗格",
+    "audit_shared": "[對帳] {machine} 的窗格 {pane} 有好幾個頻道的紀錄都指著它：{channels}。它的路由和標記先不動，請只留一個頻道接著它（其他的用 !detach 卸下）",
+    "none": "沒有",
+}
+# C-201 2b: a rename taken along by the channel, its conversation, its tmux window and session (bot/rename.py);
+# marks per #discord-lab 11-18: ✅ done, ❌ tried and not done, ➖ not for this channel (no failure)
+RENAME = {
+    "usage": "用法：`/rename <新名字>`（例如 `/rename 回測`）",
+    "done": "✅ #{old} 改名為 #{new}",
+    "partly": "⚠️ #{old} 改名，有一項沒改成",
+    "late_head": "⚠️ #{old} 改名，頻道名還不知道改了沒",
+    "failed": "❌ #{old} 沒改成名字",
+    "row_done": "- ✅ {item}",
+    "row_done_as": "- ✅ {item}：{name}",
+    "row_failed": "- ❌ {item}：{why}",
+    "row_skipped": "- ➖ {item}：{why}",
+    "row_late": "- ⏳ {item}：{why}",
+    "item_channel": "頻道名",
+    "item_conversation": "Claude 對話名",
+    "item_agent_conversation": "對話名",  # (an adapter's pane: nothing typed, C-198)
+    "adapter_none": "轉接層沒有",
+    "item_window": "tmux window",
+    "item_session": "tmux session",
+    "same_name": "已經是這個名字",
+    "rate_limited": "Discord 限制 10 分鐘只能改兩次，頻道名晚點再改",
+    "limited_not_done": "Discord 限制 10 分鐘只能改兩次，頻道名先沒改，過幾分鐘再改一次",
+    "late": "Discord {secs} 秒內沒有回應，頻道名還不知道改了沒，過幾分鐘看一下",
+    "discord_refused": "Discord 沒有接受（{why}）",
+    "not_tmux": "這個頻道不是在 tmux 裡跑的 Claude，沒有對話名",
+    "not_sent": "沒送進去（{why}）",
+    "not_entered": "沒有打進對話框",
+    "no_window": "這個頻道的 Claude 現在不在 tmux 裡，沒有 window 可改",
+    "window_closed": "視窗現在沒開，下次開的時候用新名字",
+    "unreachable": "那台機器現在連不上，{item}名沒改",
+    "tmux_refused": "tmux 沒有改（{why}）",
+    "not_bots": "不是機器人開的，沒改",
+    "users_session": "是你自己的 session，沒改",
+    "not_followed": "這個頻道設定改名時不跟著變",
+    "by": "-# 由 #{channel} 的 Claude 改名：{why}",
+    "audit": "[改名] #{old} → #{new}（{done}{skipped}{failed}）{by}",
+    "audit_discord": "[改名] #{old} 在 Discord 改名為 #{new}，跟著改：{done}{skipped}{failed}",
+    "audit_tmux": "[改名] #{channel} 的 tmux window 在 tmux 裡改名為 {name}，跟著改：{done}{skipped}{failed}",
+    "audit_done": "改了：{items}",
+    "audit_none": "沒有",
+    "audit_skipped": "；沒改：{items}",
+    "audit_failed": "；沒改成：{items}",
+    "audit_late": "；還不知道改了沒：{items}",
+    "audit_by": " · 由 #{channel} 的 Claude：{why}",
+    "button": "改名…",
+    "modal_title": "改名：#{channel}",
+    "modal_field": "新名字",
+    "gone": "這個頻道已經不在了",
+}
 # What Claude puts at the start of a final reply that needs the owner (calls.discussed()); in the system note (C-103).
+RESET = {  # altention dc post --reset (v0.6.1, manager 11-19): bot/resets.py
+    "channel": "🔄 由 {by} 開了新對話：{why}",
+    "channel_own": "🔄 這個頻道的 Claude 開了新對話：{why}",
+    "audit": "🔄 altention dc post --reset：{by} 讓 #{channel} 開了新對話（{why}）{then}",
+    "audit_then": "，接著交給新對話：{then}",
+    "done": "#{channel} 開了新對話（舊的可以用 `altention dc post {channel} --resume <id 開頭>` 或 `!resume` 接回）{then}",
+    "done_then": "，並把 --then 的話交給了它",
+    "later": "這一輪結束後 #{channel} 會開新對話{then}",
+    "later_then": "，再把 --then 的話交給它",
+    "later_default": "，再叫新對話讀交接檔",
+    "own_default": "（新對話）上一個對話由這個頻道的 Claude 結束並開了這個新的：{why}。接續請讀它留下的交接檔"
+                   "（舊對話可以用 `!resume` 接回）。",
+    "not_claude": "#{channel} 不是有 Claude 對話的頻道，--reset 不適用",
+    "attached": "#{channel} 接的是使用者自己在 tmux 開的對話，--reset 不適用（只有使用者能在那裡 `/clear`）",
+    "busy": "#{channel} 沒有開新對話：它{what}。等它閒下來再試（--reset 沒有強制的選項）",
+    "busy_turn": "正在跑一輪",
+    "busy_bg": "有 {n} 個背景工作",
+    "busy_subs": "有 {n} 個子代理或 workflow 在跑",
+    "busy_queue": "還有 {n} 則訊息排著要給它",
+    "paused": "#{channel} 暫停中（到 {until}），先不開新對話；要的話先 --unpause",
+    "cancelled": "-# --reset 取消：要求它的那一輪沒有正常結束（中斷或失敗），這裡已經開始了新的一輪，對話照舊",
+    "audit_cancelled": "🔄 altention dc post --reset 取消：#{channel} 的那一輪沒有正常結束就開始了新的一輪（{by} 要求的：{why}）",
+}
 # TODO(v0.7.0, i18n): the marker follows the language, and the bot knows it in every language (#release 11-03).
 DISCUSS_MARK = "💬 要跟你討論："
 GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR, "secret": SECRET, "quota": QUOTA,
           "calls": CALLS, "cc": CC, "lease": LEASE, "pause": PAUSE, "menus": MENUS,
-          "perms": PERMS}
+          "perms": PERMS, "where": WHERE, "reconcile": RECONCILE, "rename": RENAME, "reset": RESET}
 
 
 def enter():
@@ -506,6 +638,21 @@ def lease(code, **data):
     return words("lease", code, data, GENERAL_NOTE)
 
 
+def reconcile(code, **data):
+    """C-201's words for the look (RECONCILE)."""
+    return words("reconcile", code, data, GENERAL_NOTE)
+
+
+def rename(code, **data):
+    """C-201 2b's words (RENAME)."""
+    return words("rename", code, data, GENERAL_NOTE)
+
+
+def where(code, **data):
+    """C-201's words (WHERE)."""
+    return words("where", code, data, GENERAL_NOTE)
+
+
 def perms(code, **data):
     """C-191's words (PERMS)."""
     return words("perms", code, data, GENERAL_NOTE)
@@ -524,6 +671,11 @@ def menus(code, **data):
 def pause(code, **data):
     """C-184's words (PAUSE)."""
     return words("pause", code, data, GENERAL_NOTE)
+
+
+def reset(code, **data):
+    """altention dc post --reset's words (RESET)."""
+    return words("reset", code, data, GENERAL_NOTE)
 
 
 def note(code, **data):

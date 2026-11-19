@@ -221,19 +221,19 @@ class Named(unittest.TestCase):
     sessions_named() must find each. A new way of holding one is added here and there together."""
     N = "the-session"
     WRITERS = (
-        ("bot/tmux_bridge.py", 'st.setdefault("tmux", tmuxio.session_name(', {"tmux": N}),                               # ensure
-        ("bot/setup.py", '"session": tmuxio.session_name(ch.name, ch.id), "window": ""}, "kind": "terminal"',           # a terminal in the bot's tmux
+        ("bot/tmux_bridge.py", 'where_mod.put(st, getattr(ch, "name", None), tmux=tmuxio.session_name(', {"tmux": N}),                               # ensure
+        ("bot/setup.py", '"session": tmuxio.session_name(ch.name, ch.id), "window": ""})',           # a terminal in the bot's tmux
          {"kind": "terminal", "home": {"socket": "/s", "session": N, "window": ""}}),
-        ("bot/setup.py", 'st.update({"home": {"socket": tmuxio.user_socket(), "session": session, "window": window}',   # a window, this machine
+        ("bot/setup.py", 'home={"socket": tmuxio.user_socket(), "session": session, "window": window}',   # a window, this machine
          {"home": {"socket": "/s", "session": N, "window": "w"}}),
-        ("bot/setup.py", 'st.update({"home": {"socket": info["socket"], "session": session, "window": window, "host": host}',
+        ("bot/setup.py", 'where_mod.put(st, home={"socket": info["socket"], "session": session, "window": window, "host": host})',
          {"home": {"socket": "/s", "session": N, "window": "w", "host": "host-a"}}),
-        ("bot/main.py", 'st.update({"pane": address, "pane_session": pane["session"]', {"pane": {"id": "%1"}, "pane_session": N}),  # /attach
+        ("bot/main.py", 'pane=address, pane_session=pane["session"])', {"pane": {"id": "%1"}, "pane_session": N}),  # /attach
         ("bot/archive.py", 'rec = {"pane": st.get("pane"), "pane_session": st.get("pane_session"), "home": st.get("home")',       # !detach
          {"archived": {"pane": {"id": "%1"}, "pane_session": N, "home": None}}),
         ("bot/archive.py", 'rec = {"pane": st.get("pane"), "pane_session": st.get("pane_session"), "home": st.get("home")',
          {"archived": {"pane": None, "pane_session": None, "home": {"session": N}}}),
-        ("bot/archive.py", 'st.update({"pane": pane, "pane_session": rec.get("pane_session")})', {"pane": {"id": "%1"}, "pane_session": N}),
+        ("bot/archive.py", 'pane=pane, pane_session=rec.get("pane_session"), home=rec.get("home"))', {"pane": {"id": "%1"}, "pane_session": N}),
         ("bot/archive.py", '"session": rec.get("pane_session") or tmuxio.safe_session(ch.name)}', {"home": {"session": N}}),
     )
 

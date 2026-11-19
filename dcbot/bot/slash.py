@@ -139,6 +139,10 @@ def setup(bot):
     async def recap(interaction: discord.Interaction, turns: Optional[app_commands.Range[int, 1, 20]] = None):
         await builtin(interaction, "!recap %s" % (turns or ""), True)
 
+    @tree.command(name="where", description="這個頻道的 Claude 現在在哪裡：機器、tmux、對話、資料夾", guild=guild)
+    async def where(interaction: discord.Interaction):
+        await builtin(interaction, "!where", False)
+
     @tree.command(name="rename", description="這個頻道和它的 Claude Code 對話一起改名（來源仍寫在頻道主題）", guild=guild)
     @app_commands.describe(name="新名字，例如 回測")
     async def rename(interaction: discord.Interaction, name: str):

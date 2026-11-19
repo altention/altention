@@ -28,8 +28,10 @@ from altention.connectors.claude_code import transcript
 from . import activity, archive, attachments, awaiting, calls, catalog, catchup, lease as lease_mod, cc_health, cc_watch, config, events, files, history, kinds, layout, messages, peers, posts, process, remote, routes, screens, secretbox, sessions, sources, setup, slash, terminal, tmuxio
 from .claude_bridge import run_text, run_turn
 from .tmux_bridge import NotOpened, TmuxBridge, fence
-from . import agentanswer, ask as ask_mod, envfile, frames, ledger, masking, msgtext, perms, postbox, statewrite, update_cards, util
+from . import resets
+from . import agentanswer, ask as ask_mod, envfile, frames, ledger, masking, msgtext, perms, postbox, statewrite, update_cards, util, where as where_mod, reconcile, rename as rename_mod
 from .util import split_message
+from .pauses import clock as clock_shown  # (a time as the owner reads it: the instance's zone)
 from . import deliver as outgoing  # (C-172a P1b; the Bot has a deliver() of its own)
 
 STATE = config.STATE
@@ -51,7 +53,7 @@ RESTART_WAIT = 60  # seconds a restart waits for half-done work (posts, events) 
 WINDOW_LOCK_SECS = 60  # C-162: how long the first held turn waits for the window's queue (then it goes on in print)
 WINDOW_SAY_SECS = 5  # C-162: a held channel waiting for its window's turn says so after this long
 SELFTEST = "selftest"  # the channel of the made-up event Bot.self_test() sends through the hook
-BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!commands", "!attach", "!detach", "!archive", "!stop",
+BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!where", "!commands", "!attach", "!detach", "!archive", "!stop",
             "!cwd", "!mode", "!screen", "!key", "!files", "!restart", "!rollback", "!cctest",
             "!agentanswers")
 
@@ -62,7 +64,7 @@ AGENT_ANSWERS_USAGE = "用法：`!agentanswers on`、`!agentanswers off`，不�
 HELP = """**內建指令**（不經過 Claude，Claude 壞掉時也能用）
 `!status` 機器人狀態　`!reset` 這個頻道開新對話　`!stop` 中止這個頻道正在跑的工作
 `!resume` 列出最近的對話　`!resume <編號或 id 開頭>` 接回那個對話（`!reset` 之後想回去時用）
-`!rename <名字>` 頻道和 Claude Code 對話一起改名　`!recap [幾輪]` 顯示這個頻道的對話最近幾輪（預設 3）　`!commands [refresh]` Claude Code 的指令和 skill 清單
+`!rename <名字>` 頻道和 Claude Code 對話一起改名　`!where` 這個頻道的 Claude 現在在哪裡（機器、tmux、對話、資料夾）　`!recap [幾輪]` 顯示這個頻道的對話最近幾輪（預設 3）　`!commands [refresh]` Claude Code 的指令和 skill 清單
 `!attach` 列出這台機器 tmux 裡的 Claude Code　`!attach <編號> [專案名]` 幫它開一個頻道接上　`!attach project:<專案名>` 或 `!attach all` 一次接上多個　`!detach` 卸下這個頻道　`!archive` 封存這個頻道（任何種類；打字可以接回或恢復）
 `!cwd <路徑>` 設定這個頻道的工作目錄　`!restart` 重啟機器人　`!rollback` 退回上一個正常版本
 `!mode tmux|print` 切換這個頻道的模式（tmux：常駐對話，可中途補充、背景工作會回報；print：每則訊息跑一次，備用）　`!mode retry` 再試一次一般模式
@@ -78,7 +80,7 @@ SYSTEM_NOTE = """你是使用者在 Discord 上的助理機器人，背後是 Cl
 - 機器人自己的程式碼在 {root}（git repo）。修改機器人請照 {root}/CLAUDE.md 的流程（測試 → `./deploy.sh` → 自動重啟，失敗會自動退回）。
 - 機器清單和設定在實例（{instance}：machines.json、plugins.json），服務管理在引擎 {engine}（ops/apply.py、ops/doctor.py）；進度插件整理的各專案進度在 {progress}（STATUS.md、projects/*/STATUS.md）。
 - 絕對不要讀取、輸出或修改 ~/.config/altention/secrets/ 和 ~/.config/dcbot/ 裡的任何東西（那裡是 token 和金鑰）。
-- 最後的回覆裡有需要使用者決定、回答或討論、不回就沒辦法往下的事時，回覆的第一行用「{mark}」開頭，接一句重點：機器人看到它才會 @ 使用者。只是報告做完、列出之後可以做的事都不算，不要每則都加；用 AskUserQuestion 按鈕提問或貼出計畫時也不要加。"""
+- 最後的回覆裡有要使用者本人決定或動手、不回就沒辦法往下的事時，回覆的第一行用「{mark}」開頭，接一句重點：機器人看到它才會 @ 使用者。在等別的頻道或別的 Claude、已經交給別人去問、報告做完、列出之後可以做的事，都不算。同一件事使用者還沒回之前只加一次，不要每則都加；用 AskUserQuestion 按鈕提問或貼出計畫時也不要加。"""
 
 TMUX_NOTE = """
 - 你是跑在 tmux 裡的互動式 Claude Code（使用者也可以用 `{where}` 直接接手）。每一輪結束時，你**最後一則**文字會貼到 Discord 當作正式回覆；你在工具呼叫之前說的話也會即時以引用的樣式貼出來當進度，所以中途的話保持簡短，結論和要使用者決定的事都放在最後的回覆。使用者可能在你處理到一半時補充訊息。
@@ -316,6 +318,7 @@ class Bot(discord.Client):
         super().__init__(intents=intents, **client_options())
         self.new_install = not os.path.exists(CHANNELS)  # no channel state at all, not one that could not be read
         self.channels_state = load_json(CHANNELS, {})
+        where_mod.context = self.where_context  # (where.put(): a channel's place and its record written together)
         self.locks = {}
         self.tmux = TmuxBridge(self)
         self.tree = slash.setup(self)
@@ -327,6 +330,8 @@ class Bot(discord.Client):
         self.posts = posts.Posts(self)
         self.cards = update_cards.Cards(self)
         self.perms = perms.Perms(self)  # its own permissions: #audit, the #update card once, doctor (C-191)
+        self.renamer = rename_mod.Renamer(self)  # C-201 2b: a rename taken along by all the channel's names
+        self.looks = reconcile.Looks(self)  # C-201: whether each channel's pane is where its record says
         self.launcher = activity.Activity(self)  # the 打開 buttons of plugins' Activity pages (C-54a; discord.Client has an `activity`)
         self.secrets = secretbox.Secrets(self)  # the 填入 buttons for plugins' secrets (C-77 G3b)
         self.tmux.asks.on_done = self.posts.answered  # a question announced in another channel: update that notice
@@ -394,6 +399,7 @@ class Bot(discord.Client):
                 self.loop.create_task(self.refresh_catalog())
             self.loop.create_task(self.reconcile())  # what this engine version declares, once it is not the one compared
             self.perms.soon()  # C-191: in the background, from the cache; never in the pump's way
+            self.loop.create_task(self.looks.run())  # C-201: now and every 2 minutes, a task of its own
             self.loop.create_task(self.launcher.watch())  # whether the Activities are on, known before a press (C-54a)
             if guild:
                 self.loop.create_task(self.adopt_archived(guild))  # channels moved into the archive by hand (C-63)
@@ -1350,16 +1356,16 @@ class Bot(discord.Client):
         elif st.get("home") or st.get("pane"):  # a window in the owner's tmux there, or a pane of theirs attached
             for k in ("home", "pane"):
                 if st.get(k):
-                    st[k] = dict(st[k], host=primary)
+                    where_mod.put(st, **{k: dict(st[k], host=primary)})
                     took[k] = True
         else:  # a session of the bot's own tmux server there, or none yet: there, never here
-            name = st.pop("tmux", None)
+            name = st.get("tmux")
             took["tmux"] = name
             pane = next((p for p in found.get("panes") or [] if name and p.get("session") == name), None)
-            st["home"] = {"host": primary, "socket": (pane or {}).get("socket") or found.get("socket"),
-                          "session": name or session or "dc-taken", "window": ""}
-            if pane:
-                st["pane"] = {"host": primary, "socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}
+            where_mod.put(st, tmux=None, home={"host": primary, "socket": (pane or {}).get("socket") or found.get("socket"),
+                                               "session": name or session or "dc-taken", "window": ""},
+                          **({"pane": {"host": primary, "socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}}
+                             if pane else {}))
         st["took_from"] = took
 
     async def say_takeover(self, got, n, reached):
@@ -1591,7 +1597,8 @@ class Bot(discord.Client):
                     or await self.terminal.on_interaction(interaction) or await self.posts.on_interaction(interaction) \
                     or await self.files.on_interaction(interaction) or await self.cards.on_interaction(interaction) \
                     or await self.launcher.on_interaction(interaction) or await self.secrets.on_interaction(interaction) \
-                    or await self.tmux.on_interaction(interaction) or await self.tmux.cc.on_interaction(interaction):
+                    or await self.tmux.on_interaction(interaction) or await self.tmux.cc.on_interaction(interaction) \
+                    or await self.renamer.on_interaction(interaction):
                 return
             ref = routes.button_ref((interaction.data or {}).get("custom_id"))
             if interaction.type == discord.InteractionType.component and ref is not None:
@@ -1762,7 +1769,58 @@ class Bot(discord.Client):
         `kind` and `connector` are put on each channel as its flags tell them, for whoever reads the file."""
         for st in self.channels_state.values():
             kinds.stamp(st)
+        try:  # C-201: each channel's `where` from its fields (bot/where.py); one that cannot be made is left as it was
+            where_mod.stamp(self.channels_state, self.channel_name_of, *self.where_context(),
+                            say=lambda line: print(line, flush=True))
+        except Exception:
+            traceback.print_exc()
         save_later(CHANNELS, self.channels_state)  # (a slow NFS write no longer stops the event loop: C-175)
+
+    async def where_card(self, ch, st):
+        """/where's card for a channel (C-201): its `where` as the last save wrote it, the conversation's name read
+        from its file when it is on this machine (in a thread: a long file)."""
+        await rename_mod.learn_agent(self, st, getattr(ch, "name", None))  # (pi, Codex: said as they are, C-198)
+        self.save()  # (the record as the fields are now)
+        rec = st.get("where")
+        here, bot_socket = self.where_context()
+        title = None
+        conversation = ((rec or {}).get("agent") or {}).get("conversation")
+        if conversation and ((rec or {}).get("place") or {}).get("machine") == here and st.get("cwd"):
+            try:
+                from altention.connectors.claude_code import sessions as cc_sessions
+                got = await asyncio.to_thread(cc_sessions.summarize, cc_sessions.transcript(st["cwd"], conversation))
+                title = (got or {}).get("title") or None
+            except Exception:
+                traceback.print_exc()
+        return where_mod.card(rec, getattr(ch, "name", "?"), here, bot_socket, title=title, clock=clock_shown, say=messages.where)
+
+    def recorded_on(self, pane):
+        """The channel whose record points to this very pane (its machine, socket, number and process) though no
+        route says so (a route lost: !attach went by the table only, and two records came to point to one pane:
+        #code-review on 1a4cad50, manager 11-18), or None."""
+        here = self.where_context()[0]
+
+        def machine(p):
+            return None if p.get("host") in (None, "", here) else p["host"]
+        if not pane.get("pid"):
+            return None
+        for cid, st in self.channels_state.items():
+            p = st.get("pane") if isinstance(st, dict) else None
+            if isinstance(p, dict) and p.get("id") == pane.get("id") and machine(p) == machine(pane) \
+                    and str(p.get("pid") or "") == str(pane["pid"]) \
+                    and util.same_socket(p.get("socket"), pane.get("socket"), machine(pane) is None):
+                return cid
+        return None
+
+    def where_context(self):
+        """(this machine's name, the bot's own tmux server's socket) for bot/where.py: looked up once."""
+        if getattr(self, "_where_context", None) is None:
+            self._where_context = (remote.this_machine(), os.path.join(tmuxio.socket_dir(), config.TMUX_SOCKET))
+        return self._where_context
+
+    def channel_name_of(self, cid):
+        ch = self.get_channel(int(cid)) if str(cid).isdigit() else None
+        return getattr(ch, "name", None)
 
     def mode(self, st):
         """How the channel's turns run: "tmux", "print", or "text" (C-162: its own mode, or lower while this
@@ -1776,16 +1834,19 @@ class Bot(discord.Client):
 
     def note(self, ch, st):
         """The system-prompt addition that tells Claude where it is."""
-        machine = (st.get("home") or {}).get("host") or (st.get("pane") or {}).get("host") or remote.this_machine()
+        place = (where_mod.put(st) or {}).get("place") or {}  # (C-201 2a: from its record, made now)
+        machine = place.get("machine") or (st.get("home") or {}).get("host") or (st.get("pane") or {}).get("host") \
+            or remote.this_machine()
         alt = remote.alt()
         data = os.environ.get("ALT_DATA") or os.path.join(alt.root(), "data")
         text = SYSTEM_NOTE.format(host=machine, channel=getattr(ch, "name", "DM"), cwd=st["cwd"], mark=messages.DISCUSS_MARK,
                                   root=config.ROOT, engine=os.path.dirname(config.ROOT),
                                   instance=alt.instance_dir() or "這台還沒有實例", progress=os.path.join(data, "progress"))
         if self.mode(st) == "tmux":
-            text += TMUX_NOTE.format(alt=remote.altention_cmd(machine), where="tmux attach -t %s" % st["home"]["session"] + (
+            session = place.get("session") or (st.get("home") or {}).get("session") or st.get("tmux", "")
+            text += TMUX_NOTE.format(alt=remote.altention_cmd(machine), where="tmux attach -t %s" % session + (
                                          "（在 %s）" % st["home"]["host"] if st["home"].get("host") else "") if st.get("home") else
-                                     "tmux -L %s attach -t %s" % (config.TMUX_SOCKET, st.get("tmux", "")))
+                                     "tmux -L %s attach -t %s" % (config.TMUX_SOCKET, session))
         return text
 
     # ------------------------------------------------------------------ messages
@@ -2152,7 +2213,7 @@ class Bot(discord.Client):
         except Exception:
             traceback.print_exc()
         st = self.channels_state.pop(str(channel.id), None)
-        await routes.unbind_any(channel.id, ((st or {}).get("pane") or {}).get("host"))
+        await routes.unbind_any(channel.id, ((st or {}).get("pane") or {}).get("host"), (st or {}).get("pane"))
         self.setup.cards.pop(channel.id, None)
         self.setup.held.pop(channel.id, None)
         self.tmux.rts.pop(str(channel.id), None)
@@ -2210,7 +2271,11 @@ class Bot(discord.Client):
         st["note_next"] = "（機器人通知：這個頻道已從 #%s 改名為 #%s，頻道 ID %d。之後提到或讀這個頻道請用新名字或 ID。）" % (
             before.name, after.name, after.id)
         self.save()
-        await self.audit("#%s 改名為 #%s" % (before.name, after.name))
+        if self.renamer.mine_said(after.id, after.name):
+            return  # (the bot's own rename: said in its #audit line, the others renamed with it)
+        if not st.get("where"):
+            return await self.audit("#%s 改名為 #%s" % (before.name, after.name))
+        await self.renamer.follow_discord(after, st, before.name)  # (C-201 2b, owner 11-17 point 2 a)
 
     async def on_guild_channel_create(self, channel):
         """The owner opened a text channel: show the setup card straight away."""
@@ -2235,18 +2300,9 @@ class Bot(discord.Client):
         return "#%s" % c.name if c is not None else None
 
     async def rename(self, ch, st, name):
-        """`!rename <name>`: the channel and the Claude Code session get the same name. Where the session comes
-        from (machine, tmux, folder) stays in the channel topic and in !status."""
-        name = re.sub(r"[^\w-]+", "-", name.strip().lower(), flags=re.UNICODE).strip("-")[:90]
-        if not name:
-            return "用法：`!rename <新名字>`（例如 `!rename 回測`）"
-        try:
-            await ch.edit(name=name)
-        except discord.HTTPException as e:
-            return "頻道改名失敗（Discord 限制每 10 分鐘最多改兩次名字）：%s" % e
-        if self.mode(st) == "tmux":
-            await self.tmux.submit(slash.Origin(ch), "/rename " + name, out=self.quiet)
-        return "已改名為 #%s，Claude Code 那邊的對話名稱也一起改。來源照舊寫在頻道主題和 `!status` 裡。" % name
+        """`!rename <name>` (/rename): the channel, its Claude Code conversation, its tmux window and (the bot's own
+        for it alone) its session, as its record follows (C-201 2b, bot/rename.py). Its card."""
+        return (await self.renamer.rename(ch, st, name))[1]  # (a channel with no conversation: its name alone)
 
     async def quiet(self, text):
         pass
@@ -2423,7 +2479,7 @@ class Bot(discord.Client):
         pane = routes.pick(panes, ref)
         if pane is None:
             return "找不到 `%s`。先用 `!attach` 看清單。" % ref
-        taken = routes.routed_to(pane, routes.load())
+        taken = routes.routed_to(pane, routes.load()) or self.recorded_on(pane)
         was = ((self.channels_state.get(str(taken)) or {}).get("pane") or {}).get("pid") if taken else None
         if taken and self.get_channel(int(taken)) and not (was and pane.get("pid") and str(was) != str(pane["pid"])):
             return "這個對話已經接在 <#%s> 了。" % taken  # (a route from another machine's table: not when the number was the old pane's)
@@ -2505,7 +2561,9 @@ class Bot(discord.Client):
         st = self.chan(new)
         had = st.get("session_id")
         if kept_here is not None:  # its old pane's route goes, what ran there ended with it; its conversation stays listed
-            await routes.unbind_any(new.id, pane.get("host"))
+            gone = st.get("pane")
+            where_mod.put(st, pane=None)  # (out of the record before the awaits: a look meanwhile binds no route again, #code-review-2 on 1a4cad50)
+            await routes.unbind_any(new.id, pane.get("host"), gone)  # (its tag too: C-201)
             st.pop("bg", None)
             sessions.remember(st, st.get("session_id"))
         st.pop("cwd_from", None)  # an attached session works where it already is
@@ -2516,9 +2574,10 @@ class Bot(discord.Client):
         address = {"socket": pane["socket"], "id": pane["id"], "pid": pane.get("pid")}
         if pane.get("host"):
             address["host"] = pane["host"]
-        st.update({"pane": address, "pane_session": pane["session"],
-                   "cwd": pane["cwd"], "mode": "tmux",
+        st.update({"cwd": pane["cwd"], "mode": "tmux",
                    "busy": False, "last_active": time.time()})
+        where_mod.put(st, getattr(new, "name", None), pane=address, pane_session=pane["session"])  # (after its folder: in its record too)
+        await rename_mod.learn_agent(self, st, getattr(new, "name", None))  # (an adapter's pane: its name in the record, C-198)
         # it was started outside the bot and knows nothing of Discord: told with the first message it gets here
         st["note_next"] = ("（機器人通知：這個對話已接到 Discord 的 #%s（頻道 ID %d），使用者會在那裡跟你對話。你每輪最後的回覆會貼到 "
                            "Discord：Discord 不支援表格，用清單。要給使用者看檔案（PDF、圖片、報告）就用 `%s dc post %d "
@@ -2602,9 +2661,11 @@ class Bot(discord.Client):
         home = st.get("home")
         where = ("tmux `%s` 裡的視窗" % home["session"]) if home else tmuxio.label(st["pane"])
         await self.tmux.close(ch, kill=False)
-        await routes.unbind_any(ch.id, (st.get("pane") or {}).get("host"))
         place = archive.where_from(ch, ch.guild)  # where it was, for 接回 to put it back there (C-63)
         rec = dict(archive.record(st, why), **place)
+        gone = st.get("pane")
+        where_mod.put(st, pane=None)  # (out of the record before the awaits: a look meanwhile binds no route again, #code-review-2 on 1a4cad50)
+        await routes.unbind_any(ch.id, (gone or {}).get("host"), gone)
         self.channels_state[str(ch.id)] = dict(((k, st[k]) for k in archive.KEPT_HISTORY if k in st), archived=rec,
                                                cwd=st.get("cwd"))  # for 接回; what it has shown and held stays (owner's report 2026-10-20)
         self.save()
@@ -2705,6 +2766,14 @@ class Bot(discord.Client):
         elif cmd == "!recap":
             for part in split_message(self.recap(st, arg.strip())):
                 await send(part)
+        elif cmd == "!where":  # C-201 (2b: its 〔改名…〕 button)
+            text = await self.where_card(ch, st)
+            if st.get("where") and posts.listens(st):
+                view = self.renamer.view(ch)
+                await send(text, view=view)
+                view.stop()  # clicks arrive in on_interaction by custom_id
+            else:
+                await send(text)
         elif cmd == "!status":
             up = int(time.time() - self.started)
             busy = sum(1 for c in self.channels_state.values() if c.get("busy")) + self.active
@@ -2739,9 +2808,7 @@ class Bot(discord.Client):
                     "，背景工作 %d 個" % st["bg"] if st.get("bg") else "")
             await send(info)
         elif cmd == "!reset":
-            await self.tmux.close(ch)
-            sessions.remember(st, st.pop("session_id", None))
-            self.save()
+            await resets.new_conversation(self, ch, st)  # (the same way as a Claude's --reset)
             await send("這個頻道已開始新的對話。原本的對話可以用 `!resume` 接回。")
         elif cmd == "!resume":
             await send(await self.resume(ch, st, arg.strip()))

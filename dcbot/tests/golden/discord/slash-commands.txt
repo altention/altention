@@ -22,3 +22,4 @@
 /stop() → !stop
 /talklimit(limit: Optional[str] = None)
 /usage() → /usage
+/where()
