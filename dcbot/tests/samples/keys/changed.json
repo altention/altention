@@ -22,5 +22,12 @@
  "tests.test_safety.OwnersPane.test_a_message_not_entered_says_in_the_log_what_the_screen_is": "enter re-look: new test (a message not entered says in the log what the screen is); the existing tests' keys are unchanged",
  "tests.test_safety.Submit.test_typed_is_said_only_for_a_plain_message_that_went_in": "C-199: new test (submit says typed only for a plain message that went in); the existing tests' keys are unchanged",
  "tests.test_safety.OwnersPane.test_a_long_message_in_a_scrolled_box_gets_its_enter": "C-202: new test (a long message in a scrolled box, real 2.1.326 screen, gets its Enter); the existing tests' keys are unchanged",
- "tests.test_safety.OwnersPane.test_a_message_not_entered_keeps_the_screen_masked": "C-202: new test (the screen kept when Enter is not pressed); the existing tests' keys are unchanged"
+ "tests.test_safety.OwnersPane.test_a_message_not_entered_keeps_the_screen_masked": "C-202: new test (the screen kept when Enter is not pressed); the existing tests' keys are unchanged",
+ "tests.test_put_away.AnotherConversationSince.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_put_away.HomeWindow.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_put_away.OwnSession.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_put_away.SameWindow.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_put_away.Window.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_whole_turn.AnotherMachine.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged",
+ "tests.test_whole_turn.ThisMachine.test_with_a_standby_the_footer_names_the_machine_claude_runs_on": "C-180: new test (the footer's machine with a standby); the existing tests' keys are unchanged"
 }

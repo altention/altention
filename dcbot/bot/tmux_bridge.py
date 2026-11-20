@@ -2123,12 +2123,14 @@ class TmuxBridge(object):
             rt.last_final = final
             await self.end_turn(st, rt)
             st["context"] = ev.get("context")
+            ran_on = ev.get("host") or remote.this_machine()  # C-180: the machine the channel's Claude runs on (its
+            # events' host; this one when they come from this machine's own spool), not the bot's as such
             foot = events.footer(turn.tools if turn else {}, time.time() - turn.t0 if turn else None, st["bg"],
-                                 st["context"], tail=events.footer_tail(remote.this_machine(), ev.get("prompt_id"))
+                                 st["context"], tail=events.footer_tail(ran_on, ev.get("prompt_id"))
                                  if getattr(self.host, "lease", None) is not None else "")  # (C-163 1.4: with a standby)
             if turn is None and ev.get("host") and ev.get("host") == remote.old_bot_machine():  # a turn begun under the
                 # bot before the takeover, its Stop read from that machine's spool: marked as a replay is (drill 11-08)
-                foot = messages.lease("replayed_footer", tail=events.footer_tail(remote.this_machine(), ev.get("prompt_id")))
+                foot = messages.lease("replayed_footer", tail=events.footer_tail(ran_on, ev.get("prompt_id")))
             reply = masking.masked(ev.get("last_assistant_message") or "（沒有文字回覆）")
             src = turn.src if turn else rt.where  # no turn begun: a queued message, sent in with no event until its Stop
             # where this turn begins in the transcript, for 📋. Its end is looked for when asked, by the turn's id in

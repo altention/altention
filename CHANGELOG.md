@@ -14,6 +14,20 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.7.3 — 2026-11-21
+
+### For people
+- **The machine named under a reply is the one the channel's Claude runs on.** Only an installation with a standby
+  names a machine there. It used to name the bot's machine, which is wrong when that Claude runs elsewhere (after
+  /move machine, or on a pane attached from another machine).
+
+### For people (zh-TW)
+- **回覆下方小字寫的機器，改成頻道的 Claude 實際在哪台。**有備援的安裝才會寫機器名；之前寫的是機器人那台，Claude 在別台時（用 /move machine 搬過去、接上別台的窗格）會寫錯。
+
+### For agents
+
+None.
+
 ## v0.7.2 — 2026-11-20
 
 ### For people

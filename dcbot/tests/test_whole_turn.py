@@ -300,6 +300,23 @@ class World(object):
         self.assertFalse(any("整理好了" in p for p in pieces), "the reply of the turn before is not in this one")
         self.first_turn_recorded(self.ch.sent[2], first_end)  # and the first turn's 📋 now ends where this one begins
 
+    def test_with_a_standby_the_footer_names_the_machine_claude_runs_on(self):
+        """C-180: with a standby the footer ends with a machine and the turn's id. The machine is the one the
+        channel's Claude runs on (its events' host; the bot's own when it runs here), never the bot's machine as
+        such: v0.6.0-v0.7.2 named the bot's machine for a Claude on another machine."""
+        async def turns():
+            await self.send("hello")
+            self.claude.stop("hi")
+            await self.settled()
+            foot = self.ch.sent[-1].content.rsplit("\n", 1)[1]
+            parts = foot.split(" · ")
+            self.assertEqual(parts[-2], self.remote_host or "host-bot", foot)
+            self.assertRegex(parts[-1], r"^prompt-\d+$", "the turn's id last: %s" % foot)
+        self.bridge.host.lease = object()
+        self.bridge.host.claim_turn = lambda cid, pid: True
+        with mock.patch.object(remote, "this_machine", lambda: "host-bot"):
+            self.play(turns)
+
     def test_a_whole_turn_and_the_one_after(self):
         async def turns():
             m = await self.send("整理一下 notes 資料夾")
