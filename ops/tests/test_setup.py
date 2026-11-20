@@ -249,6 +249,57 @@ class Parts(Rig):
         self.assertEqual(self.status()["answered"]["backup"], "later", "nothing ticked: later")
         self.assertEqual(self.status()["left"], [])
 
+    def test_the_plugins_data_asked_apart_and_kept(self):
+        """11-02 real test item 5: the plugins' private data in a question of its own; its answer counts as a
+        backup chosen; none ticked there leaves only those out; 「之後再說」 takes both away."""
+        import remote
+        data = [("plugin:demo/notes", "/d/demo", True, "demo")]
+        with mock.patch.object(remote, "plugin_data", return_value=data), \
+                mock.patch.object(remote, "known", return_value=True), \
+                mock.patch.object(setup, "remote_set", return_value=False):
+            self.basics()
+            self.answer("plugins", "keep")
+            self.answer("plugins.planner", "off")
+            self.answer("usage.plan", "Pro")
+            self.answer("progress.every", "10m")
+            self.answer("healthchecks", "no")
+            self.answer("backup", "now")
+            keys = [x["key"] for x in json.loads(self.run_("questions", "--json")[1])]
+            self.assertEqual(keys, ["backup.items", "backup.plugins"])
+            self.answer("backup.items", "instance")
+            self.answer("backup.plugins", "plugin:demo/x", code=1)
+            self.answer("backup.plugins", "plugin:demo/notes")
+            answered = self.status()["answered"]
+            self.assertEqual(setup.backups_missing(answered), ["instance", "plugin:demo/notes"])
+            self.answer("backup.plugins", "")
+            self.assertEqual(setup.backups_missing(self.status()["answered"]), ["instance"], "none of these, the others stay")
+            self.assertEqual(self.status()["answered"]["backup"], "now")
+            self.answer("backup", "later")
+            self.assertNotIn("backup.plugins", self.status()["answered"])
+            self.answer("backup", "now")  # #code-review of 6e788f00: only the plugins' data, none of the built-ins
+            self.answer("backup.items", "")
+            self.assertEqual(self.status()["answered"]["backup"], "now", "the plugins' question still to come")
+            self.assertEqual([x["key"] for x in json.loads(self.run_("questions", "--json")[1])], ["backup.plugins"])
+            self.answer("backup.plugins", "plugin:demo/notes")
+            self.assertEqual(setup.backups_missing(self.status()["answered"]), ["plugin:demo/notes"])
+            self.answer("backup.plugins", "")
+            answered = self.status()["answered"]
+            self.assertEqual(answered["backup"], "later", "nothing ticked anywhere: later")
+            self.assertNotIn("backup.items", answered)
+
+    def test_no_question_offers_more_than_four(self):
+        """AskUserQuestion takes four choices at most: every question of the setup flow (and the backups with many
+        plugins' data) offers no more, or Claude drops some (11-02 real test item 5)."""
+        import remote
+        from ops import plugins
+        data = [("plugin:p%d/d" % i, "/d/p%d" % i, True, "p%d" % i) for i in range(9)]
+        with mock.patch.object(remote, "plugin_data", return_value=data):
+            asked = plugins.setup_questions(plugins.plugin.discover()[0], "UTC", False) + plugins.backup_questions() + \
+                plugins.briefing_questions() + plugins.standby_questions(["a", "b", "c"], "p") + [plugins.health_question()]
+        for q in asked:
+            with self.subTest(key=q["key"]):
+                self.assertLessEqual(len(q["options"]), plugins.MOST_OPTIONS)
+
 
 class Done(Rig):
     def all_answered(self, backup="later"):
@@ -974,6 +1025,174 @@ class Reconcile(ReconcileRig):
             code, out = self.run_("reconcile")
         self.assertIn("機器人不在這台", out)
         self.assertEqual(self.posted, [])
+
+
+class PluginChannel(ReconcileRig):
+    """v0.7.2 #3 (plugin.format 5): a plugin's own Claude channel is asked in #setup (#release 11-20's words), opened
+    in {data}/<plugin>/<folder> by done; 「先不要」 is not asked again, and 「開 #x」 (setup.py channel x) opens it
+    whenever, also after it (manager 11-20: the person's words are the way in, tested)."""
+
+    DEMO = {"name": "demo", "title": "示範", "description": "d", "uses": {"plugin.format": 5},
+            "channels": [{"name": "notes", "kind": "claude", "setting": "demo.channel", "folder": "work"}]}
+
+    def setUp(self):
+        super().setUp()
+        self.data = os.path.join(self.home, "資料")
+        found = setup.plugin.discover()[0] + [("demo", "/r/plugins/demo", self.DEMO)]
+        rows = [(n, "/x", d, "on", "") for n, _, d in found]
+        self.opened = []
+        for p in (mock.patch.dict(os.environ, {"ALT_DATA": self.data}),
+                  mock.patch.object(setup.plugin, "discover", return_value=(found, [])),
+                  mock.patch.object(setup.plugin, "on_this_machine", return_value=(rows, [])),
+                  mock.patch.object(setup, "open_claude", self.open_claude)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def open_claude(self, what, base, folder, topic, out, moved=None):
+        self.opened.append((what, base, folder, topic))
+        self.chans.append(("301", base, ""))  # (the bot made it)
+        return "301"
+
+    def folder(self):
+        return os.path.join(self.data, "demo", "work")
+
+    def test_asked_in_its_words_and_open_opens_it_at_done(self):
+        self.assertEqual(self.plan().get("channel.demo.notes"), "ask")
+        self.run_("reconcile")
+        self.assertIn("channel.demo.notes", self.settings()["setup"]["ask"])
+        q = [x for x in json.loads(self.run_("questions", "--json")[1]) if x["key"] == "channel.demo.notes"][0]
+        self.assertEqual(q["question"], "插件 示範 有自己的 Claude 頻道 #notes（Claude 在 %s 工作）。現在開嗎？" % self.folder())
+        self.assertEqual([(o["label"], o["description"]) for o in q["options"]],
+                         [("開", "馬上開好，頻道裡的 Claude 會在那個資料夾工作"), ("先不要", "之後不再問；想開時在 #setup 說「開 #notes」")])
+        self.answer("channel.demo.notes", "maybe", code=1)
+        for key, value in (("plugins.planner", "off"), ("dcbot.default_permission", "manual"), ("usage.plan", "Pro"),
+                           ("channel.demo.notes", "open")):
+            self.answer(key, value)
+        self.assertEqual(self.opened, [], "opened by done")
+        with mock.patch.multiple(setup, script=lambda argv, timeout=1800: subprocess.CompletedProcess(argv, 0, "ok\n"),
+                                 dashboard=mock.DEFAULT, secretary=mock.DEFAULT):
+            code, out = self.run_("done")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.opened, [("channel.demo.notes", "notes", self.folder(), "示範")])
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder()).st_mode), 0o700, "made first")
+        self.assertEqual(self.settings()["demo"]["channel"], "301")
+        self.assertEqual(self.plan().get("channel.demo.notes"), None, "set: nothing to ask")
+
+    def test_not_now_is_not_asked_again_and_open_x_opens_it_after_all(self):
+        self.run_("reconcile")
+        self.answer("channel.demo.notes", "no")
+        self.assertNotIn("channel.demo.notes", self.settings()["setup"].get("ask", []))
+        self.assertNotIn("channel.demo.notes", self.plan(), "「先不要」 stands")
+        code, out = self.run_("channel", "#notes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("#notes 開在 <#301>，Claude 在 %s 工作" % self.folder(), out)
+        self.assertEqual(self.settings()["setup"]["answered"]["channel.demo.notes"], "open")
+        self.assertEqual(self.settings()["demo"]["channel"], "301")
+        code, out = self.run_("channel", "notes")
+        self.assertEqual((code, len(self.opened)), (0, 1), "already open: not twice")
+        self.assertIn("已經開了", out)
+        code, out = self.run_("channel", "nosuch")
+        self.assertEqual(code, 1)
+        self.assertIn("沒有插件要用 #nosuch", out)
+
+    def set_up_before(self, **answered):
+        """#setup done earlier, nothing left to ask (the demo plugin put on since)."""
+        d = self.settings()
+        d["setup"] = {"done": True, "answered": dict({"usage.plan": "Pro"}, **answered)}
+        self.write(d)
+
+    def install_step(self):
+        """install.sh's step on the bot's machine (ops/install.py plugin_channels), with this test's setup module."""
+        import install
+
+        class Said:
+            lines = []
+
+            def say(self, status, ident, text):
+                self.lines.append((status, ident, text))
+        r = Said()
+        with mock.patch.object(install, "setup_cmd", return_value=setup):
+            install.plugin_channels(r, True)
+        return r.lines
+
+    def test_put_on_with_plugin_add_after_setup_is_asked_at_once(self):
+        """support-2's trial 11-20 (v0.7.2): a plugin put on in #setup after it was done (setup.py plugin-add, which
+        runs install.sh) had its channel asked only after the next engine update; now install.sh asks it."""
+        self.set_up_before()
+        ran = []
+
+        def install_sh(argv, **k):
+            ran.append(self.install_step())
+            return subprocess.CompletedProcess(argv, 0, "ok core.done 安裝跑完了\n")
+        with mock.patch("plugins.main", return_value=0), mock.patch.object(setup, "script", side_effect=install_sh):
+            self.assertEqual(setup.plugin_add(["demo", "--yes"], out=io.StringIO()), 0)
+        self.assertEqual(ran[0], [("changed", "core.plugin-channels", "插件的 Claude 頻道 #notes 要不要開，到 #setup 問")])
+        self.assertEqual(self.settings()["setup"]["ask"], ["channel.demo.notes"])
+        self.assertEqual(self.posted[-1][1], json.dumps({"channel": "setup", "open_setup": True, "text": ""}), "#setup opened")
+        self.assertIn(("update", "📝 新裝的插件有自己的 Claude 頻道：#notes。要不要開，到 #setup 回答。"), self.said)
+        self.assertIn("a plugin put on asks channel.demo.notes", git(self.inst, "log", "-1", "--format=%s"))
+        q = [x for x in json.loads(self.run_("questions", "--json")[1]) if x["key"] == "channel.demo.notes"]
+        self.assertEqual(len(q), 1, "#setup asks it in its words")
+        self.answer("channel.demo.notes", "no")
+        self.assertEqual(self.install_step(), [("ok", "core.plugin-channels", "沒有新的插件頻道要問")], "「先不要」 stands")
+
+    def test_put_on_with_plugins_add_then_install_sh_is_asked(self):
+        """The terminal's way (ops/plugins.py add --yes, then ./install.sh as it says): asked by that install.sh;
+        once only, never what is answered, asked already, or set; nothing while #setup is not done or elsewhere."""
+        self.set_up_before()
+        self.assertEqual(self.install_step()[0][0], "changed")
+        n = len(self.posted)
+        self.assertEqual(self.install_step(), [("ok", "core.plugin-channels", "沒有新的插件頻道要問")], "in setup.ask already")
+        self.assertEqual(len(self.posted), n, "#setup not opened again")
+        for answered in ({"channel.demo.notes": "open"}, {"channel.demo.notes": "no"}):
+            self.set_up_before(**answered)
+            self.assertEqual(setup.ask_new_channels(io.StringIO()), [], answered)
+        self.set_up_before()
+        d = self.settings()
+        d["demo"] = {"channel": "301"}
+        self.write(d)
+        self.assertEqual(setup.ask_new_channels(io.StringIO()), [], "its channel set")
+        d.pop("demo")
+        d["setup"]["done"] = False
+        self.write(d)
+        self.assertEqual(setup.ask_new_channels(io.StringIO()), [], "a new installation in #setup asks its own")
+        d["setup"]["done"] = True
+        self.write(d)
+        with mock.patch.object(setup.config, "bot_here", return_value=False):
+            self.assertEqual(setup.ask_new_channels(io.StringIO()), [], "only on the bot's machine")
+        d.pop("setup")
+        self.write(d)
+        self.assertEqual(setup.ask_new_channels(io.StringIO()), ["channel.demo.notes"], "from before #setup: as the reconcile")
+        self.assertEqual(self.settings()["setup"], {"done": True, "since": "reconcile", "ask": ["channel.demo.notes"]})
+        self.assertEqual([s for s in self.said if s[0] == "not a notice"], [], "said as notices only")
+
+    def test_the_setting_wins_and_a_link_out_is_refused(self):
+        self.DEMO["channels"][0]["folder_setting"] = "demo.folder"
+        self.addCleanup(self.DEMO["channels"][0].pop, "folder_setting")
+        mine = os.path.join(self.home, "我的筆記")
+        d = self.settings()
+        d["demo"] = {"folder": mine}
+        self.write(d)
+        self.run_("channel", "notes")
+        self.assertEqual(self.opened[-1][2], mine, "any path the person wrote")
+        d = self.settings()
+        d.pop("demo")
+        self.write(d)
+        os.makedirs(os.path.join(self.data, "demo"))
+        outside = os.path.join(self.home, "外面")
+        os.makedirs(outside)
+        os.symlink(outside, self.folder())
+        code, out = self.run_("channel", "notes")
+        self.assertEqual(code, 2, out)
+        self.assertIn("不在 %s 底下（有符號連結指出去）" % os.path.join(self.data, "demo"), out)
+        self.assertEqual(len(self.opened), 1, "not opened")
+
+    def test_the_skill_takes_the_persons_words(self):
+        with open(os.path.join(setup.ENGINE, "skills", "setup", "SKILL.md"), encoding="utf-8") as f:
+            skill = f.read()
+        self.assertIn("「開 #<名稱>」", skill.split("\n")[2], "in the description: the skill is used for it")
+        self.assertIn("python3 <ENGINE>/ops/setup.py channel <名稱>", skill)
+        self.assertIn("channel NAME", setup.__doc__)
 
 
 class OpenedBoards(ReconcileRig):

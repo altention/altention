@@ -257,17 +257,18 @@ REVIEWED = re.compile(r"\(reviewed ([^)]*)\)")  # deploy_candidate.prepare(): "(
 HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 
-def named_reviewed(subject):
-    """The hashes a subject names as reviewed: in each "(reviewed …)", and after "release: merge <branch>"."""
-    out = [h for group in REVIEWED.findall(subject) for h in HEX.findall(group)]
-    m = SQUASHED.match(subject)
+def named_reviewed(message):
+    """The hashes a commit message names as reviewed: in each "(reviewed …)", anywhere in it (the subject or a line
+    after it; C-206 low), and after "release: merge <branch>" at its start."""
+    out = [h for group in REVIEWED.findall(message) for h in HEX.findall(group)]
+    m = SQUASHED.match(message)
     return out + ([m.group(1)] if m else [])
 
 
 def reviewed(git, commit, last, record, said):
     """A12: every non-merge commit in LAST..COMMIT came in through one of L3's "release: merge" commits (it is in
     that merge's second parent and not in its first), or is one itself made by `deploy.sh --commit` (one parent, its
-    tree the same as that of a hash its subject names as reviewed: "(reviewed h1, h2; h3 lint only)", which
+    tree the same as that of a hash its message names as reviewed: "(reviewed h1, h2; h3 lint only)", which
     deploy_candidate.prepare() appends, or "release: merge <branch> <hash>": C-206); the others must be in the
     checklist's reviewed_exceptions."""
     if not last:
@@ -284,8 +285,8 @@ def reviewed(git, commit, last, record, said):
         parents = parts[1].split()
         if len(parents) >= 2:
             covered.update(git("rev-list", parents[1], "--not", parents[0]).stdout.split())
-    for row in git("log", "--no-merges", "--format=%H%x01%T%x01%s", span).stdout.splitlines():
-        parts = row.split("\x01")
+    for row in git("log", "--no-merges", "--format=%H%x01%T%x01%B%x00", span).stdout.split("\x00"):
+        parts = row.strip("\n").split("\x01")  # (the whole message: "(reviewed …)" may be on a line of its own)
         if len(parts) != 3:
             continue
         for h in named_reviewed(parts[2]):

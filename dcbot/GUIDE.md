@@ -33,6 +33,7 @@
 - `/cwd`, `!cwd`: 設定這個頻道的工作目錄，會開新對話。
 - `/files`, `!files`: 檔案瀏覽器（見「終端機和檔案」）。
 - `/rename`, `!rename`: 頻道、Claude Code 對話、tmux window（機器人開的 session 也一起）一起改名；在 Discord 或 tmux 手動改，其他的也跟著變。
+- `/move`, `!move`: 把這個頻道的 Claude 搬到別的地方：同一台換 session（`/move session <名字>`）或 tmux（`/move tmux bot`、`/move tmux user <session>`），搬到別台（`/move machine <機器> [資料夾]`），或換資料夾（`/move folder <路徑>`）。會先問；接回的是同一個對話，新位置沒接上就回原位置。
 - `/setup`, `!setup`: 重新叫出這個頻道的設定卡。
 - `/attach`, `!attach`: 把 tmux 裡自己開的 Claude Code 接到頻道（見「接上你自己開的 Claude」）。
 - `/detach`, `!detach`: Discord 不再跟著這個對話，對話本身不受影響，頻道移到封存。
@@ -55,6 +56,7 @@ Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字
 - `/attach`：列出 tmux 裡的 Claude Code，點一下就開頻道接上，並貼出之前的對話。
 - `/detach`：頻道不再跟著，對話照跑；之後在封存的頻道打字可以接回。
 - `/rename`：頻道、對話、tmux 的名字一起改。
+- `/move`：搬到別的 session、tmux、別台機器或別的資料夾，同一個對話接著用；會先問，沒接上就回原位置。
 
 ## 終端機和檔案
 - **終端機頻道**：設定卡選 💻，每則訊息是一行指令，輸出貼回來；`/run` 找跑過的指令。

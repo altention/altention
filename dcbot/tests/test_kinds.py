@@ -158,7 +158,10 @@ class Stamped(unittest.TestCase):
                     for node in ast.walk(fn):
                         if isinstance(node, ast.Call) and any(isinstance(a, ast.Name) and a.id == "CHANNELS" for a in node.args):
                             writes.append((name, fn.name, getattr(node.func, "id", getattr(node.func, "attr", "?"))))
-        self.assertEqual([w for w in writes if w[2] not in ("load_json", "exists")], [("main.py", "save", "save_later")])  # reads: not writers
+        # (C-28: backup.py names the file too: backup() reads it; restore() writes it, but only while the bot is not
+        # running, the supervisor's lock held: dcctl restore-state; tests/test_backup.py)
+        self.assertEqual([w for w in writes if w[2] not in ("load_json", "exists")],
+                         [("backup.py", "backup", "join"), ("backup.py", "restore", "join"), ("main.py", "save", "save_later")])  # reads: not writers
         self.assertIn(("main.py", "__init__", "load_json"), writes, "(the walk does see calls that name the file)")
 
     def test_reset_cwd_mode_and_a_print_turn_leave_the_file_as_the_flags_say(self):

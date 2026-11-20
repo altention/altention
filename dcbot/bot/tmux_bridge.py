@@ -147,6 +147,7 @@ class NotOpened(BridgeError):
     SETTINGS = "settings"          # the installation's settings could not be read: {"error"}
     PERMISSION_UNSET = "permission-unset"  # neither the channel nor the installation says the permission mode: {}
     MODEL = "model"                # the model set is nothing a command line can hold: {"value", "whose"}
+    BACKGROUND = "background"      # a move's /exit left the conversation running in the background (C-201 2c1): {"session"}
 
     def __init__(self, why, text, **data):
         BridgeError.__init__(self, text)
@@ -283,6 +284,7 @@ AGAIN_SECS = 2  # C-198: a new process in an attached pane whose record could no
 STALE_WAIT_SECS = 300  # C-162: how long a window to be reopened is let finish the turn it runs
 PANE_SAID_SECS = 6 * 3600  # an attached pane whose screen is not known: said at most this often (C-162)
 CLOSED_KEPT = 5
+CLOSED_END = "closed"  # from_elsewhere(): the end of a window the bot closed itself (truthy, like any not the channel's)
 CLOSED_SECS = 60  # how long a window the bot closed is remembered as closed, when nothing of it or of its number comes
 
 
@@ -290,6 +292,14 @@ def leading(host):
     """host.leader_ok(), where it has one that says False; True otherwise (no standby, a test's host)."""
     way = getattr(host, "leader_ok", None)
     return not callable(way) or way() is not False
+
+
+def place(t):
+    """What tells one window from another for target(): a pane's machine, socket and id (not its pid, agent and the
+    like, written into the record as they are learnt), or the bot's session name."""
+    if isinstance(t, dict):
+        return (t.get("host") or None, t.get("socket"), str(t.get("id")))
+    return t
 
 
 def opened(st, rt):
@@ -371,7 +381,7 @@ def from_elsewhere(st, opening, ev, closed=None):
         if hit and ev.get("hook_event_name") == "SessionStart":
             closed[:] = [p for p in closed if p not in hit]
         elif hit and ev.get("hook_event_name") == "SessionEnd":
-            return True
+            return CLOSED_END  # (not the channel's, and nothing to say of it: the bot closed it and said so)
     if opening is True:
         return False
     if same(opening) or same(st.get("pane")):
@@ -418,6 +428,8 @@ class Runtime(object):
         self.pos = {}  # what the connector's enrich keeps for each transcript of this channel (hooks.place)
         self.where = None  # (transcript, byte where the running turn begins), as the last event told: for 📋
         self.opening = None   # a window being opened for the channel (ensure_home): True, then its pane, until it is kept
+        self.opens = 0        # one more each time open() begins: look_again() tells a window opened meanwhile by it
+        self.ready_sid = None  # the conversation id of the last SessionStart (bot/moving.py checks a move by it)
         self.outcome = None   # what the checks before the last message typed came to (Typing; may_type())
         self.closed = []      # windows the bot closed for the channel lately (close()), until one of their number starts anew
         self.unanswered = False  # the last opening gave up waiting on the owner's answer to a startup dialog (wait_ready)
@@ -746,6 +758,9 @@ class TmuxBridge(object):
         if (st.get("took_from") or {}).get("pending"):  # C-163: the old bot machine's channel, that machine not
             raise unreachable({"host": st["took_from"]["machine"], "socket": "", "id": "?"})  # reached yet: never
             # opened here (section 4.1)
+        if st.get("move_background"):  # (C-201 2c1: the conversation still runs, in the background; another
+            sid = st["move_background"].get("session") or "?"  # opened on it would be a second Claude)
+            raise NotOpened(NotOpened.BACKGROUND, messages.move("in_background", sid=sid), session=sid)
         if st.get("home"):  # a window the bot opens in the owner's own tmux (chosen on the setup card)
             return await self.ensure_home(ch, st, rt)
         if st.get("pane"):  # the owner's own terminal: nothing to start, and never anything to restart
@@ -907,6 +922,7 @@ class TmuxBridge(object):
         clears away one that did not (pane: what start gave, None too), and gives what is known of why (words to
         add when the saved one could not be taken up; None: nothing known). The folder is made once the conversation is
         to be opened at all (not when the permission mode says no), once for both tries."""
+        rt.opens += 1  # (before anything is awaited: a look_again() asking meanwhile leaves this channel alone)
         how = await self.chosen_for(st)
         dirs = await attachments.folders(host, ch.id)
         saved = st.get("session_id")
@@ -1607,9 +1623,15 @@ class TmuxBridge(object):
         if remote.problem and ((st.get("pane") or {}).get("host") or (st.get("home") or {}).get("host")):
             return  # the machine list is unreadable, so that machine cannot be reached by name: do not call it gone
         asked = target(st)
+        rt = self.rts.setdefault(str(cid), Runtime())
+        opens = rt.opens
         how = await tmuxio.standing(asked) if ch is not None and asked else "gone"
-        if asked and target(st) != asked:
-            return  # the channel moved to another window while its machine was asked (a message meanwhile): not ours
+        if asked and place(target(st)) != place(asked) or rt.opens != opens:
+            # the channel moved to another window while its machine was asked (a message meanwhile), or a window was
+            # (being) opened again for it, in the same place for a session of the bot's (#code-review-2 on fbe1cfa6):
+            # not ours. Only the place counts: a pid or agent written into the record meanwhile (remember_pids(),
+            # /where) is the same window (#code-review-2 on cafb7031)
+            return
         if how != "gone":  # ("unknown": its machine does not answer just now. Not said to be gone, nothing let go
             if st.get("busy"):  # of: watch() finds out once the machine answers again)
                 self.watch(ch, st, self.rt(ch))  # a turn kept running while the bot was down
@@ -1969,7 +1991,11 @@ class TmuxBridge(object):
             return await self.let_be(ev)
         if stranger(was, ev):
             return await self.let_be(ev, RESPAWNED_WHY)
-        if from_elsewhere(was, getattr(self.rts.get(str(ch.id)), "opening", None), ev, getattr(self.rts.get(str(ch.id)), "closed", None)):
+        gone = from_elsewhere(was, getattr(self.rts.get(str(ch.id)), "opening", None), ev, getattr(self.rts.get(str(ch.id)), "closed", None))
+        if gone == CLOSED_END:
+            return  # a window the bot closed (!resume, /move's /exit): its end is no news, not even in #audit. (Let go as
+            # "another window, it runs on in the terminal" it was said wrongly there after every /move: 2c1 drill 11-20)
+        if gone:
             return await self.let_go(ch, ev, elsewhere=True)
         self.let_go_said.discard(ch.id)
         st, rt = self.host.chan(ch), self.rt(ch)
@@ -2038,6 +2064,7 @@ class TmuxBridge(object):
             await self.end_turn(st, rt)  # the turn still open here ended with no event (cut short): this is not it
         texts = ev.get("texts")  # read where the transcript is: here by fill(), on another machine by tools/dcremote
         if what in (cc_hooks.READY, cc_hooks.SESSION_CHANGED, cc_hooks.COMPACTED):  # a Claude Code says its session is there
+            rt.ready_sid = ev.get("session_id")  # (the conversation it says it is: a move checks it, C-201 2c1)
             rt.ready.set()
         elif what == cc_hooks.INPUT:
             prompt = ev.get("prompt") or ""
@@ -2067,6 +2094,8 @@ class TmuxBridge(object):
                 await self.say(ch, "⌨️ **終端機那邊輸入**\n" + events.quote(masking.masked(prompt), 1500), silent=True)
             if st.get("reset_after"):  # (dc post --reset asked in a turn that did not end well: dropped)
                 await self.host.posts.resets.new_turn(ch, st, ev.get("prompt_id"))
+            if st.get("move_after"):  # (a tmux move waiting on a turn that did not end well: dropped; C-201 2c1)
+                await self.host.mover.new_turn(ch, st, ev.get("prompt_id"))
             self.begin_turn(ch, st, rt, prompt, task=ev.get("dc_from") == cc_hooks.TASK, pid=ev.get("prompt_id"))
         elif what in (cc_hooks.PROGRESS, cc_hooks.PEER_SENT):
             turn = self.begin_turn(ch, st, rt, pid=ev.get("prompt_id"))
@@ -2132,6 +2161,8 @@ class TmuxBridge(object):
             await self.login_back(st)  # a turn of that machine ended well: a lost login is back
             if st.get("reset_after"):  # its Claude asked for a new conversation during this turn (dc post --reset)
                 self.host.posts.resets.after_turn(ch, st, ev.get("prompt_id"))  # (a task: its receipt is an event)
+            if st.get("move_after"):  # a tmux move waiting on this turn (C-201 2c1: bot/moving.py)
+                self.host.mover.after_turn(ch, st, ev.get("prompt_id"))
         elif what == cc_hooks.TURN_FAILED:  # the API failed (usage limit, overload, …): the turn is over, say why
             turn = rt.turn
             await self.interim(ch, rt, texts=texts)

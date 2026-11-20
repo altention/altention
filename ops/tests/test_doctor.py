@@ -599,6 +599,9 @@ class Records(unittest.TestCase):
         self.assertEqual(r["status"], "warn")
         self.assertIn("會補 1 項：progress/run", r["msg"])
         self.assertIn("只報告，沒有動手", r["msg"])
+        self.assertIn("plugins.py plan", r["fix"], "retimed too: look at the plan first")
+        r = said(dict(rep, add=[item]))  # 6b: only to add (a plugin's new version): the install line
+        self.assertEqual((r["status"], r["fix"]), ("warn", "host-a 要跑一次安裝：python3 ~/altention/engine/ops/apply.py host-a"))
         r = said(dict(rep, core=[dict(item, plugin="core", name="sync")]))
         self.assertEqual(r["status"], "fail")
         self.assertIn("永遠不會自動改", r["msg"])
@@ -3214,6 +3217,37 @@ class TokenOnTheBotsMachineOnly(unittest.TestCase):
             self.assertNotIn("bot_token", o, "another machine's token is not checked")
         finally:
             shutil.rmtree(home)
+
+
+
+class ChannelBackup(unittest.TestCase):
+    """C-28: the bot's machine says how its last dcctl backup went (dcbot/state/channel-backup.json)."""
+
+    def got(self, o, is_bot=True):
+        return [(r["status"], r["msg"], r.get("fix", "")) for r in doctor.channel_backup_records("lap", o, is_bot)]
+
+    def test_said_on_the_bots_machine_only(self):
+        now = 1_000_000.0
+        self.assertEqual(self.got({"channel_backup": {}, "now": now}, is_bot=False), [])
+        self.assertEqual(self.got({"now": now}), [], "an older engine's probe: not asked")
+        (status, msg, fix), = self.got({"channel_backup": {}, "now": now})
+        self.assertEqual(status, "warn")
+        self.assertIn("還沒備份過", msg)
+        self.assertIn("dcctl backup", fix)
+        (status, msg, _), = self.got({"channel_backup": {"at": now - 25 * 3600, "channels": 3}, "now": now})
+        self.assertEqual(status, "warn")
+        self.assertIn("超過一天", msg)
+        (status, msg, fix), = self.got({"channel_backup": {"at": now - 60, "channels": 3, "unclassified": ["new_one"]},
+                                        "now": now})
+        self.assertEqual(status, "warn")
+        self.assertIn("new_one", msg)
+        self.assertIn("backup.py", fix)
+        (status, msg, _), = self.got({"channel_backup": {"at": now - 60, "channels": 3, "unclassified": []}, "now": now})
+        self.assertEqual(status, "ok")
+        self.assertIn("3 個頻道", msg)
+
+    def test_the_probe_reads_the_status_file(self):
+        self.assertIn('o["channel_backup"] = rj(os.path.join(ch, "dcbot", "state", "channel-backup.json"))', doctor.PROBE)
 
 
 if __name__ == "__main__":

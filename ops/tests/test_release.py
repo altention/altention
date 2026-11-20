@@ -788,6 +788,24 @@ class Plugins(Rig):
         self.assertEqual(c, 1, out)
         self.assertIn("standby 只能是 true 或 false，而且只配 machines one", out)
 
+    def test_a_channel_folder_needs_the_fifth_format(self):
+        """v0.7.2 #3: channels[].folder or folder_setting needs plugin.format 5 (#release's words); optional 5 is enough."""
+        chans = [{"name": "notes", "kind": "claude", "setting": "demo.channel", "folder": "work"}]
+        for uses, code in (({}, 1), ({"plugin.format": 4}, 1), ({"plugin.format": 5}, 0),
+                           ({"plugin.format": {"v": 5, "optional": True}}, 0)):
+            with self.subTest(uses=uses):
+                self.put("plugin.json", json.dumps(dict(PLUGIN, uses=uses, channels=chans)))
+                self.plug_commit("f %s" % json.dumps(uses))
+                c, out = self.run_("check-plugin", "demo")
+                self.assertEqual(c, code, out)
+                if code:
+                    self.assertIn('"plugin.format": 5', out)
+        self.put("plugin.json", json.dumps(dict(PLUGIN, uses={"plugin.format": 5}, channels=[dict(chans[0], folder="../x")])))
+        self.plug_commit("dots")
+        c, out = self.run_("check-plugin", "demo")
+        self.assertEqual(c, 1, out)
+        self.assertIn("channels[0].folder 要寫插件資料資料夾裡的相對路徑（不能是絕對路徑、~ 開頭或含 ..）", out)
+
     def test_an_interface_of_its_own_may_not_take_an_engine_name(self):
         self.put("plugin.json", json.dumps(dict(PLUGIN, interfaces={"dc.post": {"version": 1}, "rig.spend": {"version": 1}})))
         self.plug_commit("offers")

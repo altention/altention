@@ -361,6 +361,24 @@ class Reviewed(Repo):
         self.assertEqual(gates.named_reviewed("x (reviewed aaaa111, bbbb222; cccc333 lint only) (reviewed dddd444)"),
                          ["aaaa111", "bbbb222", "cccc333", "dddd444"])
 
+    def test_reviewed_named_on_a_line_after_the_subject(self):
+        """C-206 low: only the subject was read; "(reviewed …)" on a line of the body (a long subject, or written
+        under it) did not count. The whole message is read now; a tree that is not the hash's still does not."""
+        git(self.repo, "tag", "v0.1.0")
+        git(self.repo, "checkout", "-q", "-b", "feature")
+        self.write("a.py", "x = 1\n")
+        work = self.commit("work")
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "checkout", "-q", work, "--", "a.py")
+        below = self.commit("A long subject about the change\n\nWhat it does.\n(reviewed %s)\n" % work[:8])
+        self.write("a.py", "x = 2\n")
+        other = self.commit("Something else\n\n(reviewed %s)" % work[:8])
+        said = []
+        gates.reviewed(self.git, other, "v0.1.0", None, said)
+        self.assertIn("1 個", said[0])
+        self.assertNotIn(below[:12], said[0])
+        self.assertIn(other[:12], said[0], "named in its body, but its tree is not the reviewed hash's")
+
 
 class Markers(Repo):
     def test_markers_but_not_a_heading_underline(self):

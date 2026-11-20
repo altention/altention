@@ -59,13 +59,14 @@
 - `/resume`, `!resume`: 列出最近的對話，選一個接回（會把那個對話的紀錄貼進頻道）。`!resume <id 開頭 8 碼>` 可以接回清單外更舊的。選好之後下一則訊息接回它；貼紀錄像 `/attach` 一樣不發通知，長的要貼幾分鐘；這個頻道貼過的對話不會重貼，只放最後幾輪。在對話裡直接打 Claude Code 的 `/resume` 也一樣。 這個頻道貼過紀錄、或本來就在這個頻道進行的對話，接回時只貼最後 3 輪。完全不想貼就用 `!resume <id> --quiet`（`/resume` 選單勾 quiet）。
 - `/stop`, `!stop`: 中止正在跑的工作，對話保留。
 - `/recap`, `!recap`: 顯示這個頻道的對話最近幾輪（預設 3 輪，最多 20），內容直接讀 Claude 的對話紀錄。
-- `/where`, `!where`: 這個頻道的 Claude 現在在哪裡：哪台機器、tmux 是機器人的還是你的、哪個 session 和 window（或窗格）、哪個對話（id 開頭和名字）、哪個資料夾，以及改名時哪些會跟著變。卡片下面有〔改名…〕按鈕，按下去填新名字（跟 `/rename` 一樣）；搬家的按鈕之後會加。
+- `/where`, `!where`: 這個頻道的 Claude 現在在哪裡：哪台機器、tmux 是機器人的還是你的、哪個 session 和 window（或窗格）、哪個對話（id 開頭和名字）、哪個資料夾，以及改名時哪些會跟著變。卡片下面有〔改名…〕按鈕，按下去填新名字（跟 `/rename` 一樣）；〔搬到…〕按鈕填種類和目標（跟 `/move` 一樣）。
 - `/screen`, `!screen`: 看 Claude 的終端機畫面（圖片，按 📝 看文字）。圖片保留顏色和對齊；📝 會回一則文字版，可以複製。
 - `/key`, `!key`: 送按鍵到終端機，例如 `Escape`、`Enter`、`Down Enter`。
 - `/mode`, `!mode`: 切換 `tmux`（預設，常駐對話）或 `print`（每則訊息跑一次，備用）；`!mode retry` 再試一次一般模式。
 - `/cwd`, `!cwd`: 設定這個頻道的工作目錄，會開新對話。
 - `/files`, `!files`: 檔案瀏覽器（見「看檔案」）。
 - `/rename`, `!rename`: 頻道名、Claude Code 的對話名、tmux 的 window 名一起改；session 是機器人替這個頻道開的，也一起改（尾巴的編號留著）。回覆逐項寫 ✅ 改了、❌ 沒改成（附原因，例如 Discord 限制 10 分鐘只能改兩次頻道名）、➖ 這個頻道不適用。在 Discord 手動改頻道名，或在 tmux 用 rename-window 改 window 名，其他的也會照樣跟著變（tmux 依程式自動取的名字不算）。
+- `/move`, `!move`: 把這個頻道的 Claude 搬到別的地方：同一台的別的 session 或 tmux，或別台機器、別的資料夾。`/move session <名字>`：同一個 tmux 裡換 session（move-window），窗格和 Claude 都不動、不用停；你的 tmux 裡那個 session 要先開好，機器人的 tmux 沒有就會開一個。機器人自己開的頻道搬過去後，就是那個 session 裡的一個視窗（之後靠窗格找它）。`/move tmux bot`、`/move tmux user <session 名字>`：在機器人的 tmux 和你的 tmux 之間搬。窗格不能跨 tmux，所以會先確認（❓ 卡片的〔搬〕〔取消〕），再停掉舊的 Claude（等這一輪做完、停在空的輸入框，送 `/exit` 並確認它真的結束了），然後在新位置用同一個對話 id 接回；新的起來、而且報上來的是同一個對話才算搬好，不然把新的關掉、回原本的位置接回。不會有兩個 Claude 同時接同一個對話。不搬的情況（會說原因）：還有背景工作、子代理或 workflow 在跑（搬了會中斷）；你自己的窗格不是停在空的輸入框，或窗格直接跑 Claude、底下沒有 shell（停掉它窗格會關掉）；這台有 claude daemon 在跑（`/exit` 只會退到背景，什麼都不送就拒絕）；`/exit` 之後 Claude 沒結束；`session` 的目標是機器人替別的頻道開的 session（`dc-…-四位數`，搬進去兩個頻道會接到同一個 Claude）；萬一還是退到背景、按 Esc 也回不來：頻道先不開 Claude（不然同一個對話會有兩個），照卡片說的 `claude stop <id>` 停掉再打 `!move clear`。在你的 tmux 裡開 Claude（搬進你的 tmux，或搬不成、在你的窗格接回）都照你自己開 Claude 的樣子：開一個你的 shell 視窗、打一行 `claude … --resume <id>`，用你原本啟動 Claude 的選項（權限模式、--add-dir 等；從你的窗格搬走時記下來），不知道就用 `--permission-mode default`；絕不帶機器人的設定檔，也絕不用跳過權限確認的模式（bypassPermissions、--dangerously-skip-permissions 會換成 default）。搬進來之後它就是你的窗格（跟 /attach 接上的一樣）。把你的窗格搬到機器人那邊時，確認卡會寫：搬過去用機器人的設定和權限模式，搬回來恢復成哪個模式。別的頻道的 Claude 要求的搬家被拒絕或在動手前停下時，#audit 也會記一行（寫明什麼都沒動和原因）。pi 或 Codex 的對話（「這種對話還不能搬」）；暫停中或 print 模式；別台機器上的頻道只能用 `machine`、`folder` 搬。`/move machine <機器> [資料夾]`：搬到別台機器（或從別台搬回機器人這台）。搬到機器人這台就開在機器人的 tmux，搬到別台開在那台你的 tmux（一個新視窗，用那台的 claude，照你自己開 Claude 的樣子）。資料夾沒寫就找同一個路徑，沒有的話把家目錄換成那台的（`/home/a/x` → 那台的 `~/x`），都沒有就拒絕，請你寫出資料夾。`/move folder <路徑>`：同一台換資料夾（路徑寫完整的，`~/…` 也可以）；你的窗格用 `( cd -- <資料夾> && claude … --resume <id> )` 在子 shell 跑，你的 shell 留在原本的資料夾。兩種都會先確認，再照上面的順序停掉舊的（別台的窗格就在那台檢查和停）、把對話紀錄（`~/.claude/projects/…/<id>.jsonl` 和旁邊的 `<id>/` 資料夾）複製到新位置（原本的留著；新位置已經有同一個 id、但內容不是它的開頭時，先改名成 `<id>.jsonl.before-move-<時間>` 留著，卡片會說）、在新位置接回同一個對話；沒接上就回原本的位置和原本的資料夾接回。只在確定的事上拒絕（說原因、什麼都不動）：那台連不上、找不到 claude、找不到資料夾、已經在那台或那個資料夾、那台的引擎太舊（不認得複製紀錄的指令）；那台看不到 Claude Code 的登入檔只會寫在確認卡上（mac 的登入在 keychain、用 API key 也沒有那個檔），不擋。搬完下一則訊息會告訴 Claude 資料夾換了。別的頻道的 Claude 也能用 `--move machine <機器> [資料夾]`、`--move folder <路徑>`。別的頻道的 Claude 也能搬：`altention dc post <頻道> --move session <名字> --why "…"`、`--move tmux bot`、`--move tmux user <session>`，不用按確認，卡片和 #audit 會寫是哪個頻道的 Claude 要求的。
 - `/setup`, `!setup`: 重新叫出這個頻道的設定卡。
 - `/attach`, `!attach`: 把 tmux 裡自己開的 Claude Code 接到頻道（見「接上你自己開的對話」）。
 - `/detach`, `!detach`: Discord 不再跟著這個對話，對話本身不受影響，頻道移到封存。
@@ -112,6 +113,7 @@ Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字
 - **檔案的打開按鈕**：有插件的頁面能開檔案時（例如可以看檔案的頁面），Claude 用 `altention dc post --file` 貼的每個檔案下面都會有一顆打開按鈕，按下去就在 Discord 裡打開那台機器上的那個檔案（按鈕上的字由插件決定，一則有好幾個檔案時會接上檔名）。一則訊息最多 5 顆：檔案多、或好幾個頁面都能開檔案時，排在後面的檔案沒有按鈕；路徑特別長的檔案也沒有。插件確定沒設好時不附按鈕。
 - **「填入」按鈕（插件要的金鑰）**：插件要一個金鑰或 token 時，Claude 不會叫你貼進對話，而是用 `altention dc post <頻道> --secret <插件>/<名字>` 貼一顆「填入 …」按鈕。只有你按得動（別人按會看到「只有擁有者能填這個。」）；按下去跳出輸入框，貼上後按送出，值就存在機器人那台（Claude 要讀會被擋下，跟機器人的 token 一樣），只有你看得到的回覆說「存好了」或「沒有存：原因」，#audit 記一行（只有插件和金鑰的名字）。值會經過 Discord，**輸入時看得到字**（Discord 的輸入框不會遮）；不想經過 Discord，就在機器人那台的終端機跑 `altention secret set <插件> <名字>`。存好之後按鈕會變成「✅ 已填入 …（再按可以換）」，再按一次就換成新的值；輸入框最多 4000 字，更長的請用終端機。按鈕 7 天後失效。這個插件還有別台在用時，「存好了」下面會多一行，列出是哪幾台；要放過去，到 #setup 跟 Claude 說「把 <插件> 的 <名字> 也放到 <機器>」，它問過你才送，而且只送到你說的那台。
 - `/rename <名字>`：頻道名、Claude Code 的對話名、tmux 的 window 名一起改；session 是機器人替這個頻道開的，也一起改（尾巴的編號留著）。回覆逐項寫 ✅ 改了、❌ 沒改成（附原因，例如 Discord 限制 10 分鐘只能改兩次頻道名）、➖ 這個頻道不適用。在 Discord 手動改頻道名，或在 tmux 用 rename-window 改 window 名，其他的也會照樣跟著變（tmux 依程式自動取的名字不算）。別的頻道的 Claude 也能改：`altention dc post <頻道> --rename <名字> --why "…"`，卡片和 #audit 會寫是哪個頻道的 Claude 改的。
+- `/move session <名字>`、`/move tmux bot`、`/move tmux user <session>`、`/move machine <機器> [資料夾]`、`/move folder <路徑>`：把這個頻道的 Claude 搬到別的 session、在機器人的 tmux 和你的 tmux 之間搬，或搬到別台機器、別的資料夾（見上面 `/move`）。
 {{#attach_machines}}- **別台機器**：`/attach` 也會列出 {{attach_machines}} 上 tmux 裡的 Claude（會標出機器名稱），接上之後用起來一樣。之後要加別台，在機器清單給它 `dcattach` 角色就行（那台要能從 {{bot_machine}} 用 SSH 連到）。別台的 Claude 用 `altention dc post <分類>/<頻道> --new-claude <資料夾>` 開新頻道時，頻道會開在它自己那台你的 tmux，跟在設定卡選那台一樣。用 `--on` 開在別台時，`~` 要加引號（`'~/…'`），不然這台的 shell 會先換成這台的家目錄。別台機器的對話目前還不支援 📋 看過程。{{/attach_machines}}{{^attach_machines}}- **別台機器**：別台機器 tmux 裡的 Claude 也能接上。在機器清單加上那台並給它 `dcattach` 角色（那台要能從 {{bot_machine}} 用 SSH 連到），`/attach` 就會列出它。別台的 Claude 用 `altention dc post <分類>/<頻道> --new-claude <資料夾>` 開新頻道時，頻道會開在它自己那台你的 tmux，跟在設定卡選那台一樣。用 `--on` 開在別台時，`~` 要加引號（`'~/…'`），不然這台的 shell 會先換成這台的家目錄。別台機器的對話目前還不支援 📋 看過程。{{/attach_machines}}
 
 ## 終端機頻道
@@ -163,8 +165,13 @@ Claude Code 自己的 `/` 指令和 skill 也在選單裡，打 `/` 加幾個字
   - 24 小時內換到第 3 次，就停在當下那台，不再自動切換，原本那台回來也不會自己切回；那次的接手通知會講，要人去看原本那台怎麼了。
   - 兩台的引擎要一樣新，差太多時只通知、不接手（doctor 會說）。
 - **暫停**：在備援那台的 `~/altention/engine/dcbot/state/` 放一個叫 `stop` 的空檔，那台就不會接手（刪掉就恢復，最多等 5 分鐘）。備援正在當機器人時，要等它切回之後才生效。
-- **拿掉**：目前沒有一句話就拿掉的指令，請 Claude 照這幾步做：從機器清單拿掉那台的 `dcbot-standby` 角色、對那台跑 `python3 ops/apply.py <機器>`、照 doctor 說的在各台清掉留下的紀錄（`lease.owner-left`），最後重啟機器人。
+- **拿掉**：在 #setup 說「拿掉備援」，或在機器人那台跑 `altention standby remove <機器>`：拿掉那台的 `dcbot-standby` 角色、讓那台照新設定裝好、清掉兩台之前有備援時留下的紀錄，最後重啟機器人。備援正在當機器人時不能拿，要等它切回。那台存的 token 或 webhook 會留著，要刪再說。
 - **只通知模式**：選「只通知」時：不放 token，那台只會在機器人停了、或連不上 Discord 太久時，用 webhook 通知你。
+
+## 頻道設定的備份
+- **存什麼**：每個頻道接哪個資料夾、哪個對話、什麼模式、看板等設定。每一輪同步都會存進實例的 `backup/dcbot-channels.json`，有變才寫，再由同步提交。不存 token、畫面和對話內容；像秘密的字會遮掉。只有當下是機器人的那台會寫：有備援時是正在當機器人的那台。
+- **補回來**：機器人那台的頻道設定檔（`dcbot/state/channels.json`）壞了或不見時，請 Claude 在機器人停著時跑 `dcctl restore-state`。它只補缺的頻道，已經有的不動，原本的檔先另存成 `.bak`；補回來的就是備份裡的樣子，遮掉的字還是遮掉的。機器人跑著時會拒絕，什麼都不寫。
+- **檢查**：系統檢查（doctor）的 `backup.channels` 會提醒三種情況：還沒有備份、超過一天沒更新、頻道設定裡有備份不認得的新項目。
 
 ## 已知限制
 - 補充訊息要等 Claude 手上那個工具跑完才會被看到；急的話加 `!!` 立刻送出。

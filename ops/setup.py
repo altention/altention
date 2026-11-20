@@ -31,6 +31,9 @@
   python3 ops/setup.py board-gone ID          the bot, when a channel is deleted: a board channel made again (at most
                                               once an hour), said in #audit; any other channel, nothing
   python3 ops/setup.py tutorial               #tutorial opened, its Claude asked to start the tour at step 1
+  python3 ops/setup.py channel NAME           a plugin's own Claude channel #NAME (channels[] kind "claude") opened
+                                              now, its Claude in the plugin's folder: when the person says
+                                              「開 #NAME」 in #setup (also after 「先不要」)
   python3 ops/setup.py plugin-add NAME [vX.Y.Z] [--yes [--hooks-ok]]
                                               a plugin from the official list (C-81 K2, ops/plugins.py add): without
                                               --yes what it would do here; with it written into the instance and
@@ -276,7 +279,7 @@ def flow(answered, found=None):
     backup = plugins.backup_questions(off)
     asked.append(backup[0])
     if answered.get("backup") == "now":
-        asked.append(backup[1])
+        asked += backup[1:]  # (the built-ins, then the plugins' data in questions of their own)
     return asked
 
 
@@ -333,6 +336,8 @@ def question_for(key, found=None, answered=None):
         return offers.question(key.split(".", 1)[1], d) if d is not None else None
     if key == "plugins.%s" % SECRETARY:
         return plugins.secretary_question(found, again=answered.get(key) == "on", gone=channel_gone(key, found))
+    if key.startswith("channel."):
+        return channel_question(key, found)
     import instance
     q = next((q for q in plugins.setup_questions(found, instance.system_timezone(None), False) if q["key"] == key), None)
     written = (setup_state() or {}).get("permission_written")
@@ -346,7 +351,10 @@ def backups_missing(answered):
     if answered.get("backup") != "now":
         return []
     import remote
-    return [n for n in answered.get("backup.items") or [] if remote.known(n) and not remote_set(remote, n)]
+    chosen = list(answered.get("backup.items") or [])
+    for k in sorted(k for k in answered if plugins.plugin_backup_key(k)):
+        chosen += answered.get(k) or []
+    return [n for n in chosen if remote.known(n) and not remote_set(remote, n)]
 
 
 def remote_set(remote, name):
@@ -598,6 +606,9 @@ def answer(key, value, out=None):
         if value not in ("on", "off"):
             raise Refused("只能是 on（開）或 off（不開）")
         turn(d, SECRETARY, value == "on", machine)
+    elif key.startswith("channel."):  # a plugin's own Claude channel: opened by done (open), or never asked again (no)
+        if value not in q["values"]:
+            raise Refused("只能是 open（開）或 no（先不要）")
     elif key == "planner.times":
         if value not in q["values"]:
             raise Refused("只能是 suggested（用建議的）或 custom（自己選）")
@@ -645,13 +656,28 @@ def answer(key, value, out=None):
         if value not in q["values"]:
             raise Refused("只能是 now（現在設定）或 later（之後再說）")
         if value == "later":
-            answered.pop("backup.items", None)
+            for k in [k for k in answered if k == "backup.items" or plugins.plugin_backup_key(k)]:
+                answered.pop(k, None)
+    elif plugins.plugin_backup_key(key):  # the plugins' data: none ticked is none of these, the others stay
+        items = [x.strip() for x in value.split(",") if x.strip()]
+        bad = [x for x in items if x not in q["values"]]
+        if bad:
+            raise Refused("沒有這幾樣：%s（只能是 %s，用逗號分開）" % ("、".join(bad), "、".join(q["values"])))
+        value = items
+        others = [x["key"] for x in flow(answered, found) if plugins.plugin_backup_key(x["key"]) and x["key"] != key]
+        if not items and answered.get("backup.items") == [] and all(answered.get(k) == [] for k in others):
+            for k in [k for k in answered if plugins.plugin_backup_key(k)] + ["backup.items"]:
+                answered.pop(k, None)  # nothing ticked anywhere: later
+            answered["backup"] = "later"
+            key, value = None, None
     elif key == "backup.items":
         items = [x.strip() for x in value.split(",") if x.strip()]
         bad = [x for x in items if x not in q["values"]]
         if bad:
             raise Refused("沒有這幾樣：%s（只能是 %s，用逗號分開）" % ("、".join(bad), "、".join(q["values"])))
-        if not items:  # nothing ticked: later
+        if not items and any(plugins.plugin_backup_key(x["key"]) for x in flow(answered, found)):
+            value = []  # none of these, perhaps the plugins' data (#code-review of 6e788f00): later only if none there
+        elif not items:  # nothing ticked: later
             answered["backup"] = "later"
             key, value = None, None
         else:
@@ -809,6 +835,79 @@ def open_claude(what, base, folder, topic, out, moved=None):
     if r.returncode != 0:
         raise Failed("開不了 #%s：%s" % (name, r.stdout.strip()[-200:]))
     return wait_for(name)
+
+
+def channel_key(name, channel):
+    """setup.ask's key for plugin `name`'s own Claude channel `channel` (channels[] kind "claude", plugin.format 5)."""
+    return "channel.%s.%s" % (name, channel)
+
+
+def plugin_channel(key=None, channel=None, found=None):
+    """((plugin name, title), channel entry) of a Claude channel a plugin in use here declares (not the secretary's):
+    by its setup.ask key, or by the channel's name (setup.py channel); None when none is."""
+    found = plugin.discover()[0] if found is None else found
+    rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
+    channels, _ = declared(found, rows)
+    titles = {n: (d or {}).get("title") or n for n, _, d in found}
+    for c in channels:
+        if c.get("kind") != "claude" or c["plugin"] in (SECRETARY, "core") or not c.get("setting"):
+            continue
+        if key == channel_key(c["plugin"], c["name"]) or (channel and channel.lstrip("#") == c["name"]):
+            return (c["plugin"], titles.get(c["plugin"])), c
+    return None
+
+
+def channel_question(key, found):
+    """The question of a plugin's own Claude channel (#release 11-20's words); None when no plugin in use has it."""
+    got = plugin_channel(key, found=found)
+    if got is None:
+        return None
+    (name, title), c = got
+    folder = plugin.channel_folder(name, c)[0]
+    return {"key": key, "values": ["open", "no"], "header": "插件頻道", "multiSelect": False,
+            "question": "插件 %s 有自己的 Claude 頻道 #%s（Claude 在 %s 工作）。現在開嗎？" % (title, c["name"], folder),
+            "options": [{"label": "開", "description": "馬上開好，頻道裡的 Claude 會在那個資料夾工作"},
+                        {"label": "先不要", "description": "之後不再問；想開時在 #setup 說「開 #%s」" % c["name"]}]}
+
+
+def open_plugin_channel(who, c, out):
+    """Plugin who=(name, title)'s Claude channel `c` opened: its folder made (and kept inside the plugin's data
+    folder), the channel opened there (open_claude), its ID written to c["setting"]."""
+    name, title = who
+    folder, base = plugin.channel_folder(name, c)
+    try:
+        plugin.make_channel_folder(folder, base)
+    except (plugin.PluginError, OSError) as e:
+        raise Failed("#%s 沒開：%s" % (c["name"], e))
+    what = channel_key(name, c["name"])
+    cid = open_claude(what, c["name"], folder, title, out, moved="已經有 #%s 了，開在 #%%s" % c["name"])
+    write_channel(c["setting"], cid)
+    set_opening(what, None)
+    commit("setup: %s" % what)
+    out.write("#%s 開在 <#%s>，Claude 在 %s 工作\n" % (c["name"], cid, folder))
+
+
+def channel(name, out=None):
+    """setup.py channel NAME: the person said 「開 #NAME」 in #setup (also after 「先不要」): opened now."""
+    out = out or sys.stdout
+    got = plugin_channel(channel=name)
+    if got is None:
+        raise Refused("沒有插件要用 #%s 這個頻道（開著的插件 channels[] 裡 kind 是 claude 的）" % name.lstrip("#"))
+    who, c = got
+    if set_value(config.setting(c["setting"])):
+        out.write("#%s 已經開了（%s）\n" % (c["name"], c["setting"]))
+        return 0
+    open_plugin_channel(who, c, out)
+    d = read_settings()
+    state = setup_state(d)
+    if state is not None:  # 「先不要」 no longer stands; the question taken out of setup.ask
+        key = channel_key(who[0], c["name"])
+        state.setdefault("answered", {})[key] = "open"
+        if key in asked(state):
+            state["ask"] = [k for k in asked(state) if k != key]
+        write_settings(d)
+        commit("setup: %s open" % key)
+    return 0
 
 
 def write_channel(key, cid):
@@ -1092,6 +1191,11 @@ def done(out=None):
         guide(out)
     if rows.get(SECRETARY) in ("on", "off") and not config.setting("planner.channel"):
         secretary(out)
+    for key, value in sorted(answered.items()):
+        if key.startswith("channel.") and value == "open":
+            found_c = plugin_channel(key)
+            if found_c and not set_value(config.setting(found_c[1]["setting"])):
+                open_plugin_channel(found_c[0], found_c[1], out)
     if asking:  # an installation set up before: #chat is there; the reconcile's questions are answered
         d = read_settings()
         if setup_state(d) is not None:
@@ -1567,6 +1671,45 @@ def boards_to_open(state, found):
             and machine in entries[n]["disabled_on"]]
 
 
+def ask_new_channels(out=None):
+    """The Claude channels of plugins put on after #setup (setup.py plugin-add, ops/plugins.py add --yes: install.sh
+    runs this once the plugin is here) put in setup.ask and #setup opened, as the reconcile would at the next engine
+    update (support-2's trial 11-20: until then nothing asked). Only channels never asked: no answer recorded, not
+    in setup.ask already, no channel set; a new installation still in #setup asks its own. [keys put in]."""
+    out = out or sys.stdout
+    if not config.bot_here():
+        return []
+    d = read_settings()
+    st = d.get("setup") if isinstance(d.get("setup"), dict) else None
+    if st is not None and st.get("done") is not True:
+        return []
+    found = plugin.discover()[0]
+    rows = {n: w for n, _, _, w, _ in plugin.on_this_machine()[0]}
+    answered = (st or {}).get("answered") if isinstance((st or {}).get("answered"), dict) else {}
+    before = asked(st or {})
+    new = []
+    for c in declared(found, rows)[0]:
+        if c.get("kind") != "claude" or not c.get("setting") or c["plugin"] in ("core", SECRETARY):
+            continue
+        key = channel_key(c["plugin"], c["name"])
+        if key in answered or key in before or key in new or set_value(config.setting(c["setting"])):
+            continue
+        new.append(key)
+    if not new:
+        return []
+    if st is None:  # an installation from before #setup: set up already, asked only these (no tour), as the reconcile
+        st = d["setup"] = {"done": True, "since": "reconcile"}
+    st["ask"] = before + new
+    write_settings(d)
+    commit("setup: a plugin put on asks %s" % "、".join(new))
+    heads = ["#%s" % k.rsplit(".", 1)[1] for k in new]
+    say_update("📝 新裝的插件有自己的 Claude 頻道：%s。要不要開，到 #setup 回答。" % "、".join(heads))
+    p = dcctl("post", inp=json.dumps({"channel": "setup", "open_setup": True, "text": ""}))
+    if p.returncode != 0:
+        out.write("請機器人開 #setup 沒送出去：%s\n" % p.stdout.strip()[-200:])
+    return new
+
+
 def in_setup(state):
     """A new installation still in #setup (done not yet true)."""
     return state is not None and state.get("done") is not True
@@ -1677,7 +1820,9 @@ def reconcile_plan(chans, before_offers=None):
                     plan.append({"kind": "fill", "what": "dashboard",
                                  "say": (REMADE_SAY if stale else UNSET_SAY) % c["name"]})
                 continue
-            key = "plugins.%s" % c["plugin"]
+            key = "plugins.%s" % c["plugin"] if c["plugin"] == SECRETARY else channel_key(c["plugin"], c["name"])
+            if key != "plugins.%s" % SECRETARY and ((state or {}).get("answered") or {}).get(key) == "no":
+                continue  # 「先不要」: not asked again; 「開 #x」 in #setup opens it (setup.py channel)
             if key not in ask:
                 ask.append(key)
                 plan.append({"kind": "ask", "what": key, "say": "%s：%s" % (
@@ -2199,6 +2344,8 @@ def main(argv):
             return guide()
         if args == ["tutorial"] and not as_json:
             return tutorial()
+        if len(args) == 2 and args[0] == "channel" and not as_json:
+            return channel(args[1])
         if args == ["repos"]:
             return repos(as_json)
         if len(args) == 2 and args[0] == "restore" and not as_json:

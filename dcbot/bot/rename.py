@@ -78,6 +78,15 @@ async def learn_agent(bot, st, name=None):
     return now if now is not None else (pane.get("agent") or "")
 
 
+
+def reason(text):
+    """Why a rename was not typed in, for its card's row: the first sentence of what the bridge says, without its
+    consequences (the row says it was not sent: "沒送進去：…"; manager 11-20, words said twice) or its bold."""
+    why = str(text or "").replace("**", "").lstrip("⚠️ ").split("。")[0]
+    for tail in ("，所以", "，訊息沒有送出", "，這則沒有送出"):
+        why = why.split(tail)[0]
+    return why[:160]
+
 class Renamer:
     def __init__(self, bot):
         self.bot = bot
@@ -178,12 +187,11 @@ class Renamer:
         try:
             got = await self.bot.tmux.submit(slash.Origin(ch), "/rename " + new, out=self.bot.quiet)
         except Exception as e:  # (NotOpened: its pane gone, a machine not reached; said as it says it)
-            return "failed", messages.rename("not_sent", why=str(e).split("。")[0][:160]), None
+            return "failed", messages.rename("not_sent", why=reason(str(e))), None
         if got is not None and not got:  # not typed in (manager 11-20, X: a pane restarted and still being made sure
             # of, the box not what was typed, …): a Typing refused, or False; never said as done
             why = messages.not_sent(got.code, **got.data) if getattr(got, "code", None) else messages.rename("not_entered")
-            why = why.replace("**", "").lstrip("⚠️ ").split("。")[0].split("，所以")[0]  # (the reason, not its consequences)
-            return "failed", messages.rename("not_sent", why=why[:160]), None
+            return "failed", messages.rename("not_sent", why=reason(why)), None
         return "done", None, None
 
     async def do_window(self, ch, st, rec, new):

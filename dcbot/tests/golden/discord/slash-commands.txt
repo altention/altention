@@ -11,6 +11,7 @@
 /files(path: Optional[str] = None)
 /key(keys: str)
 /mode(mode: Optional[app_commands.Choice[str]] = None)
+/move(kind: app_commands.Choice[str], target: str)
 /recap(turns: Optional[app_commands.Range[int, 1, 20]] = None)
 /rename(name: str)
 /reset() → !reset

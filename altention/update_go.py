@@ -14,9 +14,11 @@
                                           changes meet the release's), after the person agreed
   altention update undo                   back to before the last update (altention/before-vX, update.py marks it;
                                           the plugins that update moved go back too)
-  altention update plugin <name> <vX.Y.Z> [--anyway]
+  altention update plugin <name> <vX.Y.Z> [--anyway] [--hooks-ok]
                                           one plugin moved to that release, once the person saw what it brings (the
-                                          bot's machine; --anyway: even though its own test fails)
+                                          bot's machine; --anyway: even though its own test fails; --hooks-ok: it adds
+                                          a hook or a rewrite of replies and the person said yes to that); a version
+                                          that does more here is followed by install, the other machines named
   altention update follow                 this machine's plugins to the versions the instance says (lead_others runs it
                                           on each other machine; update.py's rounds do it through plugins-round)
   altention update card <vX.Y.Z>          the 🆕 card for that release with its buttons (update.py calls it on the bot's
@@ -70,7 +72,7 @@ ENGINE_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ENGINE_HERE not in sys.path:
     sys.path.insert(0, ENGINE_HERE)
 
-from altention import botmove, catalog, config, plugin_update, sync, update  # noqa: E402
+from altention import botmove, catalog, config, plugin, plugin_update, sync, update  # noqa: E402
 from altention.dc import card as cards  # noqa: E402
 
 GO_KINDS = ("clean", "commits")  # what go takes on by itself
@@ -84,6 +86,20 @@ TIMEOUTS = {"update": 900, "install": 1200, "reconcile": 300, "doctor": 300, "ma
 
 def engine():
     return update.ENGINE  # at call time (the tests point it at a rig)
+
+
+def pinned():
+    """Whether this engine is a git checkout detached from its branch (pinned to a fixed version: no round moves it,
+    C-57), so its plugins move without it (E3, manager 11-02). An unpacked engine or an unreadable one: False."""
+    eng = engine()
+    if not os.path.exists(os.path.join(eng, ".git")):
+        return False
+    try:
+        r = subprocess.run(["git", "-C", eng, "symbolic-ref", "-q", "HEAD"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 1  # (1: not a symbolic ref, detached; 128 and others: not readable)
 
 
 def state_dir():
@@ -220,12 +236,15 @@ PLAIN = {  # one line for the 🆕 card (manager 2026-10-20: plain words; the re
     "none": "這台已經是最新的了。",
 }
 
+PINNED_GOES = ("這台的引擎停在一個固定的版本上，不會換；按「更新」只換下面可以換的插件。"  # (go_first: E3)
+               "要引擎也更新，到 #chat 跟 Claude 說「引擎停在固定版本了，幫我接回去」。")
+
 EXPLAIN = {  # what stopped go, for its card: what happened, whether anything is lost, what can be done (C-57 U3;
     # the person may not be an engineer: no commit, rebase, HEAD, and no "saved", manager 2026-10-19)
     "edits": "這台有你自己改過的檔%s。為了不蓋掉你的修改，這次先不更新，現在照舊版跑，你的修改都還在。\n"
              "可以先把你的修改保留下來再更新，更新後你的修改還在：按「請 Claude 幫忙」，Claude 會先問你一次。",
     "untracked": "新版本要加的檔案%s，這台已經有同名的檔（不是引擎原本就有的）。為了不蓋掉它，這次先不更新，現在照舊版跑，"
-                 "那個檔沒動。\n把那個檔改名或移走再按一次更新，或按「請 Claude 幫忙」。",
+                 "那個檔沒動。\n把那個檔改名或移走，下一輪檢查沒問題了，會貼一張可以按「更新」的新卡；或按「請 Claude 幫忙」。",
     "conflict": "你自己改過的地方%s，新版本也改了同一段，兩邊要合在一起。為了不蓋掉你的修改，這次先不更新，現在照舊版跑，"
                 "你的修改都還在。\n按「請 Claude 幫忙」：Claude 會先在旁邊合好給你看，你同意了才換上。",
     "mixed": "這台有機器人自己退回的版本，又有你自己改過的地方，程式不猜哪些要留。這次先不更新，現在照舊版跑，你的東西都還在。\n"
@@ -507,8 +526,12 @@ def go_first(say, version, card_id):
             return only_plugins(say, card_id, f["now"], version)
         say("✅ 這台已經是 %s 了，不用再更新。" % f["now"])
         return 0
+    if f["kind"] == "detached" and f.get("now") and bot_machine_here() and any(
+            o["tag"] and o["check"]["kind"] in PLUGIN_GO for o in checked(offers(fetch=True), f["now"])):
+        return only_plugins(say, card_id, f["now"], version, pinned=True)  # E3: the plugins move, the engine stays
     if f["kind"] in ("busy", "offline", "archive", "none"):
         say("❌ 這次沒有更新：%s 你的東西都沒動。" % PLAIN[f["kind"]], details=technical(f))
+        mark_stuck(card_id)
         return 1
     if f["kind"] not in GO_KINDS:
         if f["kind"] == "conflict":  # the copy Claude merges in, under #setup's folder (U4)
@@ -516,6 +539,7 @@ def go_first(say, version, card_id):
             f["copy"], f["files"] = made if made[0] else (None, f["files"])
         wait = "\n插件等引擎好了再一起換。" if bot_machine_here() and any(o["tag"] for o in offers()) else ""
         say("📝 還沒更新到 %s：%s%s" % (tag, explain(f), wait), help_buttons(card_id, f, tag), technical(f))
+        mark_stuck(card_id)
         return 1
     newer = "（你按的是 %s；已經有更新的 %s，直接換到它。）" % (version, tag) if tag != version else ""
     first = "✓ 先在旁邊試過了：" + ("可以直接換" if f["kind"] == "clean" else "你的修改可以跟新版接在一起，會留著")
@@ -529,12 +553,14 @@ def go_first(say, version, card_id):
     now = update.release_in(update.Round())[0]
     if code == update.LOCKED and (not now or update.vtuple(now) < update.vtuple(tag)):
         say("❌ 這次沒有更新：引擎現在正在做別的事（同步或另一個更新），等一下再按更新就可以。你的東西都沒動。", details=out[-3000:])
+        mark_stuck(card_id)
         return 1
     if not now or update.vtuple(now) < update.vtuple(tag):
         why = alerts_since(started)
         plain = why[-1] if why else "換版這一步沒成功，這次沒有更新，現在照舊版跑，你的東西都沒動。"
         say("❌ 還沒更新到 %s：%s" % (tag, re.sub(r"（細節：.*$", "", plain, flags=re.S)),
             help_buttons(card_id, f, tag, "換到新版（update.py --release）", out), technical(f) + "\n\n" + out[-3000:])
+        mark_stuck(card_id)
         return 1
     d = read_progress()
     d["done"], d["tag"] = ["update"], now
@@ -563,12 +589,13 @@ def steps_left(d):
     return [words for key, words in STEPS if key not in done and (plugins or key != "plugins")]
 
 
-def only_plugins(say, card_id, now, asked):
-    """The engine is the newest already and plugins have newer releases: go's steps from 換插件 on (the record says
-    so: an interrupted one is taken up as any other)."""
+def only_plugins(say, card_id, now, asked, pinned=False):
+    """The engine is the newest already (or `pinned` to a fixed version, E3) and plugins have newer releases: go's
+    steps from 換插件 on (the record says so: an interrupted one is taken up as any other)."""
     write_progress({"card": card_id, "asked": asked, "tag": now, "start": now, "newer": "", "notes": [],
-                    "first": "✓ 引擎已經是最新的 %s，這次只換插件" % now, "done": ["update", "install"],
-                    "only_plugins": True, "at": time.time()})
+                    "first": ("✓ 引擎停在固定的版本 %s（不會自己更新），這次只換插件" if pinned else
+                              "✓ 引擎已經是最新的 %s，這次只換插件") % now, "done": ["update", "install"],
+                    "only_plugins": True, "pinned": bool(pinned), "at": time.time()})
     return go_on(say, now, card_id)
 
 
@@ -667,6 +694,8 @@ def go_on(say, version, card_id):
     if said_taken_back(say, version, card_id, f):
         return 1
     text = done_text(d, version, notes)
+    if d.get("only_plugins") and not any(l.startswith("✅") for l in d.get("plugins") or []):
+        mark_stuck(card_id)  # 更新 pressed, no plugin moved: posted again once one can go (manager 11-20)
     waiting = d.get("waiting") or []
     buttons = [{"id": "ask", "label": "請 Claude 幫忙", "style": "primary", "action": "ask_claude",
                 "arg": handed(card_id, plugin_ask(waiting))}] if waiting and card_id else []
@@ -810,8 +839,8 @@ def step(key):
 def done_text(d, version, notes):
     plugins = d.get("plugins") or []
     if d.get("only_plugins"):
-        text = "%s（引擎已經是最新的 %s）：\n%s" % ("✅ 插件更新好了" if any(l.startswith("✅") for l in plugins) else
-                                            "📝 插件這次沒有換", version, "\n".join(plugins))
+        text = "%s（%s %s）：\n%s" % ("✅ 插件更新好了" if any(l.startswith("✅") for l in plugins) else "📝 插件這次沒有換",
+                                   "引擎停在固定的版本" if d.get("pinned") else "引擎已經是最新的", version, "\n".join(plugins))
         if notes:
             text += "\n\n" + "\n".join(notes)
         return text + "\n\n想回到更新前的版本：到 #setup 跟 Claude 說「引擎回到更新前」。"
@@ -851,10 +880,15 @@ def new_card(tag, if_new=False):
     if not engine_new and not any(o["tag"] for o in got):
         print("引擎和插件都沒有新版，不用貼卡片")
         return 0
-    if if_new and card_id == last_card():
-        print("跟上次貼的卡片一樣（%s），不重貼" % card_id)
-        return 0
-    checked(got, shown)
+    last = card_state()
+    stuck = False
+    if if_new and card_id == last.get("base", last.get("id")):
+        if not last.get("stuck"):
+            print("跟上次貼的卡片一樣（%s），不重貼" % card_id)
+            return 0
+        stuck = True  # pressed and not updated (its 更新 button gone): posted again once nothing stops it
+    fixed = pinned()
+    checked(got, now if fixed else shown)  # (a pinned engine stays at `now`: E3)
     goes = [o for o in got if o["tag"] and o["check"]["kind"] in PLUGIN_GO]
     waiting = [o for o in got if o["tag"] and o["check"]["kind"] not in PLUGIN_GO]
     details = []
@@ -863,10 +897,12 @@ def new_card(tag, if_new=False):
         versions = update.releases_between(rnd, update.vtuple(now) if now else None, tag)
         text = "🆕 有新版本 %s 可以更新" % tag + ("（這台現在是 %s）。" % now if now else "。")
         text += update.notes_of(rnd, tag, versions)
-        text += "\n\n" + PLAIN.get(f["kind"], PLAIN["unreadable"])
+        text += "\n\n" + (PINNED_GOES if f["kind"] == "detached" and goes else PLAIN.get(f["kind"], PLAIN["unreadable"]))
         engine_goes = f["kind"] not in ("archive", "none")
         agents = for_agents(rnd, tag, versions)
         details.append(technical(f) + ("\n\n" + agents if agents else ""))
+    elif fixed:  # E3: the engine never moves; what fits it goes, the rest waits as the pin (PLUGIN_PLAIN)
+        text, engine_goes = "🆕 有插件的新版本可以更新（引擎停在固定的版本 %s，不會自己更新）。" % now, False
     else:
         text, engine_goes = "🆕 有插件的新版本可以更新（引擎已經是最新的 %s）。" % now, False
     if got:
@@ -880,47 +916,86 @@ def new_card(tag, if_new=False):
         buttons.append({"id": "ask", "label": "請 Claude 幫忙", "style": "secondary", "action": "ask_claude",
                         "arg": handed(card_id, plugin_ask(waiting))})
     details = "\n\n".join(details)
+    base, words = card_id, None
+    if stuck:
+        # (a pinned engine's 更新 takes the plugins alone, E3: what goes, not its "detached")
+        if not ((engine_new and not fixed and f["kind"] in GO_KINDS) or ((not engine_new or fixed) and goes)):
+            print("上次按了「更新」沒換成，原因還在（%s），不重貼" % (f["kind"] if engine_new else "插件"))
+            return 0
+        card_id, words = "%s-r%d" % (base, time.time()), STUCK_GONE  # a card of its own: the old one keeps its words
     try:
         cards.show(card_id, text, buttons, details[:cards.DETAILS_MAX])
     except cards.CardError as e:
         print("沒貼成：%s" % e)
         return 1
-    close_older(card_id, tag)
+    close_older(card_id, tag, base, words)
     return 0
+
+
+STUCK_GONE = "上次沒更新成的原因已經排除了，請看下面那張新卡。"  # (#release 11-02)
+
+
+def card_state():
+    """update-card: {"id" (the 🆕 card posted last), "base" (the id it stands for, when posted again: card_id_of's),
+    "stuck" (pressed and not updated)}; {} when none."""
+    try:
+        with open(os.path.join(state_dir(), "update-card")) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def last_card():
     """The id of the 🆕 card posted last (update-card), None when none."""
-    try:
-        with open(os.path.join(state_dir(), "update-card")) as f:
-            return json.load(f).get("id")
-    except (OSError, ValueError, AttributeError):
-        return None
+    return card_state().get("id")
 
 
-def close_older(card_id, tag):
-    """The card of the release told before (update-card: {id}) loses its buttons and says a newer one is out."""
+def write_card_state(d):
     path = os.path.join(state_dir(), "update-card")
-    old = last_card()
-    if old and old != card_id:
-        try:
-            cards.close(old, "這張卡的版本已經不是最新的了：有新版本 %s，請看下面那張新卡。" % tag
-                        if card_id == "update-%s" % tag else "這張卡已經不是最新的了：要更新的內容變了，請看下面那張新卡。")
-        except cards.CardError as e:
-            print("舊的卡片 %s 沒收掉：%s" % (old, e))
     with open(path + ".tmp", "w") as f:
-        json.dump({"id": card_id, "at": time.time()}, f)
+        json.dump(d, f)
     os.replace(path + ".tmp", path)
 
 
+def close_older(card_id, tag, base=None, words=None):
+    """The card of the release told before (update-card: {id}) loses its buttons and says a newer one is out (or
+    `words`). `base`: the id card_id stands for (card_id_of's), when it differs (posted again)."""
+    old = last_card()
+    base = base or card_id
+    if old and old != card_id:
+        try:
+            cards.close(old, words or ("這張卡的版本已經不是最新的了：有新版本 %s，請看下面那張新卡。" % tag
+                                       if base == "update-%s" % tag else "這張卡已經不是最新的了：要更新的內容變了，請看下面那張新卡。"))
+        except cards.CardError as e:
+            print("舊的卡片 %s 沒收掉：%s" % (old, e))
+    write_card_state(dict({"id": card_id, "at": time.time()}, **({"base": base} if base != card_id else {})))
+
+
+def mark_stuck(card_id):
+    """A press of the 🆕 card `card_id` that did not update: the card keeps no 更新 button. Marked, so a later round
+    posts a new card once nothing stops it (11-02 real test: the same card id was never posted again)."""
+    d = card_state()
+    if card_id and card_id == d.get("id") and not d.get("stuck"):
+        try:
+            write_card_state(dict(d, stuck=time.time()))
+        except OSError:
+            pass
+
+
+def stuck_card():
+    return bool(card_state().get("stuck"))
+
+
 PLUGIN_GO = ("clean",)  # what 更新 takes on by itself (C-61 E3); the rest waits on the card for a person
-PLUGIN_STOP = ("unreachable", "broken", "origin", "edits", "engine", "interface")  # `update plugin` does not take these either
+PLUGIN_STOP = ("unreachable", "broken", "origin", "edits", "engine", "pinned", "interface")  # `update plugin` does not take these either
 PLUGIN_PLAIN = {  # why a plugin does not go with 更新, for the card (plain words)
     "unreachable": "這次拿不到這一版",
     "broken": "新版的設定檔讀不懂",
     "origin": "這台的插件資料夾不是從設定的地方來的，不動它",
     "edits": "插件資料夾裡有你自己改過的東西",
     "engine": "新版要更新的引擎，引擎換好了再換",
+    "pinned": "新版要新版引擎，引擎現在停在固定版本；要換就到 #chat 跟 Claude 說「引擎停在固定版本了，幫我接回去」",
     "interface": "新版要的引擎介面這版引擎沒有，換了也不會啟用",
     "test": "新版自己的測試沒過",
     "perms": "新版會在這台多做一些事，要你看過、同意了才換",
@@ -931,6 +1006,9 @@ PLUGIN_NEXT = {  # for #setup's Claude, by kind: what can be done (update skill'
     "test": "說明新版自己的測試沒過（下面是沒過的那幾行），預設不換；使用者知道了還是要換，才 "
             "`altention update plugin %(n)s %(v)s --anyway`。",
     "engine": "先更新引擎（卡片上的「更新」，或 `altention update go <引擎的新版>`），再 `altention update plugin %(n)s %(v)s`。",
+    "pinned": "引擎停在固定的版本（detached HEAD），新版插件要更新的引擎、又沒有用 uses 寫清楚它要的介面："
+              "照 CLAUDE.md「引擎停在固定版本了，幫我接回去」那條先問使用者要不要接回去；接回去更新完再 "
+              "`altention update plugin %(n)s %(v)s`。不接回去就留在現在這版。",
     "interface": "新版的 plugin.json 寫的 uses 這版引擎給不了（下面寫了是哪個介面）：先更新引擎，更新完還是對不上，"
                  "就留在現在這版，等插件出跟這版引擎相合的版本。",
     "edits": "插件資料夾裡有使用者自己的修改或同名的檔：先問使用者要留還是不要，不要自己動那個資料夾。",
@@ -964,11 +1042,12 @@ def offers(fetch=False, deadline=None, backoff=False):
 
 def checked(got, engine_version):
     """`got` with each one's check against `engine_version` (the engine this round ends with: it may run the new
-    version's own test)."""
+    version's own test), as a pinned engine's when it is one (pinned(): E3)."""
+    fixed = pinned() if any(o["tag"] and o["check"] is None for o in got) else False
     for o in got:
         if o["tag"] and o["check"] is None:
             try:
-                o["check"] = plugin_update.check(o["p"], o["tag"], engine_version)
+                o["check"] = plugin_update.check(o["p"], o["tag"], engine_version, pinned=fixed)
             except Exception as e:
                 o["check"] = {"kind": "broken", "kinds": ["broken"], "why": "檢查出錯：%s: %s" % (type(e).__name__, e),
                               "added": []}
@@ -1202,7 +1281,7 @@ def plugins_round(deadline, tell=None):
             if moved:
                 update.send("✅ 插件已更新：%s。\n\n想回到更新前的版本：到 #setup 跟 Claude 說「引擎回到更新前」。"
                             % "、".join("%s %s → %s" % (n, w, t) for n, (w, t) in sorted(moved.items())))
-        if tell or any(o not in go_now and o["tag"] for o in got):
+        if tell or any(o not in go_now and o["tag"] for o in got) or stuck_card():
             tag = tell or available_tag() or now
             if tag:
                 with redirect_out() as out:
@@ -1268,15 +1347,15 @@ class redirect_out(object):
         return False
 
 
-def one_plugin(name, version, anyway=False):
+def one_plugin(name, version, anyway=False, hooks_ok=False):
     with go_lock() as held:
         if not held:
             print(BUSY)
             return 1
-        return _one_plugin(name, version, anyway)
+        return _one_plugin(name, version, anyway, hooks_ok)
 
 
-def _one_plugin(name, version, anyway=False):
+def _one_plugin(name, version, anyway=False, hooks_ok=False):
     """altention update plugin <name> <vX>: one plugin moved, once the person saw what it brings (Claude asks first:
     perms is theirs to say, decision 4; a failed test only with --anyway, manager 2026-10-20). The bot's machine
     only (it writes the instance's version); the others follow it."""
@@ -1291,13 +1370,18 @@ def _one_plugin(name, version, anyway=False):
         print("插件 %s 已經是 %s 了，不用換。" % (name, version))
         return 0
     plugin_update.newer(p, fetch=True, deadline=time.time() + FOLLOW_LIMIT)
-    c = plugin_update.check(p, version, update.release_in(update.Round())[0])
+    c = plugin_update.check(p, version, update.release_in(update.Round())[0], pinned=pinned())
     if c["kind"] in PLUGIN_STOP:
         print("插件 %s 這次沒換到 %s：%s。你的東西都沒動。（細節：%s）" % (name, version, PLUGIN_PLAIN[c["kind"]], c["why"]))
         return 1
     if "test" in c["kinds"] and not anyway:
         print("插件 %s 的 %s 自己的測試沒過，這次不換；你的東西都沒動。\n%s\n知道了還是要換：altention update plugin %s %s --anyway"
               % (name, version, c["why"], name, version))
+        return 1
+    if c.get("watchers") and not hooks_ok:  # seeing the conversations is asked on its own (manager 11-02, 6b)
+        print("插件 %s 的 %s 多了會看到你對話內容的東西（%s），要先問過你才換；這次沒換，留在 %s，你的東西都沒動。\n"
+              "問過、同意了再換：altention update plugin %s %s --hooks-ok"
+              % (name, version, "、".join(c["watchers"]), p["version"], name, version))
         return 1
     ok, said = plugin_update.switch(p, version, deadline=time.time() + FOLLOW_LIMIT)
     if not ok:
@@ -1313,7 +1397,34 @@ def _one_plugin(name, version, anyway=False):
     print("插件 %s 已經換到 %s%s。%s想回到換之前：到 #setup 跟 Claude 說「引擎回到更新前」。" % (
         name, version, "（%s）" % said if said else "",
         "別台會在下一輪自己跟上。" if not unpushed else "實例還沒推出去（%s），別台等同步推出去之後才跟上。" % unpushed))
-    return 0
+    return install_after(name, version, c) if c.get("added") else 0
+
+
+def install_after(name, version, c):
+    """A plugin moved to a version that does more here (its 「多了」 lines: hooks, schedules, a rewrite, skills,
+    channels): install run here at once, so they are in place, said as it went (manager 11-02, 6b); each other
+    machine it runs on named with the line that puts them in there (core.auto_apply never writes: a person runs it).
+    0 when the install here went through."""
+    code, out = step("install")
+    if code == 0:
+        print("這台已經跑完一次安裝，新版多的（%s）裝好了。" % "；".join(c["added"])[:300])
+    elif code == 2:  # done, with things left to a person (go's steps and standby read 2 so too)
+        print("這台已經跑完一次安裝，新版多的（%s）裝好了；另外有要你處理的事：\n%s"
+              % ("；".join(c["added"])[:300], "\n".join((out or "").strip().splitlines()[-8:])))
+    else:
+        print("這台的安裝沒跑完（結束碼 %s），新版多的可能還沒裝上：\n%s\n跟 Claude 說「看一下安裝為什麼沒過」。"
+              % (code, "\n".join((out or "").strip().splitlines()[-8:])))
+    there = []
+    try:
+        entry = (config.settings().get("plugins") or {}).get(name) or {}
+        d = plugin.load(os.path.join(plugin_update.folder_of(name), "plugin.json"))
+        there = [m for m in plugin.machines_for(name, entry, d) if m != config.this_machine()]
+    except Exception as e:  # the list is the person's to read: say it was not worked out, not that there is none
+        print("（看不出別台有沒有用 %s：%s；有的話那台要跑一次安裝）" % (name, e))
+    if there:
+        print("別台跟上 %s 之後，也要各跑一次安裝，新版多的才會裝上：\n%s" % (version, "\n".join(
+            "- %s 要跑一次安裝：python3 ~/altention/engine/ops/apply.py %s" % (m, m) for m in there)))
+    return 0 if code in (0, 2) else 1
 
 
 def undo_plugins(move):
@@ -1697,8 +1808,9 @@ def main(argv):
         return save(argv[1])
     if argv == ["undo"]:
         return undo()
-    if argv[:1] == ["plugin"] and len(argv) in (3, 4) and update.RELEASE_TAG.match(argv[2]) and argv[3:] in ([], ["--anyway"]):
-        return one_plugin(argv[1], argv[2], anyway=argv[3:] == ["--anyway"])
+    if argv[:1] == ["plugin"] and 3 <= len(argv) <= 5 and update.RELEASE_TAG.match(argv[2]) and \
+            set(argv[3:]) <= {"--anyway", "--hooks-ok"} and len(set(argv[3:])) == len(argv[3:]):
+        return one_plugin(argv[1], argv[2], anyway="--anyway" in argv[3:], hooks_ok="--hooks-ok" in argv[3:])
     if argv == ["follow"]:
         return follow_here()
     if argv[:1] == ["plugins-round"] and len(argv) in (2, 4) and argv[1].isdigit() and (

@@ -12,7 +12,10 @@ in-place deploy commits new files after this check; with --new-under, only the n
 the deploy commits: another channel's work in progress elsewhere is not its matter; else every file; *.py and files
 whose first line is a python #!), symbolic links and .venv, node_modules aside:
 - ruff RUFF_VERSION with RULES (C901 is only counted, never fails);
-- ALT001: subprocess.run/check_output/call/check_call without timeout=, outside tests (a folder named tests).
+- ALT001: subprocess.run/check_output/call/check_call without timeout=, outside tests (a folder named tests);
+- C-207: a symbolic link whose target is an absolute path (or ~), among git's files and the new ones counted above
+  (outside a repository, every link but under .venv and the like): it is one machine's path, a checkout elsewhere
+  breaks on it and a release carries it (a test worktree's dcbot/.venv link was committed once, 2c2 d003d16f).
 With --against-rev or --against-upstream, also C-148: each commit in that rev..HEAD (merges aside) that changes a
 golden file (<suite>/tests/golden/) has a line "golden: <case>, … — <why>" naming exactly those (tools/golden).
   A call whose lines say "# no-timeout: <why>" (one waiting for a person) is not counted. Only the module's
@@ -149,6 +152,32 @@ def files(root, new_under=None):
         if is_python(path):
             out.append(name)
     return sorted(out)
+
+
+def links_out(root, new_under=None):
+    """C-207: the tree's symbolic links pointing at an absolute path, as [(name, target)], sorted. In a repository the
+    links git holds (wherever, .venv too: committing that is the mistake) and the new ones files() would count; else
+    every link but under SKIP_DIRS (a link of one's own tree, not committed, is no one else's matter)."""
+    if os.path.exists(os.path.join(root, ".git")):
+        new = git_files(root, "--others", "--exclude-standard")
+        names = git_files(root, "--cached") + (new if new_under is None else [n for n in new if under(n, new_under)])
+    else:
+        names = []
+        for folder, dirs, found in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            names += [os.path.relpath(os.path.join(folder, n), root) for n in found + dirs]
+    out = []
+    for name in sorted(set(names)):
+        path = os.path.join(root, name)
+        if not os.path.islink(path):
+            continue
+        try:
+            target = os.readlink(path)
+        except OSError:
+            continue
+        if os.path.isabs(target) or target.startswith("~"):
+            out.append((name, target))
+    return out
 
 
 def source_lines(root, name, cache):
@@ -392,6 +421,13 @@ def checked(root, path, ruff, against=None, new_under=None):
             code = NEW
         for i, n in more:
             print("    %s %s ×%d：%s" % (i["file"], i["rule"], n, i["line"][:120]))
+    links = links_out(root, new_under)
+    if links:
+        print("✗ lint：%d 個連結指向絕對路徑（那是這台機器的路徑：換一台就斷，發佈也會帶出去；改成相對路徑，"
+              "或不要提交它，例如寫進 .gitignore，資料夾的連結要寫成不加斜線的名字）：" % len(links))
+        for name, target in links:
+            print("    %s → %s" % (name, target))
+        code = NEW
     if new:
         print("✗ lint：%d 個新問題（新寫或改到的程式碼要過；基準只能減）：" % len(new))
         for name, rule, row, message, _ in new:

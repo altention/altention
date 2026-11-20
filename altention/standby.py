@@ -7,6 +7,9 @@
                                              apply
   altention standby setup MACHINE notify     MACHINE only tells: the role, a Discord webhook in the notification
                                              channel stored there (one test message by it), and apply
+  altention standby remove MACHINE           MACHINE is no standby any more (C-179): the role taken off (committed,
+                                             pushed), apply there, the fencing's record cleared on both machines
+                                             (dcremote owner-clear), the bot here restarted; a secret it has stays
 
 #setup asks it on a new installation with two machines or more (ops/setup.py: standby, standby.mode), and runs it
 when the owner says 設備援 later. The token and the webhook address are read and sent in this one process, through
@@ -54,6 +57,10 @@ SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
 class Failed(Exception):
     """A step that did not happen: its words are for the owner."""
+
+
+class NotPushed(Failed):
+    """The instance committed here but not pushed (remove_role)."""
 
 
 def candidates():
@@ -137,6 +144,17 @@ def instance_lock(inst, wait=60):
 def add_role(machine):
     """The role dcbot-standby on `machine` in the instance's machines.json, committed (under the sync's lock) and
     pushed (the other machines' apply read it). True when it changed. A commit that fails puts the file back."""
+    return set_role(machine, True)
+
+
+def remove_role(machine):
+    """add_role()'s other way (C-179): the role taken off `machine`, committed and pushed. True when it changed.
+    Not pushed (a remote there): Failed, even when it was off already (a run before that stopped there): that
+    machine's apply would pull the list with the role still on (#code-review on 0f2b2351)."""
+    return set_role(machine, False, must_push=True)
+
+
+def set_role(machine, on, must_push=False):
     inst = config.instance_dir()
     path = os.path.join(inst, "machines.json")
     git = ["git", "-C", inst]
@@ -149,28 +167,37 @@ def add_role(machine):
         if m is None:
             raise Failed("機器清單裡沒有 %s" % machine)
         roles = m.setdefault("roles", [])
-        if ROLE in roles:
-            return False
-        roles.append(ROLE)
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(path + ".tmp", path)
-        subprocess.run(git + ["add", "machines.json"], capture_output=True, timeout=60)
-        who = [] if subprocess.run(git + ["config", "user.email"], capture_output=True, timeout=60).stdout.strip() else \
-            ["-c", "user.name=altention", "-c", "user.email=altention@localhost"]
-        r = subprocess.run(git[:1] + who + git[1:] + ["commit", "-q", "-m", "standby: %s takes the role %s" % (machine, ROLE)],
-                           capture_output=True, universal_newlines=True, timeout=60)
-        if r.returncode != 0:
-            with open(path, "w", encoding="utf-8") as f:  # (put back: a role said failed must not be added after all)
-                f.write(before)
-            subprocess.run(git + ["reset", "-q", "--", "machines.json"], capture_output=True, timeout=60)
-            raise Failed("實例 commit 失敗：%s" % (r.stderr or r.stdout).strip()[:200])
+        changed = (ROLE in roles) != on
+        if changed:
+            roles[:] = roles + [ROLE] if on else [r for r in roles if r != ROLE]
+            write_role(path, d, before, git, machine, on)
     finally:
         lock.close()
-    if subprocess.run(git + ["remote"], capture_output=True, universal_newlines=True, timeout=60).stdout.strip():
-        subprocess.run(git + ["push", "-q"], capture_output=True, timeout=120)  # (else the sync pushes it)
-    return True
+    if (changed or must_push) and subprocess.run(git + ["remote"], capture_output=True, universal_newlines=True,
+                                                 timeout=60).stdout.strip():
+        r = subprocess.run(git + ["push", "-q"], capture_output=True, universal_newlines=True, timeout=120)
+        if r.returncode != 0 and must_push:  # (else the sync pushes it)
+            raise NotPushed("實例沒推出去（%s）" % ((r.stderr or r.stdout).strip()[-200:] or r.returncode))
+    return changed
+
+
+def write_role(path, d, before, git, machine, on):
+    """The list with the role changed, written and committed; a commit that fails puts the file back."""
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+    subprocess.run(git + ["add", "machines.json"], capture_output=True, timeout=60)
+    who = [] if subprocess.run(git + ["config", "user.email"], capture_output=True, timeout=60).stdout.strip() else \
+        ["-c", "user.name=altention", "-c", "user.email=altention@localhost"]
+    said = "standby: %s takes the role %s" if on else "standby: %s gives up the role %s"
+    r = subprocess.run(git[:1] + who + git[1:] + ["commit", "-q", "-m", said % (machine, ROLE)],
+                       capture_output=True, universal_newlines=True, timeout=60)
+    if r.returncode != 0:
+        with open(path, "w", encoding="utf-8") as f:  # (put back: a role said failed must not be added after all)
+            f.write(before)
+        subprocess.run(git + ["reset", "-q", "--", "machines.json"], capture_output=True, timeout=60)
+        raise Failed("實例 commit 失敗：%s" % (r.stderr or r.stdout).strip()[:200])
 
 
 def discord(method, path, body=None, token=None):
@@ -321,6 +348,74 @@ def setup(machine, mode, out=None, steps=None):
     return 0 if ok else 1
 
 
+def owner_clear(machine):
+    """`dcremote owner-clear` on `machine` (this one: run here; another: by ssh): the fencing's record of a bot with a
+    standby gone, so the bot without a lease is not refused there. (cleared or there was none, what it said)."""
+    eng = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if machine == config.this_machine():
+        try:
+            r = subprocess.run([sys.executable, os.path.join(eng, "dcbot", "tools", "dcremote"), "owner-clear"],
+                               capture_output=True, universal_newlines=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        ok, said = r.returncode == 0, (r.stdout or r.stderr).strip()
+    else:
+        m = (config.inventory().get("machines") or {}).get(machine) or {}
+        ok, said = run_there(machine, "python3 %s/dcbot/tools/dcremote owner-clear" % config.engine_on(m), "")
+    if ok:
+        return True, ""
+    try:  # (its refusal is a JSON line: {"cleared": false, "error": "…"})
+        said = json.loads(said.splitlines()[-1]).get("error") or said
+    except (ValueError, IndexError, AttributeError):
+        pass
+    return False, said[-200:] or "沒有回應"
+
+
+def remove(machine, out=None, steps=None):
+    """remove MACHINE (the module's words; the go-live plan's section 4, in its order). Run on the bot's machine while
+    it is the bot (not while the standby has taken over: it would step down to nothing). Raises Failed before anything
+    is done. The list not pushed, or that machine not applied: stops there, no record cleared, no restart (it still
+    has the role and its cron: this bot keeps the lease; #code-review on 0f2b2351), said with the command to run
+    again. A record not cleared afterwards is said with what to do, the restart done all the same. 0, or 1."""
+    from altention import text
+    out = out or sys.stdout
+    steps = steps or {}
+    here, primary = config.this_machine(), config.bot_machine()[0]
+    if here != primary:
+        raise Failed(text.t("standby.remove_not_here", here=here, primary=primary))
+    m = (config.inventory().get("machines") or {}).get(machine)
+    if m is None or machine == primary:
+        raise Failed(text.t("standby.remove_not_one", machine=machine))
+    had = ROLE in ((m or {}).get("roles") or [])
+    try:
+        removed = (steps.get("remove_role") or remove_role)(machine)
+    except NotPushed as e:  # (that machine's apply would pull the role back: stop, as when apply fails)
+        out.write(text.t("standby.remove_not_pushed", machine=machine, why=e) + "\n")
+        return 1
+    out.write(text.t("standby.role_removed" if removed else "standby.role_none", machine=machine) + "\n")
+    ok, last = (steps.get("apply") or apply)(machine)
+    if not ok:  # it still has the role and its cron there: this bot keeps the lease, or that one would take over
+        out.write(text.t("standby.remove_not_applied", machine=machine, last=last[0]) + "\n")  # (an unreachable
+        return 1  # machine is no proof against it: #code-review on 0f2b2351)
+    out.write(text.t("standby.applied", machine=machine, last=last[0]) + "\n")
+    good = True
+    left = [n for n, x in (config.inventory().get("machines") or {}).items()
+            if n != machine and ROLE in ((x or {}).get("roles") or [])]
+    if left:  # (another standby still there: owner-clear refuses, and its fencing must stay)
+        out.write(text.t("standby.clear_others", others="、".join(sorted(left))) + "\n")
+    else:
+        for name in (primary, machine):
+            ok, why = (steps.get("owner_clear") or owner_clear)(name)
+            out.write(text.t("standby.cleared" if ok else "standby.clear_failed", machine=name, why=why, engine=config.engine_on(
+                (config.inventory().get("machines") or {}).get(name) or {})) + "\n")
+            good = good and ok
+    (steps.get("restart_bot") or restart_bot)()
+    if had or removed:
+        secret_store.tell_audit(text.t("standby.audit_removed", machine=machine, primary=primary))
+    out.write(text.t("standby.removed", machine=machine) + "\n")
+    return 0 if good else 1
+
+
 def main(argv):
     from altention import text
     if argv[:1] == ["status"]:
@@ -339,6 +434,12 @@ def main(argv):
             return setup(argv[1], argv[2])
         except Failed as e:
             print(text.t("standby.failed", why=e))
+            return 1
+    if argv[:1] == ["remove"] and len(argv) == 2:
+        try:
+            return remove(argv[1])
+        except Failed as e:
+            print(text.t("standby.remove_failed", why=e))
             return 1
     print(__doc__.split("\n\n")[0])
     return 2

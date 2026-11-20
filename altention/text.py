@@ -149,6 +149,19 @@ TEXT = {
         "standby.not_ready": "備援功能還在測試，這一版還不能設。",  # (#release 11-08)
         "standby.not_updated": "{machine} 的引擎沒能先更新（{last}），什麼都還沒動；請跑 python3 ops/apply.py {machine} 看細節",
         "standby.lease_made": "✓ 建好了 #bot-lease（機器人自己用的隱藏頻道）",
+        # C-179: altention standby remove
+        "standby.remove_not_here": "要在正在當機器人的那台跑：這台是 {here}，機器人現在在 {primary}。備援接手中時，等它切回再拿掉",
+        "standby.remove_not_one": "{machine} 不在機器清單上，或就是機器人那台",
+        "standby.remove_failed": "拿掉備援沒有做：{why}",
+        "standby.remove_not_applied": "✗ {machine} 還沒照新設定裝好（{last}），所以備援還在：這台照舊當機器人，紀錄不清、也不重啟。修好連線後再跑一次 altention standby remove {machine}",
+        "standby.remove_not_pushed": "✗ {machine} 的 dcbot-standby 角色在這台拿掉了，但{why}，所以備援還在：這台照舊當機器人，不 apply、不清紀錄、也不重啟。修好之後再跑一次 altention standby remove {machine}",
+        "standby.role_removed": "✓ {machine} 拿掉了 dcbot-standby 角色（實例的 machines.json 已經提交）",
+        "standby.role_none": "✓ {machine} 本來就沒有 dcbot-standby 角色，機器清單沒有改",
+        "standby.clear_others": "還有別台是備援（{others}），所以兩台換機器的紀錄都留著，不清",
+        "standby.cleared": "✓ {machine} 清掉了之前有備援時留下的紀錄",
+        "standby.clear_failed": "✗ {machine} 的紀錄沒清掉（{why}）；之後在 {machine} 跑 python3 {engine}/dcbot/tools/dcremote owner-clear",
+        "standby.audit_removed": "拿掉備援：{machine} 不再是 {primary} 的備援",
+        "standby.removed": "拿掉了；機器人正在重啟，之後不再把狀態傳給 {machine}。{machine} 上存的金鑰（token 或 webhook）還留著，要刪再跟 Claude 說；#bot-lease 留著也沒關係。",
         "standby.restarting": "設好了；機器人正在重啟，重啟後就開始把狀態傳給 {machine}。",  # (#release's words: setup
         # restarts it itself, so not "next time it restarts")
         "secret.via_sent": " {machine} 送過去",
@@ -206,6 +219,14 @@ TEXT = {
         "install.steps_left": "{plugin} 還有 {n} 件事要你做：到 #setup 跟 Claude 說「幫我裝完 {plugin}」",
         "doctor.steps_left": "{plugin} 還有 {n} 件事要你做，下一件：{title}",
         "doctor.steps_fix": "到 #setup 跟 Claude 說「幫我裝完 {plugin}」",
+        # C-28: the bot's channel settings backed up (words: #release 11-20) into the instance (dcctl backup, each sync round)
+        "doctor.channel_backup_none": "機器人的頻道設定還沒備份過：機器人那台壞了的話，每個頻道接哪個資料夾、哪個對話都要重設",
+        "doctor.channel_backup_none_fix": "同步每一輪會在機器人那台自己備份。要馬上備份：在 {machine} 跑 python3 ~/altention/engine/dcbot/tools/dcctl backup，看它說什麼",
+        "doctor.channel_backup_stale": "機器人的頻道設定超過一天沒備份了（上次：{when}）",
+        "doctor.channel_backup_stale_fix": "看 {machine} 的 ~/.local/state/altention/cron-sync.log 裡 dcctl backup 那一行。備援接手時，由正在當機器人的那台備份",
+        "doctor.channel_backup_unclassified": "頻道設定裡有新的項目還沒決定要不要備份，所以沒有存進去：{keys}",
+        "doctor.channel_backup_unclassified_fix": "這是引擎漏掉的，請回報給 Altention 的開發者（要在 dcbot/bot/backup.py 把它們分到 KEEP 或 DROP）",
+        "doctor.channel_backup_ok": "機器人的頻道設定有備份：{n} 個頻道，上次確認 {when}",
         "doctor.steps_done": "{plugin} 要你做的事都做好了",
         "bot.not_found": "找不到負責 Discord 機器人的機器：這台沒有機器人的 token（~/.config/altention/secrets/core/discord-token），機器清單裡也沒有 dcbot 角色",
         # C-94: a plugin whose "uses" this engine does not offer
@@ -247,6 +268,7 @@ TEXT = {
         "release.optional_format": "uses 裡有 optional 的寫法，要加 \"plugin.format\": 2；v0.6.0 以前的引擎讀不懂這種寫法",
         "release.standby_format": "有步驟的 on 寫了 \"standby\"，uses 要加 \"plugin.format\": 3；更早的引擎會把 standby 當成機器名，那一步永遠不跑",
         "release.standby_key_format": "plugin.json 寫了 \"standby\": true，uses 要加 \"plugin.format\": 4；更早的引擎不認得這個欄位，插件只在機器人那台跑",
+        "release.folder_format": "用到 channels[].folder，uses 要寫 \"plugin.format\": 5",
         "release.optional_unknown": "選用的 {name} 這版引擎和官方插件都沒有提供，那一項會一直不能用",
         "release.uses_needed": "{at} 用到介面 {name}，plugin.json 的 uses 要寫 \"{name}\": {version}",
         "release.uses_mismatch": "plugin.json 的 uses 在這版引擎對不上（裝了也不會啟用）：{problem}",

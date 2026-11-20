@@ -7,7 +7,7 @@ dcctl (engine) v1
 dcremote.files (engine) v1
 dcremote.tmux (engine) v1
 files.guard (engine) v1 transitional
-plugin.format (engine) v4 also v1,v2,v3
+plugin.format (engine) v5 also v1,v2,v3,v4
 py.config (engine) v1
 py.transcript (engine) v1 transitional
 rewrite (engine) v1

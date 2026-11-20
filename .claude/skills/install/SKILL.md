@@ -58,6 +58,21 @@ systemd: `sudo service cron start`). The last line failing on Debian or Ubuntu: 
 `--version` does not tell whether Claude Code is logged in: if they have never used it on this machine, ask them
 to start `claude` once in their own terminal, log in, and quit. Do not test it with `claude -p`.
 
+Then git's user, now rather than at the end (the install's last step stops on it otherwise, 6f):
+
+```bash
+git config --global user.name; git config --global user.email
+```
+
+Both print something: go on. Either is empty: ask them now which name and email their commits here should carry
+(they go into their own backup repositories only; any name works, and an address they do not want shown can be a
+made-up one such as `me@localhost`). Once they answer, set them, saying so first:
+
+```bash
+git config --global user.name "<名字>"
+git config --global user.email "<信箱>"
+```
+
 ## 2. A new install, or back from the backups
 
 First see whether this machine has an instance already (in `ENGINE`):
@@ -138,6 +153,12 @@ Then tell them what it will do, in this order:
    taken away later, the bot works as before),
    **授權（Authorize，待核對）**, and pass the check if one comes up. If the bot is already in a server, there is no
    link: it uses that one, or asks which when there are several.
+   Then it checks the bot's permissions on that server (the 14 its features use, or Administrator): 「權限：機器人要的
+   14 個都有」 is fine. A server the bot was added to earlier with fewer gets 「少了 N 個權限：…」 and a link for that
+   server: they open it, keep everything ticked, **授權（Authorize，待核對）** (the bot stays; only its permissions
+   change), then Enter in the terminal to look again. The link asks for Administrator too: on a server where they
+   had not given it, say so; they may untick Administrator alone and keep the rest. `s` goes on without them (what needs them will not work until
+   they open the same link), `q` stops without writing anything.
 6. As soon as the bot is in, it stores the token and the two IDs in `~/.config/altention/secrets/core/` (mode 600), says
    `changed dcbot.token`, and goes straight on to install everything this machine needs (the same as `./install.sh`). Do
    not run `./install.sh` yourself meanwhile. Ask them to wait until it has finished, that is until the last line says

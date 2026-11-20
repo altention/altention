@@ -813,6 +813,11 @@ def list_all(out=sys.stdout, left_out=False):
     for name, folder, d in _ordered(plugins) + drafts:
         for where, todo in plugin.retired(d):
             out.write("提醒：%s 的 plugin.json 還寫著 %s，引擎已經不讀了（%s）\n" % (name, where, todo))
+    for name, folder, d in plugins:  # an instance entry miswritten (only "version", say): install leaves it as it is
+        bad = plugin.source_of(plugin.instance_entry(name, settings))[1] if settings is not None and \
+            plugin.external(folder) else None  # and says todo; said here too (#release 11-02)
+        if bad:
+            problems = problems + ["實例設定裡 plugins.%s 寫錯了：%s" % (name, bad)]
     catalog_part(listed, settings, out, left_out)
     for p in problems:
         out.write("問題：%s\n" % p)
@@ -1041,7 +1046,9 @@ def backup_questions(off=()):
     import remote
     items = [(n, d) for n, p, d in BACKUPS if p is None or p not in off]
     theirs = [(n, "插件 %s 自己的資料（%s），它寫明是私人的" % (pl, f)) for n, f, _p, pl in remote.plugin_data(private_only=True)]
-    items += theirs  # C-61 E4: the private data of the external plugins on here
+    # C-61 E4: the private data of the external plugins on here, in questions of their own, MOST_OPTIONS each: in one
+    # with the built-ins, a question may hold no more than four, and they were dropped (11-02 real test item 5)
+    chunks = [theirs[i:i + MOST_OPTIONS] for i in range(0, len(theirs), MOST_OPTIONS)]
     return [
         {"key": "backup", "values": ["now", "later"], "header": "備份", "multiSelect": False,
          "question": "備份：你的記憶、設定、對話紀錄、進度%s現在都只存在這台電腦，電腦壞了就救不回來。"
@@ -1051,7 +1058,19 @@ def backup_questions(off=()):
         {"key": "backup.items", "values": [n for n, _ in items], "header": "備份哪些", "multiSelect": True,
          "question": "要備份哪幾樣？建議全部勾選。每一樣各用一個 private 的 repo。",
          "options": [{"label": remote.label(n), "description": d} for n, d in items]},
-    ]
+    ] + [{"key": PLUGIN_BACKUPS + ("" if i == 0 else ".%d" % (i + 1)), "values": [n for n, _ in chunk],
+          "header": "插件的資料", "multiSelect": True,
+          "question": "插件寫明是私人的資料%s，要備份哪幾樣？建議全部勾選。每一樣各用一個 private 的 repo；都不勾就是不備份這些。" % (
+              "（第 %d 組，共 %d 組）" % (i + 1, len(chunks)) if len(chunks) > 1 else ""),
+          "options": [{"label": remote.label(n), "description": d} for n, d in chunk]} for i, chunk in enumerate(chunks)]
+
+
+MOST_OPTIONS = 4  # AskUserQuestion's most options in one question: no setup question offers more (test_setup)
+PLUGIN_BACKUPS = "backup.plugins"  # the plugins' data questions' keys: this, then backup.plugins.2, ...
+
+
+def plugin_backup_key(key):
+    return key == PLUGIN_BACKUPS or key.startswith(PLUGIN_BACKUPS + ".")
 
 
 def standby_questions(machines, primary, chosen=None):

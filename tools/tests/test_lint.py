@@ -442,6 +442,54 @@ class Files(Base):
         self.assertIn("newmod.py:2 ALT001", out)
 
 
+class LinksOut(Base):
+    """C-207: a committed link to an absolute path fails (2c2 d003d16f took in a worktree's dcbot/.venv link)."""
+    def git(self, *a):
+        subprocess.run(["git", "-C", self.root] + list(a), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=60, check=True)
+
+    def test_a_committed_venv_link_to_an_absolute_path_fails(self):
+        write(os.path.join(self.root, "a.py"), "")
+        os.makedirs(os.path.join(self.root, "dcbot"))
+        os.symlink("/srv/engine/dcbot/.venv", os.path.join(self.root, "dcbot", ".venv"))
+        write(os.path.join(self.root, ".gitignore"), ".venv/\n")  # (only a folder: the link is not ignored)
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.say([])
+        code, out = self.lint()
+        self.assertEqual(code, lint.NEW, out)
+        self.assertIn("dcbot/.venv → /srv/engine/dcbot/.venv", out)
+        self.assertIn("連結指向絕對路徑", out)
+
+    def test_a_new_link_not_added_yet_fails_an_ignored_one_does_not(self):
+        os.symlink("/srv/x", os.path.join(self.root, "new-link"))
+        os.symlink("/srv/y", os.path.join(self.root, ".venv"))
+        write(os.path.join(self.root, ".gitignore"), ".venv\n")
+        self.git("init", "-q")
+        self.assertEqual(lint.links_out(self.root), [("new-link", "/srv/x")])
+        self.assertEqual(lint.links_out(self.root, ["elsewhere"]), [], "--new-under: new ones there only")
+
+    def test_a_relative_link_passes_and_home_is_absolute_too(self):
+        write(os.path.join(self.root, "a.py"), "")
+        os.symlink("a.py", os.path.join(self.root, "b.py"))
+        os.symlink("~/x", os.path.join(self.root, "c"))
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.assertEqual(lint.links_out(self.root), [("c", "~/x")])
+        os.remove(os.path.join(self.root, "c"))
+        self.git("add", "-A")
+        self.say([])
+        code, out = self.lint()
+        self.assertEqual(code, lint.OK, out)
+
+    def test_outside_a_repository_venv_and_the_like_aside(self):
+        os.symlink("/usr/lib/python3", os.path.join(self.root, ".venv"))
+        os.makedirs(os.path.join(self.root, "sub"))
+        os.symlink("/srv/z", os.path.join(self.root, "sub", "out"))
+        os.symlink("/srv", os.path.join(self.root, "dirlink"))
+        self.assertEqual(lint.links_out(self.root), [("dirlink", "/srv"), ("sub/out", "/srv/z")])
+
+
 class Ruff(Base):
     def test_no_ruff_says_the_install_line(self):
         os.environ["ALT_RUFF"] = os.path.join(self.tmp, "missing")

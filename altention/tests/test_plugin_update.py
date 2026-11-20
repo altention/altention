@@ -141,6 +141,8 @@ class Check(Rig):
         c = pu.check(self.p(), "v0.2.0", "v0.3.2")
         self.assertEqual(c["kind"], "perms")
         self.assertEqual(c["added"], ["新的 hook：Stop（它會看到你所有 Claude 對話的內容）", "新的排程 practice：每天 13:00"])
+        self.assertEqual(c["watchers"], ["hook Stop"], "6b: what is asked on its own, for update plugin --hooks-ok")
+        self.assertEqual(pu.check(self.p(), "v0.5.0", "v0.3.2")["watchers"], [])
         self.assertEqual(pu.check(self.p(), "v0.3.0", "v0.3.2")["kind"], "engine")
         self.assertEqual(pu.check(self.p(), "v0.3.0", "v9.0.0")["kind"], "clean", "the engine this round ends with")
         t = pu.check(self.p(), "v0.4.0", "v0.3.2")
@@ -163,6 +165,35 @@ class Check(Rig):
         self.clone()
         c = pu.check(self.p(), "v0.2.0", "v0.5.1")
         self.assertEqual((c["kind"], c["kinds"]), ("clean", ["clean"]))
+
+    def test_a_pinned_engine_lets_go_of_engine_when_uses_fit(self):
+        """E3 (manager 11-02): on an engine pinned to a fixed version, a new version that wants a newer engine moves
+        when its "uses" says what it needs and this engine offers it; without uses, or uses not offered, it waits,
+        said as the pin (pinned, not engine); an engine that follows releases keeps engine as before."""
+        self.release("v0.2.0", dict(BASE, engine=">=9.0.0", uses={"dc.post": 1}), "- **有 uses。**")
+        self.release("v0.3.0", dict(BASE, engine=">=9.0.0"), "- **沒有 uses。**")
+        self.release("v0.4.0", dict(BASE, engine=">=9.0.0", uses={"dc.post": 99}), "- **uses 不合。**")
+        self.clone()
+        pu.newer(self.p())
+        c = pu.check(self.p(), "v0.2.0", "v0.3.2", pinned=True)
+        self.assertEqual((c["kind"], c["kinds"]), ("clean", ["clean"]))
+        self.assertEqual(pu.check(self.p(), "v0.2.0", "v0.3.2")["kind"], "engine", "not pinned: as before")
+        c = pu.check(self.p(), "v0.3.0", "v0.3.2", pinned=True)
+        self.assertEqual(c["kind"], "pinned")
+        self.assertEqual(c["why"], "demo 的 v0.3.0 要引擎 >=9.0.0，這台的引擎停在固定的版本 v0.3.2，新版也沒寫 uses")
+        c = pu.check(self.p(), "v0.4.0", "v0.3.2", pinned=True)
+        self.assertEqual(c["kinds"], ["pinned", "interface"])
+        self.assertEqual(pu.check(self.p(), "v0.3.0", "v9.0.0", pinned=True)["kind"], "clean", "its engine met: no pin")
+
+    def test_a_pinned_engine_waits_on_a_newer_format(self):
+        """E3: a plugin.json this engine reads as written for a newer one (plugin.NewerEngine) has no uses to go by:
+        it waits on a pinned engine too, said as the pin."""
+        self.release("v0.2.0", BASE, "- **新格式。**")
+        self.clone()
+        pu.newer(self.p())
+        with mock.patch.object(pu, "_load_at_newer", return_value=(None, "newer", True)):
+            self.assertEqual(pu.check(self.p(), "v0.2.0", "v0.3.2")["kind"], "engine")
+            self.assertEqual(pu.check(self.p(), "v0.2.0", "v0.3.2", pinned=True)["kind"], "pinned")
 
     def test_a_rewrite_and_a_skill_are_more_that_it_does(self):
         """manager 2026-10-21 (#code-review-2 of 1323639): a rewrite of replies and a skill are lines of 「多了」, and a
@@ -308,6 +339,37 @@ class Unreachable(Rig):
         self.assertTrue(words.startswith("連不上它的來源（%s），這輪先跳過（從 " % self.src), words)
         self.assertTrue(any("沒有回應" in t for t in said), "git's words in the log")
         self.assertFalse(os.path.exists(self.folder()))
+
+
+class GitSaid(unittest.TestCase):
+    def test_the_line_with_the_reason_is_kept(self):
+        """11-02 real test: a failed ssh clone kept only "and the repository exists."."""
+        def said(err, out=""):
+            return pu._said(subprocess.CompletedProcess([], 128, out, err))
+        ssh = ("git@example.org: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\n"
+               "Please make sure you have the correct access rights\nand the repository exists.\n")
+        self.assertEqual(said(ssh), "git@example.org: Permission denied (publickey).")
+        self.assertEqual(said("ssh: Could not resolve hostname example.org: Name or service not known\r\n"
+                              "fatal: Could not read from remote repository.\n\nPlease make sure…\nand the repository exists."),
+                         "ssh: Could not resolve hostname example.org: Name or service not known")
+        self.assertEqual(said("fatal: something else\nhint: a hint"), "fatal: something else")
+        self.assertEqual(said("", "only this"), "only this")
+        self.assertEqual(said(""), "沒有說明")
+
+    def test_a_clone_that_fails_says_it(self):
+        ssh = "git@example.org: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nand the repository exists.\n"
+        with mock.patch.object(pu, "_git", return_value=subprocess.CompletedProcess([], 128, "", ssh)), \
+                mock.patch.object(pu, "_network", return_value=False), \
+                mock.patch.object(pu, "folder_of", return_value=os.path.join(_tmp_folder(self), "demo")):
+            st, words, _ = pu.ensure("demo", {"source": "git@example.org:x/demo.git", "version": "v0.1.0"})
+        self.assertEqual(st, "failed")
+        self.assertIn("Permission denied (publickey)", words)
+
+
+def _tmp_folder(test):
+    d = tempfile.mkdtemp()
+    test.addCleanup(shutil.rmtree, d, True)
+    return d
 
 
 class Backoff(Rig):

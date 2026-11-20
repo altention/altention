@@ -132,3 +132,15 @@ def owner_choices(app):
 def guilds(token, base=API, sleep=time.sleep):
     return [(str(g.get("id", "")), g.get("name") or "") for g in get(token, "/users/@me/guilds?limit=200", base, sleep)
             if isinstance(g, dict)]
+
+
+def permissions_in(token, guild_id, base=API, sleep=time.sleep):
+    """The bot's permissions on that server (the partial guild's "permissions": its roles together, before any
+    channel's own settings) as an int; None when Discord does not say (or the bot is not in it any more)."""
+    for g in get(token, "/users/@me/guilds?limit=200", base, sleep):
+        if isinstance(g, dict) and str(g.get("id", "")) == str(guild_id):
+            try:
+                return int(g["permissions"])
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None

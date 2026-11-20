@@ -1140,6 +1140,36 @@ class PluginsHere(Base):
         self.assertEqual(sorted(install.plugins_here.held), ["a", "b", "c"], "a needs b needs c: all three wait")
         self.assertEqual([n for n, _ in found], ["d"])
 
+    def test_a_miswritten_instance_entry_is_a_todo_not_a_failure(self):
+        """11-02 real test item 7 (#release): an entry with "version" and no "source" made the install fail
+        (unknown plugin.x, exit 1, the card ❌). Now todo (exit 2): that plugin left untouched, the others go on.
+        The row as plugin.on_this_machine() gives it for such an entry."""
+        settings = {"plugins": {"demo": {"version": "v0.1.0"}}}
+        rows = [("demo", "/r/plugins/demo", {"title": "D"}, "unknown",
+                 "實例設定裡 plugins.demo 的來源不能用：source 要寫 git 網址（寫了 version 就要有 source）"),
+                ("usage", os.path.join(install.ENGINE, "usage"), {"machines": "one"}, "on", "")]
+        r, out = self.run_()
+        with mock.patch.object(install.config, "settings", return_value=settings), \
+                mock.patch.object(install.config, "inventory", return_value={}), \
+                mock.patch.object(install.config, "bot_machine", return_value=(None, None, False)), \
+                mock.patch.object(install.plugin, "external", side_effect=lambda f, root=None: f.startswith("/r/")), \
+                mock.patch.object(install.plugin, "on_this_machine", return_value=(rows, [])), redirect_stdout(out):
+            found, _ = install.plugins_here(r, [])
+        self.assertEqual([n for n, _ in found], ["usage"])
+        self.assertIn("todo plugin.demo 實例設定裡 plugins.demo 寫錯了：source 要寫 git 網址", out.getvalue())
+        self.assertNotIn("unknown plugin.demo", out.getvalue())
+        self.assertEqual(install.plugins_here.held, ["demo"], "left untouched all the same")
+        self.assertEqual(r.code(), 2)
+        rows[0] = rows[0][:2] + (None, "unknown", "plugin.json 讀不出來")  # (an unreadable one stays unknown)
+        r, out = self.run_()
+        with mock.patch.object(install.config, "settings", return_value=settings), \
+                mock.patch.object(install.config, "inventory", return_value={}), \
+                mock.patch.object(install.config, "bot_machine", return_value=(None, None, False)), \
+                mock.patch.object(install.plugin, "on_this_machine", return_value=(rows, [])), redirect_stdout(out):
+            install.plugins_here(r, [])
+        self.assertIn("unknown plugin.demo", out.getvalue())
+        self.assertEqual(r.code(), 1)
+
     def test_settings_that_cannot_be_read_leave_everything(self):
         r, out = self.run_()
         with mock.patch.object(install.config, "settings", side_effect=install.config.ConfigError("壞了")), \
@@ -1215,6 +1245,7 @@ class FakeDiscord:
         self.redirect = None       # a URL to send every call on to (302)
         self.retry_after = 0.01    # what a 429 asks to wait
         self.guild_codes = []      # statuses to answer the next calls for the servers with, one each
+        self.perms = []            # the bot's "permissions" on its servers, one per call (the last one stays); none: not said
         self.seen = []
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -1240,7 +1271,10 @@ class FakeDiscord:
                         return self.answer(fake.guild_codes.pop(0), {"message": "no"})
                     if fake.later and sum(p.startswith("/api/v10/users/@me/guilds") for p, _ in fake.seen) > 1:
                         fake.servers = fake.later.pop(0) if len(fake.later) > 1 else fake.later[0]
-                    return self.answer(200, [{"id": i, "name": n} for i, n in fake.servers])
+                    more = {}
+                    if fake.perms:
+                        more = {"permissions": str(fake.perms.pop(0) if len(fake.perms) > 1 else fake.perms[0])}
+                    return self.answer(200, [dict({"id": i, "name": n}, **more) for i, n in fake.servers])
                 self.answer(404, {})
 
             def answer(self, code, body):
@@ -1346,6 +1380,45 @@ class AskDiscord(Base):
         self.assertEqual(q["permissions"], ["2252128378809560"], "the 14 permissions of the install guide and Administrator (C-191)")
         self.assertEqual(q["integration_type"], ["0"])
         self.assertEqual(self.slept, [3, 3, 3], "a look every 3 seconds until the bot is in")
+
+    def test_a_server_with_every_permission_or_administrator_goes_on(self):
+        """6f: the server it uses is checked for the 14 (Administrator is all of them); nothing asked."""
+        import discordapp
+        for bits in (discordapp.PERMISSION_BITS, 1 << 3):
+            self.fake.perms = [bits]
+            rc, out = self.ask([])
+            self.assertEqual(rc, 0, out)
+            self.assertIn("權限：機器人要的 14 個都有", out)
+            self.assertEqual(self.asked, [])
+            os.remove(self.path)
+
+    def test_a_server_lacking_permissions_says_which_and_waits_for_them(self):
+        """6f (fresh install 11-03: a server the bot was in already was used without a look): which ones, the link
+        for that server, Enter looks again; once they are there it goes on and writes."""
+        import discordapp
+        lacking = discordapp.PERMISSION_BITS & ~(1 << 51) & ~(1 << 13)
+        self.fake.perms = [lacking, lacking, discordapp.PERMISSION_BITS]
+        rc, out = self.ask([""])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("機器人在「my server」少了 2 個權限：MANAGE_MESSAGES、PIN_MESSAGES。", out)
+        link = [x for x in out.splitlines() if x.startswith("https://discord.com/oauth2/authorize?")]
+        self.assertEqual(len(link), 1, out)
+        self.assertIn("guild_id=" + self.GUILD, link[0])
+        self.assertIn("連結裡也有「管理者」權限，之後的功能（例如社群伺服器設定）會用到。不想給的話，在授權頁只取消勾選「管理者」，其他的保持勾選。", out)
+        self.assertIn("權限：機器人要的 14 個都有", out)
+        self.assertEqual(self.lines()[2], "GUILD_ID=" + self.GUILD)
+
+    def test_lacking_permissions_s_goes_on_and_q_writes_nothing(self):
+        self.fake.perms = [1 << 10]
+        rc, out = self.ask(["s"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("先這樣用：少了 MANAGE_CHANNELS", out)
+        self.assertTrue(os.path.exists(self.path))
+        os.remove(self.path)
+        rc, out = self.ask(["q"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("todo dcbot.token 停了，什麼都沒寫；權限補好後", out)
+        self.assertFalse(os.path.exists(self.path))
 
     def test_the_14_permissions(self):
         import discordapp
@@ -1878,6 +1951,31 @@ class Setup(Base):
                     install.catalog_look(r, True)
             self.assertIn("skip core.catalog 連不上 GitHub", out.getvalue())
             self.assertEqual(r.code(), 0, "never what stops the install")
+
+    def test_install_asks_the_channels_of_a_plugin_put_on_after_setup(self):
+        """v0.7.2 (support-2's trial 11-20): both ways of putting a plugin on after #setup (setup.py plugin-add, and
+        ops/plugins.py add --yes then ./install.sh) end in install.sh: its step core.plugin-channels runs once the
+        plugins are installed, on the bot's machine (setup.py ask_new_channels; tested in test_setup PluginChannel)."""
+        ran = []
+        made = {"core.instance": self.home, "core.plugins": ([], True)}
+
+        def run(st, ident, fn, *args, needs=()):
+            ran.append((ident, fn, args, tuple(needs)))
+            return made.get(ident)
+        with mock.patch("altention.engine_id.refusal", return_value=None), \
+                mock.patch.object(install.config, "instance_dir", return_value=self.home), \
+                mock.patch.object(install.Steps, "run", run), mock.patch.object(install, "done"), \
+                redirect_stdout(io.StringIO()):
+            install.install([])
+        ids = [i for i, _, _, _ in ran]
+        step = ran[ids.index("core.plugin-channels")]
+        self.assertGreater(ids.index("core.plugin-channels"), ids.index("core.install"))
+        self.assertEqual((step[1], step[2][1:], step[3]),
+                         (install.plugin_channels, (True,), ("core.instance", "core.plugins", "core.install")))
+        r, out = self.run_()
+        with mock.patch.object(install, "setup_cmd", side_effect=AssertionError("not asked elsewhere")), redirect_stdout(out):
+            install.plugin_channels(r, False)
+        self.assertIn("skip core.plugin-channels 機器人不在這台", out.getvalue())
 
     def test_setups_folder(self):
         eng = os.path.join(self.home, "引擎")

@@ -298,6 +298,43 @@ class Callers(unittest.TestCase):
         self.assertEqual(self.said(), "")
         self.assertTrue(self.st.get("busy"))
 
+    def test_a_pid_learnt_meanwhile_is_the_same_window(self):
+        """#code-review-2 on cafb7031 (low): compared by value, a record put anew with its pid (remember_pids()) or
+        agent (/where) while the machine was asked read as another window: not watched, never said to be gone."""
+        self.st.update({"busy": True})
+        self.st["pane"] = {k: v for k, v in FAR.items() if k != "pid"}
+        self.bridge.host.get_channel = lambda cid: self.ch
+
+        async def gone_after_a_pid(t):
+            self.st["pane"] = dict(self.st["pane"], pid=4242, agent="claude")  # meanwhile, as remember_pids() puts it
+            tmuxio.asked(t, answered=True)
+            return False
+        with fakepane.use(alive=gone_after_a_pid), mock.patch.object(tmux_bridge.remote, "problem", None):
+            asyncio.run(self.bridge.look_again(str(self.ch.id), self.st))
+        self.assertIn("tmux 對話不見了", self.said())
+        self.assertFalse(self.st.get("busy"))
+
+    def test_a_window_opened_again_meanwhile_in_the_same_place_is_not_acted_on(self):
+        """#code-review-2 on fbe1cfa6 (low): "gone" came back after a message had opened the channel's window again
+        under the same session name (a target alike to the one asked): its new turn was let go of and said gone."""
+        self.st.update({"busy": True})
+        self.bridge.host.get_channel = lambda cid: self.ch
+        rt = self.bridge.rts.setdefault(str(self.ch.id), tmux_bridge.Runtime())
+
+        async def reopened(t):
+            rt.opens += 1  # meanwhile: open() began for a message (same target)
+            tmuxio.asked(t, answered=True)
+            return False
+        with fakepane.use(alive=reopened), mock.patch.object(tmux_bridge.remote, "problem", None):
+            asyncio.run(self.bridge.look_again(str(self.ch.id), self.st))
+        self.assertEqual(self.said(), "")
+        self.assertTrue(self.st.get("busy"), "the new turn kept")
+
+    def test_open_counts_itself_before_it_waits(self):
+        import inspect
+        src = inspect.getsource(tmux_bridge.TmuxBridge.open)
+        self.assertLess(src.index("rt.opens += 1"), src.index("await "), "counted before the first await")
+
     def far_silent(self):
         self.answers = [None]
         return mock.patch.object(tmux_bridge.remote, "unreachable", lambda host: "連不上 %s" % host)

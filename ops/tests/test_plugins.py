@@ -122,6 +122,21 @@ class ListAll(unittest.TestCase):
         self.assertNotIn("問題：", text)
         self.assertNotIn("demo 沒有啟用", text)
 
+    def test_a_miswritten_instance_entry_is_a_problem(self):
+        """#release 11-02: an entry with only "version" (its "source" taken away) was not marked in list."""
+        rows = [("core", "/e/altention", {"title": "核心"}), ("demo", "/r/plugins/demo", {"title": "D"}),
+                ("ok", "/r/plugins/ok", {"title": "O"})]
+        settings = {"plugins": {"demo": {"version": "v0.1.0"}, "ok": {"local": True}}}
+        out = io.StringIO()
+        with mock.patch.object(plugins.plugin, "discover", return_value=(rows, [])), \
+                mock.patch.object(plugins.config, "settings", return_value=settings), \
+                mock.patch.object(plugins.plugin, "on_this_machine", return_value=([], [])), \
+                mock.patch.object(plugins.plugin, "external", side_effect=lambda f, root=None: f.startswith("/r/")), \
+                mock.patch.object(plugins, "catalog_part"):
+            self.assertEqual(plugins.list_all(out), 1)
+        problems = [l for l in out.getvalue().splitlines() if l.startswith("問題：")]
+        self.assertEqual(problems, ["問題：實例設定裡 plugins.demo 寫錯了：source 要寫 git 網址（寫了 version 就要有 source）"])
+
     def test_uses_at_run_time(self):
         """altention plugins uses NAME [--json] (plugin.format 2): exit 0 with each use; 1 for no such plugin."""
         got = ("on", {"plugin.format": {"ok": True, "optional": False},
@@ -419,9 +434,23 @@ class BackupQuestions(unittest.TestCase):
         self.assertIn("進度和秘書的計畫現在都只存在這台電腦", plain[0]["question"])
         with mock.patch.object(remote, "plugin_data", return_value=[("plugin:demo/notes", "/d/demo", True, "demo")]):
             q = plugins.backup_questions()
-        self.assertIn("plugin:demo/notes", q[1]["values"])
-        self.assertIn("插件 demo 的「notes」", [o["label"] for o in q[1]["options"]])
+        self.assertNotIn("plugin:demo/notes", q[1]["values"], "not with the built-ins (11-02 real test item 5)")
+        self.assertEqual((q[2]["key"], q[2]["values"]), ("backup.plugins", ["plugin:demo/notes"]))
+        self.assertIn("插件 demo 的「notes」", [o["label"] for o in q[2]["options"]])
         self.assertIn("秘書的計畫和插件的資料現在都只存在這台電腦", q[0]["question"])
+
+    def test_more_than_four_go_in_questions_of_four(self):
+        """AskUserQuestion takes four choices at most: Claude dropped the plugins' data with the built-ins. Four of
+        them a question, never more, every one offered once."""
+        import remote
+        data = [("plugin:p%d/d" % i, "/d/p%d" % i, True, "p%d" % i) for i in range(6)]
+        with mock.patch.object(remote, "plugin_data", return_value=data):
+            q = plugins.backup_questions()
+        self.assertEqual([x["key"] for x in q], ["backup", "backup.items", "backup.plugins", "backup.plugins.2"])
+        self.assertEqual(sum((x["values"] for x in q[2:]), []), [d[0] for d in data])
+        self.assertTrue(all(len(x["options"]) <= plugins.MOST_OPTIONS for x in q))
+        self.assertIn("（第 2 組，共 2 組）", q[3]["question"])
+        self.assertTrue(plugins.plugin_backup_key("backup.plugins.2") and not plugins.plugin_backup_key("backup.items"))
 
 def repo_url(name):
     """A plugin's address in the official list, put together (this file names no account)."""

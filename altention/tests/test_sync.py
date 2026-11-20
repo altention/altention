@@ -455,6 +455,40 @@ class Run(unittest.TestCase):
         for name in ("knowledge", "memory"):
             self.assertEqual(os.readlink(os.path.join(eng, name)), os.path.join(inst, name))
         self.assertTrue(os.path.exists(os.path.join(home, ".local", "state", "altention", "last_ok-sync")), "a good sync")
+        self.assertIsNone(st["channel_backup"], "no bot's token here: dcctl backup not run")
+        shutil.rmtree(home)
+
+    def test_the_channel_backup_runs_before_the_instance_and_a_failure_stops_nothing(self):
+        """C-28: on the bot's machine, dcctl backup first (its file goes into this round's commit), with a time
+        limit; failing, timing out or raising only goes into the status."""
+        home = tempfile.mkdtemp()
+        inst = os.path.join(home, "instance")
+        os.makedirs(os.path.join(inst, ".git"))
+        for result in (subprocess.CompletedProcess([], 1, "dcctl backup: failed: OSError: x\n"),
+                       subprocess.CompletedProcess([], 124, ""), OSError("no python")):
+            order, ran = [], []
+
+            def fake_run(cmd, order=order, ran=ran, result=result, **k):
+                ran.append(cmd)
+                order.append("backup")
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            with mock.patch.dict(os.environ, {"HOME": home}), mock.patch.object(config, "ENGINE", home), \
+                    mock.patch.object(config, "instance_dir", return_value=inst), \
+                    mock.patch.object(config, "this_machine", return_value="host-a"), \
+                    mock.patch.object(config, "bot_here", return_value=True), \
+                    mock.patch.object(sync, "not_this_engine", return_value=""), \
+                    mock.patch.object(sync, "repair_links", return_value={"twice": []}), \
+                    mock.patch.object(sync.subprocess, "run", fake_run), \
+                    mock.patch.object(sync, "sync_repo", side_effect=lambda path, *a, order=order, **k: order.append(path) or
+                                      {"at": 1, "ok": True, "error": None}):
+                st = sync.run()
+            self.assertEqual(order[:2], ["backup", inst], result)
+            self.assertFalse(st["channel_backup"]["ok"])
+            self.assertIn("dcctl backup", st["channel_backup"]["said"])
+            self.assertEqual(ran[0][-2:], [os.path.join(home, "dcbot", "tools", "dcctl"), "backup"])
+            self.assertIn(str(sync.BACKUP_SECS), ran[0], "under a time limit")
         shutil.rmtree(home)
 
 

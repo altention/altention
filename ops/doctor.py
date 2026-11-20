@@ -390,6 +390,7 @@ try:  # what this machine wrote down to tell (dcnotify may have failed exactly t
 except OSError:
     o["alerts"], o["unchecked"], o["fallbacks"] = [], None, {}
 o["now"] = __import__("time").time()
+o["channel_backup"] = rj(os.path.join(ch, "dcbot", "state", "channel-backup.json"))  # C-28: dcctl backup's last run
 o["sync"] = rj("~/.local/state/altention/sync.json")  # altention.sync: engine and instance sync, links (stage 2.2)
 try:  # /tmp: Claude Code, the bot and the tests all need it; full inodes stop everything (2026-10-06)
     v = os.statvfs("/tmp")
@@ -1026,6 +1027,18 @@ SECRETARY_FIX = ("在機器人那台的引擎跑 bin/altention dc post secretary
                  "python3 dcbot/tools/dcctl channels 查 #secretary 的 ID，寫進實例 plugins.json 的 \"planner\": {\"channel\": \"<ID>\"}")
 
 
+def channel_named(name, plugin_name, key):
+    """The name of the channel plugin `plugin_name` (placed on machine `name`) keeps in setting `key`; None."""
+    try:
+        for n, _f, d, _w, _why in altplugin.on_this_machine(name)[0]:
+            for c in (d or {}).get("channels", []) if n == plugin_name else []:
+                if isinstance(c, dict) and c.get("setting") == key and isinstance(c.get("name"), str):
+                    return c["name"]
+    except Exception:
+        pass
+    return None
+
+
 def unset_channels(name):
     """[(plugin, setting, kind)]: the board channels ("kind": "board") and Claude channels ("kind": "claude", one a
     plugin wakes, e.g. planner's reminders) the plugins placed on machine `name` declare in plugin.json ("channels",
@@ -1142,6 +1155,26 @@ def backup_records(name, o, on):
                       "別的帳號讀得到：%s（應該是 700）" % "、".join(loose) if loose else "",
                       "在 %s 上跑 chmod 700 %s" % (name, " ".join(shlex.quote(f) if f[:1] != "~" else f for f in loose))))
     return out
+
+
+def channel_backup_records(name, o, is_bot):
+    """C-28: on the bot's machine, the last `dcctl backup` (dcbot/state/channel-backup.json): none, over a day old, or
+    fields it left out unclassified: warn."""
+    if not is_bot or "channel_backup" not in o:
+        return []
+    got = o.get("channel_backup") or {}
+    at = _time(got.get("at"))
+    if at is None:
+        return [record("backup.channels", name, "warn", alt_text.t("doctor.channel_backup_none"),
+                       alt_text.t("doctor.channel_backup_none_fix", machine=name))]
+    if (o.get("now") or time.time()) - at > STALE_PUSH:
+        return [record("backup.channels", name, "warn", alt_text.t("doctor.channel_backup_stale", when=stamp(at)),
+                       alt_text.t("doctor.channel_backup_stale_fix", machine=name))]
+    left = [k for k in got.get("unclassified") or [] if isinstance(k, str)]
+    if left:
+        return [record("backup.channels", name, "warn", alt_text.t("doctor.channel_backup_unclassified", keys="、".join(left)),
+                       alt_text.t("doctor.channel_backup_unclassified_fix"))]
+    return [record("backup.channels", name, "ok", alt_text.t("doctor.channel_backup_ok", n=got.get("channels"), when=stamp(at)))]
 
 
 def standby_ready():
@@ -1430,10 +1463,12 @@ def check(name, m, head, instance_repo=None):
         elif plugin_name == "planner":  # the secretary has a channel of its own, working in its folder
             out.append(record("%s.channel" % plugin_name, name, "warn", "對話頻道沒設定：%s（%s 要叫醒的頻道，沒設就不會叫）" % (key, plugin_name),
                               SECRETARY_FIX))
-        else:
-            out.append(record("%s.channel" % plugin_name, name, "warn", "對話頻道沒設定：%s（%s 要叫醒的頻道，沒設就不會叫）" % (key, plugin_name),
-                              "選一個有 Claude 的頻道，在機器人那台用 python3 dcbot/tools/dcctl channels 查它的 ID，"
-                              + where))
+        else:  # (plugin.format 5) #setup opens it: 「開 #x」
+            channel = channel_named(name, plugin_name, key) or key
+            out.append(record("%s.channel" % plugin_name, name, "warn", "插件 %s 的頻道 #%s 還沒開：到 #setup 說「開 #%s」"
+                              % (plugin_name, channel, channel),
+                              "到 #setup 說「開 #%s」（或在機器人那台的引擎跑 python3 ops/setup.py channel %s）；要用已經有的頻道，"
+                              "在機器人那台用 python3 dcbot/tools/dcctl channels 查它的 ID，%s" % (channel, channel, where)))
     for plugin_name, needed, where in unmet_needs(name):  # a choice in the settings, not a fault: shown with how to undo it
         if where == "blocked":  # C-94: not turned off by anyone; this engine cannot run it
             out.append(record("%s.needs" % plugin_name, name, "warn",
@@ -1913,6 +1948,7 @@ def check(name, m, head, instance_repo=None):
         say("dcbot.not-listed", "清單上不負責 dcbot，卻有機器人排程", "%s 會移除；機器人要搬來這台就先改機器清單" % apply_it)
     out.extend(token_records(name, eng, is_bot, o, standby="dcbot-standby" in (m.get("roles") or [])))
     out.extend(lease_records(name, eng, m, o, is_bot))
+    out.extend(channel_backup_records(name, o, is_bot))
     if "progress" in roles and "progress" not in sched_off:
         problem = ""
         if o["cron_progress_paused"] and not o["cron_progress"]:
@@ -2380,6 +2416,8 @@ def would_apply_record(name, rep, now, always_on=True, alone=False):
             ["core 的 %d 項跟要的不一樣（永遠不會自動改，要人處理）：%s" % (len(rep["core"]), names(rep["core"]))] if rep.get("core") else [])
         return record("plugins.would-apply", name, "fail", "套用報告（只報告，沒有動手）：%s" % "；".join(bad + said)[:600], fix, mins)
     if said:
+        if rep.get("add") and not rep.get("remove") and not rep.get("retime"):  # only to add (a plugin's new version: 6b)
+            fix = "%s 要跑一次安裝：python3 ~/altention/engine/ops/apply.py %s" % (name, name)
         return record("plugins.would-apply", name, "warn", "套用報告（只報告，沒有動手）：%s%s" % ("；".join(said)[:600], "；" + off if off else ""),
                       fix, mins)
     return record("plugins.would-apply", name, "ok", "", "", "沒有要改的%s" % ("（%s）" % off if off else ""))

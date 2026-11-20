@@ -1147,6 +1147,31 @@ def not_this_engine():
         return "%s 是 git worktree，不是這台的引擎" % config.ENGINE if os.path.isfile(dotgit) else ""
 
 
+BACKUP_SECS = 30  # C-28: dcctl backup's time limit in a round
+
+
+def channel_backup(say):
+    """C-28: on a machine with the bot's token, `dcctl backup` before the instance is committed (dcctl itself writes
+    nothing unless this machine is the bot now). A failure or the time limit only goes into the status and the log:
+    the round goes on. None on any other machine (nothing run)."""
+    if not config.bot_here():
+        return None
+    try:
+        r = subprocess.run(limited([sys.executable, os.path.join(config.ENGINE, "dcbot", "tools", "dcctl"), "backup"],
+                                   BACKUP_SECS), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=BACKUP_SECS + 15)
+        out = (r.stdout or "").strip()
+        ok = r.returncode == 0
+        said = out.splitlines()[-1] if out else "dcctl backup: exit %d" % r.returncode
+        if r.returncode == 124:
+            said = "dcctl backup: over %d seconds, stopped" % BACKUP_SECS
+    except Exception as e:
+        ok, said = False, "dcctl backup: %s: %s" % (type(e).__name__, e)
+    if not ok:
+        say(said)
+    return {"ok": ok, "said": said[-300:]}
+
+
 def run(say=lambda text: None):
     """The whole job, as altention/cron_sync.py's cron calls it. Never raises; returns and writes the status. From another
     checkout: nothing done, nothing written."""
@@ -1187,6 +1212,10 @@ def run(say=lambda text: None):
             held = SHARED + list(SETTINGS) + [BACKUP] + owns_list(instance)
         except Exception:
             held = list(INSTANCE_SHARED)
+        try:
+            status["channel_backup"] = channel_backup(say)
+        except Exception as e:  # (never stops the round)
+            status["channel_backup"] = {"ok": False, "said": "%s: %s" % (type(e).__name__, e)}
         status["instance"] = sync_repo(instance, INSTANCE_SHARED, "sync: memory/knowledge @ %s" % (status["machine"] or "?"), say,
                                        before=lambda repo: instance_paths(instance), protected=held, instance=True)
     paths = {"states": {}, "twice": []}

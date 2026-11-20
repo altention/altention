@@ -133,6 +133,7 @@ class Bot(unittest.TestCase):
             b.rounds += 1
         b.lease.round = round_
         b.failing_back, b.TELL_SECS, b.DRAIN_SECS = False, main.Bot.TELL_SECS, main.Bot.DRAIN_SECS
+        b.RUNNING_WAIT = main.Bot.RUNNING_WAIT
         b.leader_ok = lambda: True
 
         async def audit(text):
@@ -360,6 +361,105 @@ class Bot(unittest.TestCase):
         moved = [json.loads(c[2]) for c in calls if c[1:2] == ("spool-in",)]
         self.assertEqual([[i["name"] for i in m] for m in moved], [[NAME % 8, NAME % 9]], "both, oldest first")
         self.assertIn("還有 2 則傳話沒送完，搬到 host-a 的佇列", "".join(b.audits))
+
+    def test_a_post_begun_here_is_waited_for_and_not_moved(self):
+        """B10 drill (11-18): at hand-back, posts already begun here were moved too and then ended here: shown twice
+        (6 of 1600). Now the begun one ends here first, those not begun are left in the spool (leader_ok() false)
+        and moved; each shown once. With the real Posts: its chain, safely() and the spool."""
+        from bot import posts as posts_mod
+        from tests.test_posts import Bot as PostsBot
+        names = []
+        for n in (1, 2, 3):
+            path = os.path.join(self.spool, NAME % n)
+            with open(path, "w") as f:
+                json.dump({"channel": "st-0", "text": "p%d" % n, "from_channel": "1"}, f)
+            names.append(NAME % n)
+        b = self.make()
+        pbot = PostsBot()
+        pbot.leader_ok = lambda: not b.failing_back
+        handled, gate = [], {}
+
+        async def handle(post):
+            handled.append(post["text"])
+            if post["text"] == "p1":  # (part shown when the bot goes back)
+                await gate["open"].wait()
+        calls = []
+
+        async def dcremote(host, *args, **kw):
+            calls.append((host,) + args)
+            return 0, json.dumps({"posts": len(json.loads(kw["input"]))})
+
+        async def go():
+            gate["open"] = asyncio.Event()
+            p = b.posts = posts_mod.Posts(pbot)
+            p.handle, p.slow = handle, lambda *a: None
+            for path, post in main.postbox.waiting():
+                p.inflight.add(path)
+                p.chains.setdefault(posts_mod.chain_of(post), []).append((path, post))
+            chain = asyncio.ensure_future(p.chain(posts_mod.chain_of(post)))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(len(p.running), 1, "p1 begun")
+            b.failing_back = True  # (fail_back()'s first step)
+            asyncio.get_running_loop().call_later(0.3, gate["open"].set)
+            with mock.patch.object(main.remote, "dcremote", dcremote), \
+                    mock.patch.object(main.remote, "this_machine", lambda: "host-b"):
+                await b.posts_out("host-a")
+            await chain
+            return p
+        p = asyncio.run(go())
+        self.assertEqual(handled, ["p1"], "p2, p3 never begun here")
+        moved = [c for c in calls if c[1] == "spool-in"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(os.listdir(self.spool), [], "p1 done here, p2 and p3 moved")
+        self.assertEqual((p.running, p.inflight), (set(), set()))
+        self.assertIn("搬到 host-a 的佇列", b.audits[-1])
+        self.assertIn("2 則", b.audits[-1])
+
+    def test_a_post_left_lets_go_of_the_rest_of_its_chain(self):
+        """#code-review on 037f676a (low): the lease not ok for a moment when p1 begins, back when p2 would: p2 must
+        not go before p1. The chain lets go of the rest; the next pump takes them in their order."""
+        from bot import posts as posts_mod
+        from tests.test_posts import Bot as PostsBot
+        for n in (1, 2, 3):
+            with open(os.path.join(self.spool, NAME % n), "w") as f:
+                json.dump({"channel": "st-0", "text": "p%d" % n, "from_channel": "1"}, f)
+        pbot = PostsBot()
+        oks = [False]
+        pbot.leader_ok = lambda: oks.pop(0) if oks else True
+        handled = []
+
+        async def handle(post):
+            handled.append(post["text"])
+
+        async def go():
+            p = posts_mod.Posts(pbot)
+            p.handle, p.slow = handle, lambda *a: None
+            for path, post in main.postbox.waiting():
+                p.inflight.add(path)
+                p.chains.setdefault(posts_mod.chain_of(post), []).append((path, post))
+            await p.chain(posts_mod.chain_of(post))
+            return p
+        p = asyncio.run(go())
+        self.assertEqual(handled, [], "p2, p3 not sent before p1")
+        self.assertEqual(sorted(os.listdir(self.spool)), [NAME % n for n in (1, 2, 3)], "all left in the spool")
+        self.assertEqual((p.inflight, p.running, p.chains), (set(), set(), {}))
+
+    def test_one_still_under_way_is_moved_all_the_same(self):
+        """RUNNING_WAIT over: moved (at least once), as before."""
+        path = os.path.join(self.spool, NAME % 4)
+        with open(path, "w") as f:
+            json.dump({"channel": "st-0", "text": "p4"}, f)
+        b = self.make()
+        b.RUNNING_WAIT = 0.3
+        b.posts = types.SimpleNamespace(inflight={path}, running={path})
+
+        async def dcremote(host, *args, **kw):
+            return 0, json.dumps({"posts": len(json.loads(kw["input"]))})
+        with mock.patch.object(main.remote, "dcremote", dcremote), mock.patch.object(main.remote, "this_machine", lambda: "host-b"):
+            asyncio.run(b.posts_out("host-a"))
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("1 則", b.audits[-1])
 
     def test_draining_called_off(self):
         """The primary gone again, or the push not taken, while posts were waited for: bot-host back here."""

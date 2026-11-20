@@ -148,6 +148,13 @@ def setup(bot):
     async def rename(interaction: discord.Interaction, name: str):
         await builtin(interaction, "!rename " + name, False)
 
+    @tree.command(name="move", description="把這個頻道的 Claude 搬到別的 session、tmux、機器或資料夾", guild=guild)
+    @app_commands.describe(kind="session：同一個 tmux 換 session（不用停）；tmux、machine、folder：先停掉再接回同一個對話",
+                           target="session 名字；tmux：bot 或你的 session；machine：機器名 [資料夾]；folder：路徑")
+    @app_commands.choices(kind=[app_commands.Choice(name=k, value=k) for k in ("session", "tmux", "machine", "folder")])
+    async def move(interaction: discord.Interaction, kind: app_commands.Choice[str], target: str):
+        await builtin(interaction, "!move %s %s" % (kind.value, target), False)
+
     @tree.command(name="run", description="終端機頻道：執行一行指令（可以從跑過的指令裡搜尋）", guild=guild)
     @app_commands.describe(command="要執行的指令；打字會列出這個頻道跑過、符合的指令")
     async def run(interaction: discord.Interaction, command: str):

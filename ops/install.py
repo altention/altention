@@ -26,6 +26,7 @@ ALT_NO_PATH_CHECK=1: core.path does not start the user's shell (ops/apply.py set
 files again).
 """
 import fcntl
+import io
 import json
 import os
 import re
@@ -207,6 +208,21 @@ def setup_folder(r, bot_here):
         r.say("changed", "core.setup-folder", "#setup 的資料夾 %s：%s" % (folder, "、".join(changed)))
     else:
         r.say("ok", "core.setup-folder", "#setup 的資料夾 %s" % folder)
+
+
+def plugin_channels(r, bot_here):
+    """A plugin put on after #setup (setup.py plugin-add, ops/plugins.py add --yes) whose own Claude channel was
+    never asked: asked in #setup now (setup.py ask_new_channels), not after the next engine update."""
+    if not bot_here:
+        r.say("skip", "core.plugin-channels", "機器人不在這台：插件頻道在機器人那台問")
+        return
+    out = io.StringIO()
+    new = setup_cmd().ask_new_channels(out)
+    if new:
+        r.say("changed", "core.plugin-channels", "插件的 Claude 頻道 %s 要不要開，到 #setup 問%s" % (
+            "、".join("#" + k.rsplit(".", 1)[1] for k in new), "（%s）" % out.getvalue().strip() if out.getvalue().strip() else ""))
+    else:
+        r.say("ok", "core.plugin-channels", "沒有新的插件頻道要問")
 
 
 def catalog_look(r, bot_here):
@@ -617,11 +633,16 @@ def plugins_here(r, holds):
     except Exception:
         bot_known = None
     left_out = set()
-    for n, _, d, w, why in rows:
+    for n, f, d, w, why in rows:
         if w != "unknown":
             continue
         entry = plugin.instance_entry(n, settings)
-        if (d is not None and d.get("machines") == "one" and not bot_known
+        bad = plugin.source_of(entry)[1] if d is not None and plugin.external(f) else None
+        if bad:  # the instance entry miswritten by hand (only "version", say): the owner's to fix, not a failure of
+            # the install (11-02 real test item 7, #release): left untouched, the others go on, exit 2
+            r.say("todo", "plugin.%s" % n, "實例設定裡 plugins.%s 寫錯了：%s。%s 先沒動（安裝和排程都照舊），其他插件照做；"
+                  "改好 plugins.json 再跑一次 ./install.sh" % (n, bad, n))
+        elif (d is not None and d.get("machines") == "one" and not bot_known
                 and isinstance(entry, dict) and not entry.get("on")):  # read, and plainly placed nowhere
             r.say("skip", "plugin.%s" % n, "%s 沒有指定在哪台跑（plugins.json 沒寫 plugins.%s.on，也沒有機器人那台）" % (n, n))
         else:  # only this one is left out; the others go on (manager 2026-10-06)
@@ -952,6 +973,9 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
             print("fail dcbot.token Discord 給的伺服器 ID 看不懂；什麼都沒寫，把這段輸出給維護的人看")
             return 1
         print("伺服器：%s" % (guild[1] or guild[0]))
+        if not enough_permissions(tok, app["id"], guild, line, base, sleep):
+            print("todo dcbot.token 停了，什麼都沒寫；權限補好後%s" % again)
+            return 1
     except dapp.BadToken:
         print("\nfail dcbot.token Discord 中途說 token 不對了（又按了 重設權杖（Reset Token）？）；什麼都沒寫，%s" % again)
         return 1
@@ -985,6 +1009,40 @@ def ask_discord(secret=None, line=None, interactive=None, base=None, sleep=time.
         if said:
             print("%s dcbot.move %s" % ("changed" if code == 0 else "todo", said))
     return 0
+
+
+def enough_permissions(tok, app_id, guild, line, base, sleep):
+    """The bot's permissions on the server it is to use, checked (6f: a server it was already in, added earlier with
+    fewer, is used as it is otherwise): the 14 its features use (altention/dc/invite.py), or Administrator. Short:
+    which ones, the link that changes them on that server, and Enter to look again, s to go on without them, q to
+    stop. Not told by Discord: said, and on (doctor and the #update card look again later). False: stopped (q)."""
+    import discordapp as dapp
+    from altention.dc import invite
+    while True:
+        try:
+            bits = dapp.permissions_in(tok, guild[0], base, sleep)
+        except dapp.Unreachable as e:
+            print("查不到機器人在這個伺服器的權限（%s），先往下；裝好後系統檢查會再查" % e)
+            return True
+        if bits is None:
+            print("Discord 沒說機器人在這個伺服器有哪些權限，先往下；裝好後系統檢查會再查")
+            return True
+        lack = invite.missing(bits)
+        if not lack:
+            print("權限：機器人要的 %d 個都有" % len(invite.PERMISSIONS))
+            return True
+        print("機器人在「%s」少了 %d 個權限：%s。" % (guild[1] or guild[0], len(lack), "、".join(lack)))
+        print("用瀏覽器打開下面的連結（已經選好這個伺服器），全部保持勾選，按 授權（Authorize）："
+              "機器人會留在伺服器裡，只是補上權限。連結裡也有「管理者」權限，之後的功能（例如社群伺服器設定）"
+              "會用到。不想給的話，在授權頁只取消勾選「管理者」，其他的保持勾選。")
+        print(invite.url(app_id, guild[0]))
+        pick = line("補好後按 Enter 再查一次；輸入 s 先這樣用（少的權限用到的功能不能用）；輸入 q 結束（什麼都不寫）：")
+        pick = pick.strip().lower()
+        if pick == "q":
+            return False
+        if pick == "s":
+            print("先這樣用：少了 %s，之後補上就好（打開同一個連結）" % "、".join(lack))
+            return True
 
 
 def rewrite_old(path, values):
@@ -1143,6 +1201,7 @@ def install(argv, after_discord=False):
     st.run("dcbot.token", token, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.setup-folder", setup_folder, r, bot_here, needs=["core.instance", "core.plugins"])
     st.run("core.catalog", catalog_look, r, bot_here, needs=["core.instance", "core.plugins"])
+    st.run("core.plugin-channels", plugin_channels, r, bot_here, needs=["core.instance", "core.plugins", "core.install"])
     st.run("core.git-user", git_user, r)
     r.say("ok", "core.log", "詳細輸出：%s" % r.log_path)
     done(r, st, "安裝")

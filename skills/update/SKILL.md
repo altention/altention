@@ -28,7 +28,7 @@ anything of theirs could be lost, and what they can do now.** Then ask, and act 
   - `<ENGINE>/bin/altention update apply <vX.Y.Z>`
   - `<ENGINE>/bin/altention update aside <vX.Y.Z>`
   - `<ENGINE>/bin/altention update undo`
-  - `<ENGINE>/bin/altention update plugin <名稱> <vX.Y.Z>` (with `--anyway` only as step 7 says)
+  - `<ENGINE>/bin/altention update plugin <名稱> <vX.Y.Z>` (with `--anyway` or `--hooks-ok` only as step 7 says)
   `<ENGINE>` is the path in this folder's `.claude/settings.json` allow rules. Never run `git` yourself, never edit
   the engine's files, a settings file or the crontab: a command outside those rules is checked and may be blocked,
   and the engine is theirs. The one place you edit is the merge copy (step 3b), which is in this folder.
@@ -246,6 +246,11 @@ whether anything of theirs could be lost (nothing is, until they say yes), and w
   default is to stay. Ask: 「先不要」 (recommended) or 「知道了，還是要換」; only on the second, with `--anyway`.
 - **`engine`**: the new version needs a newer engine. Say so; it is changed after the engine is: the card's
   「更新」 button, or step 4 with the engine's new version, then come back to this plugin.
+- **`pinned`**: the new version needs a newer engine, and this engine is pinned to a fixed version (it never
+  updates by itself). A new version that names what it needs (its plugin.json `uses`) and finds it here moves
+  without the engine; this one does not say, or wants a newer plugin format. Say so; if they want it, the engine
+  goes back to its branch first (CLAUDE.md: 「引擎停在固定版本了，幫我接回去」, in `#chat`), then come back to this
+  plugin. Otherwise it stays on the version they have.
 - **`interface`**: the new version names an engine interface (its plugin.json `uses`) this engine does not offer,
   so it would not run here. Say so, with the interface its line names; update the engine first as for `engine`,
   and if it still does not fit, stay on the version they have until the plugin has one that fits.
@@ -264,7 +269,13 @@ On yes, one plugin at a time (say first that it takes a minute or two):
 Run it with `run_in_background` as in the rules. What it ends with:
 
 - 「已經換到 <vX.Y.Z>」: done. When it adds 「別台會在下一輪自己跟上」 or 「實例還沒推出去」, say that line too.
-  Going back is step 6 (「引擎回到更新前」 puts the plugins of the last change back too).
+  Going back is step 6 (「引擎回到更新前」 puts the plugins of the last change back too). A version that does more
+  here is followed by an install on this machine: say whether it went through (「這台已經跑完一次安裝」, or
+  「這台的安裝沒跑完」 with its lines, and stop there), and give each 「<機器> 要跑一次安裝」 line as it is: those
+  machines get the new hooks and schedules only once that line is run (by them, or by you if they ask).
+- 「要先問過你才換」: the new version adds a hook or a rewrite of replies and you ran it without `--hooks-ok`.
+  Ask the watcher question of `perms` above (once, in its words); only on 「換到新版」 run it again with
+  `--hooks-ok` at the end. On 「先不要」 it stays on the version they have: say so.
 - 「已經是 <vX.Y.Z> 了，不用換」: nothing to do.
 - 「自己的測試沒過，這次不換」: as `test` above; only on 「知道了，還是要換」 run it again with `--anyway` at the end.
 - 「這次沒換到」, 「沒換到」 or 「放回」: nothing of theirs changed (or the plugin went back to where it was); say

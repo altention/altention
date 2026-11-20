@@ -1152,6 +1152,57 @@ class NewCard(GoRig):
         self.assertEqual([c[0] for c in self.closed], ["update-v0.2.0"], "the older card closed")
         self.assertIn("v0.3.0", self.closed[0][1])
 
+    def new_card(self, tag):
+        git(self.engine, "fetch", "-q", "--tags")  # (as update.py's round has just done)
+        with redirect_stdout(io.StringIO()) as out:
+            code = update_go.new_card(tag, if_new=True)
+        self.out = out.getvalue()
+        return code
+
+    def test_a_press_that_did_not_update_gets_a_new_card_once_the_cause_is_gone(self):
+        """11-02 real test (v0.5.1 low, #release's words): the pressed card keeps only the help buttons, and the same
+        card id was never posted again; its words said 再按一次更新 with no 更新 left."""
+        self.start()
+        self.round()
+        self.write(self.engine, "new.txt", "mine\n")
+        self.write(self.up, "new.txt", "the engine's\n")
+        self.release("0.2.0")
+        self.round()
+        self.assertEqual(self.cards[-1][0], "update-v0.2.0")
+        self.assertEqual(self.go("v0.2.0", "--card", "update-v0.2.0"), 1)
+        card_id, text, ids = self.cards[-1][:3]
+        self.assertEqual((card_id, ids), ("update-v0.2.0", ["ask", "details"]))
+        self.assertIn("把那個檔改名或移走，下一輪檢查沒問題了，會貼一張可以按「更新」的新卡", text)
+        posted = len(self.cards)
+        self.assertEqual(self.new_card("v0.2.0"), 0)
+        self.assertEqual(len(self.cards), posted, "the file still there: not posted")
+        self.assertIn("原因還在（untracked）", self.out)
+        os.remove(os.path.join(self.engine, "new.txt"))
+        self.assertEqual(self.new_card("v0.2.0"), 0)
+        card_id, text, ids = self.cards[-1][:3]
+        self.assertTrue(card_id.startswith("update-v0.2.0-r"), card_id)
+        self.assertEqual(ids, ["go", "later", "details"])
+        self.assertIn("這台沒有改過的東西，可以直接更新。", text)
+        self.assertEqual(self.closed, [("update-v0.2.0", "上次沒更新成的原因已經排除了，請看下面那張新卡。")])
+        self.assertEqual(self.new_card("v0.2.0"), 0)
+        self.assertEqual(len(self.cards), posted + 1, "once: the new card stands for the same one")
+        self.assertEqual(self.go("v0.2.0", "--card", card_id), 0, self.out)
+        self.release("0.3.0")
+        self.round()
+        self.assertEqual(self.cards[-1][0], "update-v0.3.0")
+        self.assertEqual(self.closed[-1][0], card_id, "the posted-again card closed like any other")
+
+    def test_a_press_on_an_older_card_marks_nothing(self):
+        self.start()
+        self.round()
+        self.write(self.engine, "tool.py", "X = 'being edited'\n")
+        self.release("0.2.0")
+        self.round()
+        update_go.mark_stuck("update-v0.1.9")
+        self.assertFalse(update_go.stuck_card(), "not the card posted last")
+        update_go.mark_stuck("update-v0.2.0")
+        self.assertTrue(update_go.stuck_card())
+
     def test_edits_said_plainly_on_the_card(self):
         self.start()
         self.round()
@@ -1343,6 +1394,83 @@ class Plugins(GoRig):
         self.assertIn("插件退回了：demo v0.1.0", self.out)
         self.assertEqual((self.at(), self.version()), ("v0.1.0", "v0.1.0"))
 
+    def test_plugins_alone_not_moved_the_card_comes_again(self):
+        """Only plugins on the card, 更新 pressed, none moved: the card is marked, and posted again (a card of its
+        own) once a plugin can go; not while the cause is there (manager 11-20: else the person is never told)."""
+        self.start()
+        self.plugin_release("v0.2.0", PLUGIN)
+        self.assertEqual(self.card("v0.1.0"), 0, self.out)
+        card_id = self.cards[-1][0]
+        with mock.patch.object(update_go, "plugins_step", lambda v, d: (1, ["❌ 插件 demo：這次拿不到這一版"])):
+            self.assertEqual(self.go("v0.1.0", "--card", card_id), 0, self.out)
+        self.assertTrue(self.cards[-1][1].startswith("📝 插件這次沒有換"), self.cards[-1][1])
+        self.assertTrue(update_go.stuck_card())
+        n = len(self.cards)
+        def unreachable(got, now):
+            for o in got:
+                o["check"] = {"kind": "unreachable", "why": "拿不到"}
+            return got
+        with mock.patch.object(update_go, "checked", unreachable):
+            self.assertEqual(self.card("v0.1.0", if_new=True), 0, self.out)
+        self.assertEqual((len(self.cards), update_go.stuck_card()), (n, True), "the cause still there: not again")
+        self.assertEqual(self.card("v0.1.0", if_new=True), 0, self.out)
+        self.assertEqual(self.cards[n][0][:len(card_id) + 2], card_id + "-r", "posted again, a card of its own")
+        self.assertFalse(update_go.stuck_card())
+
+    def test_plugins_alone_moved_no_mark(self):
+        self.start()
+        self.plugin_release("v0.2.0", PLUGIN)
+        self.assertEqual(self.card("v0.1.0"), 0, self.out)
+        self.assertEqual(self.go("v0.1.0", "--card", self.cards[-1][0]), 0, self.out)
+        self.assertFalse(update_go.stuck_card())
+
+    def test_a_pinned_engine_moves_the_plugins_that_fit_it(self):
+        """E3 (manager 11-02): the engine pinned (detached), a new engine out: the card checks plugins against the
+        engine it stays on; one whose uses fit goes with 更新 (the plugins alone, the engine not moved), one without
+        uses waits, said as the pin with where to ask."""
+        self.start()
+        self.release("0.2.0")
+        git(self.engine, "checkout", "-q", "--detach", "v0.1.0")
+        self.plugin_release("v0.2.0", dict(PLUGIN, engine=">=0.2.0", uses={"dc.post": 1}), "Fits.")
+        self.assertEqual(self.card("v0.2.0"), 0, self.out)
+        card_id, text, ids, _, details = self.cards[-1]
+        self.assertIn("按「更新」只換下面可以換的插件", text)
+        self.assertIn("插件 demo：v0.1.0 → v0.2.0", text)
+        self.assertEqual(ids, ["go", "later", "details"])
+        self.assertEqual(self.go("v0.2.0", "--card", card_id), 0, self.out)
+        self.assertEqual(self.ran, ["reconcile", "doctor"], "no engine step")
+        self.assertTrue(self.cards[-1][1].startswith("✅ 插件更新好了（引擎停在固定的版本 v0.1.0）"), self.cards[-1][1])
+        self.assertEqual((self.at(), self.version()), ("v0.2.0", "v0.2.0"))
+        self.assertEqual(git(self.engine, "describe", "--tags").stdout.strip(), "v0.1.0", "the engine stays")
+
+    def test_a_pinned_engine_posts_a_stuck_card_again_when_a_plugin_can_go(self):
+        """#code-review of ded99f26: a card pressed and not updated, on a pinned engine with a newer engine out, is
+        posted again once a plugin can go (更新 takes the plugins alone): its "detached" is not what stops it."""
+        self.start()
+        self.release("0.2.0")
+        git(self.engine, "checkout", "-q", "--detach", "v0.1.0")
+        self.plugin_release("v0.2.0", dict(PLUGIN, engine=">=0.2.0", uses={"dc.post": 1}), "Fits.")
+        self.assertEqual(self.card("v0.2.0"), 0, self.out)
+        first = self.cards[-1][0]
+        update_go.mark_stuck(first)
+        self.assertEqual(self.card("v0.2.0", if_new=True), 0, self.out)
+        self.assertEqual(len(self.cards), 2, self.out)
+        self.assertTrue(self.cards[-1][0].startswith(first + "-r"), self.cards[-1][0])
+
+    def test_a_pinned_engine_and_a_plugin_without_uses(self):
+        self.start()
+        git(self.engine, "checkout", "-q", "--detach", "v0.1.0")
+        self.plugin_release("v0.2.0", dict(PLUGIN, engine=">=0.2.0"), "No uses.")
+        self.assertEqual(self.card("v0.1.0"), 0, self.out)
+        card_id, text, ids, _, _ = self.cards[-1]
+        self.assertTrue(text.startswith("🆕 有插件的新版本可以更新（引擎停在固定的版本 v0.1.0，不會自己更新）。"), text)
+        self.assertIn("要新版引擎，引擎現在停在固定版本", text)
+        self.assertIn("引擎停在固定版本了，幫我接回去", text)
+        self.assertEqual(ids, ["later", "details", "ask"], "nothing goes: no 更新")
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0"), 1, self.out)
+        self.assertIn("要新版引擎，引擎現在停在固定版本", self.out)
+        self.assertEqual(self.version(), "v0.1.0")
+
     def test_nothing_new_no_card(self):
         self.start()
         self.assertEqual(self.card("v0.1.0"), 0)
@@ -1361,8 +1489,35 @@ class Plugins(GoRig):
         self.assertEqual(self.cli("plugin", "demo", "v0.2.0"), 0, self.out)
         self.assertIn("插件 demo 已經換到 v0.2.0", self.out)
         self.assertEqual((self.at(), self.version(), self.committed()), ("v0.2.0", "v0.2.0", True))
+        self.assertEqual(self.ran, ["install"], "6b: only a schedule more: no second question, install at once")
+        self.assertIn("這台已經跑完一次安裝，新版多的（新的排程 practice：每天 13:00）裝好了。", self.out)
+        self.assertNotIn("要跑一次安裝", self.out, "no other machine on the list")
         self.assertEqual(self.cli("plugin", "demo", "v0.2.0"), 0)
         self.assertIn("已經是 v0.2.0 了", self.out)
+
+    def test_a_new_hook_asked_then_install_here_and_the_others_named(self):
+        """6b (manager 11-02): a release that adds a hook moves only with --hooks-ok; then install here, said as it
+        went, and each other machine it runs on named with its apply line (core.auto_apply never writes)."""
+        with open(os.path.join(self.inst, "machines.json"), "w") as f:
+            json.dump({"format": 1, "machines": {"lap": {"ssh": ["local"], "roles": ["dcbot"]},
+                                                 "far": {"ssh": ["far"], "roles": []}}}, f)
+        self.start()
+        self.plugin_release("v0.2.0", dict(PLUGIN, hooks=[{"event": "Stop", "command": "{python} {plugin}/h.py"}]))
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0", "--anyway"), 1, self.out)
+        self.assertIn("多了會看到你對話內容的東西（hook Stop）", self.out, "--anyway is not a yes to a hook")
+        self.assertEqual(self.at(), "v0.1.0")
+        self.codes["install"] = (1, "ok core.a\nfail core.cron 寫不了排程\n")
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0", "--hooks-ok"), 1, self.out)
+        self.assertEqual((self.at(), self.version()), ("v0.2.0", "v0.2.0"), "moved; the install is what failed")
+        self.assertIn("這台的安裝沒跑完（結束碼 1），新版多的可能還沒裝上：\nok core.a\nfail core.cron 寫不了排程", self.out)
+        self.assertIn("- far 要跑一次安裝：python3 ~/altention/engine/ops/apply.py far", self.out)
+        self.assertNotIn("- lap 要跑", self.out)
+        self.declare("v0.1.0")
+        self.plugin_release("v0.3.0", dict(PLUGIN, hooks=[{"event": "Stop", "command": "{python} {plugin}/h.py"}]), "Three.")
+        self.codes["install"] = (2, "ok core.a\ntodo core.git-user 設定 git 使用者\n")
+        self.assertEqual(self.cli("plugin", "demo", "v0.3.0", "--hooks-ok"), 0, self.out)  # 2: done, a person's to-do
+        self.assertIn("裝好了；另外有要你處理的事：\nok core.a\ntodo core.git-user 設定 git 使用者", self.out)
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0", "--hooks-ok", "--hooks-ok"), 2, "a flag twice: usage")
 
     def test_a_new_rewrite_or_skill_waits_and_the_rewrite_is_asked_on_its_own(self):
         """manager 2026-10-21: a release that adds a rewrite of replies or a skill is not taken by the card's 更新;
@@ -1379,7 +1534,12 @@ class Plugins(GoRig):
         self.assertIn("多了：新的改寫回覆：{python} {plugin}/rw.py", ask)
         self.assertIn("多了：所有 Claude 都會讀到它的 skill：rigskill", ask)
         self.assertIn("有 hook 或改寫回覆的要另外再問一次", ask)
-        self.assertEqual(self.cli("plugin", "demo", "v0.2.0"), 0, self.out)
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0"), 1, self.out)  # 6b: asked on its own first
+        self.assertIn("多了會看到你對話內容的東西（改寫回覆），要先問過你才換；這次沒換，留在 v0.1.0", self.out)
+        self.assertIn("altention update plugin demo v0.2.0 --hooks-ok", self.out)
+        self.assertEqual((self.at(), self.version(), self.ran), ("v0.1.0", "v0.1.0", []))
+        self.assertEqual(self.cli("plugin", "demo", "v0.2.0", "--hooks-ok"), 0, self.out)
+        self.assertEqual(self.ran, ["install"], "it does more here: install at once")
         self.plugin_release("v0.3.0", more, "Same again.")
         self.assertEqual(self.card("v0.2.0"), 0, self.out)
         self.assertIn("go", self.cards[-1][2], "keeping them: nothing more, the card takes it")
@@ -1445,6 +1605,18 @@ class Plugins(GoRig):
         self.assertEqual(len(self.cards), 1, "posted once")
         self.assertIn("插件 demo：v0.2.0 → v0.3.0", self.cards[0][1])
         self.assertEqual(self.at(), "v0.2.0", "notify: waits for 更新")
+
+    def test_the_round_looks_again_at_a_stuck_card_with_nothing_else_new(self):
+        """No new release to tell and no plugin news: a card pressed without an update still gets new_card()."""
+        self.start()
+        asked = []
+        with mock.patch.object(update_go, "new_card", lambda tag, if_new=False: asked.append((tag, if_new)) or 0), \
+                redirect_stdout(io.StringIO()):
+            update_go.plugins_round(time.time() + 300)
+            self.assertEqual(asked, [])
+            update_go.write_card_state({"id": "update-v0.1.0", "stuck": 1})
+            update_go.plugins_round(time.time() + 300)
+        self.assertEqual(asked, [("v0.1.0", True)])
 
     def test_follow_takes_this_machine_to_the_instance(self):
         self.plugin_release("v0.2.0", PLUGIN)

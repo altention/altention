@@ -382,6 +382,8 @@ class ClosedByTheBot(unittest.TestCase):
         self.assertEqual(self.play("close", self.end(**self.SAYS)), [], "!reset, !cwd, !mode, an idle window put down: close() and nothing else")
         self.assertEqual(self.killed, ["%5"])
         self.assertEqual(self.st["session_id"], A, "and nothing of the channel is touched by it")
+        self.assertEqual([a for a in self.bridge.host.audits if "別的視窗" in a], [],
+                         "nor in #audit as another window that runs on (2c1 drill 11-20: said after every /move)")
 
     def test_nor_after_resume_gave_the_channel_another_conversation(self):
         self.play("close")
@@ -483,7 +485,7 @@ class ClosedByTheBot(unittest.TestCase):
             self.assertFalse(tmux_bridge.from_elsewhere(dict(self.st, pane=None), True, dict(ev, host="lap"), closed), name)
         closed = [dict(self.PANE, at=__import__("time").time(), session=A)]
         end = dict({"hook_event_name": "SessionEnd", "session_id": A, "host": "lap"}, **self.SAYS)
-        self.assertTrue(tmux_bridge.from_elsewhere(dict(self.st, pane=None), True, end, closed))
+        self.assertEqual(tmux_bridge.from_elsewhere(dict(self.st, pane=None), True, end, closed), tmux_bridge.CLOSED_END)
         self.assertFalse(tmux_bridge.from_elsewhere(dict(self.st, pane=None), True, dict(end, session_id=B), closed), "another conversation's end")
 
     def test_open_forgets_it_only_for_the_same_pane_and_conversation(self):

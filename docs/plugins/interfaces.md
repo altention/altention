@@ -30,7 +30,7 @@ plugin.json 寫上插件用到的介面和版本：
 - `dc.post`、`dc.read`、`dc.notify`：`altention dc post`、`read`、`notify`（`--file`、`--wait`、`--board`、`--activity`、`--create`，保留目標 `@audit`、`@notify`）。怎麼用見 `docs/plugins/discord.md`。用 `--file x.png` 貼圖時，旁邊的 `x.png.source.json`（圖是從什麼畫的）也是 `dc.post` 的一部分，這個檔的格式改了也會升版。
 - `rewrite`：plugin.json 的 `rewrite`，機器人把回覆交給插件改寫，輸入輸出見 `docs/plugins/discord.md`。
 - `activity.pages`：plugin.json 的 `activity.pages`，和打開頁面時機器人寫給插件的東西。現在是 v2（也接受 v1）：v2 加了頁面的 `opens_files`、`file_button`（貼檔案時附的按鈕，見 `docs/plugins/plugin-json.md`）；寫 1 的插件照常能用，只是不出這些按鈕。
-- `plugin.format`：plugin.json 本身的格式。現在是 v4（也接受 v1 到 v3），v2 到 v4 都是 v0.6.0 加的：v2：`uses` 的一項可以寫成選用的 `{"v": 1, "optional": true}`，插件執行時用 `altention plugins uses <插件> --json` 查哪些能用；v3：步驟的 `on` 可以寫 `standby`；v4：`"machines": "one"` 的插件可以寫 `"standby": true`（見 `docs/plugins/plugin-json.md`）。用到哪一版的寫法，`uses` 就寫那一版，例如 `"plugin.format": 4`；舊引擎沒有那一版時，整個插件會停住並說明要更新引擎。
+- `plugin.format`：plugin.json 本身的格式。現在是 v5（也接受 v1 到 v4），v2 到 v4 是 v0.6.0 加的、v5 是 v0.7.2 加的：v2：`uses` 的一項可以寫成選用的 `{"v": 1, "optional": true}`，插件執行時用 `altention plugins uses <插件> --json` 查哪些能用；v3：步驟的 `on` 可以寫 `standby`；v4：`"machines": "one"` 的插件可以寫 `"standby": true`；v5：`channels[]` 裡 `kind: "claude"` 的頻道可以寫 `folder`、`folder_setting`（見 `docs/plugins/plugin-json.md`）。用到哪一版的寫法，`uses` 就寫那一版，例如 `"plugin.format": 4`；舊引擎沒有那一版時，整個插件會停住並說明要更新引擎。
 - `tokens`：plugin.json 裡的代換符號 `{engine}` `{plugin}` `{python}` `{claude}` `{instance}` `{data}` `{root}` `{setting:…}`，以及機器人起的 Claude 拿到的 `$DCBOT_CHANNEL`。v2 起 `needs[].install` 也會展開。
 
 引擎裡的檔，只有這幾個可以用路徑叫：

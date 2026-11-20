@@ -44,6 +44,8 @@ class Bot(test_reconcile.Bot):
         class Tmux(object):
             async def submit(self, origin, text, out=None):
                 bot.submitted.append((origin.channel.id, text))
+                if isinstance(bot.submit_gives, Exception):  # (NotOpened: ensure() refused, as the real one raises)
+                    raise bot.submit_gives
                 return bot.submit_gives  # (None: typed in, as the real one; a Typing refused or False: not)
         self.tmux = Tmux()
 
@@ -93,13 +95,24 @@ class NotTypedIn(Base):
         ok, card = self.rename(self.a, "實驗 B")
         row = [l for l in card.splitlines() if "Claude 對話名" in l]
         self.assertEqual(len(row), 1, card)
-        self.assertTrue(row[0].startswith("- ❌ Claude 對話名：沒送進去（"), row)
+        self.assertTrue(row[0].startswith("- ❌ Claude 對話名：沒送進去："), row)
         self.assertNotIn("**", row[0])
         self.assertTrue(card.startswith("⚠️ #a 改名，有一項沒改成"), card)
         self.assertIn("沒改成：Claude 對話名", self.bot.audits[-1])
         self.bot.submit_gives = False  # (told() after typing: the box was not what was typed)
         ok, card = self.rename(self.a, "實驗 C")
-        self.assertIn("- ❌ Claude 對話名：沒送進去（沒有打進對話框）", card)
+        self.assertIn("- ❌ Claude 對話名：沒送進去：沒有打進對話框", card)
+
+    def test_a_pane_just_restarted_is_said_once_without_its_consequence(self):
+        """Manager 11-20 (v0.7.x): the row said 沒送進去（…，訊息沒有送出，等一下再試）: the same thing twice, in
+        brackets in brackets."""
+        from bot.tmux_bridge import NotOpened
+        e = NotOpened(NotOpened.PANE_GONE, "這個頻道的窗格剛重開（lap:dc-a），還在確認是不是同一個對話，訊息沒有送出，"
+                                         "等一下再試。", where="lap:dc-a")
+        self.bot.submit_gives = e
+        ok, card = self.rename(self.a, "實驗 D")
+        row, = [l for l in card.splitlines() if "Claude 對話名" in l]
+        self.assertEqual(row, "- ❌ Claude 對話名：沒送進去：這個頻道的窗格剛重開（lap:dc-a），還在確認是不是同一個對話")
 
 
 class Slug(unittest.TestCase):
@@ -517,6 +530,8 @@ class Wired(unittest.TestCase):
         from tests.test_setup_channel import Ch, bot, run
         _, b = bot({"7": {"tmux": "dc-a-7", "session_id": "s1", "cwd": "/w", "where": {"place": {}}}})
         b.renamer = rename.Renamer(b)
+        from bot import moving
+        b.mover = moving.Mover(b)  # (C-201 2c1: 〔搬到…〕 next to it)
         ch = Ch(b.guild, "a", 7)
         sent = []
 
@@ -530,7 +545,7 @@ class Wired(unittest.TestCase):
         run(b.command(ch, "!where", send))
         (text, view), = sent
         self.assertEqual(text, "📍 card")
-        self.assertEqual([(i.label, i.custom_id) for i in view.children], [("改名…", "c201rn:7")])
+        self.assertEqual([(i.label, i.custom_id) for i in view.children], [("改名…", "c201rn:7"), ("搬到…", "c201mv:7")])
 
 
 class Button(unittest.TestCase):

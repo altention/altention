@@ -30,7 +30,7 @@ from . import activity, archive, attachments, awaiting, calls, catalog, catchup,
 from .claude_bridge import run_text, run_turn
 from .tmux_bridge import NotOpened, TmuxBridge, fence
 from . import resets
-from . import agentanswer, ask as ask_mod, envfile, frames, ledger, masking, msgtext, perms, postbox, statewrite, update_cards, util, where as where_mod, reconcile, rename as rename_mod
+from . import agentanswer, ask as ask_mod, envfile, frames, ledger, masking, msgtext, perms, postbox, statewrite, update_cards, util, where as where_mod, reconcile, rename as rename_mod, moving
 from .util import split_message
 from .pauses import clock as clock_shown  # (a time as the owner reads it: the instance's zone)
 from . import deliver as outgoing  # (C-172a P1b; the Bot has a deliver() of its own)
@@ -54,7 +54,7 @@ RESTART_WAIT = 60  # seconds a restart waits for half-done work (posts, events) 
 WINDOW_LOCK_SECS = 60  # C-162: how long the first held turn waits for the window's queue (then it goes on in print)
 WINDOW_SAY_SECS = 5  # C-162: a held channel waiting for its window's turn says so after this long
 SELFTEST = "selftest"  # the channel of the made-up event Bot.self_test() sends through the hook
-BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!where", "!commands", "!attach", "!detach", "!archive", "!stop",
+BUILTINS = ("!help", "!status", "!setup", "!talklimit", "!reset", "!resume", "!recap", "!rename", "!where", "!move", "!commands", "!attach", "!detach", "!archive", "!stop",
             "!cwd", "!mode", "!screen", "!key", "!files", "!restart", "!rollback", "!cctest",
             "!agentanswers")
 
@@ -65,7 +65,7 @@ AGENT_ANSWERS_USAGE = "用法：`!agentanswers on`、`!agentanswers off`，不�
 HELP = """**內建指令**（不經過 Claude，Claude 壞掉時也能用）
 `!status` 機器人狀態　`!reset` 這個頻道開新對話　`!stop` 中止這個頻道正在跑的工作
 `!resume` 列出最近的對話　`!resume <編號或 id 開頭>` 接回那個對話（`!reset` 之後想回去時用）
-`!rename <名字>` 頻道和 Claude Code 對話一起改名　`!where` 這個頻道的 Claude 現在在哪裡（機器、tmux、對話、資料夾）　`!recap [幾輪]` 顯示這個頻道的對話最近幾輪（預設 3）　`!commands [refresh]` Claude Code 的指令和 skill 清單
+`!rename <名字>` 頻道和 Claude Code 對話一起改名　`!where` 這個頻道的 Claude 現在在哪裡（機器、tmux、對話、資料夾）　`!move session <名字>`／`!move tmux bot`／`!move tmux user <session>` 把這個頻道的 Claude 搬到別的 session 或 tmux　`!recap [幾輪]` 顯示這個頻道的對話最近幾輪（預設 3）　`!commands [refresh]` Claude Code 的指令和 skill 清單
 `!attach` 列出這台機器 tmux 裡的 Claude Code　`!attach <編號> [專案名]` 幫它開一個頻道接上　`!attach project:<專案名>` 或 `!attach all` 一次接上多個　`!detach` 卸下這個頻道　`!archive` 封存這個頻道（任何種類；打字可以接回或恢復）
 `!cwd <路徑>` 設定這個頻道的工作目錄　`!restart` 重啟機器人　`!rollback` 退回上一個正常版本
 `!mode tmux|print` 切換這個頻道的模式（tmux：常駐對話，可中途補充、背景工作會回報；print：每則訊息跑一次，備用）　`!mode retry` 再試一次一般模式
@@ -332,6 +332,7 @@ class Bot(discord.Client):
         self.cards = update_cards.Cards(self)
         self.perms = perms.Perms(self)  # its own permissions: #audit, the #update card once, doctor (C-191)
         self.renamer = rename_mod.Renamer(self)  # C-201 2b: a rename taken along by all the channel's names
+        self.mover = moving.Mover(self)  # C-201 2c1: /move session, /move tmux
         self.looks = reconcile.Looks(self)  # C-201: whether each channel's pane is where its record says
         self.launcher = activity.Activity(self)  # the 打開 buttons of plugins' Activity pages (C-54a; discord.Client has an `activity`)
         self.secrets = secretbox.Secrets(self)  # the 填入 buttons for plugins' secrets (C-77 G3b)
@@ -874,6 +875,7 @@ class Bot(discord.Client):
                                               time.time() - t < 86400]) >= lease_mod.DAY_MOST
 
     DRAIN_SECS = 300  # C-188: posts on their way at failback, waited for at most this long
+    RUNNING_WAIT = 30  # posts begun here when the bot goes back: waited for at most this long before the rest move
 
     async def stop_draining(self):
         """A failback that waited for posts on their way (C-188) called off: every machine's bot-host back here, so
@@ -915,7 +917,15 @@ class Bot(discord.Client):
         next), their names kept, then taken away here; not taken there, they stay here and #audit says which. Called
         once the state is pushed and every machine told, before this bot steps down (fail_back's on_done). What is
         moved is looked up then (C-193, reviews on c1d83b77): the spool as it is now and what is on its way, so that
-        posts come meanwhile (the push takes seconds) go too, with a wait before it or not (`late`: its posts)."""
+        posts come meanwhile (the push takes seconds) go too, with a wait before it or not (`late`: its posts).
+        Those begun here (posts.running: shown in part, maybe) are waited for first, RUNNING_WAIT at most: moved,
+        they would be shown twice, here as they end and there from the start (B10 drill: 6 of 1600). No new one
+        begins meanwhile (leader_ok() is false: Posts.safely leaves them in the spool); one still under way then is
+        moved all the same (at least once)."""
+        running = getattr(getattr(self, "posts", None), "running", None)
+        until = time.monotonic() + self.RUNNING_WAIT
+        while isinstance(running, set) and running and time.monotonic() < until:
+            await asyncio.sleep(0.2)
         inflight = getattr(getattr(self, "posts", None), "inflight", None)
         paths = sorted(set(late or ()) | {p for p, _ in postbox.waiting()} | (set(inflight) if isinstance(inflight, set) else set()))
         items = []
@@ -1599,7 +1609,7 @@ class Bot(discord.Client):
                     or await self.files.on_interaction(interaction) or await self.cards.on_interaction(interaction) \
                     or await self.launcher.on_interaction(interaction) or await self.secrets.on_interaction(interaction) \
                     or await self.tmux.on_interaction(interaction) or await self.tmux.cc.on_interaction(interaction) \
-                    or await self.renamer.on_interaction(interaction):
+                    or await self.renamer.on_interaction(interaction) or await self.mover.on_interaction(interaction):
                 return
             ref = routes.button_ref((interaction.data or {}).get("custom_id"))
             if interaction.type == discord.InteractionType.component and ref is not None:
@@ -2767,6 +2777,8 @@ class Bot(discord.Client):
             await send(AGENT_ANSWERS_ON if agentanswer.allowed(st) else AGENT_ANSWERS_OFF)
         elif cmd == "!rename":
             await send(await self.rename(ch, st, arg))
+        elif cmd == "!move":  # C-201 2c1 (bot/moving.py)
+            await self.mover.command(ch, st, arg, send)
         elif cmd == "!commands":
             cat = await self.refresh_catalog() if arg.strip() == "refresh" else catalog.load()
             if cat is None:
@@ -2786,6 +2798,7 @@ class Bot(discord.Client):
             text = await self.where_card(ch, st)
             if st.get("where") and posts.listens(st):
                 view = self.renamer.view(ch)
+                view.add_item(self.mover.view(ch))  # (2c1: 〔搬到…〕)
                 await send(text, view=view)
                 view.stop()  # clicks arrive in on_interaction by custom_id
             else:

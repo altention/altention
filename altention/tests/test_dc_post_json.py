@@ -104,6 +104,26 @@ class Build(unittest.TestCase):
                             (("lab", "--json", "p.json", "--delete", "900"), "不能再帶")):
             self.assertIn(words, self.refused(*argv), argv)
 
+    def test_move_its_kinds_and_why(self):
+        """C-201 2c1: --move session <name> | tmux bot | tmux user <session>, with --why, alone."""
+        got, _ = self.build("lab", "--move", "session", "work", "--why", "整理")
+        self.assertEqual((got["move_place"], got["move_target"], got["why"]), ("session", "work", "整理"))
+        self.assertNotIn("move_session", got)
+        self.assertNotIn("move_to", got, "not the category move (--move-to)")
+        got, _ = self.build("lab", "--move", "tmux", "user", "main", "--why", "w")
+        self.assertEqual((got["move_place"], got["move_target"], got["move_session"]), ("tmux", "user", "main"))
+        got, _ = self.build("lab", "--move", "tmux", "bot", "--why", "w")
+        self.assertEqual((got["move_place"], got["move_target"]), ("tmux", "bot"))
+        for argv, words in ((("lab", "--move", "session", "work"), "要帶 --why"),
+                            (("lab", "--move", "jump", "x", "--why", "w"), "--move 的寫法"),
+                            (("lab", "--move", "tmux", "there", "--why", "w"), "--move 的寫法"),
+                            (("lab", "--move", "tmux", "user", "--why", "w"), "--move 的寫法"),
+                            (("lab", "--move", "session", "--why", "w"), "--move 的寫法"),
+                            (("lab", "--move", "session", "x", "--why", "w", "還有字"), "單獨用"),
+                            (("lab", "--move", "session", "x", "--rename", "y", "--why", "w"), "單獨用"),
+                            (("lab", "--json", "p.json", "--move", "session", "x"), "不能再帶")):
+            self.assertIn(words, self.refused(*argv), argv)
+
     def test_a_plain_post_may_answer_a_message_and_go_silently(self):
         got, _ = self.build("lab", "--reply-to", "555", "--silent", "報告")
         self.assertEqual((got["text"], got["reply_to"], got["silent"]), ("報告", "555", True))

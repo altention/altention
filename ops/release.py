@@ -675,6 +675,13 @@ def engine_use(rev, d, said, notes):
         got = alt_plugin.want_of(uses.get("plugin.format"))[0]
         if not (isinstance(got, int) and got >= 4):
             said.append(alt_text.t("release.standby_key_format"))
+    if any(isinstance(c, dict) and (c.get("folder") is not None or c.get("folder_setting") is not None)
+           for c in d.get("channels") or []):  # plugin.format 5: an older engine opens no such channel
+        format_need = 5
+        used.setdefault("plugin.format", "plugin.json")
+        got = alt_plugin.want_of(uses.get("plugin.format"))[0]
+        if not (isinstance(got, int) and got >= 5):
+            said.append(alt_text.t("release.folder_format"))
     if optional:
         used.setdefault("plugin.format", "plugin.json")
         got = alt_plugin.want_of(uses.get("plugin.format"))[0]

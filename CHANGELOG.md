@@ -14,6 +14,114 @@ Each version has these sections:
   move, a step to run, something to check afterwards), or `None`. A planned `/update` command (not in this version
   yet) will read it, tell you what it says before doing anything, and never carry it out on its own.
 
+## v0.7.2 — 2026-11-20
+
+### For people
+
+- **/move moves a channel's Claude to another place on the same machine.** `/move session <name>` moves it to
+  another tmux session without stopping it. `/move tmux bot` and `/move tmux user <session>` move it between the
+  bot's tmux and yours. A card asks first. The old Claude is stopped when its turn is done, and the same
+  conversation is taken up in the new place. If the new one does not come up with that conversation, it is closed
+  and the old place takes the conversation up again: never two Claudes on one conversation. /where has a button for
+  it. In your tmux it is started the way you start Claude: your options when it came from your pane, else the
+  default permission mode; never the bot's settings, never a mode that skips permission questions.
+- **/move machine and /move folder move a channel's Claude to another machine or folder.** `/move machine <machine>
+  [folder]` takes the conversation up on another machine (in the bot's tmux on the bot's machine, in a new window of
+  your tmux elsewhere); without a folder it looks for the same path, then the same path under that machine's home.
+  `/move folder <path>` takes it up in another folder on the same machine. The conversation's record is copied
+  there and the old copy is kept; a different record with the same id already there is kept under a new name.
+  If the new place does not take it up, the old place does, in its old folder. A move is refused only when that
+  machine does not answer, has no `claude`, or has no such folder; no login file seen there is only said on the card.
+- **The bot's channel settings are backed up in the instance.** Which folder, conversation and mode each channel
+  has, and its boards, are saved at every sync (only when something changed; no tokens, screens or conversations,
+  and anything that looks like a secret is masked). If that file on the bot's machine is lost, Claude can put the
+  channels back with `dcctl restore-state` while the bot is stopped: only the channels missing are filled in, and
+  the old file is kept as `.bak`. The system check warns when there is no backup or it is more than a day old.
+- **When a plugin comes with its own Claude channel, #setup asks whether to open it.** Say 開 and the channel is
+  opened, its Claude working in the plugin's folder (or where the plugin's setting says). Say 先不要 and it is not
+  asked again; say 「開 #<channel>」 in #setup whenever you want it. Channels already opened are left as they are.
+- **A standby can be taken away with one command.** Say 「拿掉備援」 in #setup, or run
+  `altention standby remove <machine>` on the bot's machine. It takes the standby role from that machine, sets that
+  machine up again without it, clears what the two machines kept while it was a standby, and restarts the bot. If
+  that machine cannot be reached, it stops there and the bot goes on as before: run it again once the connection is
+  fixed. A token or webhook stored on that machine stays until you ask for it to be deleted.
+- **When the standby hands the bot back, no message is sent twice.** Before, a few messages could show up twice at
+  that moment.
+- **A plugin updated to a version that does more is set up at once.** Before, its new hooks and schedules waited
+  until someone ran install.sh. Now they are installed on this machine right after the update, and the card says
+  whether that worked; machines the plugin also runs on are listed with the line to run there. A version that adds
+  a hook or a rewrite of replies (it would see your conversations) is not taken until you agree.
+- **An update card that did not update is posted again once the cause is gone.** Before, a card stopped by files in
+  the way, uncommitted changes, a busy engine or a failed plugin move kept only its help button. Now the next check
+  after the cause is gone posts a new card and the old one points to it. This also holds for a card that updates
+  only plugins and for an engine pinned to a version. A failed clone now says why (no permission, host not found)
+  instead of git's last line.
+- **An engine pinned to a version still takes the plugin versions that fit it.** Before, it waited whenever a
+  plugin's new version asked for a newer engine. Now a plugin whose `uses` this engine provides is updated; one
+  without `uses` waits, and its card says the engine is pinned and to ask in #chat to put it back on its branch.
+- **#setup asks about backing up each plugin's data.** Before, the built-in items and the plugins' data shared one
+  question with at most four choices, so some plugins were never asked about, and choosing no built-in item put the
+  whole backup off. Now the plugins' data has questions of its own, four choices each, and can be backed up alone.
+- **One miswritten plugin entry no longer stops the rest.** A plugin in plugins.json with a version but no source
+  made install fail and the update card show ❌ for everything. Now only that plugin waits, as a to-do, and
+  `plugins.py list` says what is wrong with the entry.
+- **Install asks for git's user first and checks the bot's permissions on your server.** Before, a missing
+  user.name or email stopped it at the last step, and a bot already in a server was used without checking it could
+  do its work there. Now install asks for them first; after you pick the server it checks the 14 permissions the bot
+  needs (or Administrator) and, if some are missing, lists them with an invite link for that server. Enter checks
+  again, s goes on anyway, q stops without writing anything.
+- **/rename's card says why a name was not typed in once.** It used to say the reason twice, in brackets inside
+  brackets. Two rare timing cases where the bot lost sight of a busy channel's pane, or let a new turn go after a
+  pane was restarted, are fixed too.
+
+### For people (zh-TW)
+
+- **/move 把頻道的 Claude 搬到別的地方，連別台機器、別的資料夾都行。**`/move session`、`/move tmux` 在同一台換位置；`/move machine <機器> [資料夾]` 搬到別台，`/move folder <路徑>` 換資料夾，對話紀錄會一起複製過去。會先問，等這一輪做完再停掉舊的，在新位置接同一個對話；新的沒接上就回原位置接回，不會有兩個 Claude 接同一個對話。/where 也有按鈕。
+- **機器人的頻道設定會備份進實例。**每個頻道接哪個資料夾、哪個對話、什麼模式和看板，每次同步都會存起來（不存 token 和對話內容，像秘密的字會遮掉）；機器人那台的檔案壞了，請 Claude 在機器人停著時用 `dcctl restore-state` 補回來，只補缺的頻道。沒有備份或超過一天沒更新時，系統檢查會說。
+- **插件有自己的 Claude 頻道時，#setup 會問要不要開。**選「開」就開好，頻道裡的 Claude 在插件的資料夾工作；選「先不要」就不再問，之後想開在 #setup 說「開 #<頻道名>」。已經開好的頻道不動。
+- **拿掉備援只要一句話，交還時也不再重複送訊息。**在 #setup 說「拿掉備援」：拿掉那台的備援角色、清掉兩台留下的紀錄，再重啟機器人；那台連不上時會停下來，機器人照舊運作。備援把機器人交還時，之前偶爾會有幾則送兩次，現在不會了。
+- **更新插件更順。**新版多了 hook 或排程，換完當場裝好（會看到對話的要先問你）；按了「更新」沒換成的，原因排除後會重貼一張卡；引擎停在固定版本時，插件寫了需要什麼、這版引擎有的，照樣換。
+- **安裝和 #setup 更不容易卡住。**安裝一開始就問 git 的使用者，選好伺服器後檢查機器人的權限，缺的會列出來並給授權連結；備份的題目把插件的資料分開問，不再漏掉；插件設定寫錯一項，只有那一項先不動，其他照常裝。
+
+### For agents
+
+1. `altention dc post <channel> --move session <name> --why "…"`, `--move tmux bot`, `--move tmux user <session>`
+   move another channel's Claude (no card to press; the card and #audit name you). A move between tmux servers is
+   refused while background tasks, subagents or workflows run there, and while a `claude daemon` runs on that
+   machine (`/exit` would only send the conversation to the background; that case is covered by unit tests only, a
+   test machine without a login cannot produce it). A refused move is in #audit too, saying nothing was touched.
+2. `altention standby remove <machine>` runs only on the machine that is the bot now; while a standby has taken over
+   it refuses. Each step prints ✓ or ✗ with what to do: pass it on as it is. Exit 0: all done; 1: a step not done
+   (running it again is safe).
+3. When the bot is handed back, messages the standby has begun are finished there (up to 30 seconds) and the rest go
+   to the machine taking over. One still under way after that is handed over all the same, so a message is still
+   sent at least once.
+4. In plugin.json, a `channels[]` entry of kind "claude" takes `folder` (relative to `{data}/<plugin>`; no absolute
+   path, `~` or `..`; made if missing) and `folder_setting` (a setting whose value, any path, wins). A plugin using
+   either declares `"plugin.format": 5` in `uses`. An older engine then blocks the plugin and says to update the
+   engine, unless it is written `{"v": 5, "optional": true}`: write it so when the plugin works without that channel
+   (an older engine then opens no channel and does not ask about it). #setup's question for such a channel has the
+   key `channel.<plugin>.<name>` in setup.ask.
+5. `altention dc post <channel> --move machine <machine> [folder] --why "…"` and `--move folder <path>` (full paths,
+   `~/…` allowed) move it to another machine or folder. A channel on another machine can only be moved this way.
+   pi and Codex conversations cannot be moved yet.
+6. `dcctl backup` writes the channel settings to the instance's `backup/dcbot-channels.json` (listed fields only,
+   secrets masked, written only when something changed). Only the machine that is the bot writes, the one holding
+   the lease when there is a standby; elsewhere it prints `nothing written` and exits 0. `dcctl restore-state [FILE]`
+   refuses with exit 1, writing nothing, while the bot or its supervisor runs; it fills in only the channels
+   missing, keeps a `.bak` first, and puts back what the backup holds (masked strings stay masked). Both run on the
+   machine you call them on. doctor has a `backup.channels` check.
+7. `altention update plugin <name> <vX.Y.Z>` needs `--hooks-ok` for a version that adds a hook or a rewrite of
+   replies; `--anyway` does not count as that consent.
+8. A pinned engine updates a plugin only when its plugin.json declares in `uses` what it needs and the engine
+   provides it; plugin authors who want pinned engines to take a new version write `uses`. `plugin_update` has a new
+   result, `pinned`.
+9. #setup's backup questions: `backup.items` holds the built-in items only; the plugins' data is asked as
+   `backup.plugins`, `backup.plugins.2`, … Ask them as printed, without dropping choices or changing words.
+10. install exits 2 (a to-do) when a plugins.json entry has a version but no source; a plugin it cannot read is
+    still unknown.
+11. A reposted update card has the id `update-<old id>-r<time>`: it stands for the same card.
+
 ## v0.7.1 — 2026-11-20
 
 ### For people

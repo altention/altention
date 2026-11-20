@@ -71,6 +71,13 @@
   altention dc post st-0 --rename 回測 --why "…"                    rename that channel and what its record takes along (its Claude
                                                                    Code conversation, its tmux window, the bot's own session of
                                                                    it), as /rename; the card there and #audit say whose
+  altention dc post st-0 --move session work --why "…"             move that channel's Claude to another session of its tmux
+                                                                   (same pane, nothing stops); --move tmux bot, --move tmux user
+                                                                   <session>: to the bot's tmux or the owner's (the old Claude
+                                                                   ended first, the same conversation taken up there, or back
+                                                                   where it was); the card there and #audit say whose;
+                                                                   --move machine <machine> [folder], --move folder <path>: to
+                                                                   another machine or folder (its record copied, the old kept)
   altention dc post 新頻道 --create "…"                            a channel that does not exist yet is made (a plain one, for records);
                                                                    without --create an unknown name is an error, with the closest names
   altention dc post 100000000000000020 "…"                         a channel by its ID: still right after the channel is renamed
@@ -79,7 +86,10 @@
                                                                    found by the bot itself, for plugins; posts and notifications only
   altention dc post @notify --wait 30 "…"                          wait until the bot has put it on Discord: exit 0 and the message's ID
                                                                    on the last line; 3 still queued when the time was up; 4 not shown
-                                                                   (why on stderr); without --wait, 0 means queued
+                                                                   (why on stderr); without --wait, 0 means queued. To a paused
+                                                                   channel: 0 with the words that it is held; 4 when it could not
+                                                                   be kept (also past a full talk-limit card): it is on Discord
+                                                                   all the same, its ID on the last line
   altention dc post lab --json payload.json                        one Discord message's payload (JSON: text, embeds, Components V2),
                                                                    posted as it is (C-172a P1d; "-": from stdin); a post, never
                                                                    handed to the channel's Claude (tell it with a plain post).
@@ -430,6 +440,25 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         del args[i:i + 2]
         if not rename.strip():
             sys.exit("altention dc post：--rename 要給新名字")
+    move_place = None  # C-201 2c1: --move session <name> | --move tmux bot | --move tmux user <session>, with --why
+    if "--move" in args:
+        i = args.index("--move")
+        given = lambda j: args[j] if j < len(args) and not args[j].startswith("--") else ""  # noqa: E731 (a flag: not given)
+        kind, target = given(i + 1), given(i + 2)
+        n = 1 + bool(kind) + bool(kind and target)
+        session = None
+        if (kind == "tmux" and target == "user") or kind == "machine":  # (machine: its folder there, if given)
+            session = given(i + 3) or None
+            n += bool(session)
+            if kind == "tmux" and session is None:
+                session = ""
+        del args[i:i + n]
+        if kind not in ("session", "tmux", "machine", "folder") or not target.strip() or (kind == "tmux" and target not in ("bot", "user")) \
+                or (session is not None and not session.strip()) \
+                or (kind == "folder" and not target.startswith(("/", "~"))) or (kind == "machine" and session and not session.startswith(("/", "~"))):
+            sys.exit("altention dc post：--move 的寫法：--move session <名字>、--move tmux bot、--move tmux user <session 名字>、"
+                     "--move machine <機器> [資料夾]、--move folder <路徑>（資料夾寫完整路徑）")
+        move_place = (kind, target.strip(), session.strip() if session else None)
     delete_mid = None  # --delete <message id…>: messages taken away, saved in #audit first (C-205)
     if "--delete" in args:
         i = args.index("--delete")
@@ -474,7 +503,7 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         others = [k for k, v in (("--attach", attach), ("--resume", resume), ("--history", history),
                                  ("--new-claude", new_claude), ("--move-to", move_to), ("--activity", activity),
                                  ("--secret", secret), ("--now", now), ("--pause-until", pause_at), ("--unpause", unpause),
-                                 ("--drop-held", drop_held), ("--rename", rename), ("--delete", delete_mid),
+                                 ("--drop-held", drop_held), ("--rename", rename), ("--delete", delete_mid), ("--move", move_place),
                                  ("--reset", reset), ("--then", then))
                   if v] + ["--" + k.replace("_", "-") for k in asked]
         if others or args:
@@ -514,7 +543,7 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
     if "reply-to" in json_opts and not json_opts["reply-to"].isdigit():
         sys.exit("altention dc post：--reply-to 要給訊息 ID")
     if not args and callable(stdin_text) and payload is None:  # stdin is read only when no text was given here
-        stdin_text = "" if any((attach, resume, history, new_claude, move_to)) or asked or pause_at or unpause or drop_held or delete_mid or reset \
+        stdin_text = "" if any((attach, resume, history, new_claude, move_to, move_place)) or asked or pause_at or unpause or drop_held or delete_mid or reset \
             else stdin_text()
     text = " ".join(args) if args else ("" if payload is not None else stdin_text or "")
     post = {"channel": argv[0].lstrip("#"), "text": text.strip(),
@@ -560,6 +589,16 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         if not why:
             sys.exit("altention dc post：--rename 要帶 --why \"為什麼\"（會記在 #audit，也寫在頻道裡）")
         post["rename"], post["why"], post["wait"] = rename.strip(), why, wait or 60
+    if move_place is not None:
+        why = asked.pop("why", None)
+        if asked or now or args or pause_at is not None or unpause or drop_held or delete_mid or reset or rename is not None or \
+                any((board, attach, resume, history, new_claude, move_to, activity, secret, file_paths)):
+            sys.exit("altention dc post：--move 單獨用（只帶 --why，不能帶訊息、--file 或其他旗標）")
+        if not why:
+            sys.exit("altention dc post：--move 要帶 --why \"為什麼\"（會記在 #audit，也寫在那個頻道的卡片上）")
+        post["move_place"], post["move_target"], post["why"], post["wait"] = move_place[0], move_place[1], why, wait or 60
+        if move_place[2]:
+            post["move_folder" if move_place[0] == "machine" else "move_session"] = move_place[2]
     if pause_at is not None or unpause or drop_held or delete_mid:
         flag = "--pause-until" if pause_at is not None else "--unpause" if unpause else "--drop-held" if drop_held \
             else "--delete"
@@ -671,7 +710,7 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
             post["more_files"] = files[1:]
     if not post["text"] and not files and not any(k in post for k in ("json", "new_claude", "resume", "history", "move_to", "secret",
                                                                        "waiting", "answer", "talk_continue", "pause",
-                                                                       "unpause", "drop_held", "rename", "delete_messages", "reset")):
+                                                                       "unpause", "drop_held", "rename", "delete_messages", "reset", "move_place")):
         sys.exit("altention dc post：沒有內容")
     return post
 

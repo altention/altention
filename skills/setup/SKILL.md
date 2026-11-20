@@ -1,6 +1,6 @@
 ---
 name: setup
-description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done; also when they ask there to put on a plugin from the official list (「裝 <插件>」) or to finish one (「幫我裝完 <插件>」, 「接著裝 <插件>」), or to set up a standby machine for the bot (「設備援」) or the outside notice (「設外部通知」). Not for changing settings later in other channels."
+description: "The settings of a new Altention installation, asked one question at a time in Discord's #setup. Use it in #setup when the bot asks you to (\"請用 setup skill 帶使用者做完設定。\"), and whenever the person writes there while setup is not done; also when they ask there to put on a plugin from the official list (「裝 <插件>」) or to finish one (「幫我裝完 <插件>」, 「接著裝 <插件>」), or to set up a standby machine for the bot (「設備援」) or the outside notice (「設外部通知」), or to open a plugin's own channel (「開 #<名稱>」). Not for changing settings later in other channels."
 ---
 
 # Setting up, in #setup
@@ -75,7 +75,7 @@ python3 <ENGINE>/ops/setup.py status --json
   When `left` is empty, sum up in one line what they chose and run `done` (step 4, without the backups); there is no
   opening and no tour. `asking` true with `left` empty (they stopped before `done`): straight to `done`.
 - `done` true: go to step 5 (the tour) if `tour` is null, else tell them setup is done and settings are changed in
-  any channel, and stop.
+  any channel, and stop. (A request of sections 6 to 10, such as 「開 #<名稱>」, is done whatever this says.)
 - `answered` empty: start with the opening (step 2).
 - Some answered: one line 「我們接著上次停下的地方。」 and go on at step 3 with what `questions` prints first.
 - `left` empty and `done` false (every question answered, then they stopped, or `done` failed halfway): the same
@@ -132,6 +132,11 @@ Typed answers (the person chose 「其他」 or wrote something instead of choos
   to find out.
 - **Which backups** (several may be chosen): the values joined with commas, e.g. `instance,logs,progress`. None
   chosen is the empty value `""`: that means later.
+- **Which plugins' data** (`backup.plugins`, then `backup.plugins.2` … when there are more than four): the same
+  way; none chosen (`""`) only leaves those out.
+
+Every question offers at most four choices: pass each to AskUserQuestion as printed, never dropping, merging or
+rewording a choice. One with more than four is a bug: say so, and let them type the rest.
 
 The permission mode (`dcbot.default_permission`): in your own sentence before it, say that it decides how much
 Claude does without asking them, and that the suggested one stops dangerous things without making them press
@@ -330,6 +335,11 @@ When the person asks here for a standby (「設備援」, 「設一台備援」)
    yourself, never print them.
 4. It says 設備援沒有做完 with why: tell them, and that they can say 「設備援」 again once that is fixed.
 
+To take a standby away (「拿掉備援」): `altention standby status` shows which machine is one (「（備援）」); ask with
+buttons which, if more than one, and 「先不要」. Then run `altention standby remove <那台>` on the bot's machine and pass
+on what it prints: each step with ✓ or ✗ and what to do for a ✗. It refuses while the standby is the bot (it says to
+wait for the failback). A secret left on that machine stays: delete it only if the person asks.
+
 
 ## 9. The outside notice (healthchecks.io: question `healthchecks`, or 「設外部通知」)
 
@@ -338,3 +348,19 @@ minutes, grace 10), copy its ping address (https://hc-ping.com/…), and post th
 `altention dc post <this channel> --secret core/healthchecks-url`. They paste it there; you never see it. Then run
 `python3 <engine>/altention/health.py check` and pass on its line (it refuses anything but https). On 「不要」:
 nothing; they can say 「設外部通知」 here later.
+
+## 10. A plugin's own channel (question `channel.<plugin>.<name>`, or 「開 #<名稱>」)
+
+A plugin may come with a channel of its own that has its own Claude. The reconcile asks about it with the key
+`channel.<plugin>.<name>`: ask it as printed (「開」 is `open`, 「先不要」 is `no`). `open` is opened by `done`;
+`no` is never asked again.
+
+When they say 「開 #<名稱>」 here (also after 「先不要」), run:
+
+```bash
+python3 <ENGINE>/ops/setup.py channel <名稱>
+```
+
+It opens the channel now, its Claude in the folder the question named, and says where (`<#ID>`: write it just so).
+`沒有寫：` (no plugin in use has that channel): say so in one plain sentence. `沒做完：` (the folder would lie outside
+the plugin's folder, or the bot could not open it): say why plainly.

@@ -21,8 +21,8 @@ this; E3's update card will too (follow()).
 Nothing happens at import and HOME is read at call time. Standard library only, Python 3.8.
 """
 import json
-import re
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -92,8 +92,20 @@ def _git(folder, *args, timeout=GIT_TIMEOUT):
         raise
 
 
+REASON = re.compile(r"Permission denied|Could not resolve|Host key verification failed|Connection (?:refused|timed out)|"
+                    r"Repository not found|Authentication failed|not found|unable to access", re.I)
+
+
 def _said(r):
-    return ((r.stderr or "").strip().splitlines() or (r.stdout or "").strip().splitlines() or ["沒有說明"])[-1][:200]
+    """The line of what git said that has the reason: an ssh clone ends with "and the repository exists.", the
+    reason (Permission denied, Could not resolve host) lines above it (11-02 real test); else a fatal: line, else
+    the last one."""
+    said = [l.strip() for l in ((r.stderr or "").strip() or (r.stdout or "").strip()).splitlines() if l.strip()]
+    if not said:
+        return "沒有說明"
+    line = next((l for l in said if REASON.search(l)), None) or \
+        next((l for l in reversed(said) if l.startswith(("fatal:", "error:"))), None) or said[-1]
+    return line[:200]
 
 
 def declared(settings=None):
@@ -489,7 +501,7 @@ def needs_missing(folder, d, settings=None):
 # Agreed with support-3 (manager 2026-10-20): the card, the checks' order, go, undo and `update plugin` are
 # update.py's and update_go.py's; what a plugin is, where its releases are and what changes with one is here.
 
-KINDS = ("unreachable", "broken", "origin", "edits", "engine", "interface", "test", "perms", "clean")  # most pressing first
+KINDS = ("unreachable", "broken", "origin", "edits", "engine", "pinned", "interface", "test", "perms", "clean")  # most pressing first
 TEST_TIMEOUT = 600
 FETCH_TIMEOUT = 60
 
@@ -704,11 +716,14 @@ def _engine_ok(spec, engine_version):
     return True if not m or have is None else have >= tuple(int(x) for x in m.groups())
 
 
-def check(p, tag, engine_version=None, root=None):
+def check(p, tag, engine_version=None, root=None, pinned=False):
     """{kind, kinds, why, added}: whether plugin p can move to `tag` here, the most pressing kind first (KINDS):
     unreachable (the tag is not there), broken (its plugin.json not usable), origin (the folder here is not ours:
     another origin, or no git), edits (changes not committed in it, or a file of the person's where the new version
-    adds one), engine (it wants a newer engine than `engine_version`, the one this round ends with), interface (its
+    adds one), engine (it wants a newer engine than `engine_version`, the one this round ends with), pinned (the
+    same, on an engine `pinned` to a fixed version, which no round moves: E3, manager 11-02, its "engine" is let go
+    when its "uses" says what it needs and this engine offers it; without "uses", or for a plugin.json written for a
+    newer engine, it waits as before, said as the pin), interface (its
     "uses" asks for what this engine's altention/interfaces.json does not offer: C-94), test (its
     "test" fails in a copy aside), perms (it does more on this computer: `added`, plain words), clean."""
     repo, own = _repo_of(p, root)
@@ -718,7 +733,8 @@ def check(p, tag, engine_version=None, root=None):
         return {"kind": "unreachable", "kinds": ["unreachable"], "why": "拿不到 %s 的 %s" % (p["name"], tag), "added": []}
     new, bad, newer = _load_at_newer(repo, tag)
     if newer:  # written for a newer engine: the card's "update the engine" kind, not unreadable
-        return {"kind": "engine", "kinds": ["engine"], "why": text.t("plugin_update.newer_engine", plugin=p["name"], tag=tag),
+        kind = "pinned" if pinned else "engine"
+        return {"kind": kind, "kinds": [kind], "why": text.t("plugin_update.newer_engine", plugin=p["name"], tag=tag),
                 "added": []}
     if new is None:
         return {"kind": "broken", "kinds": ["broken"], "why": "%s 的 %s 讀不懂：%s" % (p["name"], tag, bad), "added": []}
@@ -731,9 +747,7 @@ def check(p, tag, engine_version=None, root=None):
         if edits.returncode != 0 or edits.stdout.strip() or loose:
             found.append("edits")
             why["edits"] = "%s 裡有你自己的修改%s" % (folder, "，或跟 %s 要加的檔同名的檔（%s）" % (tag, "、".join(loose[:5])) if loose else "")
-    if not _engine_ok(new.get("engine"), engine_version):
-        found.append("engine")
-        why["engine"] = "%s 的 %s 要引擎 %s，這一輪換完是 %s" % (p["name"], tag, new.get("engine"), engine_version)
+    problem = None
     if new.get("uses"):
         try:
             problem = plugin.uses_problem(new, plugin.offered_here())
@@ -742,6 +756,14 @@ def check(p, tag, engine_version=None, root=None):
         if problem:
             found.append("interface")
             why["interface"] = text.t("plugin_update.interface", plugin=p["name"], tag=tag, problem=problem)
+    if not _engine_ok(new.get("engine"), engine_version):
+        if not pinned:
+            found.append("engine")
+            why["engine"] = "%s 的 %s 要引擎 %s，這一輪換完是 %s" % (p["name"], tag, new.get("engine"), engine_version)
+        elif not new.get("uses") or problem:  # (a pinned engine: "uses" met is enough, E3)
+            found.append("pinned")
+            why["pinned"] = "%s 的 %s 要引擎 %s，這台的引擎停在固定的版本 %s%s" % (
+                p["name"], tag, new.get("engine"), engine_version, "，新版也沒寫 uses" if not new.get("uses") else "")
     if new.get("test") and "origin" not in found:
         ok, said = _test_at(repo, tag, new["test"])
         if not ok:
@@ -753,7 +775,8 @@ def check(p, tag, engine_version=None, root=None):
         found.append("perms")
         why["perms"] = "%s 的 %s 會在這台多做：%s" % (p["name"], tag, "；".join(more))
     kinds = [k for k in KINDS if k in found] or ["clean"]
-    return {"kind": kinds[0], "kinds": kinds, "why": why.get(kinds[0], ""), "added": more}
+    return {"kind": kinds[0], "kinds": kinds, "why": why.get(kinds[0], ""), "added": more,
+            "watchers": watchers(old, new) if more else []}
 
 
 def _test_at(repo, tag, test):

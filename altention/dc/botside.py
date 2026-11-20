@@ -20,6 +20,7 @@ RUN_SECS = 900  # the command itself over SSH, at most (C-125): above --wait's m
 # rate limit's (#code-review on 4ee2ab6), so a post still queued says so rather than being cut
 HANDED = "ALTENTION_HANDED"  # set on a command sent to the bot's machine: one that arrives there is not sent on
 STDIN_COMMANDS = {"post", "edit", "send-json"}  # the dcctl commands that read stdin: only theirs is read and sent over
+LOCAL_COMMANDS = {"backup", "restore-state"}  # C-28: about this machine's own state; each decides itself whether to act
 
 
 class NoBot(Exception):
@@ -149,7 +150,7 @@ def hand_over(argv, stdin=None):
     and its exit status and output come back as they are; this machine's own settings (a token left here) are never
     read. Returns on the bot's machine (dcctl goes on here); exits otherwise. stdin is read only for the commands
     that read it (STDIN_COMMANDS): any other command must not wait on a pipe nobody closes."""
-    if not argv or argv[0] in ("-h", "--help", "help"):
+    if not argv or argv[0] in ("-h", "--help", "help") or argv[0] in LOCAL_COMMANDS:
         return
     try:
         name, m, here = bot_machine(prog="dcctl")

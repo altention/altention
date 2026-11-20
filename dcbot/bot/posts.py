@@ -328,6 +328,7 @@ class Posts(object):
         self.held_restored = False
         self.pins_asked = None  # the task taking the pins made before P1c into the ledger (bot/pinimport.py), once
         self.inflight = set()  # spool files being handled: left in place until done, not picked up twice
+        self.running = set()  # those of them begun (safely() under way): only these can be part shown (C-163 handover)
         self.retrying = False  # a round of retry() is going: the next waits for it
         self.retried = 0  # when state/posts-failed/ was last gone through (0: at the first tick after a start)
         self.from_post = {}  # channel id -> (sender channel id, when): its Claude is working on another's post
@@ -545,6 +546,8 @@ class Posts(object):
             return replied(*await self.pauses.drop(ch, sender_ch, sender, post))
         if post.get("rename"):  # C-201 2b: as /rename, the card saying whose (bot/rename.py)
             return replied(*await self.bot.renamer.by_agent(ch, sender_ch, post))
+        if post.get("move_place"):  # C-201 2c1: /move session|tmux, the card saying whose (bot/moving.py)
+            return replied(*await self.bot.mover.by_agent(ch, sender_ch, post))
         if post.get("answer") or post.get("talk_continue"):  # they would set a paused channel's Claude working
             refused = self.pauses.refused(ch)
             if refused:
@@ -1539,6 +1542,10 @@ class Posts(object):
                     await asyncio.wait({task, seen}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
                     seen.cancel()
+                if task.done() and not task.cancelled() and task.exception() is None and task.result() is LEFT:
+                    for left, _ in self.chains.get(key) or []:  # left in the spool: the rest of this chain with it,
+                        self.inflight.discard(left)  # so that it is taken up again in its order, never one after
+                    self.chains[key] = []  # it before it (#code-review on 037f676a)
         except Exception:
             traceback.print_exc()
             # what this chain still had is let go, for the next tick to take up again rather than kept taken until a
@@ -1549,6 +1556,13 @@ class Posts(object):
             self.chains.pop(key, None)  # (nothing awaited since the last check: no post was added in between)
 
     async def safely(self, post, path=None):
+        way = getattr(self.bot, "leader_ok", None)
+        if path and callable(way) and way() is False:  # not the bot now (handing the place back, the lease lost): a
+            self.inflight.discard(path)  # spool post not begun is left in the spool, untouched, for whichever bot
+            self.showing.pop(id(post), None)  # takes it: posts_out() moves it, or this one picks it up again later;
+            return LEFT  # begun after this, the bot handing back would show it and the next bot again (B10 drill, 6 twice)
+        if path:  # (nothing awaited since the check: posts_out() sees it begun, or never begun)
+            self.running.add(path)
         began = time.time()
         self.timing[id(post)] = {}
         got = {"messages": [], "why": None}
@@ -1589,6 +1603,7 @@ class Posts(object):
                     traceback.print_exc()
                     return
         finally:
+            self.running.discard(path)
             self.shown(post)
             self.showing.pop(id(post), None)
             self.slow(post, path, began, self.timing.pop(id(post), None) or {})
@@ -1649,6 +1664,9 @@ class Posts(object):
                     self.inflight.discard(path)
         finally:
             self.retrying = False
+
+
+LEFT = object()  # Posts.safely(): a spool post left untouched (not the bot now); its chain lets go of the rest too
 
 
 BOARD_FAILS = 3  # times running a board fails to update (not NotFound) before the owner is told, once

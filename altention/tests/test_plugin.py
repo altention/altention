@@ -499,6 +499,45 @@ class ExternalHere(unittest.TestCase):
         self.assertIn("plugins.demo 的來源不能用：version 要寫標籤", here["demo"][1])
         self.assertIn("local 只能寫 true", here["draw"][1])
 
+    def test_channel_folder_fields_checked(self):
+        """plugin.format 5: folder and folder_setting only on kind claude; folder a path inside the data folder."""
+        base = {"name": "demo", "title": "D", "description": "d"}
+        ok = dict(base, channels=[{"name": "n", "kind": "claude", "setting": "demo.channel", "folder": "work/a",
+                                   "folder_setting": "demo.folder"}])
+        self.assertEqual(plugin.check(ok), ok)
+        for c, said in (({"name": "n", "kind": "board", "folder": "w"}, "channels[0].folder 只有 kind 是 claude 的頻道能寫"),
+                        ({"name": "n", "kind": "bot", "folder_setting": "x.y"}, "channels[0].folder_setting 只有 kind"),
+                        ({"name": "n", "kind": "claude", "folder": "/abs"}, "channels[0].folder 要寫插件資料資料夾裡的相對路徑"),
+                        ({"name": "n", "kind": "claude", "folder": "~/x"}, "不能是絕對路徑、~ 開頭或含 .."),
+                        ({"name": "n", "kind": "claude", "folder": "a/../../b"}, "channels[0].folder 要寫"),
+                        ({"name": "n", "kind": "claude", "folder": " "}, "channels[0].folder 要寫"),
+                        ({"name": "n", "kind": "claude", "folder": 3}, "channels[0].folder 型別不對")):
+            with self.subTest(c=c):
+                with self.assertRaises(plugin.PluginError) as e:
+                    plugin.check(dict(base, channels=[c]))
+                self.assertIn(said, str(e.exception))
+        self.assertTrue(plugin.folder_ok("a..b/c"), "a name with dots is no ..")
+
+    def test_channel_folder_where_and_made_inside(self):
+        data = os.path.join(self.root, "data 資料")
+        with mock.patch.dict(os.environ, {"ALT_DATA": data}):
+            c = {"name": "n", "kind": "claude", "folder": "work"}
+            self.assertEqual(plugin.channel_folder("demo", c, {}), (os.path.join(data, "demo", "work"), os.path.join(data, "demo")))
+            self.assertEqual(plugin.channel_folder("demo", {"name": "n"}, {})[0], os.path.join(data, "demo"))
+            c["folder_setting"] = "demo.folder"
+            self.assertEqual(plugin.channel_folder("demo", c, {"demo": {"folder": "~/筆記"}}),
+                             (os.path.expanduser("~/筆記"), None))
+            self.assertEqual(plugin.channel_folder("demo", c, {"demo": {"folder": ""}})[0], os.path.join(data, "demo", "work"))
+            folder, base = plugin.channel_folder("demo", {"name": "n", "folder": "a/b"}, {})
+            plugin.make_channel_folder(folder, base)
+            self.assertTrue(os.path.isdir(folder))
+            os.makedirs(os.path.join(self.root, "外"))
+            os.symlink(os.path.join(self.root, "外"), os.path.join(base, "out"))
+            folder, base = plugin.channel_folder("demo", {"name": "n", "folder": "out/x"}, {})
+            with self.assertRaises(plugin.PluginError):
+                plugin.make_channel_folder(folder, base)
+            self.assertFalse(os.path.exists(os.path.join(self.root, "外", "x")), "nothing made outside")
+
     def test_uses_not_offered_is_blocked_with_why_c94(self):
         offered = plugin.interfaces()
         cases = (({"dc.post": offered["dc.post"]["version"]}, "on", ""),

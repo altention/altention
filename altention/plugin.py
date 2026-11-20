@@ -141,6 +141,53 @@ def _list_of(d, key, path, fields, optional=()):
     return items
 
 
+def folder_ok(text):
+    """A channels[].folder: a path inside the plugin's data folder, as written (no absolute path, no ~, no ..)."""
+    t = text.strip() if isinstance(text, str) else ""
+    parts = re.split(r"[/\\]+", t)
+    return bool(t) and "\0" not in t and not os.path.isabs(t) and not t.startswith("~") and ".." not in parts
+
+
+def channel_folder(name, c, settings=None):
+    """(folder, base) where the Claude of plugin `name`'s channel `c` (kind "claude") works (plugin.format 5): the
+    value of its folder_setting when set (any path, ~ expanded; base None), else {data}/<name>/<folder> (no folder:
+    {data}/<name>), base {data}/<name>. Nothing made or resolved here: make_channel_folder()."""
+    key = c.get("folder_setting")
+    if isinstance(key, str) and key:
+        try:
+            value = config.setting(key) if settings is None else _dig(settings, key)
+        except Exception:
+            value = None
+        if isinstance(value, str) and value.strip():
+            return os.path.expanduser(value.strip()), None
+    base = os.path.join(expand("{data}"), name)
+    folder = c.get("folder")
+    return (os.path.join(base, folder.strip()) if isinstance(folder, str) and folder_ok(folder) else base), base
+
+
+def _dig(settings, key):
+    v = settings
+    for k in key.split("."):
+        v = v.get(k) if isinstance(v, dict) else None
+    return v
+
+
+def make_channel_folder(folder, base):
+    """`folder` made (700) when missing. Under `base` (not None), its real path must stay there, before and after:
+    a symbolic link pointing out is refused (manager 11-20). PluginError says why."""
+    def inside():
+        real, top = os.path.realpath(folder), os.path.realpath(base)
+        return real == top or real.startswith(top.rstrip(os.sep) + os.sep)
+    if base is not None and not inside():
+        raise PluginError("頻道的資料夾 %s 實際上指到 %s，不在 %s 底下（有符號連結指出去）：不開" % (
+            folder, os.path.realpath(folder), base))
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    if base is not None and not inside():
+        raise PluginError("頻道的資料夾 %s 實際上指到 %s，不在 %s 底下（有符號連結指出去）：不開" % (
+            folder, os.path.realpath(folder), base))
+    return folder
+
+
 def _length(text):
     """Minutes in "10m" or "2h", None if it is not such a length."""
     m = re.match(r"^(\d+)([mh])$", str(text))
@@ -217,8 +264,13 @@ def check(d, path="plugin.json", core=False):
         _need(isinstance(o, dict) and isinstance(o.get("cost", ""), str), path, "offer 要是物件，cost 要是文字")
         _need(o.get("when", "install") in OFFER_WHEN, path, "offer.when 只能是 %s" % "、".join(OFFER_WHEN))
     _list_of(d, "requires", path, ["plugin"])
-    for i, c in enumerate(_list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str), ("name_setting", str)])):
+    for i, c in enumerate(_list_of(d, "channels", path, ["name"], [("kind", str), ("setting", str), ("name_setting", str),
+                                                                  ("folder", str), ("folder_setting", str)])):
         _need(c.get("category", "main") in ("main", "system"), path, "channels[%d].category 只能是 main 或 system" % i)
+        for key in ("folder", "folder_setting"):  # plugin.format 5: where a Claude channel's Claude works
+            _need(c.get(key) is None or c.get("kind") == "claude", path, "channels[%d].%s 只有 kind 是 claude 的頻道能寫" % (i, key))
+        _need(c.get("folder") is None or folder_ok(c["folder"]), path,
+              "channels[%d].folder 要寫插件資料資料夾裡的相對路徑（不能是絕對路徑、~ 開頭或含 ..）" % i)
     for i, a in enumerate(_list_of(d, "asks", path, ["key", "question"])):  # C-57 S3: a setting the reconcile asks in #setup
         _need(isinstance(a.get("unless", {}), dict), path, "asks[%d].unless 要是物件（設定 → 那個值就不用問）" % i)
     for i, s in enumerate(_list_of(d, "secrets", path, ["name"], [("path", str), ("label", str)])):  # C-77 G3: the path is fixed

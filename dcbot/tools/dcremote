@@ -33,6 +33,10 @@ machine's own engine (dcbot/state/). The bot reaches it over SSH:
   dcremote tmux-at ID               the {"socket", "pane"} the ID names, checked as tmux-read checks it (--attach)
   dcremote tmux-send ID             type into that pane (bot/tmuxsend.py: checked, written to #audit, checked again);
                                     what to type as JSON on stdin {"text" | "keys", "enter", "caller", "reason"}
+  dcremote move-probe PANE_PID     C-201 2c2: {"shell", "argv", "daemon"} of a pane's processes here (bot/transcripts.py)
+  dcremote transcript-out FOLDER ID the record of conversation ID opened in FOLDER, as one line of base64 (gzip tar)
+  dcremote transcript-size FOLDER ID  {"bytes"}: the size of what transcript-out would carry (record and its folder)
+  dcremote transcript-in FOLDER ID  write that record (stdin) as ID's in FOLDER: JSON {"files", "kept"} or {"error"}
   dcremote claude-at PID            1 when Claude Code runs as process PID or under it in its terminal's foreground
                                     (by the command lines), 0 when not, ? when that cannot be told
   dcremote pid-under TOP PID         1 when process PID is process TOP or one under it and no shell, 0 when not
@@ -598,8 +602,26 @@ def main(argv):
         print(json.dumps(termrc.done_count(argv[1])))
     elif argv[0] == "info":
         folder = os.path.abspath(os.path.expanduser(argv[1])) if len(argv) > 1 else None
+        from bot import transcripts
         print(json.dumps({"socket": os.path.join(tmuxio.socket_dir(), "default"), "home": os.path.expanduser("~"),
-                          "folder": folder if folder and os.path.isdir(folder) else None, "claude": claude_here()}))
+                          "folder": folder if folder and os.path.isdir(folder) else None, "claude": claude_here(),
+                          "login": transcripts.login_seen()}))  # (C-201 2c2: only whether a login file is there)
+    elif argv[0] == "move-probe" and len(argv) >= 2:
+        from bot import transcripts
+        print(json.dumps(transcripts.probe(argv[1])))
+    elif argv[0] in ("transcript-out", "transcript-in", "transcript-size") and len(argv) >= 3:
+        from bot import transcripts
+        folder = os.path.abspath(os.path.expanduser(argv[1]))
+        try:
+            if argv[0] == "transcript-out":
+                print(transcripts.pack(folder, argv[2]))
+            elif argv[0] == "transcript-size":
+                print(json.dumps({"bytes": transcripts.size(folder, argv[2])}))
+            else:
+                print(json.dumps(transcripts.unpack(sys.stdin.read(), folder, argv[2])))
+        except transcripts.Refused as e:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+            sys.exit(3)
     elif argv[0] == "files":
         print(json.dumps(filecore.op(json.loads(sys.stdin.read() or "{}")), ensure_ascii=False))
     elif argv[0] == "attach" and len(argv) >= 5:

@@ -81,7 +81,7 @@ class Slash(unittest.TestCase):
     def test_registered_set_is_valid_for_discord(self):
         cmds = self.tree.get_commands(guild=self.tree.guild)
         self.assertEqual(sorted(c.name for c in cmds), ["archive", "attach", "btw", "cc", "commands", "compact", "context", "cwd", "detach", "files", "key",
-                                                       "mode", "recap", "rename", "reset", "resume", "run", "screen", "setup", "status", "stop", "talklimit", "usage", "where"])
+                                                       "mode", "move", "recap", "rename", "reset", "resume", "run", "screen", "setup", "status", "stop", "talklimit", "usage", "where"])
         for c in cmds:
             d = c.to_dict(self.tree)
             self.assertRegex(d["name"], r"^[a-z0-9_-]{1,32}$")

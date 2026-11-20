@@ -17,6 +17,16 @@
                                           stays at the bottom when another one is moved
   dcctl archive CHANNEL                   archive it as /archive does (the bot does it: queued while it is offline)
   dcctl delete CHANNEL --yes              only after the owner explicitly agreed in chat
+  dcctl backup                            C-28: the channels' state by its whitelist into the instance's
+                                          backup/dcbot-channels.json (only when it changed; the sync runs it every
+                                          round). Runs on this machine, never handed over: writes nothing unless
+                                          this machine is the bot now (with a standby: its bot runs and holds the
+                                          lease)
+  dcctl restore-state [FILE]              put back the channels of a backup (default: the instance's) that
+                                          state/channels.json lacks; only while the bot is not running; the old
+                                          file is copied to channels.json.bak-<time> first; exit 1 when refused.
+                                          What comes back is what the backup holds: its strings went through
+                                          altention/redact.py, so a secret-like part of a path came back masked
   dcctl send CHANNEL TEXT [--mentions]    post a message, straight to Discord (not through the bot; CHANNEL @notify:
                                           the default notification channel, by its name); mentions in it
                                           ping nobody; --mentions lets the owner's <@ID> in it ping (never a role
@@ -1049,6 +1059,63 @@ def structure(chans, state, me=None):
     return "\n".join(out)
 
 
+def backup_cmd():
+    """dcctl backup (C-28): 0 written, unchanged or not this machine's to write; 1 when it failed."""
+    from bot import backup as bk
+    from altention import config as alt
+
+    def bot_here():
+        try:
+            return bool(alt.bot_machine()[2])
+        except Exception:
+            return False
+    try:
+        machines = alt.inventory().get("machines") or {}
+    except Exception:
+        machines = {}
+    ok, why = bk.holds(config.STATE, machines, bot_here)
+    if not ok:
+        print("dcctl backup: nothing written (%s)" % why)
+        return 0
+    try:
+        inst = alt.instance_dir()
+        if not inst:
+            print("dcctl backup: no instance on this machine; nothing written")
+            return 1
+        st = bk.backup(inst, config.STATE)
+    except Exception as e:
+        print("dcctl backup: failed: %s: %s" % (type(e).__name__, e))
+        return 1
+    print("dcctl backup: %d channels, %s %s" % (st["channels"], "written to" if st["changed"] else "unchanged in", st["file"]))
+    if st["unclassified"]:
+        print("dcctl backup: fields neither kept nor dropped, left out: %s (classify them in dcbot/bot/backup.py)"
+              % ", ".join(st["unclassified"]))
+    return 0
+
+
+def restore_cmd(src=None):
+    """dcctl restore-state [FILE] (C-28): 0 restored or nothing to add; 1 refused."""
+    from bot import backup as bk
+    if src is None:
+        from altention import config as alt
+        inst = alt.instance_dir()
+        if not inst:
+            print("dcctl restore-state: no instance on this machine; name the backup file")
+            return 1
+        src = os.path.join(inst, bk.FILE)
+    try:
+        added, kept = bk.restore(src, config.STATE)
+    except bk.Refused as e:
+        print("dcctl restore-state: refused, nothing written: %s" % e)
+        return 1
+    if not added:
+        print("dcctl restore-state: every channel of %s is there already; nothing written" % src)
+        return 0
+    print("dcctl restore-state: %d channels put back from %s%s (as backed up: secret-like strings in them are masked)" % (
+        len(added), src, "; the old file is at %s" % kept if kept else ""))
+    return 0
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
@@ -1329,6 +1396,10 @@ def main(argv):
         got = token_check()
         print(json.dumps(got, ensure_ascii=False) if "--json" in args else got["said"])
         sys.exit({"ok": 0, "none": 3, "invalid": 3}.get(got["state"], 4))
+    elif cmd == "backup":
+        sys.exit(backup_cmd())
+    elif cmd == "restore-state":
+        sys.exit(restore_cmd(args[0] if args else None))
     elif cmd == "roles":
         for r in call("GET", "/guilds/%d/roles" % config.GUILD_ID):
             print("%-22s %s" % (r["id"], r["name"]))

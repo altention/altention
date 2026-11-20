@@ -286,6 +286,153 @@ class Role(Rig):
         self.assertIn("standby: host-b takes the role dcbot-standby", log)
 
 
+class Remove(Rig):
+    """C-179: altention standby remove MACHINE, in the go-live plan's order (section 4): the role off, apply there,
+    the fencing's record cleared on both, the bot restarted."""
+    def setUp(self):
+        super().setUp()
+        self.machines["machines"]["host-b"]["roles"] = ["dcbot-standby"]
+        p = mock.patch.object(config, "this_machine", lambda: "host-a")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_remove(self, machine="host-b", applied=True, cleared=(True, True)):
+        done = self.done = []
+        clears = list(cleared)
+
+        def role(m):
+            done.append(("role", m))
+            had = "dcbot-standby" in self.machines["machines"][m]["roles"]
+            self.machines["machines"][m]["roles"] = []
+            return had
+        steps = {"remove_role": role,
+                 "apply": lambda m: (done.append(("apply", m)) or (applied, ["ok" if applied else "ssh 連不上"])),
+                 "owner_clear": lambda m: (done.append(("clear", m)) or ((True, "") if clears.pop(0) else (False, "沒有回應"))),
+                 "restart_bot": lambda: done.append(("restart",))}
+        out, audit = io.StringIO(), []
+        with mock.patch.object(secret_store, "tell_audit", audit.append):
+            code = standby.remove(machine, out, steps)
+        return code, out.getvalue(), audit
+
+    def test_in_the_plans_order(self):
+        code, out, audit = self.run_remove()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.done, [("role", "host-b"), ("apply", "host-b"), ("clear", "host-a"), ("clear", "host-b"),
+                                     ("restart",)], "owner-clear only after the role is off (it refuses before)")
+        self.assertIn("拿掉了 dcbot-standby 角色", out)
+        self.assertIn("金鑰（token 或 webhook）還留著", out, "a secret there is the owner's to delete")
+        self.assertEqual(audit, ["拿掉備援：host-b 不再是 host-a 的備援"])
+
+    def test_not_applied_there_stops_with_the_lease_kept(self):
+        """#code-review on 0f2b2351 (must-fix): host-b not reached keeps its role and cron; this bot restarted
+        without a lease would leave the place to it, two bots on one token. Stop: no clear, no restart."""
+        code, out, audit = self.run_remove(applied=False)
+        self.assertEqual(code, 1)
+        self.assertEqual([d[0] for d in self.done], ["role", "apply"])
+        self.assertIn("修好連線後再跑一次 altention standby remove host-b", out)
+        self.assertNotIn("機器人正在重啟", out)
+        self.assertEqual(audit, [])
+
+    def test_not_pushed_stops_before_apply(self):
+        def role(m):
+            raise standby.NotPushed("實例沒推出去（rejected）")
+        out = io.StringIO()
+        self.done = []
+        code = standby.remove("host-b", out, {"remove_role": role, "apply": lambda m: self.done.append("apply"),
+                                              "owner_clear": lambda m: self.done.append("clear"),
+                                              "restart_bot": lambda: self.done.append("restart")})
+        self.assertEqual((code, self.done), (1, []))
+        self.assertIn("實例沒推出去（rejected）", out.getvalue())
+        self.assertIn("再跑一次 altention standby remove host-b", out.getvalue())
+
+    def test_a_record_not_cleared_is_said_and_the_rest_done(self):
+        code, out, _ = self.run_remove(cleared=(True, False))
+        self.assertEqual(code, 1)
+        self.assertEqual([d[0] for d in self.done], ["role", "apply", "clear", "clear", "restart"])
+        self.assertIn("之後在 host-b 跑 python3 %s/dcbot/tools/dcremote owner-clear" % config.engine_on(self.machines["machines"]["host-b"]), out)
+
+    def test_another_standby_left_keeps_the_fencing(self):
+        self.machines["machines"]["host-c"]["roles"] = ["dcbot-standby"]
+        code, out, _ = self.run_remove()
+        self.assertEqual(code, 0)
+        self.assertNotIn("clear", [d[0] for d in self.done])
+        self.assertIn("還有別台是備援（host-c）", out)
+
+    def test_none_there_still_tidies_and_says_so(self):
+        self.machines["machines"]["host-b"]["roles"] = []
+        code, out, audit = self.run_remove()
+        self.assertEqual(code, 0)
+        self.assertIn("本來就沒有 dcbot-standby 角色", out)
+        self.assertIn(("clear", "host-b"), self.done, "a record left behind is cleared all the same")
+        self.assertEqual(audit, [], "nothing removed: nothing said in #audit")
+
+    def test_refused_before_anything(self):
+        for machine, here in (("host-b", "host-b"), ("host-a", "host-a"), ("nowhere", "host-a")):
+            with self.subTest(machine=machine, here=here), mock.patch.object(config, "this_machine", lambda here=here: here):
+                with self.assertRaises(standby.Failed):
+                    self.run_remove(machine)
+                self.assertEqual(self.done, [])
+        with mock.patch.object(config, "this_machine", lambda: "host-b"), mock.patch("sys.stdout", io.StringIO()) as o:
+            self.assertEqual(standby.main(["remove", "host-b"]), 1)
+        self.assertIn("等它切回再拿掉", o.getvalue(), "the standby being the bot: wait for the failback")
+
+    def test_owner_clear_there_and_its_refusal(self):
+        """Another machine: by ssh, with that machine's engine path (quoted as every remote command); dcremote's
+        refusal (a JSON line) said by its own words."""
+        with mock.patch.object(standby, "run_there", lambda m, c, v: (self.sent.append((m, c, v)) or (False, '{"cleared": false, "error": "這邊還開著備援"}'))):
+            self.sent = []
+            ok, why = standby.owner_clear("host-b")
+        self.assertEqual(self.sent, [("host-b", "python3 %s/dcbot/tools/dcremote owner-clear" % config.engine_on(self.machines["machines"]["host-b"]), "")])
+        self.assertEqual((ok, why), (False, "這邊還開著備援"))
+
+
+    def test_owner_clear_here_runs_dcremote_for_real(self):
+        """This machine: the engine's own dcremote (in this test's scratch HOME, no instance: no role listed), its
+        owner file gone."""
+        owner = os.path.join(os.path.expanduser("~"), ".local", "share", "altention", "dcremote-owner")
+        os.makedirs(os.path.dirname(owner), exist_ok=True)
+        with open(owner, "w") as f:
+            f.write("7\n")
+        self.assertEqual(standby.owner_clear("host-a"), (True, ""))
+        self.assertFalse(os.path.exists(owner))
+        self.assertEqual(standby.owner_clear("host-a"), (True, ""), "none there: as good")
+
+
+class RemoveRole(Rig):
+    def test_removed_and_committed(self):
+        import subprocess
+        self.machines["machines"]["host-b"]["roles"] = ["x", "dcbot-standby"]
+        with open(os.path.join(self.inst, "machines.json"), "w") as f:
+            json.dump(self.machines, f)
+        for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+            subprocess.run(["git", "-C", self.inst, "-c", "user.name=t", "-c", "user.email=t@x"] + a, check=True)
+        with mock.patch.object(config, "instance_dir", lambda: self.inst):
+            self.assertTrue(standby.remove_role("host-b"))
+            self.assertFalse(standby.remove_role("host-b"), "once")
+        with open(os.path.join(self.inst, "machines.json")) as f:
+            self.assertEqual(json.load(f)["machines"]["host-b"]["roles"], ["x"])
+        log = subprocess.run(["git", "-C", self.inst, "log", "--oneline"], capture_output=True, text=True).stdout
+        self.assertIn("standby: host-b gives up the role dcbot-standby", log)
+
+    def test_not_pushed_is_said_even_when_it_was_off_already(self):
+        """#code-review on 0f2b2351 (low): a push that fails stops remove; run again (the role off already here),
+        the push is tried again, not skipped."""
+        import subprocess
+        self.machines["machines"]["host-b"]["roles"] = ["dcbot-standby"]
+        with open(os.path.join(self.inst, "machines.json"), "w") as f:
+            json.dump(self.machines, f)
+        for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"], ["remote", "add", "origin", os.path.join(self.home, "none.git")]):
+            subprocess.run(["git", "-C", self.inst, "-c", "user.name=t", "-c", "user.email=t@x"] + a, check=True)
+        with mock.patch.object(config, "instance_dir", lambda: self.inst):
+            for _ in range(2):
+                with self.assertRaises(standby.NotPushed) as e:
+                    standby.remove_role("host-b")
+                self.assertIn("實例沒推出去", str(e.exception))
+            subprocess.run(["git", "init", "-q", "--bare", os.path.join(self.home, "none.git")], check=True)
+            subprocess.run(["git", "-C", self.inst, "push", "-q", "-u", "origin", "HEAD"], capture_output=True)
+            self.assertFalse(standby.remove_role("host-b"), "pushed now: off already, no error")
+
+
 class Questions(Rig):
     def test_only_with_another_machine(self):
         sys_path = os.path.join(ENGINE, "ops")
