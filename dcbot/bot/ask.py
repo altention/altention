@@ -206,6 +206,12 @@ GONE = ("This conversation's Discord channel was deleted, so nobody can answer t
         "terminal instead.")  # to Claude, for a question of a conversation whose channel is no more
 
 
+CARD_DELETED = ("The Discord card of this {what} was deleted by {by} (reason: {why}), so nobody can answer it there. "
+                "The user did not ignore it and gave no answer: ask again if you still need one.")  # (C-205: to the
+# Claude that asked, so a deleted card is not taken for the owner saying nothing; manager 11-20)
+CARD_DELETED_HERE = "（這張卡片被刪了，沒有回答）"
+
+
 def gone_result(plan=False):
     """What the hook of a question (or of a plan) is handed when its channel is no more: a question is refused with
     the reason; a plan is left to the terminal's own dialog."""
@@ -552,6 +558,34 @@ class Asker(object):
             except Exception:
                 traceback.print_exc()
         await self.audit("#%s 的提問在終端機取消了（Esc、Ctrl-C 或 !key），按鈕已關掉" % name)
+
+    async def card_deleted(self, ch, mid, by, why):
+        """A message of `ch` was taken away (altention dc post --delete, C-205): a question or plan still open whose
+        card it was is closed, its hook told why (CARD_DELETED: by whom, the reason given), its other cards say so.
+        The ask_id closed, or None (no open question had that card)."""
+        for ask_id, state in waiting(ch.id):
+            cards = state.get("messages") or {}
+            if str(mid) not in (str(v) for v in cards.values()):
+                continue
+            what = "plan" if state.get("kind") == "plan" else "question"
+            await self.hand(ask_id, state, {"reason": CARD_DELETED.format(what=what, by=by, why=why)})
+            await self.closed(ch, ask_id)
+            if self.on_done is not None:
+                try:
+                    await self.on_done(ch, ask_id, "已取消（卡片被刪了）")
+                except Exception:
+                    traceback.print_exc()
+            for i, other in cards.items():
+                if str(other) == str(mid) or i in (state.get("answers") or {}):
+                    continue
+                try:
+                    q = state["questions"][int(i)]
+                    await outgoing.deliver(ch, content=answered_text(q, CARD_DELETED_HERE, "⌛"), view=None, intent="card",
+                                          key="ask:%s" % ask_id, edit=other)
+                except Exception:
+                    traceback.print_exc()
+            return ask_id
+        return None
 
     async def cancel(self, ch, reason="The user interrupted before answering."):
         """The turn that asked is over (stopped, reset, or it ended): close whatever is still open."""

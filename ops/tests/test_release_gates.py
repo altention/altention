@@ -317,6 +317,50 @@ class Reviewed(Repo):
         gates.reviewed(self.git, head, None, None, said)  # no release before: nothing to compare
         self.assertEqual(said, [])
 
+    def test_a_deploy_commit_counts_when_its_tree_is_the_reviewed_hashs(self):
+        """C-206: deploy.sh --commit puts a branch on main as one commit of one parent, "release: merge <branch>
+        <hash> (…) (reviewed …)": it counts when its tree is that hash's; another tree, or a hash not here, does not."""
+        git(self.repo, "tag", "v0.1.0")
+        git(self.repo, "checkout", "-q", "-b", "feature")
+        self.write("a.py", "x = 1\n")
+        reviewed = self.commit("feature work")
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "checkout", "-q", reviewed, "--", "a.py")
+        same = self.commit("release: merge feature %s (a thing) (reviewed %s)" % (reviewed[:8], reviewed[:8]))
+        self.write("b.py", "y = 2\n")
+        more = self.commit("release: merge feature %s (and something not reviewed)" % reviewed[:8])
+        gone = self.commit("release: merge other 0123abcd (a hash not in this repository)")
+        plain = self.commit("release: merge without a hash")
+        said = []
+        gates.reviewed(self.git, plain, "v0.1.0", None, said)
+        self.assertIn("3 個", said[0])
+        self.assertNotIn(same[:12], said[0])
+        self.assertNotIn(reviewed[:12], said[0], "its own commit is not on main's line")
+        for c in (more, gone, plain):
+            self.assertIn(c[:12], said[0])
+
+    def test_any_subject_with_what_deploy_candidate_appends(self):
+        """As deploy_candidate.prepare() writes it: the sender's own words, then "(reviewed h1, h2; h3 lint only)";
+        the tree of any of them counts (#code-review on bf72a636: 1629b14b, a46973b0)."""
+        git(self.repo, "tag", "v0.1.0")
+        git(self.repo, "checkout", "-q", "-b", "feature")
+        self.write("a.py", "x = 1\n")
+        first = self.commit("work")
+        self.write("a.py", "x = 2\n")
+        lint = self.commit("lint")
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "checkout", "-q", lint, "--", "a.py")
+        held = self.commit("Held posts: told there (reviewed %s, %s; %s lint only)" % (first[:8], "0123abcd", lint[:8]))
+        self.write("a.py", "x = 3\n")
+        other = self.commit("Something else (reviewed %s)" % first[:8])
+        said = []
+        gates.reviewed(self.git, other, "v0.1.0", None, said)
+        self.assertIn("1 個", said[0])
+        self.assertIn(other[:12], said[0])
+        self.assertNotIn(held[:12], said[0])
+        self.assertEqual(gates.named_reviewed("x (reviewed aaaa111, bbbb222; cccc333 lint only) (reviewed dddd444)"),
+                         ["aaaa111", "bbbb222", "cccc333", "dddd444"])
+
 
 class Markers(Repo):
     def test_markers_but_not_a_heading_underline(self):

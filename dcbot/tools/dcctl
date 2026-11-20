@@ -454,6 +454,8 @@ def wait_for(post, secs, moved=None):
         sys.exit(QUEUED)
     if "text" in got:  # C-176: a post the bot answers (--waiting, --answer, --talk-continue): its answer, as it is
         print(got["text"], file=sys.stdout if got.get("ok") else sys.stderr)
+        if got.get("message_id"):  # (a post shown but held, or not handed: its ID still on the last line, C-87)
+            print(got["message_id"])
         sys.exit(0 if got.get("ok") else NOT_SENT)
     if not got.get("ok"):
         print(refusal("altention dc post：沒有送出：", got.get("why")), file=sys.stderr)

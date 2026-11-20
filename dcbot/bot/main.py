@@ -8,6 +8,7 @@ Claude or a bad deploy misbehaves): !help !status !reset !resume !recap !rename 
 """
 import asyncio
 import datetime
+import io
 import json
 import logging
 import os
@@ -1749,6 +1750,21 @@ class Bot(discord.Client):
                     # record, not kept: under load every line would write the whole ledger; as lease.py, manager 11-16)
                 except Exception:  # a dropped connection too: the record is printed above, and callers go on
                     pass
+
+    async def keep_in_audit(self, text, name, data):
+        """One message in #audit with a file (C-205: a message saved whole before it is taken away): True when it is
+        there, False when it is not (no #audit, Discord refused, a dropped connection): then the caller does not go
+        on. `text` at most one message long; nobody rung."""
+        print("[audit] " + text.split("\n", 1)[0], flush=True)
+        if not self.audit_ch:
+            return False
+        try:
+            await outgoing.deliver(self.audit_ch, text[:1990], file=discord.File(io.BytesIO(data), filename=name),
+                                   allowed_mentions=discord.AllowedMentions.none(), intent="status", keep=False)
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
 
     def chan(self, channel):
         st = self.channels_state.setdefault(str(channel.id), {})

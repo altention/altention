@@ -194,6 +194,12 @@ def entry(message_id, channel_id, data=None):
     return None
 
 
+def channels_of(message_id):
+    """The channels the ledger has this message in (ids as text; none: not on record)."""
+    with _lock:
+        return [cid for cid, rows in _loaded()["channels"].items() if any(m == str(message_id) for m, _ in rows)]
+
+
 def forget(channel_id, message_id):
     """A message of the bot's deleted: its entry goes (it would hold a place of PER_CHANNEL for nothing)."""
     if channel_id is None or message_id is None:

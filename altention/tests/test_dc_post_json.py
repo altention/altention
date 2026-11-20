@@ -78,14 +78,29 @@ class Build(unittest.TestCase):
         got, _ = self.build("lab", "--board", "本週", "--json", "p.json", "--wait", "5")
         self.assertEqual((got["json"], got["wait"]), ({"content": "hi"}, 5))
 
-    def test_delete_one_of_ones_own(self):
+    def test_delete_one_or_several(self):
         got, read = self.build("lab", "--delete", "900", "--why", "寫錯了")
-        self.assertEqual((got["delete_message"], got["why"], got["wait"], read), ("900", "寫錯了", 30, []))
+        self.assertEqual((got["delete_messages"], got["why"], got["wait"], read), (["900"], "寫錯了", 36, []))
+        self.assertNotIn("delete_message", got)
+        got, _ = self.build("lab", "--delete", "900", "901", "900", "902", "--why", "清掉")
+        self.assertEqual((got["delete_messages"], got["wait"]), (["900", "901", "902"], 48), "one given twice: once")
+        got, _ = self.build("lab", "--delete", "900", "--why", "w", "--wait", "9")
+        self.assertEqual(got["wait"], 9)
+        many = [str(1000 + i) for i in range(post.DELETE_MOST)]
+        got, _ = self.build("lab", "--delete", *many, "--why", "w")
+        self.assertEqual((len(got["delete_messages"]), got["wait"]), (20, 150))
+        self.assertEqual(got["answer_wait"], 150, "dcctl takes \"wait\" for itself: the bot reads this one (rig drill 11-20)")
         for argv, words in ((("lab", "--delete", "x", "--why", "w"), "--delete 要給訊息 ID"),
                             (("lab", "--delete"), "--delete 要給訊息 ID"),
                             (("lab", "--delete", "900"), "要帶 --why"),
                             (("lab", "--delete", "900", "--why", "w", "還有字"), "單獨用"),
+                            (("lab", "--delete", "900", "901", "x", "--why", "w"), "單獨用"),
                             (("lab", "--delete", "900", "--unpause", "--why", "w"), "不能一起用"),
+                            (("lab", "--delete", "900", "--rename", "x", "--why", "w"), "單獨用"),
+                            (("lab", "--delete", "900", "--drop-held", "--why", "w"), "不能一起用"),
+                            (("lab", "--delete", "900", "--pause-until", "1h", "--why", "w"), "不能一起用"),
+                            (("lab", "--delete", *many, "1999", "--why", "w"), "一次最多 20 則，請分批"),
+                            (("lab", "--delete", "900", "901", "--reset", "--why", "w"), "不能跟"),
                             (("lab", "--json", "p.json", "--delete", "900"), "不能再帶")):
             self.assertIn(words, self.refused(*argv), argv)
 

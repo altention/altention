@@ -113,33 +113,29 @@ def buttons_refused(body, how="send-json"):
     return None
 
 
-def change_refused(entry, who, how="edit", ids_of_name=None, delete=False):
-    """Why a tool may not change (edit, or with `delete` take away: altention dc post --delete) a message the ledger
-    has as `entry` (None: not there), or None: only the sender's own (in another's channel its line of where it comes
-    from must survive the edit too, Posts.edited(): a Claude's without one is not editable there; a program's, which
-    never has one, by its key alone; manager 11-17): a post of its own (`who`, a key of bot/senders.py, the same as
-    the entry's from, or as what the words written there before P1d turn into: until bot/fromkeys.py has turned them,
-    an edit of one's own is not refused, manager 11-17; `ids_of_name`: the text channels' IDs by name, for "#name",
-    when known). A card (a question, a plan, a permission menu, an update or setup card) never; a board goes by its
-    own way (--board). A 📨 relay card is not edited (it would lose where it comes from), but may be taken away: it is
-    the sender's own post, and gone it reads as nobody's to nobody."""
-    no = "沒有刪" if delete else "沒有改"
+def change_refused(entry, who, how="edit", ids_of_name=None):
+    """Why a tool may not edit a message the ledger has as `entry` (None: not there), or None: only the sender's own
+    (in another's channel its line of where it comes from must survive the edit too, Posts.edited(): a Claude's
+    without one is not editable there; a program's, which never has one, by its key alone; manager 11-17): a post of
+    its own (`who`, a key of bot/senders.py, the same as the entry's from, or as what the words written there before
+    P1d turn into: until bot/fromkeys.py has turned them, an edit of one's own is not refused, manager 11-17;
+    `ids_of_name`: the text channels' IDs by name, for "#name", when known). A card (a question, a plan, a
+    permission menu, an update or setup card) never; a board goes by its own way (--board); a 📨 relay card is not
+    edited (it would lose where it comes from). Taking a message away goes by other rules (bot/deleting.py, C-205)."""
     if not entry:
-        return "%s：%s：機器人的紀錄（ledger）裡沒有這則，只能%s" % (util.tool(how), no, "刪工具發的訊息（C-172a 之後發、紀錄裡有的）"
-                                                              if delete else "改用 dcctl send／send-json 發的訊息")
+        return "%s：沒有改：機器人的紀錄（ledger）裡沒有這則，只能改用 dcctl send／send-json 發的訊息" % util.tool(how)
     intent = entry.get("intent")
     if intent == "card":
-        return "%s：%s：這則是機器人的卡片（提問、計畫、權限選單、更新或設定），按鈕和內容都由機器人管" % (util.tool(how), no)
+        return "%s：沒有改：這則是機器人的卡片（提問、計畫、權限選單、更新或設定），按鈕和內容都由機器人管" % util.tool(how)
     if intent == "board":
-        return "%s：%s：這則是看板，看板要用 --board 更新" % (util.tool(how), no)
+        return "%s：沒有改：這則是看板，看板要用 --board 更新" % util.tool(how)
     if intent not in CHANGEABLE:
-        return "%s：%s：這則不是用工具發的訊息（是機器人或 Claude 的回覆、通知或狀態）" % (util.tool(how), no)
-    if "card" in (entry.get("framed") or ()) and not delete:  # (a post's 📨 card in another's channel: changed, it would
-        return "%s：沒有改：這則是「📨 來自」轉傳卡片，改了就沒有來源；請重新發一則" % util.tool(how)  # read as nobody's; manager 11-17)
+        return "%s：沒有改：這則不是用工具發的訊息（是機器人或 Claude 的回覆、通知或狀態）" % util.tool(how)
+    if "card" in (entry.get("framed") or ()):  # (a post's 📨 card in another's channel: changed, it would read as
+        return "%s：沒有改：這則是「📨 來自」轉傳卡片，改了就沒有來源；請重新發一則" % util.tool(how)  # nobody's; manager 11-17)
     said = entry.get("from")
     if said != who and senders.old_key(said, ids_of_name or (lambda name: ())) != who:
-        return "%s：%s：這則是 %s 發的，只能%s自己發的" % (util.tool(how), no, senders.who(entry.get("from")) or "機器人",
-                                               "刪" if delete else "改")
+        return "%s：沒有改：這則是 %s 發的，只能改自己發的" % (util.tool(how), senders.who(entry.get("from")) or "機器人")
     return None
 
 

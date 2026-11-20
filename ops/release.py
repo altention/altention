@@ -42,7 +42,8 @@ with the same blacklist; the release author's address is a noreply one.
   each cut at 30 minutes, a failed one run once more (A9; a tree that passed is recorded by its hash in
   ~/.local/state/altention/release-tests/ and not run again), REV on the checklist's branch as this repository's
   remote has it and a fix release holding its line's previous tag (A10), every commit since the last tag brought
-  in by a "release: merge" commit (in its second parent, not its first) or named in reviewed_exceptions (A12), no
+  in by a "release: merge" commit (in its second parent, not its first), is one made by deploy.sh --commit (its
+  tree that of a hash its subject names in "(reviewed …)" or after "release: merge <branch>"), or is named in reviewed_exceptions (A12), no
   conflict marker (A13), every SKILL.md and agents/*.md head readable with its description whole (A14), every ! and
   slash command in dcbot/GUIDE.md and dcbot/docs/usage.md and every altention subcommand in usage.md, but for
   docs/release-guide-exempt.json (A15), each official plugin's newest public plugin.json read by REV's engine with

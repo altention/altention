@@ -57,12 +57,14 @@
                                                                    it is idle (no turn, background work, subagent or workflow),
                                                                    else refused with why; --then is then handed to it as your
                                                                    post. Said in #audit and in that channel; the answer is printed
-  altention dc post st-0 --delete <message id> --why "…"            take away a message you posted there (the bot's ledger
-                                                                   has it as yours: never a card, a board, a reply; in
-                                                                   another's channel one with its 來自 line or 📨 card).
-                                                                   Said in #audit; the bot's answer is printed. Only the
-                                                                   Discord message goes: another channel's Claude has read
-                                                                   it already
+  altention dc post st-0 --delete <id> [<id>…] --why "…"           take away messages in that channel (at most 20): the bot's,
+                                                                   a Claude's, the owner's or anyone's. Each is saved whole
+                                                                   in #audit first (masked, its JSON as a file); one that
+                                                                   cannot be read or saved is not taken away. Someone else's
+                                                                   gets a 🗑️ line in the channel (no mention). Never in
+                                                                   #audit, never a thread's first message. The bot's answer
+                                                                   is printed. Only the Discord message goes: a Claude may
+                                                                   have read it already
   altention dc post st-0 --drop-held --why "…"                     drop the posts a paused channel keeps (its own Claude only,
                                                                    having read them itself); the owner speaking there hands
                                                                    them over after that message anyway. Said in #audit
@@ -148,6 +150,14 @@ MAX_FILE = 8 * 1024 * 1024  # all of a post's files together
 MAX_FILES = 10              # files on one post (Discord's limit for one message)
 MAX_ARGS = 2000             # --activity's --arg pairs together, as JSON: kept with the button in the channel's state
 BOARD_PARTS = 10            # a framed board's messages at most
+DELETE_MOST = 20  # --delete: ids in one go (C-205: more are refused here, not split)
+
+
+def delete_wait(n):
+    """--delete without --wait: long enough for the bot to save and take away `n` messages one by one."""
+    return min(30 + 6 * n, botside.WAIT_MOST)
+
+
 JSON_WAIT = 30              # --json without --wait: waited for this long, so a refusal is said (C-172a P1d)
 MAX_WHERE = 2048            # a file's {"machine", "path"} as UTF-8 JSON: longer, and it gets no button (C-116)
 NAME = re.compile(r"^[a-z][a-z0-9-]*$")  # a plugin's or a page's name (altention.plugin.check_name)
@@ -420,14 +430,19 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         del args[i:i + 2]
         if not rename.strip():
             sys.exit("altention dc post：--rename 要給新名字")
-    delete_mid = None  # --delete <message id>: a post of one's own taken away (manager 11-17)
+    delete_mid = None  # --delete <message id…>: messages taken away, saved in #audit first (C-205)
     if "--delete" in args:
         i = args.index("--delete")
-        delete_mid = args[i + 1] if i + 1 < len(args) else ""
-        del args[i:i + 2]
-        if not delete_mid.strip().isdigit():
-            sys.exit("altention dc post：--delete 要給訊息 ID")
-        delete_mid = delete_mid.strip()
+        j = i + 1
+        while j < len(args) and args[j].strip().isdigit():
+            j += 1
+        delete_mid = [a.strip() for a in args[i + 1:j]]
+        del args[i:j]
+        if not delete_mid:
+            sys.exit("altention dc post：--delete 要給訊息 ID（可以給好幾個，用空白隔開）")
+        delete_mid = list(dict.fromkeys(delete_mid))  # (one given twice: taken away once)
+        if len(delete_mid) > DELETE_MOST:
+            sys.exit("altention dc post：--delete 一次最多 %d 則，請分批" % DELETE_MOST)
     board = None
     if "--board" in args:
         i = args.index("--board")
@@ -566,8 +581,11 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
         elif drop_held:
             post["drop_held"] = True
         else:
-            post["delete_message"] = delete_mid
-        post["why"], post["wait"] = why, wait or 30  # the bot's answer is what this is for: waited for, and printed
+            post["delete_messages"] = delete_mid
+        post["why"], post["wait"] = why, wait or (delete_wait(len(delete_mid)) if delete_mid else 30)  # the bot's
+        # answer is what this is for: waited for, and printed
+        if delete_mid:  # (dcctl takes "wait" for itself, never in the spool: the bot keeps to its deadline by this one)
+            post["answer_wait"] = post["wait"]
     if asked:
         kinds = [k for k in ("waiting", "answer", "talk_continue") if asked.get(k)]
         if len(kinds) != 1 or now or args or any((board, attach, resume, history, new_claude, move_to, activity, secret,
@@ -653,7 +671,7 @@ def build(argv, stdin_text, env, host, cwd, machine=None, claude=None):
             post["more_files"] = files[1:]
     if not post["text"] and not files and not any(k in post for k in ("json", "new_claude", "resume", "history", "move_to", "secret",
                                                                        "waiting", "answer", "talk_continue", "pause",
-                                                                       "unpause", "drop_held", "rename", "delete_message", "reset")):
+                                                                       "unpause", "drop_held", "rename", "delete_messages", "reset")):
         sys.exit("altention dc post：沒有內容")
     return post
 

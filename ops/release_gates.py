@@ -252,9 +252,24 @@ def version_line(git, commit, version, record, remote, said):
 
 
 # ------------------------------------------------------------------------------------------- reviewed (A12)
+SQUASHED = re.compile(r"^release: merge \S+ ([0-9a-f]{7,40})\b")  # a release merge's branch and hash, written by hand
+REVIEWED = re.compile(r"\(reviewed ([^)]*)\)")  # deploy_candidate.prepare(): "(reviewed h1, h2; h3 lint only)"
+HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
+
+
+def named_reviewed(subject):
+    """The hashes a subject names as reviewed: in each "(reviewed …)", and after "release: merge <branch>"."""
+    out = [h for group in REVIEWED.findall(subject) for h in HEX.findall(group)]
+    m = SQUASHED.match(subject)
+    return out + ([m.group(1)] if m else [])
+
+
 def reviewed(git, commit, last, record, said):
     """A12: every non-merge commit in LAST..COMMIT came in through one of L3's "release: merge" commits (it is in
-    that merge's second parent and not in its first); the others must be in the checklist's reviewed_exceptions."""
+    that merge's second parent and not in its first), or is one itself made by `deploy.sh --commit` (one parent, its
+    tree the same as that of a hash its subject names as reviewed: "(reviewed h1, h2; h3 lint only)", which
+    deploy_candidate.prepare() appends, or "release: merge <branch> <hash>": C-206); the others must be in the
+    checklist's reviewed_exceptions."""
     if not last:
         return
     span = "%s..%s" % (last, commit)
@@ -269,6 +284,15 @@ def reviewed(git, commit, last, record, said):
         parents = parts[1].split()
         if len(parents) >= 2:
             covered.update(git("rev-list", parents[1], "--not", parents[0]).stdout.split())
+    for row in git("log", "--no-merges", "--format=%H%x01%T%x01%s", span).stdout.splitlines():
+        parts = row.split("\x01")
+        if len(parts) != 3:
+            continue
+        for h in named_reviewed(parts[2]):
+            p = git("rev-parse", "-q", "--verify", "%s^{tree}" % h)
+            if p.returncode == 0 and p.stdout.strip() == parts[1]:
+                covered.add(parts[0])
+                break
     allowed = hashes(record["reviewed_exceptions"]) if record else []
     left = [c for c in commits if c not in covered and not any(len(a) >= 7 and c.startswith(a) for a in allowed)]
     if left:

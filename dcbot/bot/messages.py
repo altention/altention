@@ -498,6 +498,45 @@ RENAME = {
     "modal_field": "新名字",
     "gone": "這個頻道已經不在了",
 }
+# C-205: altention dc post --delete (bot/deleting.py)
+DELETE = {
+    "no_why": "要帶 --why（會記在 #audit）",
+    "no_ids": "要給訊息 ID",
+    "not_ids": "訊息 ID 要是數字",
+    "too_many": "一次最多 {most} 則，請分批",
+    "audit": "#audit 是紀錄，不能刪",
+    "elsewhere": "這則不在這個頻道（要刪請對它所在的頻道下指令）",
+    "unread": "讀不到這則，沒有刪（{why}）",
+    "no_read": "機器人看不到這則",
+    "no_answer": "Discord {secs} 秒內沒有回應",
+    "thread_starter": "這則開了討論串，刪了討論串就沒有開頭；要收掉請處理那個討論串（封存或刪掉討論串）",
+    "not_saved": "存不進 #audit，沒有刪",
+    "no_manage": "機器人沒有「管理訊息」權限，沒有刪（伺服器設定 → 身分組 → 機器人的身分組 → 打開「管理訊息」；或給它「管理員」權限，看 #update 的權限卡）",
+    "late": "Discord {secs} 秒內沒有回應，不知道刪了沒，過一下再看",
+    "limited": "Discord 要機器人等一下再刪（速率限制），這次沒有刪，晚點再送一次",
+    "refused": "Discord 沒收（{why}）",
+    "failed": "出錯了（{why}），沒有刪",
+    "saved_head": "🗑️ #{channel} 的訊息 {mid} 要被刪，先存在這裡（{by} 要刪；{words}；理由：{why}）",
+    "saved_author": "作者：{name}（{id}）{bot}　時間：{at}",
+    "saved_files": "附件：{files}",
+    "saved_text": "內容（已遮罩；完整的 embed、元件在附檔，文字也遮罩了）：",
+    "saved_no_text": "（沒有文字）",
+    "was_board": "看板「{name}」的一部分，看板紀錄拿掉了",
+    "was_call": "@ 使用者的「等你」那行（{key}），標成結束",
+    "was_asking": "「⏸️ 在等你」的通知（{ask}），紀錄拿掉了",
+    "was_menu": "還開著的選單卡（{title}），選單紀錄和「等你」那行收掉了，畫面上還有對話框就重貼一張",
+    "was_ask": "提問或計畫的卡片（{ask}），提問已取消，已告訴提問的 Claude 是卡片被刪了",
+    "notice": "-# 🗑️ {by} 刪了 {n} 則 <@{author}> 的訊息：{why}",
+    "sum_done": "刪了 {n} 則：{ids}",
+    "sum_gone": "已經不在 {n} 則：{ids}",
+    "sum_refused": "沒有刪 {n} 則：{ids}",
+    "sum_left": "時間不夠沒輪到 {n} 則：{ids}",
+    "ans_done": "刪掉了：{ids}",
+    "ans_gone": "已經不在了（之前就刪掉了）：{ids}",
+    "ans_unknown": "這個頻道裡找不到（可能已經刪了，或在別的頻道；在別的頻道就對那個頻道再下一次）：{ids}",
+    "ans_refused": "沒有刪 {mid}：{why}",
+    "ans_left": "時間不夠，沒輪到：{ids}（沒有動，請再送一次）",
+}
 # What Claude puts at the start of a final reply that needs the owner (calls.discussed()); in the system note (C-103).
 RESET = {  # altention dc post --reset (v0.6.1, manager 11-19): bot/resets.py
     "channel": "🔄 由 {by} 開了新對話：{why}",
@@ -526,7 +565,8 @@ RESET = {  # altention dc post --reset (v0.6.1, manager 11-19): bot/resets.py
 DISCUSS_MARK = "💬 要跟你討論："
 GROUPS = {"not_sent": NOT_SENT, "unconfirmed": UNCONFIRMED, "notes": NOTES, "far": FAR, "secret": SECRET, "quota": QUOTA,
           "calls": CALLS, "cc": CC, "lease": LEASE, "pause": PAUSE, "menus": MENUS,
-          "perms": PERMS, "where": WHERE, "reconcile": RECONCILE, "rename": RENAME, "reset": RESET}
+          "perms": PERMS, "where": WHERE, "reconcile": RECONCILE, "rename": RENAME, "reset": RESET,
+          "delete": DELETE}
 
 
 def enter():

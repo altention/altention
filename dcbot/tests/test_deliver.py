@@ -12,6 +12,8 @@ import types
 import unittest
 from unittest import mock
 
+import discord
+
 from bot import deliver, ledger
 from tests import tmuxguard  # noqa: F401  (no test reaches a real tmux server)
 
@@ -85,6 +87,24 @@ class Deliver(unittest.TestCase):
         asyncio.run(main.Bot.backfill(bot, ch, ["one", "two"]))
         self.assertEqual(len(ch.log), 5)
         self.assertEqual(ledger._loaded()["channels"], {})
+
+    def test_a_copy_kept_in_audit_with_its_file_or_said_not(self):
+        """C-205: a message saved before it is taken away: one message with its .json, unrecorded, nobody rung;
+        False when it is not there (the caller then takes nothing away)."""
+        from bot import main
+        ch = Ch()
+        bot = types.SimpleNamespace(audit_ch=ch)
+        self.assertTrue(asyncio.run(main.Bot.keep_in_audit(bot, "x" * 3000, "message-1.json", b"{}")))
+        (what, args, kw), = [(e[0], e[1], e[2]) for e in ch.log]
+        self.assertEqual((what, len(args[0]), kw["file"].filename), ("send", 1990, "message-1.json"))
+        self.assertEqual(kw["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+        self.assertEqual(ledger._loaded()["channels"], {})
+
+        class Refusing(Ch):
+            async def send(self, *a, **kw):
+                raise RuntimeError("50035")
+        self.assertFalse(asyncio.run(main.Bot.keep_in_audit(types.SimpleNamespace(audit_ch=Refusing()), "x", "m.json", b"{}")))
+        self.assertFalse(asyncio.run(main.Bot.keep_in_audit(types.SimpleNamespace(audit_ch=None), "x", "m.json", b"{}")))
 
     def test_removed(self):
         ch = Ch()

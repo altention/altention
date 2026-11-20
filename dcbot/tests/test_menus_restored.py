@@ -83,6 +83,60 @@ class Restored(unittest.TestCase):
         self.assertTrue(self.again(self.first))
         self.assertEqual(len(self.menus.open), 1)
 
+    def test_its_card_taken_away_meanwhile_one_posted_anew(self):
+        """C-205: the card the state names was deleted (altention dc post --delete, or by hand): not edited again on
+        every round, its record let go and a new card posted with buttons."""
+        import discord
+        import types
+        from bot import blocked
+        self.post()
+        st = self.bridge.host.chan(self.ch)
+        self.menus.open.clear()
+
+        class Gone(object):
+            id = 5
+
+            async def edit(self, **kw):
+                raise discord.NotFound(types.SimpleNamespace(status=404, reason="x"), {"code": 10008, "message": "Unknown Message"})
+        self.ch.get_partial_message = lambda mid: Gone()
+        sent, done = self.counted(), self.mock.AsyncMock()
+        with self.mock.patch.object(self.bridge, "call_done", done):
+            self.assertTrue(self.again(self.first))
+        done.assert_awaited_once_with(self.ch, "menu:5")
+        self.assertEqual(len(sent), 1)
+        self.assertIn(messages.menus("restored_title"), sent[0])
+        (token, m), = self.menus.open.items()
+        self.assertNotIn(messages.menus("restored"), m.get("excerpt") or "", "posted, not the edit of the old one")
+        self.assertEqual((m["call"], blocked.of(st, "dialog")["msg"]), ("menu:%s" % m["msg"], m["msg"]), "(this fake gives every card id 5)")
+
+    def test_an_open_menus_card_deleted_meanwhile_one_posted_anew(self):
+        """C-205 (#code-review's must-fix on a830dc83): the card of a menu open while the bot runs is taken away
+        (altention dc post --delete): its record let go, its mention closed, and the dialog still on the screen gets a
+        new card at once, not on the next restart."""
+        from bot import blocked
+        self.post()
+        st = self.bridge.host.chan(self.ch)
+        (token, m), = self.menus.open.items()
+        title = m["title"]
+        sent, done = self.counted(), self.mock.AsyncMock()
+
+        async def go():
+            with self.screens(), self.mock.patch.object(self.asyncio, "sleep", self.mock.AsyncMock()), \
+                    self.mock.patch.object(self.bridge, "call_done", done):
+                self.views = [self.first]
+                self.assertIsNone(await self.menus.card_deleted(self.ch, 6), "not its card: nothing")
+                self.assertEqual(await self.menus.card_deleted(self.ch, 5), title)
+                self.assertNotIn(token, self.menus.open)
+                await self.menus.again
+        self.asyncio.run(go())
+        done.assert_any_await(self.ch, "menu:5")
+        self.assertEqual(len(sent), 1, "posted anew")
+        self.assertIn(title, sent[0], "its own title: no restart happened (rig drill 11-20)")
+        self.assertNotIn(messages.menus("restored_title"), sent[0])
+        (t2, m2), = self.menus.open.items()
+        self.assertIsNot(m2, m, "a new record (its token, from the clock, may be the same ms)")
+        self.assertEqual(blocked.of(st, "dialog")["msg"], m2["msg"])
+
     def test_no_card_known_posts_one(self):
         sent = self.counted()
         self.assertTrue(self.again(self.first))

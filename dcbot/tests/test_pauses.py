@@ -129,7 +129,7 @@ class WhilePaused(Base):
         self.bot.tmux.given.clear()
 
     def test_a_post_is_shown_with_a_note_kept_and_its_sender_told(self):
-        r = self.handled({"channel": "st-0", "text": "review 好了", "from_channel": "1", "wait": 30})
+        r = self.handled({"channel": "st-0", "text": "review 好了", "from_channel": "1", "receipt": "r1"})  # (as dcctl writes it: test_receipt_held)
         self.assertEqual(self.b.sent[-1], "📨 來自 #st-1\nreview 好了")
         self.assertEqual(self.b.footers[-1], "暫停中，@%d 恢復時、或使用者在這裡說話時交給 Claude" % (NOW + 3600))
         self.assertEqual(self.given_to(2), [], "not handed over")
@@ -153,7 +153,7 @@ class WhilePaused(Base):
     def test_at_most_so_many_are_kept(self):
         for i in range(pauses.MOST_HELD):
             self.handled({"channel": "st-0", "text": "m%d" % i, "from_channel": "1"})
-        r = self.handled({"channel": "st-0", "text": "one too many", "from_channel": "1", "wait": 30})
+        r = self.handled({"channel": "st-0", "text": "one too many", "from_channel": "1", "receipt": "r1"})  # (as dcctl writes it: test_receipt_held)
         self.assertEqual(r["ok"], False)
         self.assertIn("這則沒有留住", r["text"])
         self.assertEqual(len(self.bot.channels_state["2"]["paused"]["held"]), pauses.MOST_HELD)

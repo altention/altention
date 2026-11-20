@@ -2926,6 +2926,9 @@ class TmuxBridge(object):
             msg = turn.msg
             try:
                 await lane.call("更新處理中", lambda: deliver.deliver(ch, content=body, intent="status", edit=msg, keep=False))  # (not kept)
+            except discord.NotFound:  # (taken away meanwhile, C-205's --delete or by hand: posted anew next round)
+                if turn.msg is msg:
+                    turn.msg = None
             except Exception:
                 pass
             return

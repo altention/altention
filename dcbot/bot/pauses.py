@@ -172,7 +172,7 @@ class Pauses(object):
 
     async def hold(self, ch, sender, sender_ch, post, body, files=()):
         """A post for a paused channel: kept for its resume; its sender told (its receipt, or its channel)."""
-        from .posts import replied
+        from .posts import replied, waits
         p = self.of(ch.id)
         held = p.setdefault("held", [])
         if len(held) >= MOST_HELD:
@@ -182,7 +182,7 @@ class Pauses(object):
                          "files": list(files), "at": time.time(), "now": bool(post.get("now"))})
             self.bot.save()
             said, ok = messages.pause("told_held", channel=ch.name, until=clock(p["until"]), why=p.get("why")), True
-        if post.get("wait"):
+        if waits(post):  # (dcctl's "receipt": its "wait" never reaches the spool)
             return replied(ok, said)
         if sender_ch is not None:
             from .posts import listens

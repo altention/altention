@@ -187,13 +187,14 @@ class Menus(object):
             await self.bridge.call(ch, self.open[token]["call"], "permission" if permission else "menu", gist_of(excerpt, title, permission),
                                    about=msg.id)
 
-    async def look_again(self, ch, st):
+    async def look_again(self, ch, st, title=None):
         """C-189: a dialog may be on the screen with no menu of ours for it (the bot restarted: self.open is in memory
         only; or no Notification came). Read the screen once (pressing nothing) and, when it shows a menu with
         options, take it in: the card the channel's state still names (blocked "dialog": its message id) gets new
         buttons, no new card and no new ring; with no such card, one is posted as for a Notification. A screen with
         the plain input box: the dialog was answered meanwhile, its old card and mention are closed. True when a menu
-        is open for the channel after it. Run on a task of its own (it reads a screen, maybe on another machine)."""
+        is open for the channel after it. Run on a task of its own (it reads a screen, maybe on another machine).
+        `title`: a card posted anew says this (C-205: the title of the card just taken away), not "restored"."""
         if ch is None or not isinstance(st, dict) or any(m.get("channel") == ch.id for m in self.open.values()):
             return any(m.get("channel") == ch.id for m in self.open.values()) if ch is not None else False
         t = target(st)
@@ -219,7 +220,7 @@ class Menus(object):
         if old is None or not old.get("msg"):
             if not plain_menu(view):  # (a panel a slash command left open, /model's: the owner's, never taken in)
                 return False
-            await self.post(ch, st, {"message": messages.menus("restored_title")})
+            await self.post(ch, st, {"message": title or messages.menus("restored_title")})
             return any(m.get("channel") == ch.id for m in self.open.values())
         token = "%d" % (time.time() * 1000)
         title = messages.menus("restored_title")  # (not the old card's: another dialog may stand there now; reviews on d5bfa13c)
@@ -231,10 +232,19 @@ class Menus(object):
             await deliver.deliver(ch, content=body(title, excerpt, "\n-# " + messages.menus("restored"), due), view=v,
                                   intent="card", key="menu:%s" % token, edit=old["msg"])
             v.stop()
-        except Exception:
-            traceback.print_exc()
+        except Exception as e:
             self.open.pop(token, None)
-            return False
+            if type(e).__name__ != "NotFound":
+                traceback.print_exc()
+                return False
+            # (the card is gone: taken away by altention dc post --delete, C-205, or by hand. Not edited again each
+            # round: its record let go, its mention closed, and a card posted anew as when none is known)
+            blocked.clear(st, "dialog")
+            if self.bridge is not None:
+                self.bridge.host.save()
+                await self.bridge.call_done(ch, "menu:%s" % old["msg"])
+            await self.post(ch, st, {"message": title})
+            return any(m.get("channel") == ch.id for m in self.open.values())
         return True
 
     async def closed(self, ch, m):
@@ -259,6 +269,28 @@ class Menus(object):
                 await deliver.deliver(ch, view=None, intent="card", edit=m["msg"])
             except Exception:
                 pass
+
+    async def card_deleted(self, ch, mid):
+        """C-205: the card of a menu still open was taken away (altention dc post --delete): its record let go, its
+        mention closed, and the screen looked at again on a task of its own (look_again: a dialog still there gets a
+        card posted anew). The title of what it was, or None when no open menu had that card."""
+        hit = [t for t, m in self.open.items() if m.get("channel") == ch.id and str(m.get("msg")) == str(mid)]
+        if not hit:
+            return None
+        title = self.open[hit[0]].get("title") or ""
+        for token in hit:
+            m = self.open.pop(token, None)
+            self.locks.pop(token, None)
+            if m is not None:
+                await self.closed(ch, m)
+        st = self.bridge.host.channels_state.get(str(ch.id)) if self.bridge is not None else None
+        if isinstance(st, dict):
+            old = blocked.of(st, "dialog")
+            if old is not None and str(old.get("msg")) == str(mid):
+                blocked.clear(st, "dialog")
+                self.bridge.host.save()
+            self.again = asyncio.ensure_future(self.look_again(ch, st, title=title or None))  # (kept: a test awaits it)
+        return title
 
     def gone(self, ch):
         """The channel was deleted: its menus went with it (nothing to edit), and wait for nobody."""

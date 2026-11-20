@@ -35,8 +35,8 @@ import discord
 from altention.connectors.claude_code import sessions as cc_sessions
 from altention.sources import check as srccheck
 
-from . import agentanswer, config, deliver, events, files, frames, fromkeys, kinds, layout, ledger, messages, payloads, pending, \
-    masking, pinimport, postbox, rawpost, remote, rules, senders, sentids, sources, tmuxio, util
+from . import agentanswer, config, deleting, deliver, events, files, frames, fromkeys, kinds, layout, ledger, messages, payloads, pending, \
+    pinimport, postbox, rawpost, remote, rules, senders, sentids, sources, tmuxio, util
 from .util import card_color, same_socket, split_message
 LOOP_LIMIT = 10  # when the installation says nothing
 CONTINUE_PER_DAY = 2  # a Claude's --talk-continue, per pair and day (C-176, manager 11-11)
@@ -159,12 +159,23 @@ def replied(ok, text):
         got["reply"] = {"ok": bool(ok), "text": text}
 
 
+def waits(post):
+    """Whether the sender of `post` waits for its receipt (altention dc post --wait, and what asks the bot something):
+    dcctl takes "wait" for itself and writes "receipt" in its place, so a spooled post shows it by that alone."""
+    return bool(post.get("receipt"))
+
+
 def receipt_of(got):
     """The receipt of a post from what handling it sent: the last message's ID and channel, or why there is none; a
-    post answered by the bot (replied()): that answer."""
+    post answered by the bot (replied()): that answer, with the message's ID when it is on Discord too (a post held
+    by a pause or behind a talk-limit card: shown, not handed)."""
     if got.get("reply"):
         r = got["reply"]
-        return {"ok": r["ok"], "text": r["text"], "why": None if r["ok"] else r["text"]}
+        out = {"ok": r["ok"], "text": r["text"], "why": None if r["ok"] else r["text"]}
+        if got["messages"]:
+            last = got["messages"][-1]
+            out.update(message_id=str(last.id), channel_id=str(getattr(getattr(last, "channel", None), "id", "") or ""))
+        return out
     if got["messages"] and not got.get("why"):
         last = got["messages"][-1]
         return {"ok": True, "message_id": str(last.id), "channel_id": str(getattr(getattr(last, "channel", None), "id", "") or "")}
@@ -544,7 +555,8 @@ class Posts(object):
             return replied(*await agentanswer.answer(self.bot.tmux, ch, sender_ch, post))
         if post.get("talk_continue"):  # C-176: one more stretch past the talk limit, as 繼續轉交
             return replied(*await self.talk_continue(ch, sender_ch, post))
-        if post.get("delete_message"):  # altention dc post --delete: a post of the sender's own taken away
+        if post.get("delete_messages") or post.get("delete_message"):  # altention dc post --delete (C-205; an
+            # older altention dc post sends one id, as delete_message)
             return await self.delete_post(ch, sender_ch, sender + vouched(post), post)
         if "json" in post and post.get("board"):  # --board --json: a framed board (C-172a P1d)
             return await self.board_json(ch, post["board"], post, sender + vouched(post))
@@ -576,11 +588,10 @@ class Posts(object):
                 sources.remember(card, ch.id, sources_of(post), len(got))
             else:
                 card = sent(await deliver.deliver(ch, embed=e, intent="post", frm=sender_said(), framed=("card",), **more))
-        self.shown(post)
         st = self.bot.channels_state.get(str(ch.id)) or {}
         if not listens(st):
-            return
-        if held:
+            return self.shown(post)
+        if held:  # (its receipt, written after this (safely()), carries what pauses.hold() replied: not shown() first)
             return await self.pauses.hold(ch, sender, sender_ch, post, text, [name for name, _ in got])
         pair = pair_of(ch.id, sender_ch, post)
         if pair is not None:  # a Claude to a Claude: count, and stop a conversation nobody is watching
@@ -588,7 +599,11 @@ class Posts(object):
             limit = pair_limit(self.bot.channels_state, ch.id, sender_ch.id) if sender_ch is not None else \
                 (self.bot.channels_state.get(str(ch.id)) or {}).get("talk_limit", default_limit())
             if limit and self.streak[pair] > limit:
+                if ch.id in self.held and len(self.queue_at(ch.id)) >= MOST_HELD:  # (as held_full() is reached from
+                    return await self.held_full(ch, post, sender_ch)  # hold_behind(): its receipt says so, as above)
+                self.shown(post)
                 return await self.hold(ch, sender, post, limit, sender_ch)
+        self.shown(post)  # (on Discord: the receipt goes now, not after the hand-over, C-87)
         try:
             await self.give(ch, sender, sender_ch, text, post, card=card)
         except Exception as e:
@@ -622,55 +637,9 @@ class Posts(object):
                 sent(await deliver.deliver(ch, part, allowed_mentions=quiet, intent="post", frm=sender_said(), **asked(i)))
 
     async def delete_post(self, ch, sender_ch, words, post):
-        """altention dc post --delete <message id> --why (manager 11-17, the rules the design put in bot/rules.py):
-        only a post the ledger has as the sender's own (rules.change_refused(delete=True)): never a card, a board, a
-        reply or notice of the bot's; in another's channel only one that says where it comes from (its source line or
-        its 📨 card; a Claude's posted there before P1d has neither), a program's by its key alone (it never gets the
-        line). Taken away (deliver.remove(): its ledger entry goes too) and said in #audit with the reason given; a
-        message already gone is no error. Answered through the receipt (altention dc post waits for it)."""
-        mid, why_given = str(post.get("delete_message") or ""), str(post.get("why") or "").strip()
-        how = "post --delete"
-        key = sender_key(post, sender_ch)
-        server = getattr(self.bot, "get_guild", lambda gid: None)(config.GUILD_ID)
-        entry = ledger.entry(mid, ch.id) if mid.isdigit() else None
-        why = ("--delete 要給訊息 ID" if not mid.isdigit() else None) \
-            or rules.change_refused(entry, key, how, fromkeys.ids_in(server), delete=True)
-        if not why and not ({"source", "card"} & set(entry.get("framed") or ())):
-            got = senders.parse(key)
-            own = got and got[0] == "channel" and await self.home(got[1]) == await self.home(ch.id)
-            if not (own or (got and got[0] == "program")):
-                why = "%s：沒有刪：這則在別人的頻道卻沒有來源行（%s 之前發的），看不出是誰發的，不能用工具刪" % (util.tool(how), "C-172a P1d")
-        if why:
-            await self.bot.audit("[altention dc post --delete] #%s：%s（%s）" % (ch.name, why, words))
-            return replied(False, why)
-        said = await self.said_in(ch, int(mid))  # (what it said, for #audit: the other Claude may have read it; manager)
-        try:
-            await deliver.remove(ch, int(mid))
-            gone = False
-        except discord.NotFound:
-            gone = True  # (deleted by hand already: its entry went with it)
-        except discord.HTTPException as e:
-            said = "Discord 沒收（%s %s）：%s" % (e.status, e.code, str(e.text)[:300])
-            await self.bot.audit("[altention dc post --delete] #%s：沒有刪訊息 %s：%s（%s）" % (ch.name, mid, said, words))
-            return replied(False, "%s：沒有刪：%s" % (util.tool(how), said))
-        await self.bot.audit("[altention dc post --delete] #%s %s訊息 %s（%s 發的%s；理由：%s）" % (
-            ch.name, "要刪的已經不在了：" if gone else "刪了", mid, words, "，內容：「%s」" % said if said else "", why_given))
-        return replied(True, "訊息 %s %s" % (mid, "已經不在了（之前就刪掉了）" if gone else "刪掉了"))
-
-    DELETED_SHOWN = 60  # characters of a deleted post kept in #audit
-    FETCH_SECS = 5
-
-    async def said_in(self, ch, mid):
-        """The first words of a message (its text, its 📨 card's, its Components V2's), masked, on one line; None when
-        it cannot be read (gone, no answer in FETCH_SECS)."""
-        try:
-            msg = await asyncio.wait_for(ch.fetch_message(mid), self.FETCH_SECS)
-        except Exception:
-            return None
-        text = (getattr(msg, "content", "") or "") or util.embed_text(getattr(msg, "embeds", None)) \
-            or util.components_text(getattr(msg, "components", None))
-        text = " ".join(masking.mask(text)[0].split())
-        return (text[:self.DELETED_SHOWN] + "…" if len(text) > self.DELETED_SHOWN else text) or None
+        """altention dc post --delete <id…> --why (C-205): bot/deleting.py. Answered through the receipt (altention dc
+        post waits for it)."""
+        return replied(*await deleting.Deleter(self.bot).run(ch, sender_ch, words, post, sender_key(post, sender_ch)))
 
     async def from_json(self, ch, sender_ch, words, post):
         """altention dc post --json (C-172a P1d): one message's payload, posted as it is (--edit: that message of the
@@ -1467,7 +1436,7 @@ class Posts(object):
         the sender told, through its receipt or in its channel, that it waits on the owner's card."""
         said = messages.note("held_full", channel=ch.name, most=MOST_HELD)
         not_sent(said)
-        if post.get("wait"):
+        if waits(post):
             return replied(False, said)
         sst = (self.bot.channels_state.get(str(sender_ch.id)) or {}) if sender_ch is not None else {}
         if listens(sst):

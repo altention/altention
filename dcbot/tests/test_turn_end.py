@@ -150,6 +150,28 @@ class TurnEnd(unittest.TestCase):
             self.assertEqual([m.silent for m in self.ch.sent], [True, True, True, False])  # typed at the terminal, progress, note, reply
         asyncio.run(go())
 
+    def test_progress_message_taken_away_posted_anew(self):
+        """#code-review low on C-205 a830dc83: the "working…" message deleted meanwhile is not edited every 5 s for
+        the rest of the turn: let go, posted anew next round."""
+        import discord
+        import types
+
+        async def go():
+            await self.bridge.handle(self.ev("UserPromptSubmit", prompt="go"))
+            turn = self.bridge.rt(self.ch).turn
+            turn.t0 -= 60
+            turn.msg = types.SimpleNamespace(id=1)
+
+            async def gone(*a, **kw):
+                raise discord.NotFound(types.SimpleNamespace(status=404, reason="x"), {"code": 10008, "message": "x"})
+            with mock.patch.object(tmux_bridge.deliver, "deliver", gone):
+                await self.bridge.progress(self.ch, turn, self.bridge.lane(self.ch))
+            self.assertIsNone(turn.msg)
+            turn.last = 0
+            await self.bridge.progress(self.ch, turn, self.bridge.lane(self.ch))
+            self.assertIsNotNone(turn.msg)
+        asyncio.run(go())
+
     def test_send_now_waits_for_the_queued_hint(self):
         rule = "─" * 60  # as Claude Code 2.1.295 draws it: the queued message, its hint, the spinner, over the box
         pressed, screens = [], ["working", "\n".join(["● working", "❯ hi", "  ctrl+x ctrl+s to send now", "✻ Working… (5s)", rule,
